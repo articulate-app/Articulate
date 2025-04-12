@@ -2,11 +2,11 @@
 const nextConfig = {
   experimental: {
     serverActions: {
-      allowedOrigins: ['localhost:3000', 'localhost:3001']
+      allowedOrigins: ['localhost:3000', 'localhost:3001', 'app.whyarticulate.com']
     }
   },
   images: {
-    domains: ['localhost'],
+    domains: ['localhost', 'app.whyarticulate.com'],
   },
   env: {
     NEXT_PUBLIC_SUPABASE_URL: process.env.NEXT_PUBLIC_SUPABASE_URL,
