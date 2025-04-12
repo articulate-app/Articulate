@@ -14,21 +14,34 @@ function ResetPasswordContent() {
   const [error, setError] = useState<string | null>(null);
   const [message, setMessage] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
+  const [isValidToken, setIsValidToken] = useState(false);
   const supabase = createClientComponentClient();
 
   useEffect(() => {
     const handleReset = async () => {
       if (accessToken && type === 'recovery') {
-        // Set the session with the access token
-        const { error } = await supabase.auth.setSession({
-          access_token: accessToken,
-          refresh_token: '', // Not needed for this flow
-        });
+        try {
+          // Set the session with the access token
+          const { error } = await supabase.auth.setSession({
+            access_token: accessToken,
+            refresh_token: '', // Not needed for this flow
+          });
 
-        if (error) {
-          console.error('Error setting session:', error.message);
+          if (error) {
+            console.error('Error setting session:', error.message);
+            setError('Invalid or expired reset link');
+            setIsValidToken(false);
+          } else {
+            setIsValidToken(true);
+          }
+        } catch (err) {
+          console.error('Error:', err);
           setError('Invalid or expired reset link');
+          setIsValidToken(false);
         }
+      } else {
+        setError('Invalid or expired reset link');
+        setIsValidToken(false);
       }
     };
 
@@ -67,7 +80,7 @@ function ResetPasswordContent() {
     }
   };
 
-  if (!accessToken || type !== 'recovery') {
+  if (!isValidToken) {
     return (
       <div className="min-h-screen flex flex-col items-center justify-center bg-gray-50 py-12 px-4 sm:px-6 lg:px-8">
         <div className="max-w-md w-full space-y-8">
@@ -76,6 +89,9 @@ function ResetPasswordContent() {
               Invalid or expired reset link
             </h2>
           </div>
+          {error && (
+            <div className="text-red-500 text-sm text-center">{error}</div>
+          )}
         </div>
       </div>
     );
