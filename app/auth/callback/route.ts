@@ -4,12 +4,15 @@ import { NextResponse } from 'next/server';
 
 export async function GET(request: Request) {
   const requestUrl = new URL(request.url);
-  const code = requestUrl.searchParams.get('code');
+  const accessToken = requestUrl.searchParams.get('access_token');
   const type = requestUrl.searchParams.get('type');
 
-  if (code) {
+  if (accessToken) {
     const supabase = createRouteHandlerClient({ cookies });
-    await supabase.auth.exchangeCodeForSession(code);
+    await supabase.auth.setSession({
+      access_token: accessToken,
+      refresh_token: '', // Not needed for this flow
+    });
   }
 
   // If this is a password reset, redirect to the update password page
