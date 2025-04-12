@@ -8,7 +8,12 @@ export async function GET(request: Request) {
   const type = requestUrl.searchParams.get('type');
   const accessToken = requestUrl.searchParams.get('access_token');
 
-  console.log('Reset password request:', { code, type, accessToken: !!accessToken });
+  console.log('Reset password request:', { 
+    code: !!code, 
+    type, 
+    accessToken: !!accessToken,
+    host: requestUrl.host 
+  });
 
   if (!code && !accessToken) {
     console.log('No code or access_token provided');
@@ -68,6 +73,12 @@ export async function GET(request: Request) {
       const updatePasswordUrl = new URL('/auth/update-password', request.url);
       if (code) updatePasswordUrl.searchParams.set('code', code);
       if (accessToken) updatePasswordUrl.searchParams.set('access_token', accessToken);
+      
+      // Ensure we're using the correct domain
+      if (requestUrl.host.startsWith('www.')) {
+        updatePasswordUrl.host = 'app.whyarticulate.com';
+      }
+      
       return NextResponse.redirect(updatePasswordUrl);
     }
 
