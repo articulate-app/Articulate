@@ -3,6 +3,7 @@
 import { useEffect, Suspense, useState } from 'react';
 import { useRouter, useSearchParams } from 'next/navigation';
 import { createClientComponentClient } from '@supabase/auth-helpers-nextjs';
+import { Icons } from '@/components/icons';
 
 function ResetPasswordContent() {
   const router = useRouter();
@@ -165,19 +166,19 @@ function ResetPasswordContent() {
 }
 
 export default function ResetPasswordPage() {
+  const router = useRouter();
+
+  useEffect(() => {
+    // This page will be briefly shown while the route handler processes the code
+    // and redirects to the appropriate page
+  }, []);
+
   return (
-    <Suspense fallback={
-      <div className="min-h-screen flex flex-col items-center justify-center bg-gray-50 py-12 px-4 sm:px-6 lg:px-8">
-        <div className="max-w-md w-full space-y-8">
-          <div>
-            <h2 className="mt-6 text-center text-3xl font-extrabold text-gray-900">
-              Loading...
-            </h2>
-          </div>
-        </div>
+    <div className="flex min-h-screen items-center justify-center">
+      <div className="flex flex-col items-center space-y-4">
+        <Icons.spinner className="h-8 w-8 animate-spin" />
+        <p className="text-sm text-muted-foreground">Processing reset link...</p>
       </div>
-    }>
-      <ResetPasswordContent />
-    </Suspense>
+    </div>
   );
 } 
