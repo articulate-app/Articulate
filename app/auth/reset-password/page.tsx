@@ -1,16 +1,22 @@
 'use client';
 
 import { useEffect } from 'react';
-import { useRouter } from 'next/navigation';
+import { useRouter, useSearchParams } from 'next/navigation';
 import { Icons } from '@/components/icons';
 
 export default function ResetPasswordPage() {
   const router = useRouter();
+  const searchParams = useSearchParams();
 
   useEffect(() => {
-    // This page will be briefly shown while the route handler processes the code
-    // and redirects to the appropriate page
-  }, []);
+    const code = searchParams.get('code');
+    const type = searchParams.get('type');
+
+    if (code) {
+      // Redirect to the API route to handle the code exchange
+      router.push(`/api/auth/reset-password?code=${code}&type=${type}`);
+    }
+  }, [searchParams, router]);
 
   return (
     <div className="flex min-h-screen items-center justify-center">
