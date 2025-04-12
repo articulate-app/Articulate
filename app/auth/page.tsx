@@ -29,7 +29,7 @@ export default function AuthPage() {
       if (isResetPassword) {
         // Handle password reset
         const { error } = await supabase.auth.resetPasswordForEmail(email, {
-          redirectTo: 'http://localhost:3000/auth/reset-password',
+          redirectTo: 'https://app.whyarticulate.com/auth/reset-password',
         });
         
         if (error) {
@@ -43,7 +43,7 @@ export default function AuthPage() {
           email,
           password,
           options: {
-            emailRedirectTo: `${window.location.origin}/auth/callback`,
+            emailRedirectTo: 'https://app.whyarticulate.com/auth/callback',
           },
         });
         
