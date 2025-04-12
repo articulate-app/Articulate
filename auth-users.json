@@ -1,0 +1,352 @@
+[
+  {
+    "id": "03f06dfc-77ee-4d54-a807-3bdd763d5d0c",
+    "email": "contabilidade@criap.com",
+    "created_at": "2025-04-05T20:45:03.673909Z",
+    "email_confirmed_at": "2025-04-05T20:45:03.676291Z",
+    "role": "authenticated"
+  },
+  {
+    "id": "b65345c4-0ab5-47b7-a4b8-10e8c3ce299e",
+    "email": "avieira@softingal.pt",
+    "created_at": "2025-04-05T20:45:03.661696Z",
+    "email_confirmed_at": "2025-04-05T20:45:03.663946Z",
+    "role": "authenticated"
+  },
+  {
+    "id": "ccc1ec68-68d3-4063-be2c-6cbce3f6ec02",
+    "email": "andreia.vieira@softingal.pt",
+    "created_at": "2025-04-05T20:45:02.392032Z",
+    "email_confirmed_at": "2025-04-05T20:45:02.394493Z",
+    "role": "authenticated"
+  },
+  {
+    "id": "73e14151-e821-4d45-ad18-b3d66e243c9e",
+    "email": "carlos.couto@heraprime.com",
+    "created_at": "2025-04-05T20:45:02.319572Z",
+    "email_confirmed_at": "2025-04-05T20:45:02.321923Z",
+    "role": "authenticated"
+  },
+  {
+    "id": "31bba044-c994-4f76-b9c3-9b2457cbc12a",
+    "email": "sara.m.rodrigues@galp.com",
+    "created_at": "2025-04-05T20:45:02.307102Z",
+    "email_confirmed_at": "2025-04-05T20:45:02.309214Z",
+    "role": "authenticated"
+  },
+  {
+    "id": "941b2558-00e4-463f-a7c3-70aee62bbed8",
+    "email": "joanapereira@criap.com",
+    "created_at": "2025-04-05T20:45:02.303732Z",
+    "email_confirmed_at": "2025-04-05T20:45:02.306972Z",
+    "role": "authenticated"
+  },
+  {
+    "id": "51486786-e34a-4adb-9c39-6ed5edbccd87",
+    "email": "rafaela.pinto@galp.com",
+    "created_at": "2025-04-05T20:45:02.289307Z",
+    "email_confirmed_at": "2025-04-05T20:45:02.29152Z",
+    "role": "authenticated"
+  },
+  {
+    "id": "4985ba55-aecc-4bc1-abdd-3b68522d6603",
+    "email": "constancaneves@bancocarregosa.com",
+    "created_at": "2025-04-05T20:45:01.055771Z",
+    "email_confirmed_at": "2025-04-05T20:45:01.058701Z",
+    "role": "authenticated"
+  },
+  {
+    "id": "69c183ab-a278-46b7-b033-3b9f42a612b6",
+    "email": "barbaracastrofernandes@bancocarregosa.com",
+    "created_at": "2025-04-05T20:45:01.036216Z",
+    "email_confirmed_at": "2025-04-05T20:45:01.044924Z",
+    "role": "authenticated"
+  },
+  {
+    "id": "67466f1c-64a7-4ff7-b973-3adabf2de6a2",
+    "email": "joanaribeiro@bancocarregosa.com",
+    "created_at": "2025-04-05T20:45:01.035838Z",
+    "email_confirmed_at": "2025-04-05T20:45:01.03939Z",
+    "role": "authenticated"
+  },
+  {
+    "id": "0b849325-6b9f-4a73-8237-b7ec3ba9847f",
+    "email": "raquel.honorio@fullsix.pt",
+    "created_at": "2025-04-05T20:45:01.03121Z",
+    "email_confirmed_at": "2025-04-05T20:45:01.034057Z",
+    "role": "authenticated"
+  },
+  {
+    "id": "f817a445-1191-4391-bbf4-75e4b777cfda",
+    "email": "armandaclaro@gmail.com",
+    "created_at": "2025-04-05T20:45:00.995846Z",
+    "email_confirmed_at": "2025-04-05T20:45:01.039337Z",
+    "role": "authenticated"
+  },
+  {
+    "id": "a4c1e067-060f-4d88-8748-6eef82871b7e",
+    "email": "1162829@galp.com",
+    "created_at": "2025-04-05T20:44:59.725844Z",
+    "email_confirmed_at": "2025-04-05T20:44:59.728415Z",
+    "role": "authenticated"
+  },
+  {
+    "id": "b0b7454a-7a34-4ca1-8332-b89d6e65abd8",
+    "email": "luis.goncalves@kinesso.com",
+    "created_at": "2025-04-05T20:44:59.714654Z",
+    "email_confirmed_at": "2025-04-05T20:44:59.716903Z",
+    "role": "authenticated"
+  },
+  {
+    "id": "ee612c62-6557-474b-930c-b34f396f8f66",
+    "email": "miguel.simoes@galp.com",
+    "created_at": "2025-04-05T20:44:59.695957Z",
+    "email_confirmed_at": "2025-04-05T20:44:59.698144Z",
+    "role": "authenticated"
+  },
+  {
+    "id": "8e95fb08-e96a-41bb-a2c5-7a1b2fec0bbc",
+    "email": "tomas.casimiro@jcdecaux.com",
+    "created_at": "2025-04-05T20:44:59.689475Z",
+    "email_confirmed_at": "2025-04-05T20:44:59.69154Z",
+    "role": "authenticated"
+  },
+  {
+    "id": "38d3e99c-c0a2-42bd-a649-910e9b14dfa9",
+    "email": "frederico.almendra@globalservs.com",
+    "created_at": "2025-04-05T20:44:59.684505Z",
+    "email_confirmed_at": "2025-04-05T20:44:59.686794Z",
+    "role": "authenticated"
+  },
+  {
+    "id": "13051eb1-e6c7-4f53-9618-0002668774a8",
+    "email": "accounting@bridgein.pt",
+    "created_at": "2025-04-05T20:44:58.414603Z",
+    "email_confirmed_at": "2025-04-05T20:44:58.417775Z",
+    "role": "authenticated"
+  },
+  {
+    "id": "e6c9e26b-8d5b-42dd-9be1-c4a667a96ff5",
+    "email": "daniela.vieira@lge.com",
+    "created_at": "2025-04-05T20:44:58.40045Z",
+    "email_confirmed_at": "2025-04-05T20:44:58.405712Z",
+    "role": "authenticated"
+  },
+  {
+    "id": "21277fac-30f0-4027-a81a-f454444d8341",
+    "email": "luisgraca@criap.com",
+    "created_at": "2025-04-05T20:44:58.386346Z",
+    "email_confirmed_at": "2025-04-05T20:44:58.404098Z",
+    "role": "authenticated"
+  },
+  {
+    "id": "466e2349-48f9-491c-9e1a-75768458406f",
+    "email": "finance@fullsix.pt",
+    "created_at": "2025-04-05T20:44:58.372301Z",
+    "email_confirmed_at": "2025-04-05T20:44:58.374534Z",
+    "role": "authenticated"
+  },
+  {
+    "id": "2c2f6414-9fdc-4b04-a5eb-10e4c4ee8706",
+    "email": "brunaarouca@criap.com",
+    "created_at": "2025-04-05T20:44:58.36617Z",
+    "email_confirmed_at": "2025-04-05T20:44:58.368695Z",
+    "role": "authenticated"
+  },
+  {
+    "id": "322ba005-fed8-4f02-a912-67854d6bd60f",
+    "email": "maria.gaspar@fullsix.pt",
+    "created_at": "2025-04-05T20:44:57.095432Z",
+    "email_confirmed_at": "2025-04-05T20:44:57.099159Z",
+    "role": "authenticated"
+  },
+  {
+    "id": "550d83de-57fe-4c78-91da-457e07bc8fbe",
+    "email": "sergio.carita@fullsix.pt",
+    "created_at": "2025-04-05T20:44:57.092598Z",
+    "email_confirmed_at": "2025-04-05T20:44:57.09583Z",
+    "role": "authenticated"
+  },
+  {
+    "id": "f5e9d6c0-88b4-48a9-a3bc-8a23a95aa15c",
+    "email": "andreia.paulo@jcdecaux.com",
+    "created_at": "2025-04-05T20:44:57.092265Z",
+    "email_confirmed_at": "2025-04-05T20:44:57.096688Z",
+    "role": "authenticated"
+  },
+  {
+    "id": "54e9851c-16b9-4d72-a460-9e37eedc15b0",
+    "email": "nuno.passo@hamlet.com.pt",
+    "created_at": "2025-04-05T20:44:55.873817Z",
+    "email_confirmed_at": "2025-04-05T20:44:55.877401Z",
+    "role": "authenticated"
+  },
+  {
+    "id": "47b21f06-743b-4659-bb02-e2e14c030954",
+    "email": "cdaniel.jorge.s@gmail.com",
+    "created_at": "2025-04-05T20:44:55.858022Z",
+    "email_confirmed_at": "2025-04-05T20:44:55.861231Z",
+    "role": "authenticated"
+  },
+  {
+    "id": "7cd7d818-f7d9-4b44-a205-9b40a0d63e1f",
+    "email": "goncalo.casimiro-ext@jcdecaux.com",
+    "created_at": "2025-04-05T20:44:55.838944Z",
+    "email_confirmed_at": "2025-04-05T20:44:55.852444Z",
+    "role": "authenticated"
+  },
+  {
+    "id": "844d947e-e1ba-4383-9942-39a786a30b88",
+    "email": "sventura@whyarticulate.com",
+    "created_at": "2025-04-05T20:44:55.835218Z",
+    "email_confirmed_at": "2025-04-05T20:44:55.83769Z",
+    "role": "authenticated"
+  },
+  {
+    "id": "9cda8d49-1de0-4890-bcb5-a5d598f258af",
+    "email": "teresa.menezes@sonae.pt",
+    "created_at": "2025-04-05T20:44:55.770137Z",
+    "email_confirmed_at": "2025-04-05T20:44:55.772914Z",
+    "role": "authenticated"
+  },
+  {
+    "id": "7590b372-2b73-4a7c-8951-838333a766e1",
+    "email": "miguel.franca@jcdecaux.com",
+    "created_at": "2025-04-05T20:44:54.557678Z",
+    "email_confirmed_at": "2025-04-05T20:44:54.560162Z",
+    "role": "authenticated"
+  },
+  {
+    "id": "8bcf0c7d-b35b-4991-bf18-f775bf7441c4",
+    "email": "sofia.bsousa@fullsix.pt",
+    "created_at": "2025-04-05T20:44:54.548374Z",
+    "email_confirmed_at": "2025-04-05T20:44:54.551262Z",
+    "role": "authenticated"
+  },
+  {
+    "id": "85965868-797b-49fa-8826-21b663d1f003",
+    "email": "marcelo.ferreira@nearpartner.com",
+    "created_at": "2025-04-05T20:44:54.536826Z",
+    "email_confirmed_at": "2025-04-05T20:44:54.539438Z",
+    "role": "authenticated"
+  },
+  {
+    "id": "275509b3-f4d3-40a3-bde8-b8ac00ec75ba",
+    "email": "joana.carrico.teixeira@jeronimo-martins.com",
+    "created_at": "2025-04-05T20:44:54.521141Z",
+    "email_confirmed_at": "2025-04-05T20:44:54.523331Z",
+    "role": "authenticated"
+  },
+  {
+    "id": "f0afaca3-404f-4fb1-8258-d7ac2ad2592c",
+    "email": "pedro.salgueiro@jcdecaux.com",
+    "created_at": "2025-04-05T20:44:54.439686Z",
+    "email_confirmed_at": "2025-04-05T20:44:54.441985Z",
+    "role": "authenticated"
+  },
+  {
+    "id": "ffa001d9-7b93-4c07-b4e1-9f5712870324",
+    "email": "marketingd@somengil.com",
+    "created_at": "2025-04-05T20:44:53.197291Z",
+    "email_confirmed_at": "2025-04-05T20:44:53.199637Z",
+    "role": "authenticated"
+  },
+  {
+    "id": "007917c6-31ad-4bc1-9d92-c59b515f6b88",
+    "email": "prponciano@sonae.pt",
+    "created_at": "2025-04-05T20:44:53.175416Z",
+    "email_confirmed_at": "2025-04-05T20:44:53.181127Z",
+    "role": "authenticated"
+  },
+  {
+    "id": "4f07add6-cac0-49bf-aeac-bf1625654200",
+    "email": "marketing@somengil.com",
+    "created_at": "2025-04-05T20:44:53.170698Z",
+    "email_confirmed_at": "2025-04-05T20:44:53.177497Z",
+    "role": "authenticated"
+  },
+  {
+    "id": "91f9cc6c-4576-4a57-8fee-793273b8b59e",
+    "email": "b4xjbgwsk7@privaterelay.appleid.com",
+    "created_at": "2025-04-05T20:44:53.170405Z",
+    "email_confirmed_at": "2025-04-05T20:44:53.179286Z",
+    "role": "authenticated"
+  },
+  {
+    "id": "26a02de1-be44-42d0-ab8f-5ed0367d1b49",
+    "email": "pedro.veloso@nearpartner.com",
+    "created_at": "2025-04-05T20:44:53.166687Z",
+    "email_confirmed_at": "2025-04-05T20:44:53.169114Z",
+    "role": "authenticated"
+  },
+  {
+    "id": "50249106-772c-4bd1-b612-6627f6ee3db3",
+    "email": "catarina.costa@mbcsww.com",
+    "created_at": "2025-04-05T20:44:51.865957Z",
+    "email_confirmed_at": "2025-04-05T20:44:51.869824Z",
+    "role": "authenticated"
+  },
+  {
+    "id": "b73c139c-6439-469e-984a-76cca10a6477",
+    "email": "claudia.landeiro@fullsix.pt",
+    "created_at": "2025-04-05T20:44:51.864278Z",
+    "email_confirmed_at": "2025-04-05T20:44:51.869456Z",
+    "role": "authenticated"
+  },
+  {
+    "id": "6c8ae414-1b69-49f7-b71c-0e23333cc588",
+    "email": "andre.lemos@uppout.com",
+    "created_at": "2025-04-05T20:44:51.862283Z",
+    "email_confirmed_at": "2025-04-05T20:44:51.867864Z",
+    "role": "authenticated"
+  },
+  {
+    "id": "4997c16c-7c2a-47b9-9ab5-d6a28c834d51",
+    "email": "articulate.app.sample@gmail.com",
+    "created_at": "2025-04-05T20:44:51.852887Z",
+    "email_confirmed_at": "2025-04-05T20:44:51.868866Z",
+    "role": "authenticated"
+  },
+  {
+    "id": "46168260-53a1-4a2c-992f-607813076044",
+    "email": "geral@marianacoutostudio.pt",
+    "created_at": "2025-04-05T20:44:51.830646Z",
+    "email_confirmed_at": "2025-04-05T20:44:51.832905Z",
+    "role": "authenticated"
+  },
+  {
+    "id": "87462f39-64b5-4db4-b5e5-8a1be12a8b75",
+    "email": "filipa.figueiredo@fullsix.pt",
+    "created_at": "2025-04-05T20:44:50.54375Z",
+    "email_confirmed_at": "2025-04-05T20:44:50.547824Z",
+    "role": "authenticated"
+  },
+  {
+    "id": "60db9a2a-47f5-408c-b63c-acc6afe00c86",
+    "email": "rita.sebastiao@reprisedigital.com",
+    "created_at": "2025-04-05T20:44:50.54334Z",
+    "email_confirmed_at": "2025-04-05T20:44:50.550448Z",
+    "role": "authenticated"
+  },
+  {
+    "id": "53e76957-65fe-46c4-b632-a52e55553094",
+    "email": "tiago.correa@fullsix.pt",
+    "created_at": "2025-04-05T20:44:50.542146Z",
+    "email_confirmed_at": "2025-04-05T20:44:50.546504Z",
+    "role": "authenticated"
+  },
+  {
+    "id": "8f29392a-9c38-4526-b665-037ea57e74a1",
+    "email": "sergio.ruivo@galp.com",
+    "created_at": "2025-04-05T20:44:50.535524Z",
+    "email_confirmed_at": "2025-04-05T20:44:50.537833Z",
+    "role": "authenticated"
+  },
+  {
+    "id": "7b1bd31a-15af-46ec-8323-af1fc4f0db8e",
+    "email": "joao.dasilva@fullsix.pt",
+    "created_at": "2025-04-05T20:44:50.481611Z",
+    "email_confirmed_at": "2025-04-05T20:44:50.549248Z",
+    "role": "authenticated"
+  }
+]
