@@ -16,9 +16,42 @@ function ResetPasswordContent() {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [success, setSuccess] = useState(false);
+  const [isValidating, setIsValidating] = useState(true);
   const supabase = createClientComponentClient();
 
   const code = searchParams.get('code');
+  const type = searchParams.get('type');
+
+  useEffect(() => {
+    const verifyCode = async () => {
+      if (!code) {
+        console.log('No code provided, redirecting to auth page');
+        router.push('/auth?error=Invalid reset link');
+        return;
+      }
+
+      try {
+        // Call the API route to exchange the code for a session
+        const response = await fetch(`/auth/reset-password/api?code=${code}&type=${type}`);
+        
+        if (!response.ok) {
+          const error = await response.text();
+          console.error('Code exchange error:', error);
+          router.push('/auth?error=Invalid or expired reset link');
+          return;
+        }
+
+        const data = await response.json();
+        console.log('Code exchange successful:', data);
+        setIsValidating(false);
+      } catch (error) {
+        console.error('Unexpected error:', error);
+        router.push('/auth?error=An unexpected error occurred');
+      }
+    };
+
+    verifyCode();
+  }, [code, type, router]);
 
   const handleResetPassword = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -50,6 +83,17 @@ function ResetPasswordContent() {
       setLoading(false);
     }
   };
+
+  if (isValidating) {
+    return (
+      <div className="flex min-h-screen items-center justify-center">
+        <div className="flex flex-col items-center space-y-4">
+          <Icons.spinner className="h-8 w-8 animate-spin" />
+          <p className="text-sm text-muted-foreground">Verifying reset link...</p>
+        </div>
+      </div>
+    );
+  }
 
   if (success) {
     return (
