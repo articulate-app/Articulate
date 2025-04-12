@@ -17,7 +17,7 @@ export async function GET(request: Request) {
 
   if (!code && !accessToken) {
     console.log('No code or access_token provided');
-    return NextResponse.redirect(new URL('/auth?error=Invalid reset link', request.url));
+    return NextResponse.redirect(new URL('/auth?error=Invalid reset link', request.url), { status: 302 });
   }
 
   const cookieStore = cookies();
@@ -35,7 +35,7 @@ export async function GET(request: Request) {
       
       if (error) {
         console.error('Session set error:', error);
-        return NextResponse.redirect(new URL('/auth?error=Could not establish session', request.url));
+        return NextResponse.redirect(new URL('/auth?error=Could not establish session', request.url), { status: 302 });
       }
       
       session = data.session;
@@ -46,7 +46,7 @@ export async function GET(request: Request) {
       
       if (error) {
         console.error('Code exchange error:', error);
-        return NextResponse.redirect(new URL('/auth?error=Invalid or expired reset link', request.url));
+        return NextResponse.redirect(new URL('/auth?error=Invalid or expired reset link', request.url), { status: 302 });
       }
       
       session = data.session;
@@ -58,12 +58,12 @@ export async function GET(request: Request) {
     
     if (sessionError) {
       console.error('Session verification error:', sessionError);
-      return NextResponse.redirect(new URL('/auth?error=Could not verify session', request.url));
+      return NextResponse.redirect(new URL('/auth?error=Could not verify session', request.url), { status: 302 });
     }
 
     if (!verifiedSession) {
       console.error('No session found after exchange/set');
-      return NextResponse.redirect(new URL('/auth?error=Could not establish session', request.url));
+      return NextResponse.redirect(new URL('/auth?error=Could not establish session', request.url), { status: 302 });
     }
 
     console.log('Session verified:', verifiedSession);
@@ -79,13 +79,13 @@ export async function GET(request: Request) {
         updatePasswordUrl.host = 'app.whyarticulate.com';
       }
       
-      return NextResponse.redirect(updatePasswordUrl);
+      return NextResponse.redirect(updatePasswordUrl, { status: 302 });
     }
 
     // Default redirect to home
-    return NextResponse.redirect(new URL('/', request.url));
+    return NextResponse.redirect(new URL('/', request.url), { status: 302 });
   } catch (error) {
     console.error('Unexpected error:', error);
-    return NextResponse.redirect(new URL('/auth?error=An unexpected error occurred', request.url));
+    return NextResponse.redirect(new URL('/auth?error=An unexpected error occurred', request.url), { status: 302 });
   }
 } 

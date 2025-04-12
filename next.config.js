@@ -19,7 +19,7 @@ const nextConfig = {
           },
         ],
         destination: 'https://app.whyarticulate.com/:path*',
-        permanent: true,
+        permanent: false,
       },
     ]
   },
