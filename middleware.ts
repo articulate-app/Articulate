@@ -4,7 +4,22 @@ import type { NextRequest } from 'next/server';
 
 export async function middleware(req: NextRequest) {
   const res = NextResponse.next();
+  const { pathname } = req.nextUrl;
   
+  // Define public paths that don't require authentication
+  const publicPaths = [
+    '/auth',
+    '/auth/reset-password',
+    '/auth/update-password',
+    '/auth/callback',
+    '/api/auth',
+  ];
+
+  // Allow public paths to continue without authentication check
+  if (publicPaths.some(path => pathname.startsWith(path))) {
+    return res;
+  }
+
   // Create a Supabase client with the correct configuration
   const supabase = createMiddlewareClient({ req, res });
 
@@ -12,15 +27,15 @@ export async function middleware(req: NextRequest) {
     data: { session },
   } = await supabase.auth.getSession();
 
-  // If user is not signed in and the current path is not /auth,
+  // If user is not signed in and the current path is not public,
   // redirect the user to /auth
-  if (!session && req.nextUrl.pathname !== '/auth') {
+  if (!session && !publicPaths.some(path => pathname.startsWith(path))) {
     return NextResponse.redirect(new URL('/auth', req.url));
   }
 
   // If user is signed in and the current path is /auth,
   // redirect the user to /dashboard
-  if (session && req.nextUrl.pathname === '/auth') {
+  if (session && pathname === '/auth') {
     return NextResponse.redirect(new URL('/dashboard', req.url));
   }
 
@@ -28,5 +43,5 @@ export async function middleware(req: NextRequest) {
 }
 
 export const config = {
-  matcher: ['/((?!api|_next/static|_next/image|favicon.ico).*)'],
+  matcher: ['/((?!_next/static|_next/image|favicon.ico).*)'],
 }; 
