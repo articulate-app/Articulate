@@ -28,6 +28,21 @@ export async function GET(request: Request) {
 
     console.log('Code exchange successful:', data);
 
+    // Verify the session was properly set
+    const { data: { session }, error: sessionError } = await supabase.auth.getSession();
+    
+    if (sessionError) {
+      console.error('Session verification error:', sessionError);
+      return NextResponse.redirect(new URL('/auth?error=Could not verify session', request.url));
+    }
+
+    if (!session) {
+      console.error('No session found after code exchange');
+      return NextResponse.redirect(new URL('/auth?error=Could not establish session', request.url));
+    }
+
+    console.log('Session verified:', session);
+
     // If this is a password reset, redirect to the update password page
     if (type === 'recovery') {
       const updatePasswordUrl = new URL('/auth/update-password', request.url);

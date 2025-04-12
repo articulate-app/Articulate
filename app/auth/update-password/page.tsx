@@ -31,12 +31,28 @@ export default function UpdatePasswordContent() {
     }
 
     try {
+      // First verify we have a valid session
+      const { data: { session }, error: sessionError } = await supabase.auth.getSession();
+      
+      if (sessionError) {
+        console.error('Session error:', sessionError);
+        setError('Your session has expired. Please try the password reset process again.');
+        return;
+      }
+
+      if (!session) {
+        console.error('No session found');
+        setError('Your session has expired. Please try the password reset process again.');
+        return;
+      }
+
       const { error } = await supabase.auth.updateUser({
         password: password,
       });
 
       if (error) {
-        setError(error.message);
+        console.error('Password update error:', error);
+        setError(error.message || 'Failed to update password. Please try again.');
       } else {
         setSuccess(true);
         // Redirect to dashboard after 2 seconds
@@ -45,7 +61,8 @@ export default function UpdatePasswordContent() {
         }, 2000);
       }
     } catch (err) {
-      setError('An unexpected error occurred');
+      console.error('Unexpected error:', err);
+      setError('An unexpected error occurred. Please try again.');
     } finally {
       setLoading(false);
     }
