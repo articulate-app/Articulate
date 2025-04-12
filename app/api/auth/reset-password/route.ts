@@ -44,7 +44,9 @@ export async function GET(request: Request) {
 
     // If this is a password reset, redirect to the update password page
     if (type === 'recovery') {
-      return NextResponse.redirect(new URL('/auth/update-password', request.url));
+      const updatePasswordUrl = new URL('/auth/update-password', request.url);
+      updatePasswordUrl.searchParams.set('code', code);
+      return NextResponse.redirect(updatePasswordUrl);
     }
 
     // Default redirect to home

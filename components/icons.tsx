@@ -1,6 +1,7 @@
-import { Loader2, LogOut } from 'lucide-react';
+import { Loader2, LogOut, Check } from 'lucide-react';
 
 export const Icons = {
   spinner: Loader2,
   logout: LogOut,
+  check: Check,
 }; 
