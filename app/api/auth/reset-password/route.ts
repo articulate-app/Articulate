@@ -7,28 +7,50 @@ export async function GET(request: Request) {
   const code = requestUrl.searchParams.get('code');
   const type = requestUrl.searchParams.get('type');
 
+  console.log('Reset password request:', { code, type });
+
   if (!code) {
+    console.log('No code provided');
     return NextResponse.redirect(new URL('/auth?error=Invalid reset link', request.url));
   }
 
   const supabase = createRouteHandlerClient({ cookies });
-  const { data, error } = await supabase.auth.exchangeCodeForSession(code);
   
-  if (error) {
-    return NextResponse.redirect(new URL('/auth?error=Invalid or expired reset link', request.url));
-  }
+  try {
+    // First exchange the code for a session
+    const { data: exchangeData, error: exchangeError } = await supabase.auth.exchangeCodeForSession(code);
+    
+    if (exchangeError) {
+      console.error('Code exchange error:', exchangeError);
+      return NextResponse.redirect(new URL('/auth?error=Invalid or expired reset link', request.url));
+    }
 
-  // Verify we have a valid session
-  const { data: { session } } = await supabase.auth.getSession();
-  if (!session) {
-    return NextResponse.redirect(new URL('/auth?error=Session not found', request.url));
-  }
+    console.log('Code exchange successful:', exchangeData);
 
-  // If this is a password reset, redirect to the update password page
-  if (type === 'recovery') {
-    return NextResponse.redirect(new URL('/auth/update-password', request.url));
-  }
+    // Verify we have a valid session
+    const { data: { session }, error: sessionError } = await supabase.auth.getSession();
+    
+    if (sessionError) {
+      console.error('Session error:', sessionError);
+      return NextResponse.redirect(new URL('/auth?error=Session error', request.url));
+    }
 
-  // Default redirect to home
-  return NextResponse.redirect(new URL('/', request.url));
+    if (!session) {
+      console.log('No session found');
+      return NextResponse.redirect(new URL('/auth?error=Session not found', request.url));
+    }
+
+    console.log('Session verified:', session);
+
+    // If this is a password reset, redirect to the update password page
+    if (type === 'recovery') {
+      return NextResponse.redirect(new URL('/auth/update-password', request.url));
+    }
+
+    // Default redirect to home
+    return NextResponse.redirect(new URL('/', request.url));
+  } catch (error) {
+    console.error('Unexpected error:', error);
+    return NextResponse.redirect(new URL('/auth?error=An unexpected error occurred', request.url));
+  }
 } 

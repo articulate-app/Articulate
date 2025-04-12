@@ -12,9 +12,16 @@ function ResetPasswordContent() {
     const code = searchParams.get('code');
     const type = searchParams.get('type');
 
+    console.log('Reset password page params:', { code, type });
+
     if (code) {
-      // Redirect to the API route to handle the code exchange
-      router.push(`/api/auth/reset-password?code=${code}&type=${type}`);
+      // Construct the full URL for the API route
+      const apiUrl = new URL('/api/auth/reset-password', window.location.origin);
+      apiUrl.searchParams.set('code', code);
+      if (type) apiUrl.searchParams.set('type', type);
+      
+      console.log('Redirecting to:', apiUrl.toString());
+      router.push(apiUrl.toString());
     }
   }, [searchParams, router]);
 
