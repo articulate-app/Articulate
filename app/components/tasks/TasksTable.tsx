@@ -1,3 +1,5 @@
+"use client"
+
 import {
   ColumnDef,
   flexRender,
@@ -8,7 +10,7 @@ import {
   getSortedRowModel,
 } from "@tanstack/react-table"
 import { useEffect, useState } from "react"
-import { Task, getTasks } from "@/lib/services/tasks"
+import { Task, getTasks } from "../../../lib/services/tasks"
 
 const columns: ColumnDef<Task>[] = [
   {

@@ -1,3 +1,5 @@
+"use client"
+
 import Link from "next/link"
 import { Home, ListTodo, FolderKanban, Users, Inbox, BarChart, CreditCard, Settings } from "lucide-react"
 

@@ -1,4 +1,6 @@
-import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
+"use client"
+
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "../ui/tabs"
 
 export function TaskDetails() {
   return (
