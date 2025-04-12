@@ -46,6 +46,8 @@ export default function UpdatePasswordContent() {
         return;
       }
 
+      console.log('Updating password with session:', session);
+
       const { error } = await supabase.auth.updateUser({
         password: password,
       });
@@ -54,6 +56,7 @@ export default function UpdatePasswordContent() {
         console.error('Password update error:', error);
         setError(error.message || 'Failed to update password. Please try again.');
       } else {
+        console.log('Password updated successfully');
         setSuccess(true);
         // Redirect to dashboard after 2 seconds
         setTimeout(() => {
