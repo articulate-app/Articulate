@@ -20,28 +20,27 @@ function ResetPasswordContent() {
   const [isTokenValid, setIsTokenValid] = useState(false);
 
   useEffect(() => {
-    const validateToken = async () => {
-      if (accessToken && type === 'recovery') {
-        const supabase = createClientComponentClient();
+    const validateCode = async () => {
+      const code = searchParams.get('code');
   
-        // Pass both tokens — refresh_token is required by TS, but not actually used here
-        const { error } = await supabase.auth.setSession({
-          access_token: accessToken,
-          refresh_token: 'placeholder-refresh-token',
-        });
+      if (!code) return;
   
-        if (error) {
-          console.error('Supabase setSession error:', error.message);
-          setError('Invalid or expired reset link. Please request a new one.');
-          return;
-        }
+      const supabase = createClientComponentClient();
   
-        setIsTokenValid(true);
+      const { error } = await supabase.auth.exchangeCodeForSession(code);
+  
+      if (error) {
+        console.error('Supabase exchangeCodeForSession error:', error.message);
+        setError('Invalid or expired reset link. Please request a new one.');
+        return;
       }
+  
+      setIsTokenValid(true);
     };
   
-    validateToken();
-  }, [accessToken, type]);
+    validateCode();
+  }, [searchParams]);
+  
 
   
   
