@@ -1,62 +1,49 @@
 'use client';
 
-import { Suspense, useEffect, useState } from 'react';
+import { useState, useEffect, Suspense } from 'react';
 import { useRouter, useSearchParams } from 'next/navigation';
-import { Icons } from '@/components/icons';
-import { Button } from '@/components/ui/button';
-import { Input } from '@/components/ui/input';
-import { Label } from '@/components/ui/label';
 import { createClientComponentClient } from '@supabase/auth-helpers-nextjs';
 
 function ResetPasswordContent() {
   const router = useRouter();
   const searchParams = useSearchParams();
+  const accessToken = searchParams.get('access_token');
+  const type = searchParams.get('type');
   const [password, setPassword] = useState('');
   const [confirmPassword, setConfirmPassword] = useState('');
-  const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [success, setSuccess] = useState(false);
-  const [isValidating, setIsValidating] = useState(true);
-  const supabase = createClientComponentClient();
-
-  const code = searchParams.get('code');
-  const type = searchParams.get('type');
+  const [message, setMessage] = useState<string | null>(null);
+  const [loading, setLoading] = useState(false);
+  const [isTokenValid, setIsTokenValid] = useState(false);
 
   useEffect(() => {
-    const verifyCode = async () => {
-      if (!code) {
-        console.log('No code provided, redirecting to auth page');
-        router.push('/auth?error=Invalid reset link');
-        return;
-      }
-
-      try {
-        // Call the API route to exchange the code for a session
-        const response = await fetch(`/auth/reset-password/api?code=${code}&type=${type}`);
+    const validateToken = async () => {
+      if (accessToken && type === 'recovery') {
+        const supabase = createClientComponentClient();
         
-        if (!response.ok) {
-          const error = await response.text();
-          console.error('Code exchange error:', error);
-          router.push('/auth?error=Invalid or expired reset link');
+        // Set the session with the access token
+        const { error } = await supabase.auth.setSession({
+          access_token: accessToken,
+          refresh_token: '', // Not needed for this flow
+        });
+
+        if (error) {
+          setError('Invalid or expired reset link. Please request a new one.');
           return;
         }
 
-        const data = await response.json();
-        console.log('Code exchange successful:', data);
-        setIsValidating(false);
-      } catch (error) {
-        console.error('Unexpected error:', error);
-        router.push('/auth?error=An unexpected error occurred');
+        setIsTokenValid(true);
       }
     };
 
-    verifyCode();
-  }, [code, type, router]);
+    validateToken();
+  }, [accessToken, type]);
 
-  const handleResetPassword = async (e: React.FormEvent) => {
+  const handleUpdatePassword = async (e: React.FormEvent) => {
     e.preventDefault();
-    setLoading(true);
     setError(null);
+    setMessage(null);
+    setLoading(true);
 
     if (password !== confirmPassword) {
       setError('Passwords do not match');
@@ -65,100 +52,101 @@ function ResetPasswordContent() {
     }
 
     try {
+      const supabase = createClientComponentClient();
       const { error } = await supabase.auth.updateUser({
         password: password
       });
-
+      
       if (error) {
-        setError(error.message);
-      } else {
-        setSuccess(true);
-        setTimeout(() => {
-          router.push('/auth?message=Password updated successfully');
-        }, 2000);
+        throw error;
       }
-    } catch (error) {
-      setError('An unexpected error occurred');
+      
+      setMessage('Password updated successfully! Redirecting to dashboard...');
+      setTimeout(() => {
+        router.push('/dashboard');
+      }, 2000);
+    } catch (error: any) {
+      setError(error.message || 'An error occurred while updating your password');
     } finally {
       setLoading(false);
     }
   };
 
-  if (isValidating) {
+  if (!isTokenValid) {
     return (
-      <div className="flex min-h-screen items-center justify-center">
-        <div className="flex flex-col items-center space-y-4">
-          <Icons.spinner className="h-8 w-8 animate-spin" />
-          <p className="text-sm text-muted-foreground">Verifying reset link...</p>
-        </div>
-      </div>
-    );
-  }
-
-  if (success) {
-    return (
-      <div className="flex min-h-screen items-center justify-center">
-        <div className="flex flex-col items-center space-y-4">
-          <Icons.check className="h-8 w-8 text-green-500" />
-          <p className="text-sm text-muted-foreground">Password updated successfully!</p>
+      <div className="min-h-screen flex flex-col items-center justify-center bg-gray-50 py-12 px-4 sm:px-6 lg:px-8">
+        <div className="max-w-md w-full space-y-8">
+          <div>
+            <h2 className="mt-6 text-center text-3xl font-extrabold text-gray-900">
+              {error || 'Validating reset link...'}
+            </h2>
+          </div>
         </div>
       </div>
     );
   }
 
   return (
-    <div className="flex min-h-screen items-center justify-center">
-      <div className="w-full max-w-md space-y-8 p-8">
-        <div className="text-center">
-          <h1 className="text-2xl font-bold">Reset Password</h1>
-          <p className="mt-2 text-sm text-muted-foreground">
-            Enter your new password below
-          </p>
+    <div className="min-h-screen flex flex-col items-center justify-center bg-gray-50 py-12 px-4 sm:px-6 lg:px-8">
+      <div className="max-w-md w-full space-y-8">
+        <div>
+          <h2 className="mt-6 text-center text-3xl font-extrabold text-gray-900">
+            Set your new password
+          </h2>
         </div>
-
-        <form onSubmit={handleResetPassword} className="space-y-4">
-          <div className="space-y-2">
-            <Label htmlFor="password">New Password</Label>
-            <Input
-              id="password"
-              type="password"
-              value={password}
-              onChange={(e) => setPassword(e.target.value)}
-              required
-              minLength={6}
-            />
-          </div>
-
-          <div className="space-y-2">
-            <Label htmlFor="confirmPassword">Confirm Password</Label>
-            <Input
-              id="confirmPassword"
-              type="password"
-              value={confirmPassword}
-              onChange={(e) => setConfirmPassword(e.target.value)}
-              required
-              minLength={6}
-            />
+        <form className="mt-8 space-y-6" onSubmit={handleUpdatePassword}>
+          <div className="rounded-md shadow-sm -space-y-px">
+            <div>
+              <label htmlFor="password" className="sr-only">
+                New Password
+              </label>
+              <input
+                id="password"
+                name="password"
+                type="password"
+                autoComplete="new-password"
+                required
+                className="appearance-none rounded-none relative block w-full px-3 py-2 border border-gray-300 placeholder-gray-500 text-gray-900 rounded-t-md focus:outline-none focus:ring-indigo-500 focus:border-indigo-500 focus:z-10 sm:text-sm"
+                placeholder="New Password"
+                value={password}
+                onChange={(e) => setPassword(e.target.value)}
+              />
+            </div>
+            <div>
+              <label htmlFor="confirm-password" className="sr-only">
+                Confirm New Password
+              </label>
+              <input
+                id="confirm-password"
+                name="confirm-password"
+                type="password"
+                autoComplete="new-password"
+                required
+                className="appearance-none rounded-none relative block w-full px-3 py-2 border border-gray-300 placeholder-gray-500 text-gray-900 rounded-b-md focus:outline-none focus:ring-indigo-500 focus:border-indigo-500 focus:z-10 sm:text-sm"
+                placeholder="Confirm New Password"
+                value={confirmPassword}
+                onChange={(e) => setConfirmPassword(e.target.value)}
+              />
+            </div>
           </div>
 
           {error && (
-            <div className="text-sm text-red-500">{error}</div>
+            <div className="text-red-500 text-sm text-center">{error}</div>
           )}
 
-          <Button
-            type="submit"
-            className="w-full"
-            disabled={loading}
-          >
-            {loading ? (
-              <>
-                <Icons.spinner className="mr-2 h-4 w-4 animate-spin" />
-                Updating password...
-              </>
-            ) : (
-              'Update Password'
-            )}
-          </Button>
+          {message && (
+            <div className="text-green-500 text-sm text-center">{message}</div>
+          )}
+
+          <div>
+            <button
+              type="submit"
+              disabled={loading}
+              className="group relative w-full flex justify-center py-2 px-4 border border-transparent text-sm font-medium rounded-md text-white bg-indigo-600 hover:bg-indigo-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-indigo-500"
+            >
+              {loading ? 'Updating...' : 'Update Password'}
+            </button>
+          </div>
         </form>
       </div>
     </div>
@@ -168,10 +156,13 @@ function ResetPasswordContent() {
 export default function ResetPasswordPage() {
   return (
     <Suspense fallback={
-      <div className="flex min-h-screen items-center justify-center">
-        <div className="flex flex-col items-center space-y-4">
-          <Icons.spinner className="h-8 w-8 animate-spin" />
-          <p className="text-sm text-muted-foreground">Loading...</p>
+      <div className="min-h-screen flex flex-col items-center justify-center bg-gray-50 py-12 px-4 sm:px-6 lg:px-8">
+        <div className="max-w-md w-full space-y-8">
+          <div>
+            <h2 className="mt-6 text-center text-3xl font-extrabold text-gray-900">
+              Loading...
+            </h2>
+          </div>
         </div>
       </div>
     }>

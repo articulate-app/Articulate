@@ -15,9 +15,9 @@ export async function GET(request: Request) {
     });
   }
 
-  // If this is a password reset, redirect to the reset password page
+  // If this is a password reset, redirect to the update password page
   if (type === 'recovery') {
-    return NextResponse.redirect(new URL('/auth/reset-password', request.url));
+    return NextResponse.redirect(new URL('/auth/update-password', request.url));
   }
 
   // URL to redirect to after sign in process completes

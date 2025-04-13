@@ -3,25 +3,22 @@
 import { useState } from 'react';
 import { createClientComponentClient } from '@supabase/auth-helpers-nextjs';
 import { useRouter } from 'next/navigation';
-import { Button } from '@/components/ui/button';
-import { Input } from '@/components/ui/input';
-import { Label } from '@/components/ui/label';
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
-import { Alert, AlertDescription } from '@/components/ui/alert';
-import { Icons } from '@/components/icons';
 
-export default function UpdatePasswordContent() {
+export default function UpdatePasswordPage() {
   const [password, setPassword] = useState('');
   const [confirmPassword, setConfirmPassword] = useState('');
-  const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [success, setSuccess] = useState(false);
+  const [message, setMessage] = useState<string | null>(null);
+  const [loading, setLoading] = useState(false);
   const router = useRouter();
+  
+  // Initialize the Supabase client
   const supabase = createClientComponentClient();
 
   const handleUpdatePassword = async (e: React.FormEvent) => {
     e.preventDefault();
     setError(null);
+    setMessage(null);
     setLoading(true);
 
     if (password !== confirmPassword) {
@@ -31,102 +28,88 @@ export default function UpdatePasswordContent() {
     }
 
     try {
-      // First verify we have a valid session
-      const { data: { session }, error: sessionError } = await supabase.auth.getSession();
-      
-      if (sessionError) {
-        console.error('Session error:', sessionError);
-        setError('Your session has expired. Please try the password reset process again.');
-        return;
-      }
-
-      if (!session) {
-        console.error('No session found');
-        setError('Your session has expired. Please try the password reset process again.');
-        return;
-      }
-
-      console.log('Updating password with session:', session);
-
       const { error } = await supabase.auth.updateUser({
-        password: password,
+        password: password
       });
-
+      
       if (error) {
-        console.error('Password update error:', error);
-        setError(error.message || 'Failed to update password. Please try again.');
-      } else {
-        console.log('Password updated successfully');
-        setSuccess(true);
-        // Redirect to dashboard after 2 seconds
-        setTimeout(() => {
-          router.push('/dashboard');
-        }, 2000);
+        throw error;
       }
-    } catch (err) {
-      console.error('Unexpected error:', err);
-      setError('An unexpected error occurred. Please try again.');
+      
+      setMessage('Password updated successfully! Redirecting to dashboard...');
+      setTimeout(() => {
+        router.push('/dashboard');
+      }, 2000);
+    } catch (error: any) {
+      setError(error.message || 'An error occurred while updating your password');
     } finally {
       setLoading(false);
     }
   };
 
   return (
-    <div className="flex min-h-screen items-center justify-center bg-gray-50 px-4 py-12 sm:px-6 lg:px-8">
-      <Card className="w-full max-w-md">
-        <CardHeader>
-          <CardTitle className="text-center text-2xl font-bold">Update Password</CardTitle>
-          <CardDescription className="text-center">
-            Please enter your new password below
-          </CardDescription>
-        </CardHeader>
-        <CardContent>
-          {error && (
-            <Alert variant="destructive" className="mb-4">
-              <AlertDescription>{error}</AlertDescription>
-            </Alert>
-          )}
-          {success && (
-            <Alert className="mb-4">
-              <AlertDescription>Password updated successfully! Redirecting...</AlertDescription>
-            </Alert>
-          )}
-          <form onSubmit={handleUpdatePassword} className="space-y-4">
-            <div className="space-y-2">
-              <Label htmlFor="password">New Password</Label>
-              <Input
+    <div className="min-h-screen flex flex-col items-center justify-center bg-gray-50 py-12 px-4 sm:px-6 lg:px-8">
+      <div className="max-w-md w-full space-y-8">
+        <div>
+          <h2 className="mt-6 text-center text-3xl font-extrabold text-gray-900">
+            Update your password
+          </h2>
+        </div>
+        <form className="mt-8 space-y-6" onSubmit={handleUpdatePassword}>
+          <div className="rounded-md shadow-sm -space-y-px">
+            <div>
+              <label htmlFor="password" className="sr-only">
+                New Password
+              </label>
+              <input
                 id="password"
+                name="password"
                 type="password"
+                autoComplete="new-password"
+                required
+                className="appearance-none rounded-none relative block w-full px-3 py-2 border border-gray-300 placeholder-gray-500 text-gray-900 rounded-t-md focus:outline-none focus:ring-indigo-500 focus:border-indigo-500 focus:z-10 sm:text-sm"
+                placeholder="New Password"
                 value={password}
                 onChange={(e) => setPassword(e.target.value)}
-                required
-                minLength={6}
-                className="w-full"
               />
             </div>
-            <div className="space-y-2">
-              <Label htmlFor="confirmPassword">Confirm Password</Label>
-              <Input
-                id="confirmPassword"
+            <div>
+              <label htmlFor="confirm-password" className="sr-only">
+                Confirm New Password
+              </label>
+              <input
+                id="confirm-password"
+                name="confirm-password"
                 type="password"
+                autoComplete="new-password"
+                required
+                className="appearance-none rounded-none relative block w-full px-3 py-2 border border-gray-300 placeholder-gray-500 text-gray-900 rounded-b-md focus:outline-none focus:ring-indigo-500 focus:border-indigo-500 focus:z-10 sm:text-sm"
+                placeholder="Confirm New Password"
                 value={confirmPassword}
                 onChange={(e) => setConfirmPassword(e.target.value)}
-                required
-                minLength={6}
-                className="w-full"
               />
             </div>
-            <Button
+          </div>
+
+          {error && (
+            <div className="text-red-500 text-sm text-center">{error}</div>
+          )}
+
+          {message && (
+            <div className="text-green-500 text-sm text-center">{message}</div>
+          )}
+
+          <div>
+            <button
               type="submit"
-              className="w-full"
               disabled={loading}
+              className="group relative w-full flex justify-center py-2 px-4 border border-transparent text-sm font-medium rounded-md text-white bg-indigo-600 hover:bg-indigo-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-indigo-500"
             >
-              {loading && <Icons.spinner className="mr-2 h-4 w-4 animate-spin" />}
-              Update Password
-            </Button>
-          </form>
-        </CardContent>
-      </Card>
+              {loading ? 'Updating...' : 'Update Password'}
+            </button>
+          </div>
+        </form>
+      </div>
     </div>
   );
 } 
