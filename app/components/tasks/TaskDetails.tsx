@@ -2,7 +2,27 @@
 
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "../ui/tabs"
 
-export function TaskDetails() {
+interface TaskDetailsProps {
+  task: {
+    id: string
+    title: string
+    status: string
+    due_date: string
+    briefing: string
+    meta_title?: string
+    meta_description?: string
+  } | null
+}
+
+export function TaskDetails({ task }: TaskDetailsProps) {
+  if (!task) {
+    return (
+      <div className="h-full flex items-center justify-center text-gray-500">
+        Select a task to view details
+      </div>
+    )
+  }
+
   return (
     <div className="h-full p-4">
       <Tabs defaultValue="overview" className="h-full">
@@ -20,13 +40,18 @@ export function TaskDetails() {
               <input
                 type="text"
                 className="w-full mt-1 px-3 py-2 border rounded-md"
-                placeholder="Task title"
+                value={task.title}
+                readOnly
               />
             </div>
             
             <div>
               <label className="text-sm font-medium">Status</label>
-              <select className="w-full mt-1 px-3 py-2 border rounded-md">
+              <select 
+                className="w-full mt-1 px-3 py-2 border rounded-md"
+                value={task.status}
+                disabled
+              >
                 <option>To Do</option>
                 <option>In Progress</option>
                 <option>Done</option>
@@ -38,6 +63,8 @@ export function TaskDetails() {
               <input
                 type="date"
                 className="w-full mt-1 px-3 py-2 border rounded-md"
+                value={task.due_date}
+                readOnly
               />
             </div>
           </div>
@@ -47,7 +74,8 @@ export function TaskDetails() {
           <div className="h-full">
             <textarea
               className="w-full h-full p-3 border rounded-md"
-              placeholder="Enter briefing details..."
+              value={task.briefing}
+              readOnly
             />
           </div>
         </TabsContent>
@@ -59,7 +87,8 @@ export function TaskDetails() {
               <input
                 type="text"
                 className="w-full mt-1 px-3 py-2 border rounded-md"
-                placeholder="Meta title"
+                value={task.meta_title || ""}
+                readOnly
               />
             </div>
             
@@ -67,7 +96,8 @@ export function TaskDetails() {
               <label className="text-sm font-medium">Meta Description</label>
               <textarea
                 className="w-full mt-1 px-3 py-2 border rounded-md"
-                placeholder="Meta description"
+                value={task.meta_description || ""}
+                readOnly
               />
             </div>
           </div>
@@ -75,7 +105,6 @@ export function TaskDetails() {
         
         <TabsContent value="activity">
           <div className="space-y-4">
-            {/* Activity feed will go here */}
             <p className="text-sm text-gray-500">No activity yet</p>
           </div>
         </TabsContent>
