@@ -3,12 +3,11 @@
 import { useEffect, useState } from 'react';
 import { createClientComponentClient } from '@supabase/auth-helpers-nextjs';
 import { useRouter } from 'next/navigation';
+import { TasksLayout } from '../components/tasks/TasksLayout';
 
 export default function DashboardPage() {
   const [email, setEmail] = useState<string | null>(null);
   const router = useRouter();
-  
-  // Initialize the Supabase client
   const supabase = createClientComponentClient();
 
   useEffect(() => {
@@ -40,21 +39,33 @@ export default function DashboardPage() {
   };
 
   return (
-    <div className="min-h-screen bg-gray-50 py-12 px-4 sm:px-6 lg:px-8">
-      <div className="max-w-md mx-auto">
-        <div className="bg-white shadow sm:rounded-lg">
-          <div className="px-4 py-5 sm:p-6">
-            <h3 className="text-lg leading-6 font-medium text-gray-900">
-              Welcome to your Dashboard
-            </h3>
-            <div className="mt-2 max-w-xl text-sm text-gray-500">
-              <p>You are signed in as: {email}</p>
-            </div>
-            <div className="mt-5">
+    <TasksLayout>
+      <div className="p-6">
+        <div className="mb-6">
+          <h2 className="text-2xl font-semibold text-gray-900">Welcome to your Dashboard</h2>
+          <p className="mt-1 text-sm text-gray-600">
+            You are signed in as {email}
+          </p>
+        </div>
+
+        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
+          {/* Add your dashboard content/cards here */}
+          <div className="bg-white p-6 rounded-lg shadow-sm border border-gray-200">
+            <h3 className="text-lg font-medium text-gray-900">Recent Tasks</h3>
+            <p className="mt-2 text-sm text-gray-600">No tasks yet</p>
+          </div>
+
+          <div className="bg-white p-6 rounded-lg shadow-sm border border-gray-200">
+            <h3 className="text-lg font-medium text-gray-900">Project Status</h3>
+            <p className="mt-2 text-sm text-gray-600">No active projects</p>
+          </div>
+
+          <div className="bg-white p-6 rounded-lg shadow-sm border border-gray-200">
+            <h3 className="text-lg font-medium text-gray-900">Quick Actions</h3>
+            <div className="mt-4">
               <button
-                type="button"
                 onClick={handleSignOut}
-                className="inline-flex items-center px-4 py-2 border border-transparent text-sm font-medium rounded-md text-white bg-indigo-600 hover:bg-indigo-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-indigo-500"
+                className="inline-flex items-center px-4 py-2 border border-transparent text-sm font-medium rounded-md text-white bg-gray-900 hover:bg-gray-800 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-gray-500"
               >
                 Sign out
               </button>
@@ -62,6 +73,6 @@ export default function DashboardPage() {
           </div>
         </div>
       </div>
-    </div>
+    </TasksLayout>
   );
 } 
