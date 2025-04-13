@@ -23,25 +23,20 @@ function ResetPasswordContent() {
     const validateToken = async () => {
       if (accessToken && type === 'recovery') {
         const supabase = createClientComponentClient();
-        
-        // Set the session with the access token
-        const { error } = await supabase.auth.setSession({
-          access_token: accessToken,
-          refresh_token: '', // Required by the type definition
-        });
-
-        if (error) {
+  
+        const { data: user, error } = await supabase.auth.getUser();
+  
+        if (error || !user) {
           setError('Invalid or expired reset link. Please request a new one.');
           return;
         }
-
+  
         setIsTokenValid(true);
       }
     };
-
-    validateToken();
+  
+    validateToken(); // 👈 Don't forget to call it!
   }, [accessToken, type]);
-
   const handleUpdatePassword = async (e: React.FormEvent) => {
     e.preventDefault();
     setError(null);
