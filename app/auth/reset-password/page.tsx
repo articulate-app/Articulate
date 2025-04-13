@@ -9,6 +9,9 @@ function ResetPasswordContent() {
   const searchParams = useSearchParams();
   const accessToken = searchParams.get('access_token');
   const type = searchParams.get('type');
+  console.log('access_token:', accessToken);
+  console.log('type:', type);
+
   const [password, setPassword] = useState('');
   const [confirmPassword, setConfirmPassword] = useState('');
   const [error, setError] = useState<string | null>(null);
@@ -24,7 +27,7 @@ function ResetPasswordContent() {
         // Set the session with the access token
         const { error } = await supabase.auth.setSession({
           access_token: accessToken,
-          refresh_token: '', // Not needed for this flow
+          refresh_token: undefined, // Not needed for this flow
         });
 
         if (error) {
@@ -95,6 +98,9 @@ function ResetPasswordContent() {
           </h2>
         </div>
         <form className="mt-8 space-y-6" onSubmit={handleUpdatePassword}>
+        <p className="text-xs text-gray-500">access_token: {accessToken}</p>
+        <p className="text-xs text-gray-500">type: {type}</p>
+
           <div className="rounded-md shadow-sm -space-y-px">
             <div>
               <label htmlFor="password" className="sr-only">
