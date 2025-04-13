@@ -34,6 +34,8 @@ export async function getTasks({
   sortBy?: string
   sortOrder?: 'asc' | 'desc'
 }) {
+  console.log('Fetching tasks with params:', { page, pageSize, filters, sortBy, sortOrder })
+  
   const start = (page - 1) * pageSize
   const end = start + pageSize - 1
 
@@ -53,12 +55,19 @@ export async function getTasks({
     }
   })
 
+  console.log('Executing Supabase query...')
   const { data, error, count } = await query
-
+  
   if (error) {
     console.error('Error fetching tasks:', error)
     throw error
   }
+
+  console.log('Tasks fetched successfully:', {
+    count,
+    tasksReceived: data?.length || 0,
+    firstTask: data?.[0]
+  })
 
   return {
     tasks: data as Task[],

@@ -14,6 +14,7 @@ export default function TasksPage() {
   useEffect(() => {
     async function fetchTasks() {
       try {
+        console.log('Starting to fetch tasks...')
         setIsLoading(true)
         const { tasks: fetchedTasks } = await getTasks({
           page: 1,
@@ -21,10 +22,13 @@ export default function TasksPage() {
           sortBy: 'created_at',
           sortOrder: 'desc'
         })
-        console.log('Fetched tasks:', fetchedTasks)
+        console.log('Tasks fetched in page component:', {
+          count: fetchedTasks.length,
+          tasks: fetchedTasks
+        })
         setTasks(fetchedTasks)
       } catch (err) {
-        console.error('Error fetching tasks:', err)
+        console.error('Error in page component while fetching tasks:', err)
         setError(err instanceof Error ? err.message : 'Failed to fetch tasks')
       } finally {
         setIsLoading(false)
@@ -54,11 +58,21 @@ export default function TasksPage() {
     )
   }
 
+  if (!tasks.length) {
+    return (
+      <TasksLayout>
+        <div className="flex items-center justify-center h-full">
+          <p className="text-gray-500">No tasks found</p>
+        </div>
+      </TasksLayout>
+    )
+  }
+
   return (
     <TasksLayout>
       <div className="flex h-full">
         <div className="w-1/3 border-r p-4 overflow-y-auto">
-          <h1 className="text-2xl font-bold mb-4">Tasks</h1>
+          <h1 className="text-2xl font-bold mb-4">Tasks ({tasks.length})</h1>
           <div className="space-y-2">
             {tasks.map((task) => (
               <div
