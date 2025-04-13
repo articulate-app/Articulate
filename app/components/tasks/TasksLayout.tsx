@@ -2,6 +2,7 @@
 
 import { ReactNode } from "react"
 import { Sidebar } from "./Sidebar"
+import { TaskDetails } from "./TaskDetails"
 
 interface TasksLayoutProps {
   children: ReactNode
@@ -38,6 +39,11 @@ export function TasksLayout({ children }: TasksLayoutProps) {
         <main className="flex-1 overflow-auto">
           {children}
         </main>
+      </div>
+
+      {/* Right Pane - Task Details */}
+      <div className="w-96 border-l border-gray-200">
+        <TaskDetails />
       </div>
     </div>
   )

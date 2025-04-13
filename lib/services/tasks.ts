@@ -1,15 +1,15 @@
-import { createClient } from '../../app/lib/supabase/client'
+import { createClient } from '@supabase/supabase-js'
 
-const supabase = createClient()
+const supabase = createClient(
+  process.env.NEXT_PUBLIC_SUPABASE_URL || '',
+  process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY || ''
+)
 
 export interface Task {
   id: string
   title: string
   status: string
   due_date: string
-  briefing: string
-  meta_title?: string
-  meta_description?: string
   project_id: string
   content_type: string
   production_type: string
@@ -34,8 +34,6 @@ export async function getTasks({
   sortBy?: string
   sortOrder?: 'asc' | 'desc'
 }) {
-  console.log('Fetching tasks with params:', { page, pageSize, filters, sortBy, sortOrder })
-  
   const start = (page - 1) * pageSize
   const end = start + pageSize - 1
 
@@ -44,7 +42,7 @@ export async function getTasks({
     .select(`
       *,
       project:projects(name)
-    `, { count: 'exact' })
+    `)
     .order(sortBy, { ascending: sortOrder === 'asc' })
     .range(start, end)
 
@@ -55,19 +53,11 @@ export async function getTasks({
     }
   })
 
-  console.log('Executing Supabase query...')
   const { data, error, count } = await query
-  
+
   if (error) {
-    console.error('Error fetching tasks:', error)
     throw error
   }
-
-  console.log('Tasks fetched successfully:', {
-    count,
-    tasksReceived: data?.length || 0,
-    firstTask: data?.[0]
-  })
 
   return {
     tasks: data as Task[],
@@ -86,7 +76,6 @@ export async function getTaskById(id: string) {
     .single()
 
   if (error) {
-    console.error('Error fetching task:', error)
     throw error
   }
 
