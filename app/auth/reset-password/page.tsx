@@ -27,7 +27,6 @@ function ResetPasswordContent() {
         // Set the session with the access token
         const { error } = await supabase.auth.setSession({
           access_token: accessToken,
-          refresh_token: undefined, // Not needed for this flow
         });
 
         if (error) {
