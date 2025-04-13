@@ -9,9 +9,7 @@ function ResetPasswordContent() {
   const searchParams = useSearchParams();
   const accessToken = searchParams.get('access_token');
   const type = searchParams.get('type');
-  console.log('access_token:', accessToken);
-  console.log('type:', type);
-
+  
   const [password, setPassword] = useState('');
   const [confirmPassword, setConfirmPassword] = useState('');
   const [error, setError] = useState<string | null>(null);
@@ -20,25 +18,26 @@ function ResetPasswordContent() {
   const [isTokenValid, setIsTokenValid] = useState(false);
 
   useEffect(() => {
-    const validateCode = async () => {
-      const code = searchParams.get('code');
   
-      if (!code) return;
+    const validate = async () => {
+      if (accessToken && type === 'recovery') {
+        const supabase = createClientComponentClient();
   
-      const supabase = createClientComponentClient();
+        const { error } = await supabase.auth.setSession({
+          access_token: accessToken,
+          refresh_token: 'placeholder', // Required by Supabase's type
+        });
   
-      const { error } = await supabase.auth.exchangeCodeForSession(code);
+        if (error) {
+          setError('Invalid or expired reset link');
+          return;
+        }
   
-      if (error) {
-        console.error('Supabase exchangeCodeForSession error:', error.message);
-        setError('Invalid or expired reset link. Please request a new one.');
-        return;
+        setIsTokenValid(true);
       }
-  
-      setIsTokenValid(true);
     };
   
-    validateCode();
+    validate();
   }, [searchParams]);
   
 
@@ -100,9 +99,6 @@ function ResetPasswordContent() {
           </h2>
         </div>
         <form className="mt-8 space-y-6" onSubmit={handleUpdatePassword}>
-        <p className="text-xs text-gray-500">access_token: {accessToken}</p>
-        <p className="text-xs text-gray-500">type: {type}</p>
-
           <div className="rounded-md shadow-sm -space-y-px">
             <div>
               <label htmlFor="password" className="sr-only">
