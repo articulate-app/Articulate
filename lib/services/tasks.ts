@@ -1,5 +1,13 @@
 import { createClient } from '@supabase/supabase-js'
 
+// Log environment variables (without sensitive data)
+console.log('Environment check:', {
+  hasUrl: !!process.env.NEXT_PUBLIC_SUPABASE_URL,
+  hasKey: !!process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY,
+  urlLength: process.env.NEXT_PUBLIC_SUPABASE_URL?.length,
+  keyLength: process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY?.length
+})
+
 const supabase = createClient(
   process.env.NEXT_PUBLIC_SUPABASE_URL || '',
   process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY || '',
@@ -17,8 +25,11 @@ const supabase = createClient(
   }
 )
 
-console.log('Supabase URL:', process.env.NEXT_PUBLIC_SUPABASE_URL)
-console.log('Supabase client initialized:', !!supabase)
+console.log('Supabase client initialized:', {
+  hasClient: !!supabase,
+  url: process.env.NEXT_PUBLIC_SUPABASE_URL,
+  error: !supabase ? 'Failed to initialize client' : undefined
+})
 
 export interface Task {
   id: string
@@ -52,45 +63,44 @@ export async function getTasks({
   console.log('Fetching tasks with params:', { page, pageSize, filters, sortBy, sortOrder })
   
   try {
-    // Try to fetch all tasks first
+    // First, let's check if we can access the table at all
+    const { data: tableCheck, error: tableError } = await supabase
+      .from('tasks')
+      .select('count', { count: 'exact', head: true })
+
+    console.log('Table check response:', {
+      hasData: !!tableCheck,
+      count: tableCheck,
+      error: tableError?.message
+    })
+
+    if (tableError) {
+      console.error('Table check error:', tableError)
+      throw new Error(`Failed to access tasks table: ${tableError.message}`)
+    }
+
+    // Now try to fetch actual data
     const { data, error } = await supabase
       .from('tasks')
       .select('*')
+      .order(sortBy, { ascending: sortOrder === 'asc' })
+      .range((page - 1) * pageSize, page * pageSize - 1)
 
-    console.log('Raw Supabase response:', { 
-      data: data?.length || 0, 
-      error: error?.message,
-      firstTask: data?.[0]
+    console.log('Data fetch response:', {
+      hasData: !!data,
+      dataLength: data?.length,
+      firstItem: data?.[0],
+      error: error?.message
     })
 
     if (error) {
-      console.error('Supabase error details:', error)
+      console.error('Data fetch error:', error)
       throw new Error(`Failed to fetch tasks: ${error.message}`)
     }
 
-    // If we get data, then apply sorting and pagination
-    if (data && data.length > 0) {
-      const start = (page - 1) * pageSize
-      const end = start + pageSize - 1
-      
-      const sortedData = [...data].sort((a, b) => {
-        const aValue = a[sortBy]
-        const bValue = b[sortBy]
-        if (sortOrder === 'asc') {
-          return aValue > bValue ? 1 : -1
-        }
-        return aValue < bValue ? 1 : -1
-      }).slice(start, end + 1)
-
-      return {
-        tasks: sortedData as Task[],
-        totalCount: data.length
-      }
-    }
-
     return {
-      tasks: [],
-      totalCount: 0
+      tasks: data as Task[],
+      totalCount: tableCheck || 0
     }
   } catch (error) {
     console.error('Error in getTasks:', error)

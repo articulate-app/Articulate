@@ -30,9 +30,19 @@ export function TaskList() {
         console.log("Loading tasks...")
         const result = await getTasks({})
         console.log("Tasks loaded:", result)
+        
+        if (!result) {
+          throw new Error("No response from server")
+        }
+        
         if (!result.tasks) {
           throw new Error("No tasks returned from the server")
         }
+        
+        if (result.tasks.length === 0) {
+          console.log("No tasks found in the database")
+        }
+        
         setTasks(result.tasks)
       } catch (err) {
         console.error("Error loading tasks:", err)
