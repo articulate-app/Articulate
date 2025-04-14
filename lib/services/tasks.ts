@@ -107,9 +107,16 @@ export async function getTasks({
   console.log('Fetching tasks with params:', { page, pageSize, filters, sortBy, sortOrder })
   
   try {
-    // Check authentication state
-    const session = await checkAuth()
+    // Get the current session
+    const { data: { session }, error: sessionError } = await supabase.auth.getSession()
+    
+    if (sessionError) {
+      console.error('Session error:', sessionError)
+      throw new Error(`Session error: ${sessionError.message}`)
+    }
+
     if (!session) {
+      console.error('No session found')
       throw new Error('Not authenticated')
     }
 
@@ -132,7 +139,24 @@ export async function getTasks({
     // Now try to fetch actual data with joins
     const { data, error } = await supabase
       .from('tasks')
-      .select('*')
+      .select(`
+        *,
+        projects (
+          title
+        ),
+        project_statuses (
+          title
+        ),
+        content_types (
+          title
+        ),
+        production_types (
+          title
+        ),
+        languages (
+          title
+        )
+      `)
       .order(sortBy, { ascending: sortOrder === 'asc' })
       .range((page - 1) * pageSize, page * pageSize - 1)
 
@@ -161,15 +185,39 @@ export async function getTasks({
 
 export async function getTaskById(id: string) {
   try {
-    // Check authentication state
-    const session = await checkAuth()
+    // Get the current session
+    const { data: { session }, error: sessionError } = await supabase.auth.getSession()
+    
+    if (sessionError) {
+      console.error('Session error:', sessionError)
+      throw new Error(`Session error: ${sessionError.message}`)
+    }
+
     if (!session) {
+      console.error('No session found')
       throw new Error('Not authenticated')
     }
 
     const { data, error } = await supabase
       .from('tasks')
-      .select('*')
+      .select(`
+        *,
+        projects (
+          title
+        ),
+        project_statuses (
+          title
+        ),
+        content_types (
+          title
+        ),
+        production_types (
+          title
+        ),
+        languages (
+          title
+        )
+      `)
       .eq('id', id)
       .single()
 
