@@ -5,6 +5,9 @@ const supabase = createClient(
   process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY || ''
 )
 
+console.log('Supabase URL:', process.env.NEXT_PUBLIC_SUPABASE_URL)
+console.log('Supabase client initialized:', !!supabase)
+
 export interface Task {
   id: string
   title: string
@@ -34,6 +37,8 @@ export async function getTasks({
   sortBy?: string
   sortOrder?: 'asc' | 'desc'
 }) {
+  console.log('Fetching tasks with params:', { page, pageSize, filters, sortBy, sortOrder })
+  
   const start = (page - 1) * pageSize
   const end = start + pageSize - 1
 
@@ -55,7 +60,10 @@ export async function getTasks({
 
   const { data, error, count } = await query
 
+  console.log('Supabase response:', { data, error, count })
+
   if (error) {
+    console.error('Supabase error:', error)
     throw error
   }
 
