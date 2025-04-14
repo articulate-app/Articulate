@@ -2,7 +2,22 @@
 
 import { useEffect, useState } from "react"
 import { Task, getTasks } from "@/lib/services/tasks"
-import { format } from "date-fns"
+
+// Helper function to format date
+function formatDate(dateString: string | null | undefined): string {
+  if (!dateString) return "No due date"
+  try {
+    const date = new Date(dateString)
+    return date.toLocaleDateString('en-US', {
+      month: 'short',
+      day: 'numeric',
+      year: 'numeric'
+    })
+  } catch (error) {
+    console.error('Error formatting date:', error)
+    return "Invalid date"
+  }
+}
 
 export function TaskList() {
   const [tasks, setTasks] = useState<Task[]>([])
@@ -95,7 +110,7 @@ export function TaskList() {
               </p>
             </div>
             <div className="text-sm text-gray-500">
-              {task.due_date ? format(new Date(task.due_date), "MMM d, yyyy") : "No due date"}
+              {formatDate(task.due_date)}
             </div>
           </div>
           <div className="mt-2 flex gap-2">
