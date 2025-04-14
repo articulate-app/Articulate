@@ -116,24 +116,58 @@ export async function getTasks({
     const { data, error } = await supabase
       .from('tasks')
       .select(`
-        *,
-        projects (
+        id,
+        title,
+        project_status_id,
+        delivery_date,
+        publication_date,
+        notes,
+        briefing,
+        attachment,
+        copy_post,
+        key_visual,
+        related_products,
+        linkbuilding,
+        keyword,
+        meta_title,
+        meta_description,
+        h1,
+        h2,
+        alt_text,
+        filename,
+        internal_links,
+        tags,
+        category,
+        secondary_keywords,
+        is_parent_task,
+        is_deleted,
+        created_at,
+        updated_at,
+        synced_at,
+        production_type_id,
+        language_id,
+        briefing_type_id,
+        project_id_int,
+        content_type_id,
+        assigned_to_id,
+        parent_task_id_int,
+        projects!inner (
           id,
           title
         ),
-        project_statuses (
+        project_statuses!inner (
           id,
           title
         ),
-        content_types (
+        content_types!inner (
           id,
           title
         ),
-        production_types (
+        production_types!inner (
           id,
           title
         ),
-        languages (
+        languages!inner (
           id,
           title
         )
@@ -168,24 +202,58 @@ export async function getTaskById(id: string) {
     const { data, error } = await supabase
       .from('tasks')
       .select(`
-        *,
-        projects (
+        id,
+        title,
+        project_status_id,
+        delivery_date,
+        publication_date,
+        notes,
+        briefing,
+        attachment,
+        copy_post,
+        key_visual,
+        related_products,
+        linkbuilding,
+        keyword,
+        meta_title,
+        meta_description,
+        h1,
+        h2,
+        alt_text,
+        filename,
+        internal_links,
+        tags,
+        category,
+        secondary_keywords,
+        is_parent_task,
+        is_deleted,
+        created_at,
+        updated_at,
+        synced_at,
+        production_type_id,
+        language_id,
+        briefing_type_id,
+        project_id_int,
+        content_type_id,
+        assigned_to_id,
+        parent_task_id_int,
+        projects!inner (
           id,
           title
         ),
-        project_statuses (
+        project_statuses!inner (
           id,
           title
         ),
-        content_types (
+        content_types!inner (
           id,
           title
         ),
-        production_types (
+        production_types!inner (
           id,
           title
         ),
-        languages (
+        languages!inner (
           id,
           title
         )
