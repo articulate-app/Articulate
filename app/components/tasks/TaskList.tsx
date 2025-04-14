@@ -115,26 +115,26 @@ export function TaskList() {
             <div>
               <h3 className="font-medium">{task.title || "Untitled Task"}</h3>
               <p className="text-sm text-gray-500">
-                {task.project?.title ? `${task.project.title} • ` : ""}
-                {task.content_type?.title || "No type specified"}
+                {task.projects?.title ? `${task.projects.title} • ` : ""}
+                {task.content_types?.title || "No type specified"}
               </p>
               <div className="flex items-center gap-2 mt-1">
                 <span className="text-xs text-gray-500">
                   {task.delivery_date ? formatDate(task.delivery_date) : "No date"}
                 </span>
-                {task.status?.title && (
+                {task.project_statuses?.title && (
                   <span className="px-2 py-1 text-xs font-medium rounded-full bg-blue-100 text-blue-800">
-                    {task.status.title}
+                    {task.project_statuses.title}
                   </span>
                 )}
-                {task.language?.title && (
+                {task.languages?.title && (
                   <span className="px-2 py-1 text-xs font-medium rounded-full bg-green-100 text-green-800">
-                    {task.language.title}
+                    {task.languages.title}
                   </span>
                 )}
-                {task.production_type?.title && (
+                {task.production_types?.title && (
                   <span className="px-2 py-1 text-xs font-medium rounded-full bg-purple-100 text-purple-800">
-                    {task.production_type.title}
+                    {task.production_types.title}
                   </span>
                 )}
               </div>
