@@ -21,6 +21,17 @@ const supabase = createClient(
   }
 )
 
+// Function to check authentication state
+async function checkAuth() {
+  const { data: { session }, error } = await supabase.auth.getSession()
+  console.log('Auth state:', {
+    hasSession: !!session,
+    userId: session?.user?.id,
+    error: error?.message
+  })
+  return session
+}
+
 console.log('Supabase client initialized:', {
   hasClient: !!supabase,
   url: process.env.NEXT_PUBLIC_SUPABASE_URL,
@@ -96,6 +107,12 @@ export async function getTasks({
   console.log('Fetching tasks with params:', { page, pageSize, filters, sortBy, sortOrder })
   
   try {
+    // Check authentication state
+    const session = await checkAuth()
+    if (!session) {
+      throw new Error('Not authenticated')
+    }
+
     // First, let's check if we can access the table at all
     const { data: tableCheck, error: tableError } = await supabase
       .from('tasks')
@@ -115,24 +132,7 @@ export async function getTasks({
     // Now try to fetch actual data with joins
     const { data, error } = await supabase
       .from('tasks')
-      .select(`
-        *,
-        projects (
-          title
-        ),
-        project_statuses (
-          title
-        ),
-        content_types (
-          title
-        ),
-        production_types (
-          title
-        ),
-        languages (
-          title
-        )
-      `)
+      .select('*')
       .order(sortBy, { ascending: sortOrder === 'asc' })
       .range((page - 1) * pageSize, page * pageSize - 1)
 
@@ -140,7 +140,8 @@ export async function getTasks({
       hasData: !!data,
       dataLength: data?.length,
       firstItem: data?.[0],
-      error: error?.message
+      error: error?.message,
+      errorDetails: error
     })
 
     if (error) {
@@ -160,28 +161,24 @@ export async function getTasks({
 
 export async function getTaskById(id: string) {
   try {
+    // Check authentication state
+    const session = await checkAuth()
+    if (!session) {
+      throw new Error('Not authenticated')
+    }
+
     const { data, error } = await supabase
       .from('tasks')
-      .select(`
-        *,
-        projects (
-          title
-        ),
-        project_statuses (
-          title
-        ),
-        content_types (
-          title
-        ),
-        production_types (
-          title
-        ),
-        languages (
-          title
-        )
-      `)
+      .select('*')
       .eq('id', id)
       .single()
+
+    console.log('Task fetch response:', {
+      hasData: !!data,
+      data,
+      error: error?.message,
+      errorDetails: error
+    })
 
     if (error) {
       console.error('Error fetching task:', error)
