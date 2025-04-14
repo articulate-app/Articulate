@@ -55,34 +55,16 @@ export async function getTasks({
   const end = start + pageSize - 1
 
   try {
-    // First, let's check the RLS policies
-    const { data: policies, error: policiesError } = await supabase
+    // Simple direct query
+    const { data, error } = await supabase
       .from('tasks')
-      .select('*', { count: 'exact', head: true })
-
-    console.log('RLS check response:', { policies, error: policiesError })
-
-    // Then try to fetch the actual data
-    let query = supabase
-      .from('tasks')
-      .select('*', { count: 'exact' })
+      .select('*')
       .order(sortBy, { ascending: sortOrder === 'asc' })
       .range(start, end)
 
-    // Apply filters
-    Object.entries(filters).forEach(([key, value]) => {
-      if (value) {
-        query = query.eq(key, value)
-      }
-    })
-
-    const { data, error, count } = await query
-
     console.log('Supabase response:', { 
       data: data?.length || 0, 
-      error: error?.message, 
-      count,
-      query: 'tasks select query'
+      error: error?.message 
     })
 
     if (error) {
@@ -92,7 +74,7 @@ export async function getTasks({
 
     return {
       tasks: data as Task[],
-      totalCount: count || 0
+      totalCount: data?.length || 0
     }
   } catch (error) {
     console.error('Error in getTasks:', error)
