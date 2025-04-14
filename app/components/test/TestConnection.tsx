@@ -39,10 +39,31 @@ export function TestConnection() {
 
         console.log('Auth successful:', authData)
 
-        // Then try to fetch one task
-        const { data, error } = await supabase
+        // Try to get table information
+        const { data: tables, error: tablesError } = await supabase
           .from('tasks')
           .select('*')
+          .limit(1)
+
+        console.log('Tables response:', { tables, error: tablesError })
+
+        if (tablesError) {
+          console.error('Error getting tables:', tablesError)
+          setError(`Error getting tables: ${tablesError.message}`)
+          return
+        }
+
+        // Then try to fetch one task with all its relations
+        const { data, error } = await supabase
+          .from('tasks')
+          .select(`
+            *,
+            project:projects(name),
+            status:project_statuses(name),
+            content_type:content_types(name),
+            production_type:production_types(name),
+            language:languages(name)
+          `)
           .limit(1)
           .single()
 
