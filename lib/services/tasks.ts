@@ -29,7 +29,7 @@ export interface Task {
   content_type: string
   production_type: string
   language: string
-  last_update: string
+  updated_at: string
   is_parent_task: boolean
   project?: {
     name: string
@@ -40,7 +40,7 @@ export async function getTasks({
   page = 1,
   pageSize = 10,
   filters = {},
-  sortBy = 'last_update',
+  sortBy = 'updated_at',
   sortOrder = 'desc'
 }: {
   page?: number
