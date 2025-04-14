@@ -54,50 +54,66 @@ export async function getTasks({
   const start = (page - 1) * pageSize
   const end = start + pageSize - 1
 
-  let query = supabase
-    .from('tasks')
-    .select(`
-      *,
-      project:projects(name)
-    `)
-    .order(sortBy, { ascending: sortOrder === 'asc' })
-    .range(start, end)
+  try {
+    // First, let's check if the tables exist
+    const { data: tables, error: tablesError } = await supabase
+      .from('tasks')
+      .select('id')
+      .limit(1)
 
-  // Apply filters
-  Object.entries(filters).forEach(([key, value]) => {
-    if (value) {
-      query = query.eq(key, value)
+    if (tablesError) {
+      console.error('Error checking tasks table:', tablesError)
+      throw new Error(`Database error: ${tablesError.message}`)
     }
-  })
 
-  const { data, error, count } = await query
+    let query = supabase
+      .from('tasks')
+      .select('*')
+      .order(sortBy, { ascending: sortOrder === 'asc' })
+      .range(start, end)
 
-  console.log('Supabase response:', { data, error, count })
+    // Apply filters
+    Object.entries(filters).forEach(([key, value]) => {
+      if (value) {
+        query = query.eq(key, value)
+      }
+    })
 
-  if (error) {
-    console.error('Supabase error:', error)
+    const { data, error, count } = await query
+
+    console.log('Supabase response:', { data, error, count })
+
+    if (error) {
+      console.error('Supabase error details:', error)
+      throw new Error(`Failed to fetch tasks: ${error.message}`)
+    }
+
+    return {
+      tasks: data as Task[],
+      totalCount: count || 0
+    }
+  } catch (error) {
+    console.error('Error in getTasks:', error)
     throw error
-  }
-
-  return {
-    tasks: data as Task[],
-    totalCount: count || 0
   }
 }
 
 export async function getTaskById(id: string) {
-  const { data, error } = await supabase
-    .from('tasks')
-    .select(`
-      *,
-      project:projects(name)
-    `)
-    .eq('id', id)
-    .single()
+  try {
+    const { data, error } = await supabase
+      .from('tasks')
+      .select('*')
+      .eq('id', id)
+      .single()
 
-  if (error) {
+    if (error) {
+      console.error('Error fetching task by ID:', error)
+      throw error
+    }
+
+    return data as Task
+  } catch (error) {
+    console.error('Error in getTaskById:', error)
     throw error
   }
-
-  return data as Task
 } 

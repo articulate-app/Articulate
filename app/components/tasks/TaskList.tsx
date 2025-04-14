@@ -21,7 +21,10 @@ export function TaskList() {
         setTasks(result.tasks)
       } catch (err) {
         console.error("Error loading tasks:", err)
-        setError(err instanceof Error ? err.message : "Failed to load tasks")
+        const errorMessage = err instanceof Error 
+          ? err.message 
+          : "Failed to load tasks. Please check your connection and try again."
+        setError(errorMessage)
       } finally {
         setLoading(false)
       }
@@ -31,7 +34,15 @@ export function TaskList() {
   }, [])
 
   if (loading) {
-    return <div className="p-4">Loading tasks...</div>
+    return (
+      <div className="p-4">
+        <div className="animate-pulse space-y-4">
+          {[...Array(3)].map((_, i) => (
+            <div key={i} className="h-20 bg-gray-100 rounded-lg"></div>
+          ))}
+        </div>
+      </div>
+    )
   }
 
   if (error) {
@@ -39,7 +50,13 @@ export function TaskList() {
       <div className="p-4">
         <div className="text-red-500 mb-2">Error: {error}</div>
         <div className="text-sm text-gray-500 mb-4">
-          Make sure you're connected to the internet and the Supabase service is running.
+          This could be due to:
+          <ul className="list-disc list-inside mt-2">
+            <li>No internet connection</li>
+            <li>Supabase service being down</li>
+            <li>Database permissions issues</li>
+            <li>Table structure mismatch</li>
+          </ul>
         </div>
         <button
           onClick={() => window.location.reload()}
@@ -52,7 +69,14 @@ export function TaskList() {
   }
 
   if (tasks.length === 0) {
-    return <div className="p-4 text-gray-500">No tasks found</div>
+    return (
+      <div className="p-4 text-center">
+        <div className="text-gray-500 mb-2">No tasks found</div>
+        <p className="text-sm text-gray-400">
+          Create your first task to get started
+        </p>
+      </div>
+    )
   }
 
   return (
@@ -64,9 +88,10 @@ export function TaskList() {
         >
           <div className="flex justify-between items-start">
             <div>
-              <h3 className="font-medium">{task.title}</h3>
+              <h3 className="font-medium">{task.title || "Untitled Task"}</h3>
               <p className="text-sm text-gray-500">
-                {task.project?.name} • {task.content_type}
+                {task.project?.name ? `${task.project.name} • ` : ""}
+                {task.content_type || "No type specified"}
               </p>
             </div>
             <div className="text-sm text-gray-500">
