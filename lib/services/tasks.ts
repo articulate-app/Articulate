@@ -117,11 +117,11 @@ export async function getTasks({
       .from('tasks')
       .select(`
         *,
-        projects!fk_tasks_project_id(title),
-        project_statuses!fk_tasks_project_status_id(title),
-        content_types!fk_tasks_content_type_id(title),
-        production_types!fk_tasks_production_type_id(title),
-        languages!fk_tasks_language_id(title)
+        projects!tasks_project_id_int_fkey(title),
+        project_statuses!tasks_project_status_id_fkey(title),
+        content_types!tasks_content_type_id_fkey(title),
+        production_types!tasks_production_type_id_fkey(title),
+        languages!tasks_language_id_fkey(title)
       `)
       .order(sortBy, { ascending: sortOrder === 'asc' })
       .range((page - 1) * pageSize, page * pageSize - 1)
@@ -154,11 +154,11 @@ export async function getTaskById(id: string) {
       .from('tasks')
       .select(`
         *,
-        projects!fk_tasks_project_id(title),
-        project_statuses!fk_tasks_project_status_id(title),
-        content_types!fk_tasks_content_type_id(title),
-        production_types!fk_tasks_production_type_id(title),
-        languages!fk_tasks_language_id(title)
+        projects!tasks_project_id_int_fkey(title),
+        project_statuses!tasks_project_status_id_fkey(title),
+        content_types!tasks_content_type_id_fkey(title),
+        production_types!tasks_production_type_id_fkey(title),
+        languages!tasks_language_id_fkey(title)
       `)
       .eq('id', id)
       .single()
