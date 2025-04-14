@@ -1,4 +1,5 @@
 import { createClient } from '@supabase/supabase-js'
+import { cookies } from 'next/headers'
 
 // Log environment variables (without sensitive data)
 console.log('Environment check:', {
@@ -8,28 +9,33 @@ console.log('Environment check:', {
   keyLength: process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY?.length
 })
 
-const supabase = createClient(
-  process.env.NEXT_PUBLIC_SUPABASE_URL || '',
-  process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY || '',
-  {
-    auth: {
-      persistSession: true,
-      autoRefreshToken: true,
-      detectSessionInUrl: true
-    },
-    global: {
-      headers: {
-        'Access-Control-Allow-Origin': '*'
-      }
+// Create a server-side Supabase client
+const createServerClient = () => {
+  const cookieStore = cookies()
+  return createClient(
+    process.env.NEXT_PUBLIC_SUPABASE_URL || '',
+    process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY || '',
+    {
+      auth: {
+        persistSession: false,
+        autoRefreshToken: false,
+        detectSessionInUrl: false,
+        storage: {
+          getItem: (key) => {
+            const cookie = cookieStore.get(key)
+            return cookie?.value || null
+          },
+          setItem: (key, value) => {
+            cookieStore.set(key, value)
+          },
+          removeItem: (key) => {
+            cookieStore.delete(key)
+          },
+        },
+      },
     }
-  }
-)
-
-console.log('Supabase client initialized:', {
-  hasClient: !!supabase,
-  url: process.env.NEXT_PUBLIC_SUPABASE_URL,
-  error: !supabase ? 'Failed to initialize client' : undefined
-})
+  )
+}
 
 export interface Task {
   id: string
@@ -63,6 +69,8 @@ export async function getTasks({
   console.log('Fetching tasks with params:', { page, pageSize, filters, sortBy, sortOrder })
   
   try {
+    const supabase = createServerClient()
+    
     // First, let's check if we can access the table at all
     const { data: tableCheck, error: tableError } = await supabase
       .from('tasks')
@@ -110,6 +118,7 @@ export async function getTasks({
 
 export async function getTaskById(id: string) {
   try {
+    const supabase = createServerClient()
     const { data, error } = await supabase
       .from('tasks')
       .select('*')
@@ -117,8 +126,8 @@ export async function getTaskById(id: string) {
       .single()
 
     if (error) {
-      console.error('Error fetching task by ID:', error)
-      throw error
+      console.error('Error fetching task:', error)
+      throw new Error(`Failed to fetch task: ${error.message}`)
     }
 
     return data as Task
