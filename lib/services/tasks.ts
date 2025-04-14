@@ -55,20 +55,17 @@ export async function getTasks({
   const end = start + pageSize - 1
 
   try {
-    // First, let's check if the tables exist
-    const { data: tables, error: tablesError } = await supabase
+    // First, let's check the RLS policies
+    const { data: policies, error: policiesError } = await supabase
       .from('tasks')
-      .select('id')
-      .limit(1)
+      .select('*', { count: 'exact', head: true })
 
-    if (tablesError) {
-      console.error('Error checking tasks table:', tablesError)
-      throw new Error(`Database error: ${tablesError.message}`)
-    }
+    console.log('RLS check response:', { policies, error: policiesError })
 
+    // Then try to fetch the actual data
     let query = supabase
       .from('tasks')
-      .select('*')
+      .select('*', { count: 'exact' })
       .order(sortBy, { ascending: sortOrder === 'asc' })
       .range(start, end)
 
@@ -81,7 +78,12 @@ export async function getTasks({
 
     const { data, error, count } = await query
 
-    console.log('Supabase response:', { data, error, count })
+    console.log('Supabase response:', { 
+      data: data?.length || 0, 
+      error: error?.message, 
+      count,
+      query: 'tasks select query'
+    })
 
     if (error) {
       console.error('Supabase error details:', error)
