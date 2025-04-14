@@ -51,20 +51,16 @@ export async function getTasks({
 }) {
   console.log('Fetching tasks with params:', { page, pageSize, filters, sortBy, sortOrder })
   
-  const start = (page - 1) * pageSize
-  const end = start + pageSize - 1
-
   try {
-    // Simple direct query
+    // Try to fetch all tasks first
     const { data, error } = await supabase
       .from('tasks')
       .select('*')
-      .order(sortBy, { ascending: sortOrder === 'asc' })
-      .range(start, end)
 
-    console.log('Supabase response:', { 
+    console.log('Raw Supabase response:', { 
       data: data?.length || 0, 
-      error: error?.message 
+      error: error?.message,
+      firstTask: data?.[0]
     })
 
     if (error) {
@@ -72,9 +68,29 @@ export async function getTasks({
       throw new Error(`Failed to fetch tasks: ${error.message}`)
     }
 
+    // If we get data, then apply sorting and pagination
+    if (data && data.length > 0) {
+      const start = (page - 1) * pageSize
+      const end = start + pageSize - 1
+      
+      const sortedData = [...data].sort((a, b) => {
+        const aValue = a[sortBy]
+        const bValue = b[sortBy]
+        if (sortOrder === 'asc') {
+          return aValue > bValue ? 1 : -1
+        }
+        return aValue < bValue ? 1 : -1
+      }).slice(start, end + 1)
+
+      return {
+        tasks: sortedData as Task[],
+        totalCount: data.length
+      }
+    }
+
     return {
-      tasks: data as Task[],
-      totalCount: data?.length || 0
+      tasks: [],
+      totalCount: 0
     }
   } catch (error) {
     console.error('Error in getTasks:', error)
