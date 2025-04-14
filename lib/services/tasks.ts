@@ -28,17 +28,54 @@ console.log('Supabase client initialized:', {
 })
 
 export interface Task {
-  id: string
+  id: number
   title: string
-  status: string
-  due_date: string
-  project_id: string
-  content_type: string
-  production_type: string
-  language: string
-  updated_at: string
+  project_status_id: number
+  delivery_date: string
+  publication_date: string
+  notes: string
+  briefing: string
+  attachment: string
+  copy_post: string
+  key_visual: string
+  related_products: string
+  linkbuilding: string
+  keyword: string
+  meta_title: string
+  meta_description: string
+  h1: string
+  h2: string
+  alt_text: string
+  filename: string
+  internal_links: string
+  tags: string
+  category: string
+  secondary_keywords: string
   is_parent_task: boolean
+  is_deleted: boolean
+  created_at: string
+  updated_at: string
+  synced_at: string
+  production_type_id: number
+  language_id: number
+  briefing_type_id: number | null
+  project_id_int: number
+  content_type_id: number
+  assigned_to_id: number
+  parent_task_id_int: number | null
   project?: {
+    name: string
+  }
+  status?: {
+    name: string
+  }
+  content_type?: {
+    name: string
+  }
+  production_type?: {
+    name: string
+  }
+  language?: {
     name: string
   }
 }
@@ -75,10 +112,17 @@ export async function getTasks({
       throw new Error(`Failed to access tasks table: ${tableError.message}`)
     }
 
-    // Now try to fetch actual data
+    // Now try to fetch actual data with joins
     const { data, error } = await supabase
       .from('tasks')
-      .select('*')
+      .select(`
+        *,
+        project:projects(name),
+        status:project_statuses(name),
+        content_type:content_types(name),
+        production_type:production_types(name),
+        language:languages(name)
+      `)
       .order(sortBy, { ascending: sortOrder === 'asc' })
       .range((page - 1) * pageSize, page * pageSize - 1)
 
@@ -108,7 +152,14 @@ export async function getTaskById(id: string) {
   try {
     const { data, error } = await supabase
       .from('tasks')
-      .select('*')
+      .select(`
+        *,
+        project:projects(name),
+        status:project_statuses(name),
+        content_type:content_types(name),
+        production_type:production_types(name),
+        language:languages(name)
+      `)
       .eq('id', id)
       .single()
 
