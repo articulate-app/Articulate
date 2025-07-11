@@ -20,26 +20,52 @@ export async function middleware(req: NextRequest) {
     return res;
   }
 
-  // Create a Supabase client with the correct configuration
-  const supabase = createMiddlewareClient({ req, res });
+  try {
+    // Create a Supabase client with the correct configuration
+    const supabase = createMiddlewareClient({ req, res });
 
-  const {
-    data: { session },
-  } = await supabase.auth.getSession();
+    // Get the session
+    const {
+      data: { session },
+      error: sessionError
+    } = await supabase.auth.getSession();
 
-  // If user is not signed in and the current path is not public,
-  // redirect the user to /auth
-  if (!session && !publicPaths.some(path => pathname.startsWith(path))) {
-    return NextResponse.redirect(new URL('/auth', req.url));
+    // Log session state for debugging
+    console.log('Middleware session check:', {
+      pathname,
+      hasSession: !!session,
+      sessionError: sessionError?.message,
+      userId: session?.user?.id
+    });
+
+    // If there's a session error, log it but don't block the request
+    if (sessionError) {
+      console.error('Session error:', sessionError);
+    }
+
+    // If user is not signed in and the current path is not public,
+    // redirect the user to /auth
+    if (!session && !publicPaths.some(path => pathname.startsWith(path))) {
+      const redirectUrl = new URL('/auth', req.url);
+      // Preserve the full path and query string
+      const fullPath = req.nextUrl.pathname + req.nextUrl.search;
+      redirectUrl.searchParams.set('redirect', fullPath);
+      return NextResponse.redirect(redirectUrl);
+    }
+
+    // If user is signed in and the current path is /auth,
+    // redirect the user to /dashboard
+    if (session && pathname === '/auth') {
+      const redirectUrl = new URL('/dashboard', req.url);
+      return NextResponse.redirect(redirectUrl);
+    }
+
+    return res;
+  } catch (error) {
+    console.error('Middleware error:', error);
+    // In case of error, allow the request to continue
+    return res;
   }
-
-  // If user is signed in and the current path is /auth,
-  // redirect the user to /dashboard
-  if (session && pathname === '/auth') {
-    return NextResponse.redirect(new URL('/dashboard', req.url));
-  }
-
-  return res;
 }
 
 export const config = {

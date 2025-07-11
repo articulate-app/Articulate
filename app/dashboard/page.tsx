@@ -10,6 +10,12 @@ export default function DashboardPage() {
   const router = useRouter();
   const supabase = createClientComponentClient();
 
+  // Add required state and handlers for TasksLayout
+  const [viewMode, setViewMode] = useState<'list' | 'calendar' | 'kanban'>('list');
+  const [searchValue, setSearchValue] = useState('');
+  const handleFilterClick = () => {};
+  const handleAddTaskClick = () => {};
+
   useEffect(() => {
     const getUser = async () => {
       const { data, error } = await supabase.auth.getUser();
@@ -39,7 +45,14 @@ export default function DashboardPage() {
   };
 
   return (
-    <TasksLayout>
+    <TasksLayout
+      viewMode={viewMode}
+      setViewMode={setViewMode}
+      searchValue={searchValue}
+      setSearchValue={setSearchValue}
+      onFilterClick={handleFilterClick}
+      onAddTaskClick={handleAddTaskClick}
+    >
       <div className="p-6">
         <div className="mb-6">
           <h2 className="text-2xl font-semibold text-gray-900">Welcome to your Dashboard</h2>

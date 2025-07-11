@@ -8,11 +8,8 @@ const pool = new Pool(dbConfig);
 export async function testConnection() {
   try {
     const client = await pool.connect();
-    console.log('Successfully connected to the database');
-    client.release();
     return true;
   } catch (error) {
-    console.error('Error connecting to the database:', error);
     return false;
   }
 }
@@ -23,7 +20,6 @@ export async function query(text: string, params?: any[]) {
     const result = await pool.query(text, params);
     return result;
   } catch (error) {
-    console.error('Error executing query:', error);
     throw error;
   }
 }
@@ -31,7 +27,6 @@ export async function query(text: string, params?: any[]) {
 // Close the pool when the application shuts down
 process.on('SIGINT', () => {
   pool.end().then(() => {
-    console.log('Pool has ended');
     process.exit(0);
   });
 }); 

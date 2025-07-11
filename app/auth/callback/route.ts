@@ -6,6 +6,7 @@ export async function GET(request: Request) {
   const requestUrl = new URL(request.url);
   const accessToken = requestUrl.searchParams.get('access_token');
   const type = requestUrl.searchParams.get('type');
+  const redirect = requestUrl.searchParams.get('redirect');
 
   if (accessToken) {
     const supabase = createRouteHandlerClient({ cookies });
@@ -20,6 +21,11 @@ export async function GET(request: Request) {
     return NextResponse.redirect(new URL('/auth/update-password', request.url));
   }
 
-  // URL to redirect to after sign in process completes
+  // Redirect to the original target if present
+  if (redirect) {
+    return NextResponse.redirect(new URL(redirect, request.url));
+  }
+
+  // Default: dashboard
   return NextResponse.redirect(new URL('/dashboard', request.url));
 } 
