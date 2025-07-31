@@ -3,23 +3,6 @@ import dotenv from 'dotenv';
 // Load environment variables
 dotenv.config({ path: '.env.local' });
 
-// Validate required environment variables
-const requiredEnvVars = {
-  DATABASE_URL: process.env.DATABASE_URL,
-};
-
-// Check for missing environment variables
-const missingVars = Object.entries(requiredEnvVars)
-  .filter(([key, value]) => !value)
-  .map(([key]) => key);
-
-if (missingVars.length > 0) {
-  console.error('❌ Missing required environment variables:');
-  missingVars.forEach(varName => console.error(`   - ${varName}`));
-  console.error('\nPlease ensure all required environment variables are set in your .env.local file.');
-  process.exit(1);
-}
-
 // Parse DATABASE_URL to extract connection details
 const parseDatabaseUrl = (url: string) => {
   try {
@@ -39,5 +22,16 @@ const parseDatabaseUrl = (url: string) => {
   }
 };
 
-// Database connection configuration
-export const dbConfig = parseDatabaseUrl(process.env.DATABASE_URL!); 
+// Database connection configuration - lazy loaded to avoid build-time errors
+export const getDbConfig = () => {
+  const databaseUrl = process.env.DATABASE_URL;
+  
+  if (!databaseUrl) {
+    throw new Error('DATABASE_URL environment variable is required');
+  }
+  
+  return parseDatabaseUrl(databaseUrl);
+};
+
+// For backward compatibility, export a function that returns the config
+export const dbConfig = getDbConfig; 
