@@ -12,7 +12,7 @@ export type TaskEditFields = {
   costs: { user_id: number; content_type_id: number; production_type_id: number; language_id: number }[];
 };
 
-const SUPABASE_EDGE_URL = 'https://hlszgarnpleikfkwujph.supabase.co/functions/v1/task-edit-fields';
+const SUPABASE_EDGE_URL = `${process.env.NEXT_PUBLIC_SUPABASE_URL}/functions/v1/task-edit-fields`;
 
 /**
  * Fetches all task edit metadata (e.g., project statuses, content types, production types, languages, channels, project watchers, projects, costs) 

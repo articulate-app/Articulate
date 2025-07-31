@@ -1,14 +1,22 @@
 import Typesense from 'typesense';
 
+// Validate required environment variables
+const typesenseHost = process.env.NEXT_PUBLIC_TYPESENSE_HOST;
+const typesenseApiKey = process.env.NEXT_PUBLIC_TYPESENSE_SEARCH_ONLY_API_KEY || process.env.TYPESENSE_SEARCH_ONLY_API_KEY;
+
+if (!typesenseHost || !typesenseApiKey) {
+  throw new Error('Missing required Typesense environment variables: NEXT_PUBLIC_TYPESENSE_HOST and NEXT_PUBLIC_TYPESENSE_SEARCH_ONLY_API_KEY');
+}
+
 const typesenseSearch = new Typesense.Client({
   nodes: [
     {
-      host: process.env.NEXT_PUBLIC_TYPESENSE_HOST || 'rdnm4pqijsz06akfp-1.a1.typesense.net',
+      host: typesenseHost,
       port: 443,
       protocol: 'https',
     },
   ],
-  apiKey: process.env.NEXT_PUBLIC_TYPESENSE_SEARCH_ONLY_API_KEY || process.env.TYPESENSE_SEARCH_ONLY_API_KEY || 'fGzkLFoFFwvqp7zVxW96kd1xfS9xjdsf',
+  apiKey: typesenseApiKey,
   connectionTimeoutSeconds: 5,
 });
 

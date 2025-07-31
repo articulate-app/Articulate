@@ -293,7 +293,7 @@ function useTaskDetails(taskId: string | number | undefined, accessToken: string
     queryKey: ['task', taskId, accessToken],
     queryFn: async () => {
       if (!taskId || !accessToken) return initialData;
-      const res = await fetch(`https://hlszgarnpleikfkwujph.supabase.co/functions/v1/task-details-bootstrap?task_id=${taskId}`, {
+      const res = await fetch(`${process.env.NEXT_PUBLIC_SUPABASE_URL}/functions/v1/task-details-bootstrap?task_id=${taskId}`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',

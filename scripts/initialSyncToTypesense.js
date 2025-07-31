@@ -1,22 +1,46 @@
 import { createClient } from '@supabase/supabase-js';
 import Typesense from 'typesense';
+import dotenv from 'dotenv';
+
+// Load environment variables
+dotenv.config({ path: '.env.local' });
+
+// Validate required environment variables
+const requiredEnvVars = {
+  NEXT_PUBLIC_SUPABASE_URL: process.env.NEXT_PUBLIC_SUPABASE_URL,
+  SUPABASE_SERVICE_ROLE_KEY: process.env.SUPABASE_SERVICE_ROLE_KEY,
+  TYPESENSE_HOST: process.env.TYPESENSE_HOST,
+  TYPESENSE_ADMIN_API_KEY: process.env.TYPESENSE_ADMIN_API_KEY,
+};
+
+// Check for missing environment variables
+const missingVars = Object.entries(requiredEnvVars)
+  .filter(([key, value]) => !value)
+  .map(([key]) => key);
+
+if (missingVars.length > 0) {
+  console.error('❌ Missing required environment variables:');
+  missingVars.forEach(varName => console.error(`   - ${varName}`));
+  console.error('\nPlease ensure all required environment variables are set in your .env.local file.');
+  process.exit(1);
+}
 
 // 1. Connect to Supabase
 const supabase = createClient(
-  'https://hlszgarnpleikfkwujph.supabase.co',
-  'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Imhsc3pnYXJucGxlaWtma3d1anBoIiwicm9sZSI6InNlcnZpY2Vfcm9sZSIsImlhdCI6MTc0MzY5ODI1MCwiZXhwIjoyMDU5Mjc0MjUwfQ.yoCP5sqshIB1adqIRW3xlhDXHhSdFxu5AA0XErCrI4w'
+  process.env.NEXT_PUBLIC_SUPABASE_URL,
+  process.env.SUPABASE_SERVICE_ROLE_KEY
 );
 
 // 2. Connect to Typesense
 const typesense = new Typesense.Client({
   nodes: [
     {
-      host: 'rdnm4pqijsz06akfp-1.a1.typesense.net',
+      host: process.env.TYPESENSE_HOST,
       port: 443,
       protocol: 'https',
     },
   ],
-  apiKey: 'LIzI84v8TUtiIsitQYsrn0O9hpxU9FdU',
+  apiKey: process.env.TYPESENSE_ADMIN_API_KEY,
   connectionTimeoutSeconds: 5,
 });
 

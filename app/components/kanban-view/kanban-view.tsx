@@ -263,7 +263,7 @@ export function KanbanView({ searchValue, filters, selectedTaskId, onTaskSelect,
       if (filters) {
         params.set('filters', encodeURIComponent(JSON.stringify(filters)));
       }
-      const url = `https://hlszgarnpleikfkwujph.supabase.co/functions/v1/bootstrap-kanban?${params.toString()}`;
+      const url = `${process.env.NEXT_PUBLIC_SUPABASE_URL}/functions/v1/bootstrap-kanban?${params.toString()}`;
       const res = await fetch(url, {
         headers: {
           'Content-Type': 'application/json',
