@@ -1,6 +1,9 @@
 'use client';
 
 import { useEffect, useState } from 'react';
+
+// Disable static generation for this page
+export const dynamic = 'force-dynamic';
 import { createClientComponentClient } from '@supabase/auth-helpers-nextjs';
 import { useRouter } from 'next/navigation';
 import { TasksLayout } from '../components/tasks/TasksLayout';
@@ -9,6 +12,17 @@ export default function DashboardPage() {
   const [email, setEmail] = useState<string | null>(null);
   const router = useRouter();
   const supabase = createClientComponentClient();
+
+  // Add required state and handlers for TasksLayout
+  const [viewMode, setViewMode] = useState<'list' | 'calendar' | 'kanban'>('list');
+  const [searchValue, setSearchValue] = useState('');
+  const [isAddTaskOpen, setIsAddTaskOpen] = useState(false);
+  const [isAddSubtaskPaneOpen, setIsAddSubtaskPaneOpen] = useState(false);
+  const [addSubtaskContext, setAddSubtaskContext] = useState<{ parentTaskId: number, projectId: number } | null>(null);
+  
+  const handleFilterClick = () => {};
+  const handleAddTaskClick = () => {};
+  const handleAddTaskSuccess = (task: any) => {};
 
   useEffect(() => {
     const getUser = async () => {
@@ -39,7 +53,20 @@ export default function DashboardPage() {
   };
 
   return (
-    <TasksLayout>
+    <TasksLayout
+      viewMode={viewMode}
+      setViewMode={setViewMode}
+      searchValue={searchValue}
+      setSearchValue={setSearchValue}
+      onFilterClick={handleFilterClick}
+      onAddTaskClick={handleAddTaskClick}
+      isAddTaskOpen={isAddTaskOpen}
+      setIsAddTaskOpen={setIsAddTaskOpen}
+      isAddSubtaskPaneOpen={isAddSubtaskPaneOpen}
+      setIsAddSubtaskPaneOpen={setIsAddSubtaskPaneOpen}
+      addSubtaskContext={addSubtaskContext}
+      handleAddTaskSuccess={handleAddTaskSuccess}
+    >
       <div className="p-6">
         <div className="mb-6">
           <h2 className="text-2xl font-semibold text-gray-900">Welcome to your Dashboard</h2>

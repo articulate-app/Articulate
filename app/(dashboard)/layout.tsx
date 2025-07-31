@@ -12,7 +12,7 @@ export default function DashboardLayout({ children }: DashboardLayoutProps) {
     <div className="flex h-screen">
       {/* Left Pane - Sidebar */}
       <div className="w-64 border-r border-gray-200">
-        <Sidebar />
+        <Sidebar isCollapsed={false} />
       </div>
 
       {/* Center Pane - Main Content */}

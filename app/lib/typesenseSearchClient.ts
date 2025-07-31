@@ -8,7 +8,7 @@ const typesenseSearch = new Typesense.Client({
       protocol: 'https',
     },
   ],
-  apiKey: process.env.NEXT_PUBLIC_TYPESENSE_SEARCH_ONLY_API_KEY || process.env.TYPESENSE_SEARCH_ONLY_API_KEY || '',
+  apiKey: process.env.NEXT_PUBLIC_TYPESENSE_SEARCH_ONLY_API_KEY || process.env.TYPESENSE_SEARCH_ONLY_API_KEY || 'fGzkLFoFFwvqp7zVxW96kd1xfS9xjdsf',
   connectionTimeoutSeconds: 5,
 });
 

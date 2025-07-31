@@ -1,8 +1,11 @@
 'use client';
 
-import { useState, ChangeEvent } from 'react';
+import { useState, ChangeEvent, useEffect } from 'react';
+
+// Disable static generation for this page
+export const dynamic = 'force-dynamic';
 import { createClientComponentClient } from '@supabase/auth-helpers-nextjs';
-import { useRouter } from 'next/navigation';
+import { useRouter, useSearchParams } from 'next/navigation';
 import Link from 'next/link';
 import { Button } from '../components/ui/button';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '../components/ui/card';
@@ -18,8 +21,25 @@ export default function AuthPage() {
   const [isLoading, setIsLoading] = useState(false);
   const [mode, setMode] = useState<'sign-in' | 'sign-up'>('sign-in');
   const router = useRouter();
+  const searchParams = useSearchParams();
+  const redirect = searchParams.get('redirect');
   
   const supabase = createClientComponentClient();
+
+  // Check for existing session on component mount
+  useEffect(() => {
+    const checkSession = async () => {
+      const { data: { session }, error } = await supabase.auth.getSession();
+      if (session) {
+        if (redirect) {
+          router.push(redirect);
+        } else {
+          router.push('/dashboard');
+        }
+      }
+    };
+    checkSession();
+  }, [router, supabase.auth, redirect]);
 
   const handleAuth = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -38,7 +58,7 @@ export default function AuthPage() {
           email,
           password,
           options: {
-            emailRedirectTo: `${process.env.NEXT_PUBLIC_SITE_URL}/auth/callback`,
+            emailRedirectTo: `${process.env.NEXT_PUBLIC_SITE_URL}/auth/callback${redirect ? `?redirect=${encodeURIComponent(redirect)}` : ''}`,
           },
         });
         
@@ -53,11 +73,23 @@ export default function AuthPage() {
         });
         
         if (error) throw error;
-        if (data?.user) {
-          router.push('/dashboard');
+        
+        // Verify the session was created
+        const { data: { session }, error: sessionError } = await supabase.auth.getSession();
+        if (sessionError) throw sessionError;
+        
+        if (session) {
+          if (redirect) {
+            router.push(redirect);
+          } else {
+            router.push('/dashboard');
+          }
+        } else {
+          throw new Error('Failed to create session');
         }
       }
     } catch (error: any) {
+      console.error('Authentication error:', error);
       setError(error.message || 'An error occurred during authentication');
     } finally {
       setIsLoading(false);
@@ -82,10 +114,21 @@ export default function AuthPage() {
       if (error) throw error;
       setMessage('Check your email for the password reset link!');
     } catch (error: any) {
+      console.error('Password reset error:', error);
       setError(error.message || 'An error occurred while resetting password');
     } finally {
       setIsLoading(false);
     }
+  };
+
+  // When switching modes, update the URL to preserve the redirect param
+  const handleModeSwitch = (newMode: 'sign-in' | 'sign-up') => {
+    setMode(newMode);
+    const params = new URLSearchParams(window.location.search);
+    if (redirect) {
+      params.set('redirect', redirect);
+    }
+    window.history.replaceState({}, '', `/auth${params.toString() ? '?' + params.toString() : ''}`);
   };
 
   return (
@@ -162,7 +205,7 @@ export default function AuthPage() {
                     Don't have an account?{' '}
                     <button
                       type="button"
-                      onClick={() => setMode('sign-up')}
+                      onClick={() => handleModeSwitch('sign-up')}
                       className="underline underline-offset-4 hover:text-gray-900"
                     >
                       Sign up
@@ -173,7 +216,7 @@ export default function AuthPage() {
                     Already have an account?{' '}
                     <button
                       type="button"
-                      onClick={() => setMode('sign-in')}
+                      onClick={() => handleModeSwitch('sign-in')}
                       className="underline underline-offset-4 hover:text-gray-900"
                     >
                       Sign in

@@ -23,8 +23,6 @@ export function TestConnection() {
           }
         )
 
-        console.log('Testing Supabase connection...')
-
         // First try to sign in
         const { data: authData, error: authError } = await supabase.auth.signInWithPassword({
           email: 'app@whyarticulate.com',
@@ -32,12 +30,9 @@ export function TestConnection() {
         })
 
         if (authError) {
-          console.error('Auth error:', authError)
           setError(`Auth error: ${authError.message}`)
           return
         }
-
-        console.log('Auth successful:', authData)
 
         // Try to get table information
         const { data: tables, error: tablesError } = await supabase
@@ -45,10 +40,7 @@ export function TestConnection() {
           .select('*')
           .limit(1)
 
-        console.log('Tables response:', { tables, error: tablesError })
-
         if (tablesError) {
-          console.error('Error getting tables:', tablesError)
           setError(`Error getting tables: ${tablesError.message}`)
           return
         }
@@ -67,17 +59,13 @@ export function TestConnection() {
           .limit(1)
           .single()
 
-        console.log('Task fetch result:', { data, error })
-
         if (error) {
-          console.error('Error fetching task:', error)
           setError(`Error fetching task: ${error.message}`)
           return
         }
 
         setResult(data)
       } catch (err) {
-        console.error('Test error:', err)
         setError(`Test error: ${err instanceof Error ? err.message : 'Unknown error'}`)
       }
     }

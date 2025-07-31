@@ -1,18 +1,14 @@
 import Typesense from 'typesense';
-import dotenv from 'dotenv';
-
-// Load environment variables
-dotenv.config({ path: '.env.local' });
 
 const typesense = new Typesense.Client({
   nodes: [
     {
-      host: process.env.TYPESENSE_HOST || 'rdnm4pqijsz06akfp-1.a1.typesense.net',
+      host: 'rdnm4pqijsz06akfp-1.a1.typesense.net',
       port: 443,
       protocol: 'https',
     },
   ],
-  apiKey: process.env.TYPESENSE_ADMIN_API_KEY || '',
+  apiKey: 'LIzI84v8TUtiIsitQYsrn0O9hpxU9FdU',
   connectionTimeoutSeconds: 5,
 });
 
