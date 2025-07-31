@@ -43,6 +43,8 @@ interface FetchTasksParams {
  * Fetch tasks from Typesense with search, filters, and pagination.
  */
 export async function fetchTasksFromTypesense({ q, project, filters = {}, page = 1, perPage = 25, sortBy = 'publication_timestamp', sortOrder = 'desc' }: FetchTasksParams) {
+  console.log('[Typesense] fetchTasksFromTypesense called with:', { q, project, filters, page, perPage, sortBy, sortOrder });
+  
   try {
     // Build filter_by string
     const filterParts: string[] = [];
@@ -98,7 +100,10 @@ export async function fetchTasksFromTypesense({ q, project, filters = {}, page =
     };
     if (filter_by) searchParams.filter_by = filter_by;
 
+    console.log('[Typesense] About to get client');
     const client = typesenseSearchClient();
+    console.log('[Typesense] Client obtained:', !!client);
+    
     if (!client) {
       console.log('[Typesense] Client not available, returning empty result');
       return {
@@ -111,10 +116,13 @@ export async function fetchTasksFromTypesense({ q, project, filters = {}, page =
       };
     }
     
+    console.log('[Typesense] Making search request with params:', searchParams);
     const result = await client
       .collections('tasks')
       .documents()
       .search(searchParams);
+
+    console.log('[Typesense] Search result:', { found: result.found, hits: result.hits?.length || 0 });
 
     return {
       tasks: Array.isArray(result.hits) ? result.hits.map(mapTypesenseTask) : [],
