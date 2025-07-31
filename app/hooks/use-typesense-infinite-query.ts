@@ -16,7 +16,14 @@ interface UseTypesenseInfiniteQueryOptions {
 const isTypesenseAvailable = () => {
   if (typeof window === 'undefined') return false; // Server-side
   const host = process.env.NEXT_PUBLIC_TYPESENSE_HOST;
-  const apiKey = process.env.NEXT_PUBLIC_TYPESENSE_SEARCH_ONLY_API_KEY || process.env.TYPESENSE_SEARCH_ONLY_API_KEY;
+  const apiKey = process.env.NEXT_PUBLIC_TYPESENSE_SEARCH_ONLY_API_KEY;
+  
+  console.log('[Typesense] Availability check:', {
+    host: host ? 'present' : 'missing',
+    apiKey: apiKey ? 'present' : 'missing',
+    window: typeof window !== 'undefined'
+  });
+  
   return !!(host && apiKey);
 };
 

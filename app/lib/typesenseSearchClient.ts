@@ -5,15 +5,30 @@ let typesenseSearch: any = null;
 const createTypesenseClient = () => {
   // Only validate environment variables when the client is actually created
   if (typeof window === 'undefined') {
-    // Server-side: return null or throw error
-    throw new Error('Typesense client cannot be created on the server side');
+    // Server-side: return null
+    console.log('[Typesense] Server-side, returning null');
+    return null;
   }
 
+  // Access environment variables correctly for client-side
+  // In Next.js, NEXT_PUBLIC_ variables should be available at build time
   const typesenseHost = process.env.NEXT_PUBLIC_TYPESENSE_HOST;
-  const typesenseApiKey = process.env.NEXT_PUBLIC_TYPESENSE_SEARCH_ONLY_API_KEY || process.env.TYPESENSE_SEARCH_ONLY_API_KEY;
+  const typesenseApiKey = process.env.NEXT_PUBLIC_TYPESENSE_SEARCH_ONLY_API_KEY;
+
+  console.log('[Typesense] Environment check:', {
+    host: typesenseHost ? 'present' : 'missing',
+    apiKey: typesenseApiKey ? 'present' : 'missing',
+    window: typeof window !== 'undefined',
+    nodeEnv: process.env.NODE_ENV
+  });
 
   if (!typesenseHost || !typesenseApiKey) {
-    throw new Error('Missing required Typesense environment variables: NEXT_PUBLIC_TYPESENSE_HOST and NEXT_PUBLIC_TYPESENSE_SEARCH_ONLY_API_KEY');
+    console.error('[Typesense] Missing environment variables:', {
+      host: typesenseHost,
+      apiKey: typesenseApiKey ? '***' : 'missing'
+    });
+    // Return null instead of throwing to prevent app crashes
+    return null;
   }
 
   return new Typesense.Client({

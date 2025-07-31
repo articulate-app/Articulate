@@ -99,6 +99,18 @@ export async function fetchTasksFromTypesense({ q, project, filters = {}, page =
     if (filter_by) searchParams.filter_by = filter_by;
 
     const client = typesenseSearchClient();
+    if (!client) {
+      console.log('[Typesense] Client not available, returning empty result');
+      return {
+        tasks: [],
+        found: 0,
+        out_of: 0,
+        page: page,
+        per_page: perPage,
+        next_page: false,
+      };
+    }
+    
     const result = await client
       .collections('tasks')
       .documents()
