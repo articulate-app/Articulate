@@ -43,71 +43,85 @@ interface FetchTasksParams {
  * Fetch tasks from Typesense with search, filters, and pagination.
  */
 export async function fetchTasksFromTypesense({ q, project, filters = {}, page = 1, perPage = 25, sortBy = 'publication_timestamp', sortOrder = 'desc' }: FetchTasksParams) {
-  // Build filter_by string
-  const filterParts: string[] = [];
-  if (project) filterParts.push(`project_id_int:=${project}`);
-  // Add other filters
-  const filterFields = [
-    'assigned_to_name',
-    'channel_names',
-    'content_type_title',
-    'project_name',
-    'project_id_int',
-    'project_status_name', // Add project_status_name to supported filter fields
-    'production_type_title',
-    'language_code',
-  ];
-  for (const field of filterFields) {
-    if (filters[field]) {
-      // Support array or string
-      const value = Array.isArray(filters[field]) ? filters[field].join(',') : filters[field];
-      filterParts.push(`${field}:=[${value}]`);
+  try {
+    // Build filter_by string
+    const filterParts: string[] = [];
+    if (project) filterParts.push(`project_id_int:=${project}`);
+    // Add other filters
+    const filterFields = [
+      'assigned_to_name',
+      'channel_names',
+      'content_type_title',
+      'project_name',
+      'project_id_int',
+      'project_status_name', // Add project_status_name to supported filter fields
+      'production_type_title',
+      'language_code',
+    ];
+    for (const field of filterFields) {
+      if (filters[field]) {
+        // Support array or string
+        const value = Array.isArray(filters[field]) ? filters[field].join(',') : filters[field];
+        filterParts.push(`${field}:=[${value}]`);
+      }
     }
+    const filter_by = filterParts.length > 0 ? filterParts.join(' && ') : undefined;
+
+    // Map frontend field names to Typesense field names
+    const fieldMapping: Record<string, string> = {
+      'title': 'title',
+      'assigned_user': 'assigned_to_name',
+      'projects': 'project_name',
+      'project_statuses': 'project_status_name',
+      'delivery_date': 'delivery_date',
+      'publication_date': 'publication_timestamp',
+      'updated_at': 'updated_at',
+      'content_type_title': 'content_type_title',
+      'production_type_title': 'production_type_title',
+      'language_code': 'language_code',
+    };
+
+    console.log('[Typesense] Sorting by:', { sortBy, sortOrder, fieldMapping });
+    const typesenseField = fieldMapping[sortBy] || 'publication_timestamp';
+    
+    // Fallback to publication_timestamp if the field doesn't exist in Typesense
+    const safeSortBy = typesenseField === 'project_status_name' ? 'publication_timestamp' : typesenseField;
+    const sort_by = `${safeSortBy}:${sortOrder}`;
+    console.log('[Typesense] Final sort_by:', sort_by);
+
+    const searchParams: any = {
+      q: q || '*',
+      query_by: 'title,briefing,notes,assigned_to_name,project_name',
+      sort_by,
+      page,
+      per_page: perPage,
+    };
+    if (filter_by) searchParams.filter_by = filter_by;
+
+    const client = typesenseSearchClient();
+    const result = await client
+      .collections('tasks')
+      .documents()
+      .search(searchParams);
+
+    return {
+      tasks: Array.isArray(result.hits) ? result.hits.map(mapTypesenseTask) : [],
+      found: result.found,
+      out_of: result.out_of,
+      page: result.page,
+      per_page: result.request_params.per_page,
+      next_page: result.found > (page * perPage),
+    };
+  } catch (error: any) {
+    console.error('[Typesense] Error in fetchTasksFromTypesense:', error);
+    // Return empty result instead of throwing
+    return {
+      tasks: [],
+      found: 0,
+      out_of: 0,
+      page: page,
+      per_page: perPage,
+      next_page: false,
+    };
   }
-  const filter_by = filterParts.length > 0 ? filterParts.join(' && ') : undefined;
-
-  // Map frontend field names to Typesense field names
-  const fieldMapping: Record<string, string> = {
-    'title': 'title',
-    'assigned_user': 'assigned_to_name',
-    'projects': 'project_name',
-    'project_statuses': 'project_status_name',
-    'delivery_date': 'delivery_date',
-    'publication_date': 'publication_timestamp',
-    'updated_at': 'updated_at',
-    'content_type_title': 'content_type_title',
-    'production_type_title': 'production_type_title',
-    'language_code': 'language_code',
-  };
-
-  console.log('[Typesense] Sorting by:', { sortBy, sortOrder, fieldMapping });
-  const typesenseField = fieldMapping[sortBy] || 'publication_timestamp';
-  
-  // Fallback to publication_timestamp if the field doesn't exist in Typesense
-  const safeSortBy = typesenseField === 'project_status_name' ? 'publication_timestamp' : typesenseField;
-  const sort_by = `${safeSortBy}:${sortOrder}`;
-  console.log('[Typesense] Final sort_by:', sort_by);
-
-  const searchParams: any = {
-    q: q || '*',
-    query_by: 'title,briefing,notes,assigned_to_name,project_name',
-    sort_by,
-    page,
-    per_page: perPage,
-  };
-  if (filter_by) searchParams.filter_by = filter_by;
-
-  const result = await typesenseSearchClient()
-    .collections('tasks')
-    .documents()
-    .search(searchParams);
-
-  return {
-    tasks: Array.isArray(result.hits) ? result.hits.map(mapTypesenseTask) : [],
-    found: result.found,
-    out_of: result.out_of,
-    page: result.page,
-    per_page: result.request_params.per_page,
-    next_page: result.found > (page * perPage),
-  };
 } 

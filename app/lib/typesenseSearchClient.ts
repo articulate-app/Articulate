@@ -3,7 +3,12 @@ import Typesense from 'typesense';
 let typesenseSearch: any = null;
 
 const createTypesenseClient = () => {
-  // Validate required environment variables
+  // Only validate environment variables when the client is actually created
+  if (typeof window === 'undefined') {
+    // Server-side: return null or throw error
+    throw new Error('Typesense client cannot be created on the server side');
+  }
+
   const typesenseHost = process.env.NEXT_PUBLIC_TYPESENSE_HOST;
   const typesenseApiKey = process.env.NEXT_PUBLIC_TYPESENSE_SEARCH_ONLY_API_KEY || process.env.TYPESENSE_SEARCH_ONLY_API_KEY;
 

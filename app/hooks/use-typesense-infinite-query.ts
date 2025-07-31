@@ -12,6 +12,14 @@ interface UseTypesenseInfiniteQueryOptions {
   enabled?: boolean; // New param to control when queries should run
 }
 
+// Check if Typesense environment variables are available
+const isTypesenseAvailable = () => {
+  if (typeof window === 'undefined') return false; // Server-side
+  const host = process.env.NEXT_PUBLIC_TYPESENSE_HOST;
+  const apiKey = process.env.NEXT_PUBLIC_TYPESENSE_SEARCH_ONLY_API_KEY || process.env.TYPESENSE_SEARCH_ONLY_API_KEY;
+  return !!(host && apiKey);
+};
+
 // Helper: does the updated task match the current search/filter?
 function doesTaskMatchSearch(task: any, q: string, filters: Record<string, string | string[]>, project?: string): boolean {
   // Check project filter
@@ -64,6 +72,10 @@ export function useTypesenseInfiniteQuery({ q, project, filters = {}, pageSize =
   useEffect(() => {
     if (!enabled) return; // Don't fetch if disabled
     if (isFetching) return; // Don't fetch if already fetching
+    if (!isTypesenseAvailable()) {
+      console.log('[Typesense] Environment variables not available, skipping fetch');
+      return;
+    }
     
     let cancelled = false;
     async function fetchPage() {
