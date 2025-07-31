@@ -1,14 +1,22 @@
 import Typesense from 'typesense';
 
+// Validate required environment variables
+const typesenseHost = process.env.NEXT_PUBLIC_TYPESENSE_HOST;
+const typesenseApiKey = process.env.TYPESENSE_ADMIN_API_KEY;
+
+if (!typesenseHost || !typesenseApiKey) {
+  throw new Error('Missing required Typesense environment variables: NEXT_PUBLIC_TYPESENSE_HOST and TYPESENSE_ADMIN_API_KEY');
+}
+
 const typesense = new Typesense.Client({
   nodes: [
     {
-      host: process.env.NEXT_PUBLIC_TYPESENSE_HOST || 'your-cluster.typesense.net', // no https or port here
+      host: typesenseHost,
       port: 443,
       protocol: 'https',
     },
   ],
-  apiKey: process.env.TYPESENSE_ADMIN_API_KEY || 'YOUR_ADMIN_API_KEY',
+  apiKey: typesenseApiKey,
   connectionTimeoutSeconds: 5,
 });
 
