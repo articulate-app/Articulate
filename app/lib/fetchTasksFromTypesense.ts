@@ -97,7 +97,7 @@ export async function fetchTasksFromTypesense({ q, project, filters = {}, page =
   };
   if (filter_by) searchParams.filter_by = filter_by;
 
-  const result = await typesenseSearchClient
+  const result = await typesenseSearchClient()
     .collections('tasks')
     .documents()
     .search(searchParams);

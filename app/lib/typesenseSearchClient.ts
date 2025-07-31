@@ -1,23 +1,34 @@
 import Typesense from 'typesense';
 
-// Validate required environment variables
-const typesenseHost = process.env.NEXT_PUBLIC_TYPESENSE_HOST;
-const typesenseApiKey = process.env.NEXT_PUBLIC_TYPESENSE_SEARCH_ONLY_API_KEY || process.env.TYPESENSE_SEARCH_ONLY_API_KEY;
+let typesenseSearch: any = null;
 
-if (!typesenseHost || !typesenseApiKey) {
-  throw new Error('Missing required Typesense environment variables: NEXT_PUBLIC_TYPESENSE_HOST and NEXT_PUBLIC_TYPESENSE_SEARCH_ONLY_API_KEY');
-}
+const createTypesenseClient = () => {
+  // Validate required environment variables
+  const typesenseHost = process.env.NEXT_PUBLIC_TYPESENSE_HOST;
+  const typesenseApiKey = process.env.NEXT_PUBLIC_TYPESENSE_SEARCH_ONLY_API_KEY || process.env.TYPESENSE_SEARCH_ONLY_API_KEY;
 
-const typesenseSearch = new Typesense.Client({
-  nodes: [
-    {
-      host: typesenseHost,
-      port: 443,
-      protocol: 'https',
-    },
-  ],
-  apiKey: typesenseApiKey,
-  connectionTimeoutSeconds: 5,
-});
+  if (!typesenseHost || !typesenseApiKey) {
+    throw new Error('Missing required Typesense environment variables: NEXT_PUBLIC_TYPESENSE_HOST and NEXT_PUBLIC_TYPESENSE_SEARCH_ONLY_API_KEY');
+  }
 
-export default typesenseSearch; 
+  return new Typesense.Client({
+    nodes: [
+      {
+        host: typesenseHost,
+        port: 443,
+        protocol: 'https',
+      },
+    ],
+    apiKey: typesenseApiKey,
+    connectionTimeoutSeconds: 5,
+  });
+};
+
+const getTypesenseClient = () => {
+  if (!typesenseSearch) {
+    typesenseSearch = createTypesenseClient();
+  }
+  return typesenseSearch;
+};
+
+export default getTypesenseClient; 
