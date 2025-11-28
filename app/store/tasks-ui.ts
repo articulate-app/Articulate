@@ -13,6 +13,7 @@ export interface TaskFilters {
   productionType: string[]
   language: string[]
   channels: string[]
+  overdueStatus: string[]
 }
 
 function parseFiltersFromParams(params: URLSearchParams): TaskFilters {
@@ -33,6 +34,7 @@ function parseFiltersFromParams(params: URLSearchParams): TaskFilters {
     productionType: params.get('productionType')?.split(',').filter(Boolean) ?? [],
     language: params.get('language')?.split(',').filter(Boolean) ?? [],
     channels: params.get('channels')?.split(',').filter(Boolean) ?? [],
+    overdueStatus: params.get('overdueStatus')?.split(',').filter(Boolean) ?? [],
   }
 }
 
@@ -63,6 +65,7 @@ export const useTasksUI = create<TasksUIState>((set, get) => ({
     productionType: [],
     language: [],
     channels: [],
+    overdueStatus: [],
   },
   setFilters: (filters) => set({ filters }),
   syncFromUrl: (params) => {

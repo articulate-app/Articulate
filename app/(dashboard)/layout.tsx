@@ -1,13 +1,16 @@
 "use client"
 
-import { ReactNode } from "react"
-import { Sidebar } from "../components/tasks/Sidebar"
+import { ReactNode, useState } from "react"
+import { Sidebar } from "../components/ui/Sidebar"
+import { AiPane } from "../../features/ai-chat/AiPane"
+import { Bot } from "lucide-react"
 
 interface DashboardLayoutProps {
   children: ReactNode
 }
 
 export default function DashboardLayout({ children }: DashboardLayoutProps) {
+  const [isAiOpen, setIsAiOpen] = useState(false)
   return (
     <div className="flex h-screen">
       {/* Left Pane - Sidebar */}
@@ -30,6 +33,15 @@ export default function DashboardLayout({ children }: DashboardLayoutProps) {
             </div>
           </div>
           <div className="flex items-center gap-4">
+            <button
+              type="button"
+              aria-label="Open AI Assistant"
+              className="inline-flex items-center gap-2 px-3 py-2 rounded-md border hover:bg-gray-50"
+              onClick={() => setIsAiOpen(true)}
+            >
+              <Bot className="w-4 h-4" />
+              <span className="text-sm">AI</span>
+            </button>
             {/* User avatar and menu will go here */}
           </div>
         </header>
@@ -39,6 +51,7 @@ export default function DashboardLayout({ children }: DashboardLayoutProps) {
           {children}
         </main>
       </div>
+      <AiPane isOpen={isAiOpen} onClose={() => setIsAiOpen(false)} initialScope="global" />
     </div>
   )
 } 

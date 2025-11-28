@@ -53,4 +53,42 @@ export interface TasksResponse {
   tasks: Task[]
   nextCursor: number | null
   hasMore: boolean
-} 
+}
+
+export type ReviewData = {
+  avg_seo_score: number | null;
+  avg_relevance_score: number | null;
+  avg_grammar_score: number | null;
+  avg_delays_score: number | null;
+  global_score: number | null;
+  review_count: number | null;
+};
+
+export type Review = {
+  id: number;
+  task_id: number;
+  created_by: number;
+  score_seo: number | null;
+  score_relevance: number | null;
+  score_grammar: number | null;
+  score_delays: number | null;
+  review_score: number | null;
+  positive_feedback: string | null;
+  negative_feedback: string | null;
+  created_at: string;
+  updated_at: string;
+  review_title: string;
+  author?: { id: number; full_name: string | null; photo: string | null };
+};
+
+export type NewReviewPayload = {
+  task_id: number;
+  review_title: string | null;
+  score_seo: number | null;
+  score_relevance: number | null;
+  score_grammar: number | null;
+  score_delays: number | null;
+  positive_feedback: string | null;
+  negative_feedback: string | null;
+  // created_by is set by trigger
+}; 

@@ -33,6 +33,7 @@ export interface TaskFilters {
   productionType: string[]
   language: string[]
   channels: string[]
+  overdueStatus: string[]
 }
 
 interface FilterOption {
@@ -100,7 +101,8 @@ export function TaskFilters({ isOpen, onClose, onApplyFilters, activeFilters, fi
       contentType: [],
       productionType: [],
       language: [],
-      channels: []
+      channels: [],
+      overdueStatus: []
     }
     setFilters(empty)
     onApplyFilters(empty, empty)
@@ -210,6 +212,19 @@ export function TaskFilters({ isOpen, onClose, onApplyFilters, activeFilters, fi
               value={filters.channels}
               onChange={(value) => setFilters({ ...filters, channels: value })}
               placeholder="Select channels..."
+            />
+          </div>
+
+          {/* Overdue Status */}
+          <div className="space-y-2">
+            <label className="text-sm font-medium">Overdue Status</label>
+            <MultiSelect
+              options={[
+                { id: 'delivery_overdue', label: 'Delivery overdue' },
+                { id: 'publication_overdue', label: 'Publication overdue' }
+              ]}
+              value={filters.overdueStatus}
+              onChange={vals => setFilters(f => ({ ...f, overdueStatus: vals }))}
             />
           </div>
         </div>

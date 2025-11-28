@@ -139,14 +139,7 @@ html, body {
   overflow: hidden;
 } 
 
-/* Hide scrollbars but keep functionality */
-.scrollbar-hide {
-  -ms-overflow-style: none;  /* Internet Explorer 10+ */
-  scrollbar-width: none;  /* Firefox */
-}
-.scrollbar-hide::-webkit-scrollbar {
-  display: none;  /* Safari and Chrome */
-}
+
 
 /* More aggressive scrollbar hiding for Kanban */
 .scrollbar-hide::-webkit-scrollbar,
@@ -164,7 +157,9 @@ html, body {
 }
 .kanban-scrollbar::-webkit-scrollbar-track {
   background: #dbeafe;
-} 
+}
+
+
 
 /* Custom scrollbar for kanban horizontal scrolling */
 .kanban-horizontal-scroll::-webkit-scrollbar {
@@ -184,6 +179,9 @@ html, body {
 .kanban-horizontal-scroll::-webkit-scrollbar-thumb:hover {
   background: #94a3b8;
 }
+
+
+
 
 /* Mobile-specific kanban scrolling */
 @media (max-width: 768px) {

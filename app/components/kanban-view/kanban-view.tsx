@@ -13,20 +13,22 @@ import { useTaskRealtime } from '../../../hooks/use-task-realtime';
 import { useFilterOptions } from '../../hooks/use-filter-options';
 import { useSearchParams, useRouter } from 'next/navigation';
 import { DropdownMenu, DropdownMenuTrigger, DropdownMenuContent, DropdownMenuItem } from '@/components/ui/dropdown-menu';
+import { ChevronDown } from 'lucide-react';
 import { flushSync } from 'react-dom';
 import { useTypesenseInfiniteQuery } from '../../hooks/use-typesense-infinite-query';
 import { getTypesenseUpdater } from '../../store/typesense-tasks';
+import { readKanbanOptions, writeParam } from '../../lib/utils';
 
-// Group-by options for Kanban
+// Group-by options for Kanban (URL-based values)
 const GROUP_BY_OPTIONS = [
-  { value: 'project_status_name', label: 'Status' },
-  { value: 'assigned_to_name', label: 'Assignee' },
-  { value: 'project_name', label: 'Project' },
+  { value: 'status', label: 'Status' },
+  { value: 'assignee', label: 'Assignee' },
+  { value: 'project', label: 'Project' },
   { value: 'delivery_date', label: 'Delivery Date' },
   { value: 'publication_date', label: 'Publication Date' },
-  { value: 'content_type_title', label: 'Content Type' },
-  { value: 'production_type_title', label: 'Production Type' },
-  { value: 'channel_names', label: 'Channel' },
+  { value: 'content_type', label: 'Content Type' },
+  { value: 'production_type', label: 'Production Type' },
+  { value: 'channel', label: 'Channel' },
 ];
 
 // Map groupBy to the actual DB field for updating
@@ -211,7 +213,6 @@ interface KanbanViewProps {
 }
 
 export function KanbanView({ searchValue, filters, selectedTaskId, onTaskSelect, onOptimisticUpdate, expandButton, enabled = true }: KanbanViewProps) {
-  const [groupBy, setGroupBy] = useState<string>('project_status_name');
   const [limit, setLimit] = useState<number>(25);
   const queryClient = useQueryClient();
   const supabase = createClientComponentClient();
@@ -226,6 +227,22 @@ export function KanbanView({ searchValue, filters, selectedTaskId, onTaskSelect,
   const columnsContainerRef = useRef<HTMLDivElement>(null);
   const params = useSearchParams();
   const router = useRouter();
+
+  // Read kanban options from URL
+  const kanbanOptions = readKanbanOptions(new URLSearchParams(params.toString()));
+  
+  // Map URL groupBy to database field
+  const groupBy = kanbanOptions.groupBy === 'assignee' ? 'assigned_to_name' : 
+                  kanbanOptions.groupBy === 'project' ? 'project_name' : 
+                  kanbanOptions.groupBy === 'status' ? 'project_status_name' : 
+                  kanbanOptions.groupBy === 'priority' ? 'project_status_name' : 
+                  kanbanOptions.groupBy === 'content_type' ? 'content_type_title' : 
+                  kanbanOptions.groupBy === 'production_type' ? 'production_type_title' : 
+                  kanbanOptions.groupBy === 'language' ? 'language_code' : 
+                  kanbanOptions.groupBy === 'delivery_date' ? 'delivery_date' : 
+                  kanbanOptions.groupBy === 'publication_date' ? 'publication_date' : 
+                  kanbanOptions.groupBy === 'channel' ? 'channel_names' : 'project_status_name';
+  const showSubtasks = kanbanOptions.showSubtasks;
 
   // Track the currently dragged task id
   const [draggedTaskId, setDraggedTaskId] = useState<string | null>(null);
@@ -298,19 +315,27 @@ export function KanbanView({ searchValue, filters, selectedTaskId, onTaskSelect,
     languages: kanbanData?.languages,
   };
 
-  // Find the dragged task and its project id (must be after groupedTasks is defined)
-  let draggedTask: any = null;
-  let draggedTaskProjectId: string | null = null;
-  if (draggedTaskId) {
-    const allTasks = Object.values(optimisticGroupedTasks || groupedTasks).flat();
-    draggedTask = allTasks.find((t: any) => String(t.id) === String(draggedTaskId));
-    draggedTaskProjectId = draggedTask?.project_id_int ? String(draggedTask.project_id_int) : null;
-  }
-
   // --- Kanban deduplication logic for project_status_name ---
   let columnDefs: { key: string; label: string; statusIds?: string[] }[] = [];
   let statusNameProjectToId: Record<string, Record<string, string>> = {};
   const tasksSource = optimisticGroupedTasks !== null ? optimisticGroupedTasks : groupedTasks;
+  
+  // Filter out subtasks if showSubtasks is false
+  const filteredTasksSource = showSubtasks ? tasksSource : Object.fromEntries(
+    Object.entries(tasksSource).map(([key, tasks]) => [
+      key, 
+      (tasks as any[]).filter(task => !task.parent_task_id_int)
+    ])
+  );
+
+  // Find the dragged task and its project id (must be after filteredTasksSource is defined)
+  let draggedTask: any = null;
+  let draggedTaskProjectId: string | null = null;
+  if (draggedTaskId) {
+    const allTasks = Object.values(optimisticGroupedTasks || filteredTasksSource).flat();
+    draggedTask = allTasks.find((t: any) => String(t.id) === String(draggedTaskId));
+    draggedTaskProjectId = draggedTask?.project_id_int ? String(draggedTask.project_id_int) : null;
+  }
   if (groupBy === 'project_status_name' && meta.statuses) {
     // Build map: statusName -> [statusIds]
     const statusNameToIds: Record<string, string[]> = {};
@@ -331,7 +356,7 @@ export function KanbanView({ searchValue, filters, selectedTaskId, onTaskSelect,
   } else if (groupBy === 'delivery_date' || groupBy === 'publication_date') {
     // Group by month (YYYY-MM)
     const groupMap: Record<string, { label: string; tasks: any[] }> = {};
-    for (const task of Object.values(tasksSource).flat()) {
+    for (const task of Object.values(filteredTasksSource).flat()) {
       const dateValue = task[groupBy];
       if (!dateValue) {
         if (!groupMap['__unassigned__']) groupMap['__unassigned__'] = { label: getUnassignedLabel(groupBy), tasks: [] };
@@ -355,7 +380,7 @@ export function KanbanView({ searchValue, filters, selectedTaskId, onTaskSelect,
       .map(([key, { label }]) => ({ key, label }));
   } else {
     // Default: one column per group key
-    columnDefs = Object.keys(tasksSource).map(key => ({
+    columnDefs = Object.keys(filteredTasksSource).map(key => ({
       key,
       label: getGroupLabel({ groupBy, groupKey: key, meta }),
     }));
@@ -370,7 +395,7 @@ export function KanbanView({ searchValue, filters, selectedTaskId, onTaskSelect,
       groupedTasksForColumns[col.key] = [];
     }
     // Assign tasks to the correct columns
-    for (const task of Object.values(tasksSource).flat()) {
+    for (const task of Object.values(filteredTasksSource).flat()) {
       const statusId = String(task.project_status_id);
       const col = columnDefs.find(col => col.statusIds?.includes(statusId));
       if (col) {
@@ -382,7 +407,7 @@ export function KanbanView({ searchValue, filters, selectedTaskId, onTaskSelect,
     for (const col of columnDefs) {
       groupedTasksForColumns[col.key] = [];
     }
-    for (const task of Object.values(tasksSource).flat()) {
+    for (const task of Object.values(filteredTasksSource).flat()) {
       const dateValue = task[groupBy];
       if (!dateValue) {
         groupedTasksForColumns['__unassigned__'].push(task);
@@ -398,7 +423,7 @@ export function KanbanView({ searchValue, filters, selectedTaskId, onTaskSelect,
       groupedTasksForColumns[groupKey].push(task);
     }
   } else {
-    groupedTasksForColumns = tasksSource;
+    groupedTasksForColumns = filteredTasksSource;
   }
 
   // --- Render columns and cards as before, using deduplicated columns if needed ---
@@ -418,7 +443,7 @@ export function KanbanView({ searchValue, filters, selectedTaskId, onTaskSelect,
     const newGroupKey = over.id;
     if (!validColumnIds.includes(newGroupKey)) return;
     // Find the task being moved
-    const allTasks = Object.values(tasksSource).flat();
+    const allTasks = Object.values(filteredTasksSource).flat();
     const task = allTasks.find((t: any) => t && typeof t === 'object' && String(t.id) === String(taskId));
     if (!task) return;
     let currentValue = task[groupBy];
@@ -577,33 +602,28 @@ export function KanbanView({ searchValue, filters, selectedTaskId, onTaskSelect,
   const pillButton =
     'inline-flex items-center gap-1 px-3 py-1 rounded-full border border-gray-200 text-gray-700 text-sm font-medium hover:bg-gray-50 transition shadow-none focus:ring-2 focus:ring-blue-200 focus:outline-none';
 
+  // View switcher dropdown state
+  const [viewSwitcherOpen, setViewSwitcherOpen] = useState(false);
+
   // No scroll sync needed - we'll use CSS to hide the inner scrollbar
 
   // --- Render ---
   // Let the browser calculate the natural width
 
   return (
-            <div style={{ position: 'relative', height: '100%' }}>
+    <div className="flex flex-col h-full">
       {/* Header Bar with Group By and Calendar/Kanban Toggle */}
-      <div className="flex items-center gap-2 px-4 py-2 border-b bg-white sticky top-0 z-10">
-        <span className="text-sm font-medium text-gray-500">Group by:</span>
-        <div className="relative">
-          <select
-            className="rounded-full border px-3 py-1 text-sm bg-white focus:outline-none focus:ring-2 focus:ring-blue-200"
-            value={groupBy}
-            onChange={e => setGroupBy(e.target.value)}
-          >
-            {GROUP_BY_OPTIONS.map(opt => (
-              <option key={opt.value} value={opt.value}>{opt.label}</option>
-            ))}
-          </select>
-        </div>
-        {/* Calendar/Kanban pill button toggle */}
-        <DropdownMenu>
+      <div className="flex items-center gap-2 px-4 py-2 min-h-[56px] border-b bg-white z-10 flex-shrink-0">
+        {/* View switcher dropdown */}
+        <DropdownMenu open={viewSwitcherOpen} onOpenChange={setViewSwitcherOpen}>
           <DropdownMenuTrigger asChild>
-            <button className={pillButton + ' min-w-[110px]'} type="button">
+            <h2 className="flex items-center gap-1 text-xl font-semibold text-gray-900 cursor-pointer hover:text-gray-700 transition-colors">
               {params.get('middleView') === 'calendar' ? 'Calendar' : 'Kanban'}
-            </button>
+              <ChevronDown 
+                size={16} 
+                className={`transition-transform duration-200 ${viewSwitcherOpen ? 'rotate-180' : ''}`}
+              />
+            </h2>
           </DropdownMenuTrigger>
           <DropdownMenuContent align="start">
             <DropdownMenuItem onClick={() => {
@@ -618,11 +638,38 @@ export function KanbanView({ searchValue, filters, selectedTaskId, onTaskSelect,
             }}>Kanban</DropdownMenuItem>
           </DropdownMenuContent>
         </DropdownMenu>
+        <span className="text-sm font-medium text-gray-500">Group by:</span>
+        <div className="relative">
+          <select
+            className="rounded-full border px-3 py-1 text-sm bg-white focus:outline-none focus:ring-2 focus:ring-blue-200"
+            value={kanbanOptions.groupBy}
+            onChange={e => {
+              const newParams = writeParam(new URLSearchParams(params.toString()), 'kanban_group_by', e.target.value);
+              router.replace(`?${newParams.toString()}`);
+            }}
+          >
+            {GROUP_BY_OPTIONS.map(opt => (
+              <option key={opt.value} value={opt.value}>{opt.label}</option>
+            ))}
+          </select>
+        </div>
+        {/* Subtasks toggle */}
+        <span className="mx-2 text-gray-200 select-none">|</span>
+        <button
+          className={pillButton + (showSubtasks ? ' bg-blue-600 text-white border-blue-600' : '')}
+          onClick={() => {
+            const newParams = writeParam(new URLSearchParams(params.toString()), 'kanban_show_subtasks', !showSubtasks);
+            router.replace(`?${newParams.toString()}`);
+          }}
+          type="button"
+                  >
+            Subtasks
+          </button>
         {/* Expand/restore button slot (right-aligned) */}
         {expandButton}
       </div>
       {/* Kanban Columns - horizontal scroll area below header */}
-      <div>
+      <div className="flex-1 min-h-0">
         <DndContext 
           sensors={sensors} 
           collisionDetection={pointerWithin} 
@@ -631,10 +678,8 @@ export function KanbanView({ searchValue, filters, selectedTaskId, onTaskSelect,
           onDragCancel={() => setDraggedTaskId(null)}
         >
         <div
-          className="overflow-y-hidden overflow-x-auto kanban-horizontal-scroll flex gap-4 px-4 py-4"
+          className="overflow-x-auto flex gap-4 px-4 py-4 h-full"
           style={{
-            minHeight: 0,
-            height: 'calc(100% - 16px)',
             width: 'max-content',
             minWidth: '100%',
           }}
@@ -704,20 +749,20 @@ function KanbanColumn({ col, label, groupedTasks, selectedTaskId, onTaskSelect, 
       ref={setColumnNodeRef}
       className={
         cn(
-          'flex-shrink-0 min-w-[280px] w-[280px] flex flex-col bg-gray-50 rounded-lg shadow-sm border border-gray-200',
+          'flex-shrink-0 min-w-[280px] w-[280px] flex flex-col bg-gray-50 rounded-lg shadow-sm border border-gray-200 h-full',
           isOver && 'ring-2 ring-blue-400 border-blue-400 bg-blue-50',
           !isValidForDraggedTask && 'opacity-50 pointer-events-none'
         )
       }
     >
       <div
-        className="px-4 py-2 border-b bg-white rounded-t-lg font-semibold text-gray-700 text-sm sticky top-0 z-10"
+        className="px-4 py-2 border-b bg-white rounded-t-lg font-semibold text-gray-700 text-sm flex-shrink-0"
         style={{}}
       >
         {label}
       </div>
-      {/* PATCH: Prevent horizontal scroll in Kanban columns */}
-      <div className="flex-1 overflow-y-auto overflow-x-hidden p-2">
+      {/* Scrollable content area */}
+      <div className="flex-1 overflow-y-auto overflow-x-hidden p-2 min-h-0">
         <SortableContext items={tasksForColumn.map((task: any) => String(task.id))} strategy={horizontalListSortingStrategy}>
           {tasksForColumn.map((task: any) => (
             <SortableKanbanCard key={task.id} id={String(task.id)}>

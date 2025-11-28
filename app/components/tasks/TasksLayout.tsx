@@ -1,7 +1,6 @@
 "use client"
 
 import { ReactNode, useState, cloneElement, useEffect, useCallback, useRef } from "react"
-import { Sidebar } from "./Sidebar"
 import { TaskDetails } from "./TaskDetails"
 import { normalizeTask } from "./task-cache-utils"
 import { Menu, X, ChevronLeft, ChevronRight, Calendar, PanelLeft, PanelRight, Maximize2, Minimize2, ChevronDown } from "lucide-react"
@@ -12,6 +11,7 @@ import { CalendarView } from '../../components/calendar-view/calendar-view'
 import { TaskHeaderBar } from '../../components/ui/task-header-bar'
 import { ResizablePanel } from "../ui/resizable-panel"
 import { SlidePanel } from "../ui/slide-panel"
+import { Sidebar } from "../ui/Sidebar"
 import { AddTaskForm } from './AddTaskForm'
 import { useRouter } from 'next/navigation'
 import { useTasksUI, ViewMode } from '../../store/tasks-ui'
@@ -20,6 +20,7 @@ import { TaskList } from './TaskList'
 import { getTaskById } from '../../../lib/services/tasks';
 import { useQueryClient } from '@tanstack/react-query';
 import { GroupingDropdown } from './grouping-dropdown';
+import { MultiselectToggle } from '../ui/multiselect-toggle';
 import { PanelGroup, Panel, PanelResizeHandle, ImperativePanelHandle } from 'react-resizable-panels';
 import { DropdownMenu, DropdownMenuTrigger, DropdownMenuContent, DropdownMenuItem } from '../ui/dropdown-menu';
 import { FilterBadges } from "../../../components/ui/filter-badges";
@@ -84,6 +85,9 @@ import { MobileNavigation, type MobileViewMode } from './mobile-navigation';
 import { MobileTaskDetail } from './mobile-task-detail';
 import { ResizableBottomSheet } from '../ui/resizable-bottom-sheet';
 import { TaskFilters } from './TaskFilters';
+import { KeywordPlannerPane } from '../KeywordPlannerPane';
+import { AiPane } from '../../../features/ai-chat/AiPane';
+import { ProjectSEOSettings } from '../../../features/tasks/components/ProjectSEOSettings';
 
 // No need to import types for URLSearchParams or FilterBadge; use global types
 
@@ -102,7 +106,7 @@ export function getActiveFilterBadges(
   const updateUrl = (newFilters: TaskFiltersType) => {
     const newParams = new URLSearchParams(params.toString());
     [
-      'assignedTo','status','project','contentType','productionType','language','channels',
+      'assignedTo','status','project','contentType','productionType','language','channels','overdueStatus',
       'deliveryDateFrom','deliveryDateTo','publicationDateFrom','publicationDateTo'
     ].forEach((key: string) => newParams.delete(key));
     if (newFilters.assignedTo?.length) newParams.set('assignedTo', newFilters.assignedTo.join(','));
@@ -112,6 +116,7 @@ export function getActiveFilterBadges(
     if (newFilters.productionType?.length) newParams.set('productionType', newFilters.productionType.join(','));
     if (newFilters.language?.length) newParams.set('language', newFilters.language.join(','));
     if (newFilters.channels?.length) newParams.set('channels', newFilters.channels.join(','));
+    if (newFilters.overdueStatus?.length) newParams.set('overdueStatus', newFilters.overdueStatus.join(','));
     if (newFilters.deliveryDate?.from) newParams.set('deliveryDateFrom', newFilters.deliveryDate.from.toISOString().slice(0,10));
     if (newFilters.deliveryDate?.to) newParams.set('deliveryDateTo', newFilters.deliveryDate.to.toISOString().slice(0,10));
     if (newFilters.publicationDate?.from) newParams.set('publicationDateFrom', newFilters.publicationDate.from.toISOString().slice(0,10));
@@ -127,6 +132,7 @@ export function getActiveFilterBadges(
     productionType: 'Production Type',
     language: 'Language',
     channels: 'Channel',
+    overdueStatus: 'Overdue Status',
   };
   const getLabel = (key: string, val: string): string => {
     if (!filterOptions) return val;
@@ -158,6 +164,14 @@ export function getActiveFilterBadges(
       case 'channels': {
         const opt = filterOptions.channels?.find((ch: any) => String(ch.value) === String(val) || String(ch.id) === String(val));
         return opt?.label || val;
+      }
+      case 'overdueStatus': {
+        // Map the filter values to display labels
+        const labelMap: Record<string, string> = {
+          'delivery_overdue': 'Delivery overdue',
+          'publication_overdue': 'Publication overdue'
+        };
+        return labelMap[val] || val;
       }
       default:
         return val;
@@ -234,7 +248,8 @@ export function getActiveFilterBadges(
       contentType: [],
       productionType: [],
       language: [],
-      channels: []
+      channels: [],
+      overdueStatus: []
     };
     updateUrl(emptyFilters);
   };
@@ -281,13 +296,13 @@ function normalizeBasicTask(task: any): any {
 import { useQuery } from '@tanstack/react-query';
 const RICH_FIELDS = [
   'copy_post', 'briefing', 'notes', 'meta_title', 'meta_description', 'keyword',
-  'channel_names', 'attachments', 'subtasks', 'thread_id', 'mentions', 'watchers', 'project_watchers'
+  'channel_names', 'attachments', 'subtasks', 'thread_id', 'mentions', 'watchers', 'project_watchers', 'review_data'
 ];
 
 function useTaskDetails(taskId: string | number | undefined, accessToken: string | null, initialData: any) {
   const RICH_FIELDS = [
     'copy_post', 'briefing', 'notes', 'meta_title', 'meta_description', 'keyword',
-    'channel_names', 'attachments', 'subtasks', 'thread_id', 'mentions', 'watchers', 'project_watchers'
+    'channel_names', 'attachments', 'subtasks', 'thread_id', 'mentions', 'watchers', 'project_watchers', 'review_data'
   ];
   return useQuery({
     queryKey: ['task', taskId, accessToken],
@@ -406,6 +421,17 @@ export function TasksLayout({
   const [localIsAddTaskOpen, localSetIsAddTaskOpen] = useState(false);
   const isAddTaskOpen = typeof _isAddTaskOpen === 'boolean' ? _isAddTaskOpen : localIsAddTaskOpen;
   const setIsAddTaskOpen = _setIsAddTaskOpen || localSetIsAddTaskOpen;
+
+  // Duplicate task state
+  const [isDuplicateTaskOpen, setIsDuplicateTaskOpen] = useState(false);
+  const [duplicateInitialValues, setDuplicateInitialValues] = useState<any>(null);
+
+  // Keyword Planner state
+  const [isKeywordPlannerOpen, setIsKeywordPlannerOpen] = useState(false);
+
+  // Multiselect state
+  const [isMultiselectMode, setIsMultiselectMode] = useState(false);
+  const handleToggleMultiselect = () => setIsMultiselectMode(prev => !prev);
 
   // **FIX: Split layout config to prevent middle view changes from affecting left pane**
   // Core layout state (affects panel sizing and visibility)
@@ -970,6 +996,11 @@ export function TasksLayout({
     // Clean up any old view parameters
     newParams.delete('view');
     
+    // Remove AI-related parameters when AI pane is not active
+    if (newConfig.middleView !== 'ai-build') {
+      newParams.delete('aiThreadId');
+    }
+    
     console.log('[TasksLayout] About to update URL to:', `${pathname}?${newParams.toString()}`);
     router.replace(`${pathname}?${newParams.toString()}`, { scroll: false });
     // Don't update state directly - let the URL effect handle it
@@ -1303,6 +1334,11 @@ export function TasksLayout({
     if (onCloseDetails) onCloseDetails();
   };
 
+  const handleDuplicateTask = useCallback((initialValues: any) => {
+    setDuplicateInitialValues(initialValues);
+    setIsDuplicateTaskOpen(true);
+  }, []);
+
   // Collapsed state for each panel
   const [isLeftCollapsed, setIsLeftCollapsed] = useState(false);
   const [isCenterCollapsed, setIsCenterCollapsed] = useState(false);
@@ -1553,6 +1589,8 @@ export function TasksLayout({
                       onTaskSelect={handleMobileTaskSelect}
                       selectedTaskId={selectedTaskId !== undefined && selectedTaskId !== null ? String(selectedTaskId) : undefined}
                       editFields={memoizedEditFields}
+                      isMultiselectMode={isMultiselectMode}
+                      onToggleMultiselect={handleToggleMultiselect}
                     />
                   </div>
                 )}
@@ -1606,6 +1644,7 @@ export function TasksLayout({
               <AddTaskForm 
                 onSuccess={() => setIsAddTaskOpen(false)} 
                 onClose={() => setIsAddTaskOpen(false)} 
+                isModal={true}
               />
             )}
             {mobileFilterOpen && (
@@ -1632,10 +1671,7 @@ export function TasksLayout({
   // Desktop layout
   return (
     <div className="flex h-full w-full max-w-full overflow-x-hidden bg-white">
-      {/* Sidebar (desktop) */}
-      <div style={{ width: isSidebarCollapsed ? 0 : undefined, transition: 'width 0.2s', overflow: 'hidden' }}>
-        <Sidebar isCollapsed={isSidebarCollapsed} isMobileMenuOpen={isSidebarOpen} onClose={_onSidebarToggle} />
-      </div>
+      {/* Sidebar is now rendered at layout level */}
       {/* Always render all three panels, use CSS for fullscreen/collapse */}
       <PanelGroup 
         ref={panelGroupRef}
@@ -1773,6 +1809,11 @@ export function TasksLayout({
               >
                 Filters
               </button>
+              <MultiselectToggle
+                isMultiselectMode={isMultiselectMode}
+                onToggle={handleToggleMultiselect}
+                className={pillButton + ' ml-2'}
+              />
               {/* Expand/Restore button for left pane */}
               {focus !== 'middle' && (() => {
                 // Check if we're in a "focused left" state - either explicit focus or left+right layout
@@ -1828,12 +1869,33 @@ export function TasksLayout({
                 onTaskSelect={handleTaskSelect}
                 selectedTaskId={selectedTaskId !== undefined && selectedTaskId !== null ? String(selectedTaskId) : undefined}
                 editFields={memoizedEditFields}
+                isMultiselectMode={isMultiselectMode}
+                onToggleMultiselect={handleToggleMultiselect}
               />
             </div>
           </div>
           {isAddTaskOpen && (
-            <SlidePanel isOpen={isAddTaskOpen} onClose={() => setIsAddTaskOpen(false)} position="right" className="w-[400px]">
-              <AddTaskForm onSuccess={() => setIsAddTaskOpen(false)} onClose={() => setIsAddTaskOpen(false)} />
+            <SlidePanel isOpen={isAddTaskOpen} onClose={() => setIsAddTaskOpen(false)} position="right" className="w-[400px]" title="Add Task">
+              <AddTaskForm onSuccess={() => setIsAddTaskOpen(false)} onClose={() => setIsAddTaskOpen(false)} isModal={true} />
+            </SlidePanel>
+          )}
+          {isDuplicateTaskOpen && (
+            <SlidePanel isOpen={isDuplicateTaskOpen} onClose={() => setIsDuplicateTaskOpen(false)} position="right" className="w-[400px]" title="Duplicate Task">
+              <AddTaskForm 
+                onSuccess={(newTask) => {
+                  setIsDuplicateTaskOpen(false);
+                  setDuplicateInitialValues(null);
+                  // Navigate to the new task
+                  if (newTask?.id) {
+                    handleTaskSelect(newTask.id);
+                  }
+                }} 
+                onClose={() => {
+                  setIsDuplicateTaskOpen(false);
+                  setDuplicateInitialValues(null);
+                }} 
+                isModal={true} 
+              />
             </SlidePanel>
           )}
         </Panel>
@@ -1963,6 +2025,35 @@ export function TasksLayout({
               />
             </div>
             
+            {/* AI Build View - Only render when explicitly requested and center is visible */}
+            {middleView === 'ai-build' && isCenterVisible && (
+              <div className="h-full w-full">
+                <AiPane 
+                  isOpen={true} 
+                  onClose={() => {
+                    const newParams = new URLSearchParams(params.toString());
+                    newParams.delete('middleView');
+                    newParams.delete('aiThreadId');
+                    newParams.delete('chatMode');
+                    newParams.delete('chatPreFill');
+                    newParams.delete('chatComponentId');
+                    router.replace(`?${newParams.toString()}`);
+                  }} 
+                  initialScope="task" 
+                  taskId={selectedTaskId ? Number(selectedTaskId) : undefined}
+                  inline={true}
+                />
+              </div>
+            )}
+
+            {/* Project SEO Settings View */}
+            {middleView === 'project-seo' && (
+              <div className="h-full w-full overflow-y-auto">
+                <ProjectSEOSettings 
+                  projectId={Number(params.get('projectId') || '0')}
+                />
+              </div>
+            )}
 
       </div>
         </Panel>
@@ -2000,14 +2091,69 @@ export function TasksLayout({
             width: isRightPaneVisible ? undefined : '0px'
           }}
         >
-          <TaskDetails
-            isCollapsed={isDetailsCollapsed}
-            selectedTask={selectedTaskData}
-            onClose={handleCloseDetails}
-            onCollapse={handleCloseDetails}
-            isExpanded={focus === 'right'}
-            onExpand={() => handleLayoutChange({ focus: 'right' })}
-            onRestore={() => {
+          {/* AI Build View - Render inside right panel when focus=right and middleView=ai-build */}
+          {focus === 'right' && middleView === 'ai-build' ? (
+            <div className="h-full flex">
+              <div className="flex-1 overflow-auto border-r">
+                <TaskDetails
+                  isCollapsed={isDetailsCollapsed}
+                  selectedTask={selectedTaskData}
+                  onClose={handleCloseDetails}
+                  onCollapse={handleCloseDetails}
+                  isExpanded={focus === 'right'}
+                  onExpand={() => handleLayoutChange({ focus: 'right' })}
+                  onRestore={() => {
+                    // Restore to previous layout based on whether a task is selected
+                    const hasSelectedTask = !!selectedTaskId;
+                    handleLayoutChange({ 
+                      layout: hasSelectedTask ? ['left', 'middle', 'right'] : ['left', 'middle'],
+                      leftView: 'list',
+                      middleView: middleView,
+                      rightView: 'details',
+                      focus: null 
+                    });
+                  }}
+                  onTaskUpdate={onTaskUpdate}
+                  onAddSubtask={onAddSubtask}
+                  onDuplicateTask={handleDuplicateTask}
+                  attachments={selectedTaskData?.attachments || []}
+                  threadId={selectedTaskData?.thread_id || null}
+                  mentions={selectedTaskData?.mentions || []}
+                  watchers={selectedTaskData?.watchers || []}
+                  currentUser={null}
+                  subtasks={selectedTaskData?.subtasks || []}
+                  project_watchers={selectedTaskData?.project_watchers || []}
+                  accessToken={accessToken}
+                  onOptimisticUpdate={onTaskUpdate}
+                />
+              </div>
+              <div className="flex-1 overflow-auto">
+                <AiPane 
+                  isOpen={true} 
+                  onClose={() => {
+                    const newParams = new URLSearchParams(params.toString());
+                    newParams.delete('middleView');
+                    newParams.delete('aiThreadId');
+                    newParams.delete('chatMode');
+                    newParams.delete('chatPreFill');
+                    newParams.delete('chatComponentId');
+                    router.replace(`?${newParams.toString()}`);
+                  }} 
+                  initialScope="task" 
+                  taskId={selectedTaskId ? Number(selectedTaskId) : undefined}
+                  inline={true}
+                />
+              </div>
+            </div>
+          ) : (
+            <TaskDetails
+              isCollapsed={isDetailsCollapsed}
+              selectedTask={selectedTaskData}
+              onClose={handleCloseDetails}
+              onCollapse={handleCloseDetails}
+              isExpanded={focus === 'right'}
+              onExpand={() => handleLayoutChange({ focus: 'right' })}
+              onRestore={() => {
               // Restore to previous layout based on whether a task is selected
               const hasSelectedTask = !!selectedTaskId;
               handleLayoutChange({ 
@@ -2037,6 +2183,7 @@ export function TasksLayout({
               if (onTaskUpdate) onTaskUpdate(sanitized);
             }}
             onAddSubtask={onAddSubtask}
+            onDuplicateTask={handleDuplicateTask}
             attachments={attachments}
             threadId={threadId}
             mentions={mentions}
@@ -2046,13 +2193,14 @@ export function TasksLayout({
             project_watchers={project_watchers}
             accessToken={accessToken}
           />
+          )}
         </Panel>
       </PanelGroup>
       
       {/* Desktop Add Task Modal */}
       {isAddTaskOpen && (
-        <SlidePanel isOpen={isAddTaskOpen} onClose={() => setIsAddTaskOpen(false)} position="right" className="w-[400px]">
-          <AddTaskForm onSuccess={() => setIsAddTaskOpen(false)} onClose={() => setIsAddTaskOpen(false)} />
+        <SlidePanel isOpen={isAddTaskOpen} onClose={() => setIsAddTaskOpen(false)} position="right" className="w-[400px]" title="Add Task">
+                          <AddTaskForm onSuccess={() => setIsAddTaskOpen(false)} onClose={() => setIsAddTaskOpen(false)} isModal={true} />
         </SlidePanel>
       )}
     </div>

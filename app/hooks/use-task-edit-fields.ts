@@ -2,7 +2,15 @@ import { useQuery } from '@tanstack/react-query';
 
 // Updated type for the new task-edit-fields response
 export type TaskEditFields = {
-  project_statuses: { id: number; name: string; color: string; order_priority: number; project_id: number }[];
+  project_statuses: { 
+    id: number; 
+    name: string; 
+    color: string; 
+    order_priority: number; 
+    project_id: number;
+    is_closed: boolean;
+    is_publication_closed: boolean;
+  }[];
   content_types: { id: number; title: string }[];
   production_types: { id: number; title: string }[];
   languages: { id: number; code: string; long_name: string }[];

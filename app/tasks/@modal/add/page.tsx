@@ -63,7 +63,9 @@ export default function AddTaskModal() {
         maxHeight={0.95}
         title="Add Task"
       >
-        <AddTaskForm onSuccess={() => router.back()} onClose={() => router.back()} />
+        <div className="h-full overflow-y-auto">
+          <AddTaskForm onSuccess={() => router.back()} onClose={() => router.back()} isModal={true} />
+        </div>
       </ResizableBottomSheet>,
       document.body
     );
@@ -74,7 +76,7 @@ export default function AddTaskModal() {
     <div className="fixed inset-0 z-50 bg-black/40 overflow-y-auto">
       <div
         ref={modalRef}
-        className="fixed top-0 bottom-0 right-0 bg-white shadow-xl flex flex-col overflow-y-auto"
+        className="fixed top-0 bottom-0 right-0 bg-white shadow-xl flex flex-col"
         style={{ width, boxSizing: 'border-box', minWidth: 700, maxWidth }}
       >
         {/* Left-edge resize area (desktop only) */}
@@ -83,8 +85,23 @@ export default function AddTaskModal() {
           style={{ userSelect: 'none' }}
           onMouseDown={onMouseDown}
         />
-        <div className="flex-1 overflow-y-auto px-0 pt-0 pb-0 w-full min-w-0 min-h-0">
-          <AddTaskForm onSuccess={() => router.back()} onClose={() => router.back()} />
+        
+        {/* Header */}
+        <div className="sticky top-0 z-10 bg-white py-4 px-6 flex items-center justify-between border-b">
+          <h2 className="text-lg font-semibold">Add Task</h2>
+          <button
+            className="text-gray-500 hover:text-black text-2xl font-bold"
+            onClick={() => router.back()}
+            aria-label="Close"
+            type="button"
+          >
+            ×
+          </button>
+        </div>
+        
+        {/* Content with scroll */}
+        <div className="flex-1 overflow-y-auto">
+          <AddTaskForm onSuccess={() => router.back()} onClose={() => router.back()} isModal={true} />
         </div>
       </div>
     </div>,

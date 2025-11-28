@@ -14,6 +14,8 @@ interface TypesenseTasksState {
   isFetching: boolean;
   setTasks: (tasks: SetTasksArg) => void;
   updateTask: (updatedTask: TypesenseTask) => void;
+  addTask: (newTask: TypesenseTask) => void;
+  removeTask: (taskId: string | number) => void;
   resetTasks: () => void;
   setPage: (page: number) => void;
   setHasMore: (hasMore: boolean) => void;
@@ -37,6 +39,28 @@ export const useTypesenseTasksStore = create<TypesenseTasksState>((set, get) => 
     console.log('[Zustand] updateTask called. Updated task:', updatedTask, 'New tasks:', newTasks);
     return { tasks: newTasks };
   }),
+  addTask: (newTask) => set((state) => {
+    // Check if task already exists
+    const existingIndex = state.tasks.findIndex((task) => String(task.id) === String(newTask.id));
+    if (existingIndex !== -1) {
+      // Update existing task
+      const newTasks = [...state.tasks];
+      newTasks[existingIndex] = { ...newTasks[existingIndex], ...newTask };
+      console.log('[Zustand] addTask called. Updated existing task:', newTask);
+      return { tasks: newTasks };
+    } else {
+      // For new tasks, we'll add them at the beginning for now
+      // The proper sorting will be handled by the Typesense query when it refetches
+      const newTasks = [newTask, ...state.tasks];
+      console.log('[Zustand] addTask called. Added new task:', newTask);
+      return { tasks: newTasks };
+    }
+  }),
+  removeTask: (taskId) => set((state) => {
+    const newTasks = state.tasks.filter((task) => String(task.id) !== String(taskId));
+    console.log('[Zustand] removeTask called. Removed task:', taskId, 'New tasks count:', newTasks.length);
+    return { tasks: newTasks };
+  }),
   resetTasks: () => set({ tasks: [], page: 1, hasMore: true, isFetching: false }),
   setPage: (page) => set({ page }),
   setHasMore: (hasMore) => set({ hasMore }),
@@ -46,4 +70,6 @@ export const useTypesenseTasksStore = create<TypesenseTasksState>((set, get) => 
 }));
 
 export const setTypesenseUpdater = (fn: (task: any) => void) => useTypesenseTasksStore.getState().setUpdater(fn);
-export const getTypesenseUpdater = () => useTypesenseTasksStore.getState().updater; 
+export const getTypesenseUpdater = () => useTypesenseTasksStore.getState().updater;
+export const addTaskToTypesenseStore = (task: any) => useTypesenseTasksStore.getState().addTask(task);
+export const removeTaskFromTypesenseStore = (taskId: string | number) => useTypesenseTasksStore.getState().removeTask(taskId); 

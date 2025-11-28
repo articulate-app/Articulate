@@ -34,6 +34,34 @@ const COLUMNS_STRING = `
   project_status_id
 `.replace(/\s+/g, ' ').trim()
 
+// Helper function to format date based on current year
+function formatDateWithYear(dateString: string | null | undefined): string {
+  if (!dateString) return "—";
+  try {
+    const date = new Date(dateString);
+    const now = new Date();
+    const currentYear = now.getFullYear();
+    const dateYear = date.getFullYear();
+    
+    if (dateYear === currentYear) {
+      // Current year: dd/mmm format (e.g., "18/jul", "9/jul")
+      const day = date.getDate().toString().padStart(2, '0');
+      const month = date.toLocaleDateString('en-US', { month: 'short' }).toLowerCase();
+      return `${day}/${month}`;
+    } else {
+      // Previous years: dd/mm/yyyy format
+      return date.toLocaleDateString('en-US', {
+        day: '2-digit',
+        month: '2-digit',
+        year: 'numeric'
+      });
+    }
+  } catch (error) {
+    console.error('Error formatting date:', error);
+    return "Invalid date";
+  }
+}
+
 // Separate component for the group content to maintain clean table structure
 function GroupContent({ 
   group, 
@@ -119,13 +147,13 @@ function GroupContent({
               data.map(row => (
                 <tr key={row.id} className="hover:bg-gray-50 cursor-pointer" onClick={() => onTaskSelect?.(row)}>
                   <td className="px-3 py-2 text-sm border-b border-gray-100 truncate align-middle">{row.title}</td>
-                  <td className="px-3 py-2 text-sm border-b border-gray-100 truncate align-middle">{row.assigned_to_name || '—'}</td>
+                  <td className="px-3 py-2 text-sm border-b border-gray-100 truncate align-middle">{row.assigned_to_name || ''}</td>
                   <td className="px-3 py-2 text-sm border-b border-gray-100 truncate align-middle">
                     <span className="flex items-center gap-2">
                       {row.project_color && (
                         <span className="inline-block w-2 h-2 rounded-full" style={{ backgroundColor: row.project_color }} />
                       )}
-                      {row.project_name || '—'}
+                      {row.project_name || ''}
                     </span>
                   </td>
                   <td className="px-3 py-2 text-sm border-b border-gray-100 truncate align-middle">
@@ -133,20 +161,28 @@ function GroupContent({
                       {row.project_status_color && (
                         <span className="inline-block w-2 h-2 rounded-full" style={{ backgroundColor: row.project_status_color }} />
                       )}
-                      {row.project_status_name || '—'}
+                      {row.project_status_name || ''}
                     </span>
                   </td>
-                  <td className="px-3 py-2 text-sm border-b border-gray-100 truncate align-middle">{row.content_type_title || '—'}</td>
-                  <td className="px-3 py-2 text-sm border-b border-gray-100 truncate align-middle">{row.production_type_title || '—'}</td>
-                  <td className="px-3 py-2 text-sm border-b border-gray-100 truncate align-middle">{row.language_code || '—'}</td>
+                  <td className="px-3 py-2 text-sm border-b border-gray-100 truncate align-middle">{row.content_type_title || ''}</td>
+                  <td className="px-3 py-2 text-sm border-b border-gray-100 truncate align-middle">{row.production_type_title || ''}</td>
+                  <td className="px-3 py-2 text-sm border-b border-gray-100 truncate align-middle">{row.language_code || ''}</td>
                   <td className="px-3 py-2 text-sm border-b border-gray-100 truncate align-middle">
-                    {row.delivery_date ? new Date(row.delivery_date).toLocaleDateString() : '—'}
+                    <span className={cn(
+                      row.is_overdue && "text-red-600 font-medium"
+                    )}>
+                      {row.delivery_date ? formatDateWithYear(row.delivery_date) : ''}
+                    </span>
                   </td>
                   <td className="px-3 py-2 text-sm border-b border-gray-100 truncate align-middle">
-                    {row.publication_date ? new Date(row.publication_date).toLocaleDateString() : '—'}
+                    <span className={cn(
+                      row.is_publication_overdue && "text-red-600 font-medium"
+                    )}>
+                      {row.publication_date ? formatDateWithYear(row.publication_date) : ''}
+                    </span>
                   </td>
                   <td className="px-3 py-2 text-sm border-b border-gray-100 truncate align-middle">
-                    {row.updated_at ? new Date(row.updated_at).toLocaleDateString() : '—'}
+                    {row.updated_at ? new Date(row.updated_at).toLocaleDateString() : ''}
                   </td>
                 </tr>
               ))

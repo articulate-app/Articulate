@@ -23,6 +23,7 @@ interface RealtimeChatProps {
   onDelete?: (id: string) => void | Promise<void>
   hideInput?: boolean
   currentPublicUserId?: number | null
+  focusedMentionId?: number | null
 }
 
 /**
@@ -43,6 +44,7 @@ export const RealtimeChat = ({
   onDelete,
   hideInput = false,
   currentPublicUserId,
+  focusedMentionId,
 }: RealtimeChatProps) => {
   const { containerRef, scrollToBottom } = useChatScroll()
 
@@ -51,7 +53,6 @@ export const RealtimeChat = ({
   const [editValue, setEditValue] = useState('')
   const [isProcessing, setIsProcessing] = useState(false)
   const isConnected = !!onSend
-  const [search, setSearch] = useState('');
 
   // Use only the messages prop
   const allMessages = useMemo(() => {
@@ -60,18 +61,6 @@ export const RealtimeChat = ({
     )
     return uniqueMessages.sort((a, b) => a.createdAt.localeCompare(b.createdAt))
   }, [initialMessages])
-
-  // Filtered messages for search
-  const filteredMessages = useMemo(() => {
-    if (!search.trim()) return allMessages;
-    const s = search.trim().toLowerCase();
-    return allMessages.filter(m => {
-      const content = (m.content || '').toLowerCase();
-      const user = m.user || {};
-      const name = (user.displayName || user.email || user.userId || '').toLowerCase();
-      return content.includes(s) || name.includes(s);
-    });
-  }, [allMessages, search]);
 
   useEffect(() => {
     if (onMessage) {
@@ -98,33 +87,28 @@ export const RealtimeChat = ({
 
   return (
     <div className="flex flex-col h-full w-full bg-background text-foreground antialiased">
-      {/* Search bar for mentions/messages */}
-      <div className="p-4 pb-0">
-        <Input
-          type="text"
-          value={search}
-          onChange={e => setSearch(e.target.value)}
-          placeholder="Search mentions..."
-          className="w-full mb-2"
-        />
-      </div>
       {/* Messages */}
       <div ref={containerRef} className="flex-1 overflow-y-auto p-4 space-y-4">
-        {filteredMessages.length === 0 ? (
+        {allMessages.length === 0 ? (
           <div className="text-center text-sm text-muted-foreground">
             No messages found.
           </div>
         ) : null}
         <div className="space-y-1">
-          {filteredMessages.map((message, index) => {
-            const prevMessage = index > 0 ? filteredMessages[index - 1] : null
+          {allMessages.map((message, index) => {
+            const prevMessage = index > 0 ? allMessages[index - 1] : null
             const showHeader = !prevMessage || prevMessage.user.userId !== message.user.userId
             // Use created_by for 'my' message detection
             const isOwnMessage = currentPublicUserId != null && message.created_by === currentPublicUserId;
 
+            // Check if this message should be highlighted (focusedMentionId matches message.id)
+            const isFocused = focusedMentionId !== null && focusedMentionId !== undefined && 
+              (message.id === focusedMentionId.toString() || Number(message.id) === focusedMentionId)
+
             return (
               <div
                 key={message.id}
+                data-mention-id={message.id}
                 className="animate-in fade-in slide-in-from-bottom-4 duration-300"
               >
                 <ChatMessageItem

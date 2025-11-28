@@ -16,7 +16,7 @@ import {
 } from "@tanstack/react-table"
 import { useVirtualizer, VirtualItem } from "@tanstack/react-virtual"
 import { cn } from "@/lib/utils"
-import { ChevronDown, ChevronRight } from "lucide-react"
+import { ChevronDown, ChevronRight, Trash2 } from "lucide-react"
 import dynamic from "next/dynamic"
 import { Button } from "../ui/button"
 import { getFilterOptions } from "../../lib/services/filters"
@@ -38,6 +38,8 @@ import { fetchTasksFromTypesense } from '../../lib/fetchTasksFromTypesense';
 import { useTypesenseInfiniteQuery } from '../../hooks/use-typesense-infinite-query';
 import { setTypesenseUpdater } from '../../store/typesense-tasks';
 import { useMobileDetection } from '../../hooks/use-mobile-detection';
+import { updateTaskInCachesWithOverdue } from './task-cache-utils';
+import { BulkActionBar, type BulkAction } from '../ui/bulk-action-bar';
 
 interface TaskListProps {
   onTaskSelect?: (task: any) => void
@@ -46,6 +48,36 @@ interface TaskListProps {
   expandMainTaskId?: number | string | null
   selectedTaskId?: string | number | null
   editFields?: any // Task edit fields data from useTaskEditFields hook
+  isMultiselectMode?: boolean
+  onToggleMultiselect?: () => void
+}
+
+// Helper function to format date based on current year
+function formatDateWithYear(dateString: string | null | undefined): string {
+  if (!dateString) return "—";
+  try {
+    const date = new Date(dateString);
+    const now = new Date();
+    const currentYear = now.getFullYear();
+    const dateYear = date.getFullYear();
+    
+    if (dateYear === currentYear) {
+      // Current year: dd/mmm format (e.g., "18/jul", "9/jul")
+      const day = date.getDate().toString().padStart(2, '0');
+      const month = date.toLocaleDateString('en-US', { month: 'short' }).toLowerCase();
+      return `${day}/${month}`;
+    } else {
+      // Previous years: dd/mm/yyyy format
+      return date.toLocaleDateString('en-US', {
+        day: '2-digit',
+        month: '2-digit',
+        year: 'numeric'
+      });
+    }
+  } catch (error) {
+    console.error('Error formatting date:', error);
+    return "Invalid date";
+  }
 }
 
 // Helper function to format date
@@ -99,14 +131,49 @@ interface DenormalizedTask {
   // Add any other fields you need from the tasks table
 }
 
+// Helper to calculate overdue status based on dates and project status
+function calculateOverdueStatus(
+  deliveryDate: string | null,
+  publicationDate: string | null,
+  projectStatusId: string | null,
+  projectStatuses: any[]
+): { isOverdue: boolean; isPublicationOverdue: boolean } {
+  const now = new Date();
+  now.setHours(0, 0, 0, 0); // Compare only dates, not time
+
+  // Find the current project status
+  const currentStatus = projectStatuses.find(s => String(s.id) === String(projectStatusId));
+  
+  // Calculate delivery overdue
+  let isOverdue = false;
+  if (deliveryDate && !currentStatus?.is_closed) {
+    const deliveryDateObj = new Date(deliveryDate);
+    deliveryDateObj.setHours(0, 0, 0, 0);
+    isOverdue = deliveryDateObj < now;
+  }
+
+  // Calculate publication overdue
+  let isPublicationOverdue = false;
+  if (publicationDate && !currentStatus?.is_publication_closed) {
+    const publicationDateObj = new Date(publicationDate);
+    publicationDateObj.setHours(0, 0, 0, 0);
+    isPublicationOverdue = publicationDateObj < now;
+  }
+
+  return { isOverdue, isPublicationOverdue };
+}
+
 // Mobile Task Card Component
-function MobileTaskCard({ task, isSelected, isMainTask, isExpanded, onTaskSelect, onToggleExpand }: {
+function MobileTaskCard({ task, isSelected, isMainTask, isExpanded, onTaskSelect, onToggleExpand, isMultiselectMode, isTaskSelected, onTaskToggle }: {
   task: any;
   isSelected: boolean;
   isMainTask: boolean;
   isExpanded: boolean;
   onTaskSelect: (task: any) => void;
   onToggleExpand?: (taskId: number) => void;
+  isMultiselectMode?: boolean;
+  isTaskSelected?: boolean;
+  onTaskToggle?: (taskId: number) => void;
 }) {
   const getInitials = (name: string) => {
     return name.split(' ').map(n => n[0]).join('').toUpperCase().slice(0, 2);
@@ -116,13 +183,34 @@ function MobileTaskCard({ task, isSelected, isMainTask, isExpanded, onTaskSelect
     <div 
       className={cn(
         'p-3 border-b border-gray-100 cursor-pointer transition-colors',
-        isSelected ? 'bg-blue-50 border-l-4 border-l-blue-500' : 'hover:bg-gray-50',
+        isMultiselectMode 
+          ? isTaskSelected ? 'bg-blue-50 border-l-4 border-l-blue-500' : 'hover:bg-gray-50'
+          : isSelected ? 'bg-blue-50 border-l-4 border-l-blue-500' : 'hover:bg-gray-50',
         isMainTask && 'font-semibold'
       )}
-      onClick={() => onTaskSelect(task)}
+      onClick={() => {
+        if (isMultiselectMode && onTaskToggle) {
+          onTaskToggle(task.id);
+        } else {
+          onTaskSelect(task);
+        }
+      }}
     >
       <div className="flex items-center justify-between">
         <div className="flex items-center gap-3 flex-1 min-w-0">
+          {/* Checkbox for multiselect mode */}
+          {isMultiselectMode && (
+            <input
+              type="checkbox"
+              checked={isTaskSelected || false}
+              onChange={(e) => {
+                e.stopPropagation();
+                onTaskToggle?.(task.id);
+              }}
+              className="rounded border-gray-300 text-blue-600 focus:ring-blue-500 flex-shrink-0"
+            />
+          )}
+          
           {/* Status color ball */}
           <div 
             className="w-3 h-3 rounded-full flex-shrink-0"
@@ -168,8 +256,11 @@ function MobileTaskCard({ task, isSelected, isMainTask, isExpanded, onTaskSelect
         
         {/* Delivery date */}
         <div className="flex-shrink-0 ml-3">
-          <span className="text-xs text-gray-500">
-            {task.delivery_date ? new Date(task.delivery_date).toLocaleDateString() : '—'}
+          <span className={cn(
+            "text-xs",
+            task.is_overdue ? "text-red-600 font-medium" : "text-gray-500"
+          )}>
+            {formatDateWithYear(task.delivery_date)}
           </span>
         </div>
       </div>
@@ -194,12 +285,15 @@ async function fetchSubtasksForParent(parentId: number) {
 }
 
 // SubtaskRows component for rendering subtasks for a main task
-function SubtaskRows({ parentId, taskColumns, onTaskSelect, selectedTaskId, isMobile }: { 
+function SubtaskRows({ parentId, taskColumns, onTaskSelect, selectedTaskId, isMobile, isMultiselectMode, selectedTasks, onTaskToggle }: { 
   parentId: number, 
   taskColumns: any[], 
   onTaskSelect: (task: any) => void, 
   selectedTaskId?: string | number | null,
-  isMobile?: boolean 
+  isMobile?: boolean,
+  isMultiselectMode?: boolean,
+  selectedTasks?: Set<number>,
+  onTaskToggle?: (taskId: number) => void
 }) {
   const { data, isFetching } = useQuery({
     queryKey: ['subtasks', parentId],
@@ -237,6 +331,9 @@ function SubtaskRows({ parentId, taskColumns, onTaskSelect, selectedTaskId, isMo
               isMainTask={false}
               isExpanded={false}
               onTaskSelect={onTaskSelect}
+              isMultiselectMode={isMultiselectMode}
+              isTaskSelected={selectedTasks?.has(subtask.id) || false}
+              onTaskToggle={onTaskToggle}
             />
           </div>
         ))}
@@ -251,9 +348,17 @@ function SubtaskRows({ parentId, taskColumns, onTaskSelect, selectedTaskId, isMo
           key={subtask.id}
           className={cn(
             'hover:bg-gray-50 cursor-pointer',
-            selectedTaskId && String(subtask.id) === String(selectedTaskId) && 'bg-gray-100',
+            isMultiselectMode 
+              ? selectedTasks?.has(subtask.id) && 'bg-blue-50 border-l-4 border-l-blue-500'
+              : selectedTaskId && String(subtask.id) === String(selectedTaskId) && 'bg-gray-100',
           )}
-          onClick={() => onTaskSelect(subtask)}
+          onClick={(e) => {
+            if (isMultiselectMode && onTaskToggle) {
+              onTaskToggle(subtask.id);
+            } else {
+              onTaskSelect(subtask);
+            }
+          }}
         >
           {taskColumns.map((col, idx) => (
             <td
@@ -275,7 +380,7 @@ function SubtaskRows({ parentId, taskColumns, onTaskSelect, selectedTaskId, isMo
   )
 }
 
-export function TaskList({ onTaskSelect, expandMainTaskId, selectedTaskId, editFields }: TaskListProps) {
+export function TaskList({ onTaskSelect, expandMainTaskId, selectedTaskId, editFields, isMultiselectMode: externalIsMultiselectMode, onToggleMultiselect }: TaskListProps) {
   console.log('[TaskList] RENDER');
   const params = useSearchParams()
   const router = useRouter()
@@ -296,7 +401,13 @@ export function TaskList({ onTaskSelect, expandMainTaskId, selectedTaskId, editF
     onTaskUpdate: (task, event) => {
       console.log(`[TaskList] Received ${event} event for task:`, task.id)
       // Patch all task caches with the updated task
-      updateTaskInCaches(queryClient, task);
+      if (editFields?.project_statuses) {
+        // Use the new function with overdue calculation if project statuses are available
+        updateTaskInCachesWithOverdue(queryClient, task, editFields.project_statuses);
+      } else {
+        // Fallback to the original function if project statuses are not available
+        updateTaskInCaches(queryClient, task);
+      }
       // Invalidate all queries that start with 'tasks' (fixes InfiniteList live updates)
       queryClient.invalidateQueries({
         predicate: (query) =>
@@ -335,6 +446,11 @@ export function TaskList({ onTaskSelect, expandMainTaskId, selectedTaskId, editF
   const [columnSizing, setColumnSizing] = useState<ColumnSizingState>(defaultColumnWidths)
   const [isUserResized, setIsUserResized] = useState(false)
   const [hasMeasured, setHasMeasured] = useState(false)
+
+  // --- Multiselect State ---
+  const [internalIsMultiselectMode, setInternalIsMultiselectMode] = useState(false)
+  const isMultiselectMode = externalIsMultiselectMode ?? internalIsMultiselectMode
+  const [selectedTasks, setSelectedTasks] = useState<Set<number>>(new Set())
 
   // Ref for measuring container width
   const containerRef = useRef<HTMLDivElement>(null)
@@ -417,6 +533,84 @@ export function TaskList({ onTaskSelect, expandMainTaskId, selectedTaskId, editF
     })
   }
 
+  // --- Multiselect Handlers ---
+  const handleToggleMultiselectMode = () => {
+    if (onToggleMultiselect) {
+      onToggleMultiselect()
+    } else {
+      setInternalIsMultiselectMode(prev => !prev)
+    }
+    if (isMultiselectMode) {
+      setSelectedTasks(new Set()) // Clear selection when exiting multiselect mode
+    }
+  }
+
+  const handleTaskToggle = (taskId: number) => {
+    setSelectedTasks(prev => {
+      const next = new Set(prev)
+      if (next.has(taskId)) {
+        next.delete(taskId)
+      } else {
+        next.add(taskId)
+      }
+      return next
+    })
+  }
+
+  const handleClearSelection = () => {
+    setSelectedTasks(new Set())
+  }
+
+  const handleBulkDelete = async () => {
+    if (selectedTasks.size === 0) return
+
+    const confirmed = window.confirm(`Are you sure you want to delete ${selectedTasks.size} task${selectedTasks.size !== 1 ? 's' : ''}?`)
+    if (!confirmed) return
+
+    try {
+      const supabase = createClientComponentClient()
+      const { error } = await supabase
+        .from('tasks')
+        .delete()
+        .in('id', Array.from(selectedTasks))
+
+      if (error) throw error
+
+      // Remove tasks from all caches
+      selectedTasks.forEach(taskId => {
+        removeTaskFromAllStores(taskId)
+      })
+
+      // Clear selection
+      setSelectedTasks(new Set())
+      
+      // Invalidate queries
+      queryClient.invalidateQueries({ queryKey: ['tasks'] })
+      queryClient.invalidateQueries({ queryKey: ['subtasks'] })
+
+      toast({
+        title: 'Tasks deleted',
+        description: `Successfully deleted ${selectedTasks.size} task${selectedTasks.size !== 1 ? 's' : ''}.`,
+      })
+    } catch (err: any) {
+      toast({
+        title: 'Failed to delete tasks',
+        description: err?.message || 'An error occurred while deleting the tasks.',
+        variant: 'destructive',
+      })
+    }
+  }
+
+  // --- Bulk Actions Configuration ---
+  const bulkActions: BulkAction[] = [
+    {
+      label: 'Delete',
+      icon: Trash2,
+      onClick: handleBulkDelete,
+      variant: 'destructive',
+    }
+  ]
+
   // --- Minimalist Arrow SVG ---
   const Arrow = ({ direction }: { direction: 'asc' | 'desc' }) => (
     <svg width="12" height="12" viewBox="0 0 12 12" aria-hidden="true" className="inline ml-1 align-middle">
@@ -429,6 +623,46 @@ export function TaskList({ onTaskSelect, expandMainTaskId, selectedTaskId, editF
   )
 
   const taskColumns: ColumnDef<any>[] = [
+    // Add checkbox column when in multiselect mode
+    ...(isMultiselectMode ? [{
+      id: 'select',
+      header: () => (
+        <input
+          type="checkbox"
+          className="rounded border-gray-300 text-blue-600 focus:ring-blue-500"
+          onChange={(e) => {
+            if (e.target.checked) {
+              // Select all visible tasks
+              const allTaskIds = typesenseTasks.map(task => Number(task.id))
+              setSelectedTasks(new Set(allTaskIds))
+            } else {
+              setSelectedTasks(new Set())
+            }
+          }}
+          checked={selectedTasks.size > 0 && selectedTasks.size === typesenseTasks.length}
+          ref={(el) => {
+            if (el) {
+              el.indeterminate = selectedTasks.size > 0 && selectedTasks.size < typesenseTasks.length
+            }
+          }}
+        />
+      ),
+      cell: (info: any) => (
+        <input
+          type="checkbox"
+          checked={selectedTasks.has(info.row.original.id)}
+          onChange={(e) => {
+            e.stopPropagation()
+            handleTaskToggle(info.row.original.id)
+          }}
+          className="rounded border-gray-300 text-blue-600 focus:ring-blue-500"
+        />
+      ),
+      size: 50,
+      minSize: 50,
+      maxSize: 50,
+      enableResizing: false,
+    }] : []),
     {
       accessorKey: 'title',
       header: () => (
@@ -475,7 +709,7 @@ export function TaskList({ onTaskSelect, expandMainTaskId, selectedTaskId, editF
           {sortBy === 'assigned_user' && <Arrow direction={sortOrder} />}
         </button>
       ),
-      cell: info => <span className="truncate block max-w-full whitespace-nowrap overflow-hidden text-ellipsis">{info.row.original.assigned_user?.full_name || '—'}</span>,
+      cell: info => <span className="truncate block max-w-full whitespace-nowrap overflow-hidden text-ellipsis">{info.row.original.assigned_user?.full_name || ''}</span>,
       size: columnSizing.users,
       minSize: 80,
       maxSize: 1000,
@@ -494,7 +728,7 @@ export function TaskList({ onTaskSelect, expandMainTaskId, selectedTaskId, editF
           {info.row.original.projects?.color && (
             <span className="inline-block w-2 h-2 rounded-full" style={{ backgroundColor: info.row.original.projects.color }} />
           )}
-          <span className="truncate max-w-[120px] whitespace-nowrap overflow-hidden text-ellipsis">{info.row.original.projects?.name || '—'}</span>
+          <span className="truncate max-w-[120px] whitespace-nowrap overflow-hidden text-ellipsis">{info.row.original.projects?.name || ''}</span>
         </span>
       ),
       size: columnSizing.projects,
@@ -512,7 +746,7 @@ export function TaskList({ onTaskSelect, expandMainTaskId, selectedTaskId, editF
       ),
       cell: info => {
         const status = info.row.original.project_statuses;
-        const name = status?.name || '—';
+        const name = status?.name || '';
         const color = status?.color;
         return (
           <span
@@ -546,7 +780,18 @@ export function TaskList({ onTaskSelect, expandMainTaskId, selectedTaskId, editF
           {sortBy === 'delivery_date' && <Arrow direction={sortOrder} />}
         </button>
       ),
-      cell: info => <span className="truncate block max-w-full whitespace-nowrap overflow-hidden text-ellipsis">{info.row.original.delivery_date ? new Date(info.row.original.delivery_date).toLocaleDateString() : '—'}</span>,
+      cell: info => {
+        const task = info.row.original;
+        const date = formatDateWithYear(task.delivery_date);
+        return (
+          <span className={cn(
+            "truncate block max-w-full whitespace-nowrap overflow-hidden text-ellipsis",
+            task.is_overdue && "text-red-600 font-medium"
+          )}>
+            {date}
+          </span>
+        );
+      },
       size: columnSizing.delivery_date,
       minSize: 80,
       maxSize: 1000,
@@ -560,7 +805,18 @@ export function TaskList({ onTaskSelect, expandMainTaskId, selectedTaskId, editF
           {sortBy === 'publication_date' && <Arrow direction={sortOrder} />}
         </button>
       ),
-      cell: info => <span className="truncate block max-w-full whitespace-nowrap overflow-hidden text-ellipsis">{info.row.original.publication_date ? new Date(info.row.original.publication_date).toLocaleDateString() : '—'}</span>,
+      cell: info => {
+        const task = info.row.original;
+        const date = formatDateWithYear(task.publication_date);
+        return (
+          <span className={cn(
+            "truncate block max-w-full whitespace-nowrap overflow-hidden text-ellipsis",
+            task.is_publication_overdue && "text-red-600 font-medium"
+          )}>
+            {date}
+          </span>
+        );
+      },
       size: columnSizing.publication_date,
       minSize: 80,
       maxSize: 1000,
@@ -574,7 +830,7 @@ export function TaskList({ onTaskSelect, expandMainTaskId, selectedTaskId, editF
           {sortBy === 'updated_at' && <Arrow direction={sortOrder} />}
         </button>
       ),
-      cell: info => <span className="truncate block max-w-full whitespace-nowrap overflow-hidden text-ellipsis">{info.row.original.updated_at ? new Date(info.row.original.updated_at).toLocaleDateString() : '—'}</span>,
+      cell: info => <span className="truncate block max-w-full whitespace-nowrap overflow-hidden text-ellipsis">{formatDateWithYear(info.row.original.updated_at)}</span>,
       size: columnSizing.updated_at,
       minSize: 80,
       maxSize: 1000,
@@ -588,7 +844,7 @@ export function TaskList({ onTaskSelect, expandMainTaskId, selectedTaskId, editF
           {sortBy === 'content_type_title' && <Arrow direction={sortOrder} />}
         </button>
       ),
-      cell: info => <span className="truncate block max-w-full whitespace-nowrap overflow-hidden text-ellipsis">{info.row.original.content_type_title || '—'}</span>,
+      cell: info => <span className="truncate block max-w-full whitespace-nowrap overflow-hidden text-ellipsis">{info.row.original.content_type_title || ''}</span>,
       size: 140,
       minSize: 80,
       maxSize: 1000,
@@ -602,7 +858,7 @@ export function TaskList({ onTaskSelect, expandMainTaskId, selectedTaskId, editF
           {sortBy === 'production_type_title' && <Arrow direction={sortOrder} />}
         </button>
       ),
-      cell: info => <span className="truncate block max-w-full whitespace-nowrap overflow-hidden text-ellipsis">{info.row.original.production_type_title || '—'}</span>,
+      cell: info => <span className="truncate block max-w-full whitespace-nowrap overflow-hidden text-ellipsis">{info.row.original.production_type_title || ''}</span>,
       size: 140,
       minSize: 80,
       maxSize: 1000,
@@ -616,7 +872,7 @@ export function TaskList({ onTaskSelect, expandMainTaskId, selectedTaskId, editF
           {sortBy === 'language_code' && <Arrow direction={sortOrder} />}
         </button>
       ),
-      cell: info => <span className="truncate block max-w-full whitespace-nowrap overflow-hidden text-ellipsis">{info.row.original.language_code || '—'}</span>,
+      cell: info => <span className="truncate block max-w-full whitespace-nowrap overflow-hidden text-ellipsis">{info.row.original.language_code || ''}</span>,
       size: 100,
       minSize: 80,
       maxSize: 1000,
@@ -744,6 +1000,13 @@ export function TaskList({ onTaskSelect, expandMainTaskId, selectedTaskId, editF
   const statusParam = params.get('status');
   if (statusParam) {
     filters['project_status_name'] = statusParam.includes(',') ? statusParam.split(',') : statusParam;
+  }
+
+  // Handle overdue status filter - map from URL 'overdueStatus' param to Typesense filter fields
+  const overdueStatusParam = params.get('overdueStatus');
+  if (overdueStatusParam) {
+    const overdueStatuses = overdueStatusParam.includes(',') ? overdueStatusParam.split(',') : [overdueStatusParam];
+    filters['overdueStatus'] = overdueStatuses;
   }
 
   // Use Typesense infinite query hook (only fetch data for ungrouped view)
@@ -961,6 +1224,14 @@ export function TaskList({ onTaskSelect, expandMainTaskId, selectedTaskId, editF
   if (isMobile) {
     return (
       <div ref={containerRef} className="flex flex-col h-full w-full bg-white">
+        {/* Bulk Action Bar for Mobile */}
+        <BulkActionBar
+          selectedCount={selectedTasks.size}
+          onClearSelection={handleClearSelection}
+          actions={bulkActions}
+          entityName="task"
+        />
+        
         <div className="flex-1 overflow-y-auto">
           {isGroupedView ? (
             <div className="p-4">
@@ -999,6 +1270,9 @@ export function TaskList({ onTaskSelect, expandMainTaskId, selectedTaskId, editF
                       isExpanded={isExpanded}
                       onTaskSelect={handleTaskSelect}
                       onToggleExpand={handleToggleMainTask}
+                      isMultiselectMode={isMultiselectMode}
+                      isTaskSelected={selectedTasks.has(task.id)}
+                      onTaskToggle={handleTaskToggle}
                     />
                     {isMainTask && isExpanded && (
                       <SubtaskRows
@@ -1007,6 +1281,9 @@ export function TaskList({ onTaskSelect, expandMainTaskId, selectedTaskId, editF
                         onTaskSelect={onTaskSelect || (() => {})}
                         selectedTaskId={selectedTaskId}
                         isMobile={true}
+                        isMultiselectMode={isMultiselectMode}
+                        selectedTasks={selectedTasks}
+                        onTaskToggle={handleTaskToggle}
                       />
                     )}
                   </div>
@@ -1054,6 +1331,14 @@ export function TaskList({ onTaskSelect, expandMainTaskId, selectedTaskId, editF
       ) : (
         (() => { console.log('[TaskList] rendering ungrouped view'); return null })() ||
         <div className="relative h-full flex flex-col flex-1">
+          {/* Bulk Action Bar */}
+          <BulkActionBar
+            selectedCount={selectedTasks.size}
+            onClearSelection={handleClearSelection}
+            actions={bulkActions}
+            entityName="task"
+          />
+          
           <div
             ref={tableScrollRef}
             className="flex-1 overflow-y-auto overflow-x-auto"
@@ -1127,8 +1412,20 @@ export function TaskList({ onTaskSelect, expandMainTaskId, selectedTaskId, editF
                       // If the expand/collapse button was clicked, do not navigate
                       return;
                     }
-                    if (!isGroupedView) setLocalSelectedId(task.id);
-                    if (onTaskSelect) onTaskSelect(task);
+                    
+                    // If clicking on checkbox, don't handle row click
+                    if (e && (e.target as HTMLElement).tagName === 'INPUT') {
+                      return;
+                    }
+                    
+                    if (isMultiselectMode) {
+                      // In multiselect mode, toggle selection instead of navigation
+                      handleTaskToggle(task.id);
+                    } else {
+                      // Normal mode - navigate to task
+                      if (!isGroupedView) setLocalSelectedId(task.id);
+                      if (onTaskSelect) onTaskSelect(task);
+                    }
                   };
 
                   return (
@@ -1137,7 +1434,9 @@ export function TaskList({ onTaskSelect, expandMainTaskId, selectedTaskId, editF
                         className={cn(
                           'hover:bg-gray-50 cursor-pointer',
                           isMainTask && 'font-semibold',
-                          isSelected && 'bg-gray-100',
+                          isMultiselectMode 
+                            ? selectedTasks.has(task.id) && 'bg-blue-50 border-l-4 border-l-blue-500'
+                            : isSelected && 'bg-gray-100',
                         )}
                         onClick={handleRowClick}
                       >
@@ -1157,6 +1456,9 @@ export function TaskList({ onTaskSelect, expandMainTaskId, selectedTaskId, editF
                           onTaskSelect={onTaskSelect}
                           selectedTaskId={selectedTaskId}
                           isMobile={false}
+                          isMultiselectMode={isMultiselectMode}
+                          selectedTasks={selectedTasks}
+                          onTaskToggle={handleTaskToggle}
                         />
                       )}
                     </React.Fragment>

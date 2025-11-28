@@ -1,7 +1,7 @@
 // Task list columns and types for both flat and grouped views
 // Centralized here for consistency and maintainability
 
-import { ReactNode } from "react"
+import React from "react"
 
 // Supabase columns string with join aliases (update as needed)
 export const TASK_LIST_COLUMNS_STRING = [
@@ -42,6 +42,8 @@ export type TaskListRow = {
   delivery_date: string | null
   created_at: string
   updated_at: string
+  is_overdue?: boolean
+  is_publication_overdue?: boolean
 }
 
 // Array of columns for rendering (label, accessor, optional custom render)
@@ -54,22 +56,32 @@ export const TASK_LIST_COLUMNS = [
   {
     key: "project",
     label: "Project",
-    render: (row: TaskListRow) => row.project?.name ?? "-",
+    render: (row: TaskListRow) => row.project?.name ?? "",
   },
   {
     key: "status",
     label: "Status",
-    render: (row: TaskListRow) => row.status?.name ?? "-",
+    render: (row: TaskListRow) => row.status?.name ?? "",
   },
   {
     key: "assigned_user",
     label: "Assigned To",
-    render: (row: TaskListRow) => row.assigned_user?.full_name ?? "-",
+    render: (row: TaskListRow) => row.assigned_user?.full_name ?? "",
   },
   {
     key: "delivery_date",
     label: "Delivery Date",
-    render: (row: TaskListRow) => row.delivery_date ? new Date(row.delivery_date).toLocaleDateString() : "-",
+    render: (row: TaskListRow) => {
+      if (!row.delivery_date) return "";
+      
+      const date = new Date(row.delivery_date);
+      const dateString = date.toLocaleDateString();
+      
+      if (row.is_overdue) {
+        return React.createElement('span', { style: { color: 'red', fontWeight: '500' } }, dateString);
+      }
+      return dateString;
+    },
   },
   {
     key: "created_at",

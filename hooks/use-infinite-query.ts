@@ -3,7 +3,7 @@
 import { createClientComponentClient } from '@supabase/auth-helpers-nextjs'
 import { PostgrestQueryBuilder } from '@supabase/postgrest-js'
 import { SupabaseClient } from '@supabase/supabase-js'
-import { useEffect, useRef, useSyncExternalStore } from 'react'
+import { useEffect, useRef, useSyncExternalStore, useCallback } from 'react'
 
 const supabase = createClientComponentClient()
 
@@ -32,11 +32,16 @@ type Database =
 // Change this to the database schema you want to use
 type DatabaseSchema = Database['public']
 
-// Extracts the table names from the database type
-type SupabaseTableName = keyof DatabaseSchema['Tables']
+// Extracts the table names from the database type (including views)
+type SupabaseTableName = keyof DatabaseSchema['Tables'] | keyof DatabaseSchema['Views']
 
-// Extracts the table definition from the database type
-type SupabaseTableData<T extends SupabaseTableName> = DatabaseSchema['Tables'][T]['Row']
+// Extracts the table definition from the database type (including views)
+type SupabaseTableData<T extends SupabaseTableName> = 
+  T extends keyof DatabaseSchema['Tables'] 
+    ? DatabaseSchema['Tables'][T]['Row']
+    : T extends keyof DatabaseSchema['Views']
+    ? DatabaseSchema['Views'][T]['Row']
+    : never
 
 type SupabaseSelectBuilder<T extends SupabaseTableName> = any
 
@@ -99,7 +104,7 @@ export function abortAllInfiniteQueries() {
   }
 }
 
-function createStore<TData extends { id: any }, T extends SupabaseTableName>(
+function createStore<TData extends { id?: any; doc_id?: any }, T extends SupabaseTableName>(
   props: UseInfiniteQueryProps<T>
 ) {
   const { tableName, columns = '*', pageSize = 20, trailingQuery } = props
@@ -127,7 +132,18 @@ function createStore<TData extends { id: any }, T extends SupabaseTableName>(
 
   const fetchPage = async (skip: number, queryKey: string, externalSignal?: AbortSignal) => {
     console.log('[useInfiniteQuery] fetchPage called for queryKey:', queryKey, 'skip:', skip);
-    if (state.hasInitialFetch && (state.isFetching || state.count <= state.data.length)) return;
+    
+    // Guard against duplicate requests
+    if (state.isFetching) {
+      console.log('[useInfiniteQuery] Already fetching, skipping request');
+      return;
+    }
+    
+    // Guard against fetching when we have all data
+    if (state.hasInitialFetch && state.count > 0 && state.data.length >= state.count) {
+      console.log('[useInfiniteQuery] All data loaded, skipping request');
+      return;
+    }
 
     setState({ isFetching: true });
 
@@ -158,7 +174,12 @@ function createStore<TData extends { id: any }, T extends SupabaseTableName>(
         setState({ error });
       } else {
         const deduplicatedData = ((newData || []) as TData[]).filter(
-          (item) => !state.data.find((old) => old.id === item.id)
+          (item) => !state.data.find((old) => {
+            // Handle both id and doc_id fields for documents
+            const oldId = (old as any).doc_id || (old as any).id;
+            const newId = (item as any).doc_id || (item as any).id;
+            return oldId === newId;
+          })
         );
         setState({
           data: [...state.data, ...deduplicatedData],
@@ -182,8 +203,23 @@ function createStore<TData extends { id: any }, T extends SupabaseTableName>(
   };
 
   const fetchNextPage = async (externalSignal?: AbortSignal) => {
-    if (state.isFetching) return;
-    await fetchPage(state.data.length, props.queryKey || String(props.tableName), externalSignal);
+    if (state.isFetching) {
+      console.log('[useInfiniteQuery] fetchNextPage: Already fetching, skipping');
+      return;
+    }
+    
+    // Check if there's more data to fetch
+    const hasMore = state.count === 0 || state.data.length < state.count;
+    if (!hasMore) {
+      console.log('[useInfiniteQuery] fetchNextPage: No more data to fetch, skipping');
+      return;
+    }
+    
+    // Calculate offset based on current data length
+    const offset = state.data.length;
+    console.log('[useInfiniteQuery] fetchNextPage: offset =', offset, 'data.length =', state.data.length);
+    
+    await fetchPage(offset, props.queryKey || String(props.tableName), externalSignal);
   };
 
   const initialize = async () => {
@@ -228,10 +264,29 @@ function registerStore<TData>(tableName: string, queryKey: string | undefined, s
 }
 
 /**
+ * Get an item from the store for a given table and queryKey by ID.
+ * Returns the item if found, null otherwise.
+ */
+export function getItemFromStore<TData extends { id?: any; doc_id?: any }>(
+  tableName: string,
+  queryKey: string | undefined,
+  id: TData['id'] | TData['doc_id']
+): TData | null {
+  const key = getStoreKey(tableName, queryKey)
+  const store = storeRegistry[key]
+  if (!store) return null
+  const state = store.getState()
+  return state.data.find((item: TData) => {
+    const itemId = (item as any).doc_id || (item as any).id;
+    return itemId === id;
+  }) || null
+}
+
+/**
  * Update an item in the store for a given table and queryKey.
  * Triggers a re-render in all subscribers.
  */
-export function updateItemInStore<TData extends { id: any }>(
+export function updateItemInStore<TData extends { id?: any; doc_id?: any }>(
   tableName: string,
   queryKey: string | undefined,
   updatedItem: TData
@@ -240,7 +295,11 @@ export function updateItemInStore<TData extends { id: any }>(
   const store = storeRegistry[key]
   if (!store) return
   const state = store.getState()
-  const idx = state.data.findIndex((item: TData) => item.id === updatedItem.id)
+  const updatedId = (updatedItem as any).doc_id || (updatedItem as any).id;
+  const idx = state.data.findIndex((item: TData) => {
+    const itemId = (item as any).doc_id || (item as any).id;
+    return itemId === updatedId;
+  })
   if (idx === -1) return
   const newData = [...state.data]
   newData[idx] = { ...newData[idx], ...updatedItem }
@@ -251,7 +310,7 @@ export function updateItemInStore<TData extends { id: any }>(
  * Optimistically add an item to the store for a given table and queryKey.
  * Triggers a re-render in all subscribers.
  */
-export function addItemToStore<TData extends { id: any }>(
+export function addItemToStore<TData extends { id?: any; doc_id?: any }>(
   tableName: string,
   queryKey: string | undefined,
   newItem: TData
@@ -260,7 +319,11 @@ export function addItemToStore<TData extends { id: any }>(
   const store = storeRegistry[key]
   if (!store) return
   const state = store.getState()
-  if (state.data.find((item: TData) => item.id === newItem.id)) return // avoid duplicates
+  const newId = (newItem as any).doc_id || (newItem as any).id;
+  if (state.data.find((item: TData) => {
+    const itemId = (item as any).doc_id || (item as any).id;
+    return itemId === newId;
+  })) return // avoid duplicates
   const newData = [newItem, ...state.data]
   store.setState({ data: newData })
 }
@@ -269,21 +332,24 @@ export function addItemToStore<TData extends { id: any }>(
  * Remove an item from the store for a given table and queryKey.
  * Triggers a re-render in all subscribers.
  */
-export function removeItemFromStore<TData extends { id: any }>(
+export function removeItemFromStore<TData extends { id?: any; doc_id?: any }>(
   tableName: string,
   queryKey: string | undefined,
-  id: TData['id']
+  id: TData['id'] | TData['doc_id']
 ) {
   const key = getStoreKey(tableName, queryKey)
   const store = storeRegistry[key]
   if (!store) return
   const state = store.getState()
-  const newData = state.data.filter((item: TData) => item.id !== id)
+  const newData = state.data.filter((item: TData) => {
+    const itemId = (item as any).doc_id || (item as any).id;
+    return itemId !== id;
+  })
   store.setState({ data: newData })
 }
 
 function useInfiniteQuery<
-  TData extends { id: any },
+  TData extends { id?: any; doc_id?: any },
   T extends SupabaseTableName = SupabaseTableName,
 >(props: UseInfiniteQueryProps<T>) {
   const storeRef = useRef(createStore<TData, T>(props))
@@ -319,6 +385,8 @@ function useInfiniteQuery<
 
     if (storeRef.current.getState().hasInitialFetch && hasChanged) {
       storeRef.current = createStore<TData, T>(props);
+      // ✅ Re-register the new store in the global registry
+      registerStore(props.tableName as string, props.queryKey, storeRef.current);
       prevProps.current = {
         tableName: props.tableName,
         columns: props.columns,
@@ -332,6 +400,11 @@ function useInfiniteQuery<
     }
   }, [props.tableName, props.columns, props.pageSize, props.queryKey, state.hasInitialFetch]);
 
+  // Stable fetchNextPage reference
+  const fetchNextPage = useCallback(() => {
+    return storeRef.current.fetchNextPage()
+  }, [])
+
   return {
     data: state.data,
     count: state.count,
@@ -339,8 +412,8 @@ function useInfiniteQuery<
     isLoading: state.isLoading,
     isFetching: state.isFetching,
     error: state.error,
-    hasMore: state.count > state.data.length,
-    fetchNextPage: storeRef.current.fetchNextPage,
+    hasMore: state.count === 0 || state.data.length < state.count,
+    fetchNextPage,
   }
 }
 

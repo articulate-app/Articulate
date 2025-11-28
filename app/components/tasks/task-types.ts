@@ -7,4 +7,6 @@ export type TaskWithJoins = {
   users: { full_name: string } | null
   projects: { name: string; color?: string } | null
   project_statuses: { name: string; color?: string } | null
+  is_overdue?: boolean
+  is_publication_overdue?: boolean
 } 

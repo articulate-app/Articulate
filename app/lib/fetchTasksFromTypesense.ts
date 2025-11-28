@@ -1,4 +1,4 @@
-import typesenseSearchClient from './typesenseSearchClient';
+import { supabase } from './supabase';
 
 // Map Typesense hit to your existing task format, including nested objects for table compatibility
 function mapTypesenseTask(hit: any) {
@@ -25,6 +25,9 @@ function mapTypesenseTask(hit: any) {
       ? new Date(doc.publication_timestamp)
       : null,
     updated_at: doc.updated_at || null,
+    // Add overdue fields
+    is_overdue: doc.is_overdue || false,
+    is_publication_overdue: doc.is_publication_overdue || false,
     // Add other fields as needed
   };
 }
@@ -32,7 +35,9 @@ function mapTypesenseTask(hit: any) {
 interface FetchTasksParams {
   q: string;
   project?: string;
-  filters?: { [key: string]: string | string[] };
+  filters?: { 
+    [key: string]: string | string[] | undefined;
+  };
   page?: number;
   perPage?: number;
   sortBy?: string;
@@ -40,72 +45,18 @@ interface FetchTasksParams {
 }
 
 /**
- * Fetch tasks from Typesense with search, filters, and pagination.
+ * Fetch tasks from Supabase Edge Function with search, filters, and pagination.
+ * This replaces direct Typesense calls with secure, authenticated requests.
  */
 export async function fetchTasksFromTypesense({ q, project, filters = {}, page = 1, perPage = 25, sortBy = 'publication_timestamp', sortOrder = 'desc' }: FetchTasksParams) {
-  console.log('[Typesense] fetchTasksFromTypesense called with:', { q, project, filters, page, perPage, sortBy, sortOrder });
+  console.log('[Supabase Edge Function] fetchTasksFromTypesense called with:', { q, project, filters, page, perPage, sortBy, sortOrder });
   
   try {
-    // Build filter_by string
-    const filterParts: string[] = [];
-    if (project) filterParts.push(`project_id_int:=${project}`);
-    // Add other filters
-    const filterFields = [
-      'assigned_to_name',
-      'channel_names',
-      'content_type_title',
-      'project_name',
-      'project_id_int',
-      'project_status_name', // Add project_status_name to supported filter fields
-      'production_type_title',
-      'language_code',
-    ];
-    for (const field of filterFields) {
-      if (filters[field]) {
-        // Support array or string
-        const value = Array.isArray(filters[field]) ? filters[field].join(',') : filters[field];
-        filterParts.push(`${field}:=[${value}]`);
-      }
-    }
-    const filter_by = filterParts.length > 0 ? filterParts.join(' && ') : undefined;
-
-    // Map frontend field names to Typesense field names
-    const fieldMapping: Record<string, string> = {
-      'title': 'title',
-      'assigned_user': 'assigned_to_name',
-      'projects': 'project_name',
-      'project_statuses': 'project_status_name',
-      'delivery_date': 'delivery_date',
-      'publication_date': 'publication_timestamp',
-      'updated_at': 'updated_at',
-      'content_type_title': 'content_type_title',
-      'production_type_title': 'production_type_title',
-      'language_code': 'language_code',
-    };
-
-    console.log('[Typesense] Sorting by:', { sortBy, sortOrder, fieldMapping });
-    const typesenseField = fieldMapping[sortBy] || 'publication_timestamp';
+    // Get the current session for authentication
+    const { data: { session } } = await supabase.auth.getSession();
     
-    // Fallback to publication_timestamp if the field doesn't exist in Typesense
-    const safeSortBy = typesenseField === 'project_status_name' ? 'publication_timestamp' : typesenseField;
-    const sort_by = `${safeSortBy}:${sortOrder}`;
-    console.log('[Typesense] Final sort_by:', sort_by);
-
-    const searchParams: any = {
-      q: q || '*',
-      query_by: 'title,briefing,notes,assigned_to_name,project_name',
-      sort_by,
-      page,
-      per_page: perPage,
-    };
-    if (filter_by) searchParams.filter_by = filter_by;
-
-    console.log('[Typesense] About to get client');
-    const client = typesenseSearchClient();
-    console.log('[Typesense] Client obtained:', !!client);
-    
-    if (!client) {
-      console.log('[Typesense] Client not available, returning empty result');
+    if (!session?.access_token) {
+      console.error('[Supabase Edge Function] No access token available');
       return {
         tasks: [],
         found: 0,
@@ -115,25 +66,108 @@ export async function fetchTasksFromTypesense({ q, project, filters = {}, page =
         next_page: false,
       };
     }
-    
-    console.log('[Typesense] Making search request with params:', searchParams);
-    const result = await client
-      .collections('tasks')
-      .documents()
-      .search(searchParams);
 
-    console.log('[Typesense] Search result:', { found: result.found, hits: result.hits?.length || 0 });
+    // Build query parameters for the Edge Function
+    const searchParams = new URLSearchParams({
+      q: q || '*',
+      page: page.toString(),
+      per_page: perPage.toString(),
+      sort_by: sortBy,
+      sort_order: sortOrder,
+    });
+
+    // Add project filter if specified
+    if (project) {
+      searchParams.append('project_id', project);
+    }
+
+    // Add filters
+    if (filters.overdueStatus) {
+      const overdueFilters = Array.isArray(filters.overdueStatus) ? filters.overdueStatus : [filters.overdueStatus];
+      overdueFilters.forEach(status => {
+        if (status === 'delivery_overdue') {
+          searchParams.append('is_overdue', 'true');
+        } else if (status === 'publication_overdue') {
+          searchParams.append('is_publication_overdue', 'true');
+        }
+      });
+    }
+
+    // Add other filters
+    const filterFields = [
+      'assigned_to_name',
+      'channel_names',
+      'content_type_title',
+      'project_name',
+      'project_id_int',
+      'project_status_name',
+      'production_type_title',
+      'language_code',
+      'is_overdue',
+      'is_publication_overdue',
+    ];
+
+    for (const field of filterFields) {
+      if (filters[field]) {
+        const value = Array.isArray(filters[field]) ? filters[field].join(',') : filters[field];
+        searchParams.append(field, value);
+      }
+    }
+
+    // Get the Supabase URL from environment
+    const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL;
+    if (!supabaseUrl) {
+      console.error('[Supabase Edge Function] Missing NEXT_PUBLIC_SUPABASE_URL');
+      return {
+        tasks: [],
+        found: 0,
+        out_of: 0,
+        page: page,
+        per_page: perPage,
+        next_page: false,
+      };
+    }
+
+    const edgeFunctionUrl = `${supabaseUrl}/functions/v1/search_tasks_with_acl?${searchParams.toString()}`;
+    
+    console.log('[Supabase Edge Function] Making request to:', edgeFunctionUrl);
+    
+    const response = await fetch(edgeFunctionUrl, {
+      method: 'GET',
+      headers: {
+        'Authorization': `Bearer ${session.access_token}`,
+        'Content-Type': 'application/json',
+      },
+    });
+
+    if (!response.ok) {
+      const errorText = await response.text();
+      console.error('[Supabase Edge Function] Error response:', response.status, errorText);
+      throw new Error(`Edge Function error: ${response.status} ${errorText}`);
+    }
+
+    const { search_result } = await response.json();
+    
+    console.log('[Supabase Edge Function] Search result:', { 
+      found: search_result.found, 
+      hits: search_result.hits?.length || 0 
+    });
+
+    // Map the response to match the expected format
+    const tasks = Array.isArray(search_result.hits) 
+      ? search_result.hits.map(mapTypesenseTask) 
+      : [];
 
     return {
-      tasks: Array.isArray(result.hits) ? result.hits.map(mapTypesenseTask) : [],
-      found: result.found,
-      out_of: result.out_of,
-      page: result.page,
-      per_page: result.request_params.per_page,
-      next_page: result.found > (page * perPage),
+      tasks,
+      found: search_result.found,
+      out_of: search_result.found, // Typesense out_of field
+      page: page,
+      per_page: perPage,
+      next_page: search_result.found > (page * perPage),
     };
   } catch (error: any) {
-    console.error('[Typesense] Error in fetchTasksFromTypesense:', error);
+    console.error('[Supabase Edge Function] Error in fetchTasksFromTypesense:', error);
     // Return empty result instead of throwing
     return {
       tasks: [],

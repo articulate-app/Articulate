@@ -76,4 +76,61 @@ export function getSearchKey(field: string): string {
     default:
       return field.toLowerCase().replace(/s$/, '')
   }
+}
+
+// View-scoped URL parameter helpers for middle pane
+export type CalendarOptions = { 
+  dateField: 'delivery' | 'publication'; 
+  showSubtasks: boolean 
+};
+
+export type KanbanOptions = { 
+  groupBy: 'assignee' | 'project' | 'status' | 'priority' | 'content_type' | 'production_type' | 'language' | 'delivery_date' | 'publication_date' | 'channel'; 
+  showSubtasks: boolean 
+};
+
+/**
+ * Read calendar options from URL search params with defaults and validation
+ */
+export function readCalendarOptions(sp: URLSearchParams): CalendarOptions {
+  const dateFieldParam = sp.get('calendar_date_field');
+  const showSubtasksParam = sp.get('calendar_show_subtasks');
+  
+  // Validate dateField - must be 'delivery' or 'publication'
+  const dateField = (dateFieldParam === 'delivery' || dateFieldParam === 'publication') 
+    ? dateFieldParam 
+    : 'delivery';
+  
+  // Validate showSubtasks - must be 'true' or 'false'
+  const showSubtasks = showSubtasksParam === 'true';
+  
+  return { dateField, showSubtasks };
+}
+
+/**
+ * Read kanban options from URL search params with defaults and validation
+ */
+export function readKanbanOptions(sp: URLSearchParams): KanbanOptions {
+  const groupByParam = sp.get('kanban_group_by');
+  const showSubtasksParam = sp.get('kanban_show_subtasks');
+  
+  // Validate groupBy - must be one of the allowed values
+  const validGroupByValues = ['assignee', 'project', 'status', 'priority', 'content_type', 'production_type', 'language', 'delivery_date', 'publication_date', 'channel'] as const;
+  const groupBy = validGroupByValues.includes(groupByParam as any) 
+    ? (groupByParam as 'assignee' | 'project' | 'status' | 'priority' | 'content_type' | 'production_type' | 'language' | 'delivery_date' | 'publication_date' | 'channel')
+    : 'status';
+  
+  // Validate showSubtasks - must be 'true' or 'false'
+  const showSubtasks = showSubtasksParam === 'true';
+  
+  return { groupBy, showSubtasks };
+}
+
+/**
+ * Write a parameter to URL search params without affecting other params
+ */
+export function writeParam(sp: URLSearchParams, key: string, value: string | boolean): URLSearchParams {
+  const next = new URLSearchParams(sp);
+  next.set(key, String(value));
+  return next;
 } 

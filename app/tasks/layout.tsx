@@ -11,6 +11,8 @@ import { useQuery } from "@tanstack/react-query";
 import type { TaskEditFields } from "../hooks/use-task-edit-fields";
 import type { FilterOptions } from "../lib/services/filters";
 import { useMobileDetection } from "../hooks/use-mobile-detection";
+import { KeywordPlannerPane } from "../components/KeywordPlannerPane";
+import { Sidebar } from "../components/ui/Sidebar";
 
 // Transform editFields data to filter options format (same as in TasksLayout)
 function transformEditFieldsToFilterOptions(editFields: TaskEditFields, users: any[] = []): FilterOptions {
@@ -70,11 +72,16 @@ export default function TasksLayout({ children, modal }: LayoutProps) {
   
   // Sidebar state (for mobile/desktop collapsed)
   const [isSidebarOpen, setIsSidebarOpen] = useState(false); // false = collapsed by default
+  const [isSidebarCollapsed, setIsSidebarCollapsed] = useState(true); // true = collapsed by default (icons only)
+  const [isMobileMenuOpen, setIsMobileMenuOpen] = useState(false);
   // Global search/filter state from Zustand
   const { searchValue, setSearchValue, filters, setFilters } = useTasksUI();
 
   // Filter pane open state
   const [isFilterOpen, setIsFilterOpen] = useState(false);
+  
+  // Keyword Planner state
+  const [isKeywordPlannerOpen, setIsKeywordPlannerOpen] = useState(false);
 
   // Get access token for task edit fields
   const supabase = createClientComponentClient();
@@ -94,7 +101,7 @@ export default function TasksLayout({ children, modal }: LayoutProps) {
     queryKey: ['users'],
     queryFn: async () => {
       const { data, error } = await supabase
-        .from('users')
+        .from('view_users_i_can_see')
         .select('id, full_name')
         .order('full_name');
       if (error) throw error;
@@ -115,8 +122,21 @@ export default function TasksLayout({ children, modal }: LayoutProps) {
     setIsFilterOpen(true);
   };
 
-  // Handler for sidebar toggle (hamburger)
-  const handleSidebarToggle = () => setIsSidebarOpen((v) => !v);
+  // Handler for sidebar toggle (hamburger) - for mobile, toggle mobile menu
+  const handleSidebarToggle = () => {
+    if (isMobile) {
+      setIsMobileMenuOpen((v) => !v);
+    } else {
+      setIsSidebarCollapsed((v) => !v);
+    }
+  };
+
+  const handleMobileMenuClose = () => {
+    setIsMobileMenuOpen(false);
+  };
+
+  // Handler for keyword planner toggle
+  const handleKeywordPlannerClick = () => setIsKeywordPlannerOpen((v) => !v);
 
   return (
     <div className="flex flex-col h-screen w-full bg-white">
@@ -127,30 +147,52 @@ export default function TasksLayout({ children, modal }: LayoutProps) {
             onSearchChange={setSearchValue}
             onFilterClick={handleFilterClick}
             onSidebarToggle={handleSidebarToggle}
+            onKeywordPlannerClick={handleKeywordPlannerClick}
+            isKeywordPlannerActive={isKeywordPlannerOpen}
           />
         )}
       {/* Main content (children) */}
-      <div className="flex-1 min-h-0 w-full flex flex-row">
-        {/* Pass sidebar state as context/prop if needed */}
-        {React.cloneElement(children as React.ReactElement, {
-          isSidebarOpen,
-          isSidebarCollapsed: !isSidebarOpen,
-          onSidebarToggle: handleSidebarToggle,
-        })}
-        {modal}
-        {/* Filter pane slide panel - only on desktop */}
-        {!isMobile && (
-          <TaskFilters
-            isOpen={isFilterOpen}
-            onClose={() => setIsFilterOpen(false)}
-            onApplyFilters={(mapped, display) => {
-              setFilters(mapped);
-              setIsFilterOpen(false);
-            }}
-            activeFilters={filters}
-            filterOptions={filterOptions}
+      <div className="flex-1 min-h-0 w-full flex flex-row overflow-hidden">
+        {/* Sidebar */}
+        <div className={`border-r border-gray-200 transition-all duration-300 ease-in-out z-20 flex-shrink-0 ${isSidebarCollapsed ? 'w-16' : 'w-64'}`}>
+          <Sidebar 
+            isCollapsed={isSidebarCollapsed} 
+            isMobileMenuOpen={isMobileMenuOpen} 
+            onClose={handleMobileMenuClose} 
           />
-        )}
+        </div>
+        
+        {/* Page Content */}
+        <div className="flex-1 overflow-hidden flex flex-row">
+          {/* Pass sidebar state as context/prop if needed */}
+          {React.cloneElement(children as React.ReactElement, {
+            isSidebarOpen,
+            isSidebarCollapsed,
+            onSidebarToggle: handleSidebarToggle,
+          })}
+          {modal}
+          {/* Filter pane slide panel - only on desktop */}
+          {!isMobile && (
+            <TaskFilters
+              isOpen={isFilterOpen}
+              onClose={() => setIsFilterOpen(false)}
+              onApplyFilters={(mapped, display) => {
+                setFilters(mapped);
+                setIsFilterOpen(false);
+              }}
+              activeFilters={filters}
+              filterOptions={filterOptions}
+            />
+          )}
+          
+          {/* Keyword Planner pane - only on desktop */}
+          {!isMobile && (
+            <KeywordPlannerPane
+              isOpen={isKeywordPlannerOpen}
+              onClose={() => setIsKeywordPlannerOpen(false)}
+            />
+          )}
+        </div>
       </div>
     </div>
   );

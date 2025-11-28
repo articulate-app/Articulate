@@ -138,7 +138,7 @@ export function useThreadedChat(threadId: number, currentUserId?: number, curren
           // If still missing, fetch from API
           if (!newMention.users) {
             const { data: userData } = await supabase
-              .from('users')
+              .from('view_users_i_can_see')
               .select('id, full_name, email, photo')
               .eq('id', newMention.created_by)
               .single();
@@ -146,7 +146,11 @@ export function useThreadedChat(threadId: number, currentUserId?: number, curren
               newMention = { ...newMention, users: userData };
             }
           }
-          setMentions(prev => [newMention, ...prev]);
+          setMentions(prev => {
+            // Filter out any optimistic messages with the same content to prevent duplicates
+            const filtered = prev.filter(m => !(m.isOptimistic && m.comment === newMention.comment && m.created_by === newMention.created_by))
+            return [newMention, ...filtered]
+          });
           if (newMention.users) {
             setUsersById(prev => ({ ...prev, [newMention.created_by]: newMention.users }));
           }

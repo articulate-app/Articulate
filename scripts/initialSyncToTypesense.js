@@ -78,7 +78,9 @@ const transformTask = (task) => ({
     project_status_id: task.project_status_id,
     project_status_name: task.project_status_name,
     project_status_color: task.project_status_color,
-    
+    is_overdue: task.is_overdue ?? false,
+    is_publication_overdue: task.is_publication_overdue ?? false,
+  
   });
     
 

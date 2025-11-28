@@ -143,4 +143,85 @@ export async function getProjectDetails(projectId: number) {
     threads_project: threadsProject || [],
     threads_tasks: threadsTasks || []
   }
+}
+
+/**
+ * Generate a URL-friendly slug from a string
+ */
+function generateSlug(text: string): string {
+  return text
+    .toLowerCase()
+    .trim()
+    .replace(/[^\w\s-]/g, '') // Remove non-word chars except spaces and hyphens
+    .replace(/\s+/g, '-') // Replace spaces with hyphens
+    .replace(/-+/g, '-') // Replace multiple hyphens with single hyphen
+    .replace(/^-+|-+$/g, '') // Remove leading/trailing hyphens
+}
+
+/**
+ * Create a new project with minimal required fields
+ */
+export async function createProject(name: string, billingTeamId: number) {
+  const supabase = createClientComponentClient()
+
+  const trimmedName = name.trim()
+  const slug = generateSlug(trimmedName)
+
+  const { data, error } = await supabase
+    .from("projects")
+    .insert({
+      name: trimmedName,
+      slug: slug || 'project', // Fallback if slug generation results in empty string
+      billing_team_id: billingTeamId,
+      active: true,
+    })
+    .select("id, name")
+    .single()
+
+  return { data, error }
+}
+
+/**
+ * Duplicate an existing project
+ */
+export async function duplicateProject(projectId: number, newName?: string) {
+  const supabase = createClientComponentClient()
+
+  // Fetch the original project
+  const { data: originalProject, error: fetchError } = await supabase
+    .from("projects")
+    .select("*")
+    .eq("id", projectId)
+    .single()
+
+  if (fetchError) return { data: null, error: fetchError }
+
+  // Create new project with duplicated data
+  const { id, created_at, updated_at, ...projectData } = originalProject
+  const { data: newProject, error: createError } = await supabase
+    .from("projects")
+    .insert({
+      ...projectData,
+      name: newName || `${originalProject.name} (Copy)`,
+    })
+    .select("id, name")
+    .single()
+
+  return { data: newProject, error: createError }
+}
+
+/**
+ * Soft delete a project (set active to false)
+ */
+export async function deleteProject(projectId: number) {
+  const supabase = createClientComponentClient()
+
+  const { data, error } = await supabase
+    .from("projects")
+    .update({ active: false })
+    .eq("id", projectId)
+    .select()
+    .single()
+
+  return { data, error }
 } 

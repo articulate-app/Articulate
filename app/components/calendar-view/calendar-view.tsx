@@ -23,6 +23,7 @@ import { Panel, PanelGroup, PanelResizeHandle } from 'react-resizable-panels';
 import { useTypesenseInfiniteQuery } from '../../hooks/use-typesense-infinite-query';
 import { getTypesenseUpdater } from '../../store/typesense-tasks';
 import { useMobileDetection } from '../../hooks/use-mobile-detection';
+import { readCalendarOptions, writeParam } from '../../lib/utils';
 
 // Import FullCalendar and plugins (plugins must be imported directly, not via dynamic)
 import dayGridPlugin from '@fullcalendar/daygrid';
@@ -235,9 +236,7 @@ interface CalendarViewProps {
 export function CalendarView({ onTaskClick, searchValue = "", onSearchChange, selectedTaskId, selectedTask, expandButton, onOptimisticUpdate, enabled = true }: CalendarViewProps) {
   const isMobile = useMobileDetection();
   const [visibleMonth, setVisibleMonth] = useState<Date>(() => new Date());
-  const [dateField, setDateField] = useState<'delivery_date' | 'publication_date'>('delivery_date');
   const [isAddTaskOpen, setIsAddTaskOpen] = useState(false);
-  const [showSubtasks, setShowSubtasks] = useState(false); // NEW: toggle for subtasks
   const queryClient = useQueryClient();
   const [isSessionReady, setIsSessionReady] = useState(false);
   const [defaultProjectId, setDefaultProjectId] = useState<number | undefined>(undefined);
@@ -350,6 +349,13 @@ export function CalendarView({ onTaskClick, searchValue = "", onSearchChange, se
   const params = useSearchParams();
   const router = useRouter();
 
+  // Read calendar options from URL
+  const calendarOptions = readCalendarOptions(new URLSearchParams(params.toString()));
+  
+  // Map URL dateField to database field
+  const dateField = calendarOptions.dateField === 'delivery' ? 'delivery_date' : 'publication_date';
+  const showSubtasks = calendarOptions.showSubtasks;
+
   // Parse filter values from URL
   const filterValues = React.useMemo(() => {
     const parseDate = (val?: string | null) => (val ? val : '');
@@ -387,6 +393,7 @@ export function CalendarView({ onTaskClick, searchValue = "", onSearchChange, se
     enabled: enabled, // Only run when view is enabled
     staleTime: 60_000,
   });
+
   // Only filter out subtasks in the UI if showSubtasks is off
   const filteredTasks = (tasks || []).filter(task => showSubtasks || !task.parent_task_id_int);
 
@@ -644,6 +651,8 @@ export function CalendarView({ onTaskClick, searchValue = "", onSearchChange, se
   const [dateFieldOpen, setDateFieldOpen] = useState(false);
   // Month navigation and picker
   const [monthPickerOpen, setMonthPickerOpen] = useState(false);
+  // View switcher dropdown
+  const [viewSwitcherOpen, setViewSwitcherOpen] = useState(false);
   // Month/year picker logic
   const months = Array.from({ length: 12 }, (_, i) => new Date(2000, i, 1).toLocaleString('default', { month: 'long' }));
   const years = Array.from({ length: 10 }, (_, i) => new Date().getFullYear() - 5 + i);
@@ -700,12 +709,39 @@ export function CalendarView({ onTaskClick, searchValue = "", onSearchChange, se
     };
   }, []);
 
+  // Visual debugging
+  console.log('[CalendarView] Render:', { enabled, isLoading, tasksCount: tasks?.length, filteredTasksCount: filteredTasks?.length, eventsCount: events?.length })
+
   return (
     <section className="w-full h-full flex flex-col gap-2">
       <div
-        className="flex gap-2 items-center flex-nowrap overflow-x-auto overflow-y-hidden whitespace-nowrap scrollbar-thin scrollbar-thumb-gray-300 scrollbar-track-transparent px-2 py-3 min-h-[56px] w-full bg-white sticky top-0 z-10 border-b border-gray-100"
+        className="flex gap-2 items-center flex-nowrap overflow-x-auto overflow-y-hidden whitespace-nowrap scrollbar-thin scrollbar-thumb-gray-300 scrollbar-track-transparent px-4 py-2 min-h-[56px] w-full bg-white sticky top-0 z-10 border-b border-gray-100"
         style={{ WebkitOverflowScrolling: 'touch' }}
       >
+        {/* View switcher dropdown */}
+        <DropdownMenu open={viewSwitcherOpen} onOpenChange={setViewSwitcherOpen}>
+          <DropdownMenuTrigger asChild>
+            <h2 className="flex items-center gap-1 text-xl font-semibold text-gray-900 cursor-pointer hover:text-gray-700 transition-colors">
+              {params.get('middleView') === 'kanban' ? 'Kanban' : 'Calendar'}
+              <ChevronDown 
+                size={16} 
+                className={`transition-transform duration-200 ${viewSwitcherOpen ? 'rotate-180' : ''}`}
+              />
+            </h2>
+          </DropdownMenuTrigger>
+          <DropdownMenuContent align="start">
+            <DropdownMenuItem onClick={() => {
+              const newParams = new URLSearchParams(params.toString());
+              newParams.set('middleView', 'calendar');
+              router.replace(`?${newParams.toString()}`);
+            }}>Calendar</DropdownMenuItem>
+            <DropdownMenuItem onClick={() => {
+              const newParams = new URLSearchParams(params.toString());
+              newParams.set('middleView', 'kanban');
+              router.replace(`?${newParams.toString()}`);
+            }}>Kanban</DropdownMenuItem>
+          </DropdownMenuContent>
+        </DropdownMenu>
         {/* Month navigation */}
         <button className={pillButton} onClick={handlePrevMonth} aria-label="Previous month" type="button">
           <ChevronLeft size={16} />
@@ -765,35 +801,26 @@ export function CalendarView({ onTaskClick, searchValue = "", onSearchChange, se
             </button>
           </DropdownMenuTrigger>
           <DropdownMenuContent align="start">
-            <DropdownMenuItem onClick={() => { setDateField('delivery_date'); setDateFieldOpen(false); }}>Delivery Date</DropdownMenuItem>
-            <DropdownMenuItem onClick={() => { setDateField('publication_date'); setDateFieldOpen(false); }}>Publication Date</DropdownMenuItem>
-          </DropdownMenuContent>
-        </DropdownMenu>
-        {/* Calendar type dropdown (next to date field) */}
-        <DropdownMenu>
-          <DropdownMenuTrigger asChild>
-            <button className={pillButton + ' min-w-[110px]'} type="button">
-              {params.get('middleView') === 'kanban' ? 'Kanban' : 'Calendar'} <ChevronDown size={16} />
-            </button>
-          </DropdownMenuTrigger>
-          <DropdownMenuContent align="start">
-            <DropdownMenuItem onClick={() => {
-              const newParams = new URLSearchParams(params.toString());
-              newParams.set('middleView', 'calendar');
+            <DropdownMenuItem onClick={() => { 
+              const newParams = writeParam(new URLSearchParams(params.toString()), 'calendar_date_field', 'delivery');
               router.replace(`?${newParams.toString()}`);
-            }}>Calendar</DropdownMenuItem>
-            <DropdownMenuItem onClick={() => {
-              const newParams = new URLSearchParams(params.toString());
-              newParams.set('middleView', 'kanban');
+              setDateFieldOpen(false);
+            }}>Delivery Date</DropdownMenuItem>
+            <DropdownMenuItem onClick={() => { 
+              const newParams = writeParam(new URLSearchParams(params.toString()), 'calendar_date_field', 'publication');
               router.replace(`?${newParams.toString()}`);
-            }}>Kanban</DropdownMenuItem>
+              setDateFieldOpen(false);
+            }}>Publication Date</DropdownMenuItem>
           </DropdownMenuContent>
         </DropdownMenu>
         {/* Subtasks toggle */}
         <span className="mx-2 text-gray-200 select-none">|</span>
         <button
           className={pillButton + (showSubtasks ? ' bg-blue-600 text-white border-blue-600' : '')}
-          onClick={() => setShowSubtasks(v => !v)}
+          onClick={() => {
+            const newParams = writeParam(new URLSearchParams(params.toString()), 'calendar_show_subtasks', !showSubtasks);
+            router.replace(`?${newParams.toString()}`);
+          }}
           type="button"
         >
           Subtasks
@@ -1064,7 +1091,7 @@ export function CalendarView({ onTaskClick, searchValue = "", onSearchChange, se
         // Desktop layout: Use panels
       <PanelGroup direction="vertical" className="flex-1 h-full">
         <Panel minSize={20} defaultSize={showDayTaskPane ? 66 : 100} collapsible={false} className="flex-1 h-full">
-          <div ref={calendarContainerRef} className="h-full p-4">
+          <div ref={calendarContainerRef} className="h-full p-4 md:p-0">
         <style>{`
               /* Minimalist FullCalendar overrides */
               .fc {
@@ -1273,7 +1300,7 @@ export function CalendarView({ onTaskClick, searchValue = "", onSearchChange, se
               <div className="w-full h-px bg-gray-200" />
             </PanelResizeHandle>
             <Panel minSize={15} defaultSize={34} collapsible className="h-full">
-              <div className="relative h-full px-6 py-4 bg-white border-t border-gray-200 shadow-sm flex flex-col">
+              <div className="relative h-full px-4 md:px-0 py-4 bg-white border-t border-gray-200 shadow-sm flex flex-col">
                 <div className="font-semibold text-lg mb-2">
                   Tasks for {formatDateForDisplay(selectedDate || '')}
                 </div>

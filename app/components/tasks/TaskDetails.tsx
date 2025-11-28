@@ -5,7 +5,8 @@ import { cn } from "@/lib/utils"
 import { useEffect, useState, useRef, useCallback, useMemo, Dispatch, SetStateAction } from "react"
 import { Thread } from '../../types/task'
 import { Button } from "../ui/button"
-import { Trash2, Copy, Wand2, Upload, Image as ImageIcon, X, ChevronLeft, ChevronsLeft, Maximize2, Minimize2, ChevronRight, PanelRight, ExternalLink } from "lucide-react"
+import { Trash2, Copy, Wand2, Upload, Image as ImageIcon, X, ChevronLeft, ChevronsLeft, Maximize2, Minimize2, ChevronRight, PanelRight, ExternalLink, Bot, MoreHorizontal, Plus } from "lucide-react"
+import { AiPane } from "../../../features/ai-chat/AiPane"
 import { RichTextEditor } from "../ui/rich-text-editor"
 import { createClientComponentClient } from "@supabase/auth-helpers-nextjs"
 import { ThreadedRealtimeChat } from "../threaded-realtime-chat"
@@ -18,7 +19,7 @@ import { ThreadSwitcherPopover } from "../comments-section/thread-switcher-popov
 import { ThreadParticipantsInline } from "../comments-section/thread-participants-inline"
 import { AddCommentInput } from "../comments-section/add-comment-input"
 import { getTaskById } from '../../../lib/services/tasks'
-import type { Task as BaseTask } from '../../lib/types/tasks'
+import type { Task as BaseTask, ReviewData } from '../../lib/types/tasks'
 import { updateItemInStore } from '../../../hooks/use-infinite-query'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { flushSync } from 'react-dom'
@@ -30,14 +31,17 @@ import { MultiSelect } from '../ui/multi-select'
 import { toast } from '../ui/use-toast'
 import { removeTaskFromAllStores, updateTaskInAllStores, updateTaskInCaches, normalizeTask } from './task-cache-utils'
 import { ShareButton } from '../ui/share-button'
-import { useRouter, useSearchParams } from 'next/navigation';
+import { useRouter, useSearchParams, usePathname } from 'next/navigation';
 import { ParentTaskSelect } from './ParentTaskSelect';
 import debounce from 'lodash.debounce';
 import { StickyAddCommentInput } from "../comments-section/sticky-add-comment-input"
 import { useTaskEditFields } from '../../hooks/use-task-edit-fields';
 import { useTypesenseInfiniteQuery } from '../../hooks/use-typesense-infinite-query';
-import { getTypesenseUpdater } from '../../store/typesense-tasks';
+import { getTypesenseUpdater, removeTaskFromTypesenseStore } from '../../store/typesense-tasks';
 import { useMobileDetection } from '../../hooks/use-mobile-detection';
+import { TaskReviewSummary } from './TaskReviewSummary';
+import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from '../ui/dropdown-menu'
+import { TaskContentTab } from '../../../features/tasks/components/TaskContentTab'
 
 interface TaskDetailsProps {
   isCollapsed: boolean
@@ -45,6 +49,7 @@ interface TaskDetailsProps {
     threads?: any[];
     mentions?: any[];
     thread_watchers?: any[];
+    review_data?: ReviewData | null;
   };
   onClose: () => void
   onCollapse?: () => void
@@ -53,6 +58,7 @@ interface TaskDetailsProps {
   onRestore?: () => void
   onTaskUpdate?: (updatedFields: Partial<Task>) => void
   onAddSubtask?: (parentTaskId: number, projectId: number) => void
+  onDuplicateTask?: (initialValues: any) => void
   attachments?: any[]
   threadId?: number | null
   mentions?: any[]
@@ -62,6 +68,7 @@ interface TaskDetailsProps {
   project_watchers?: any[]
   accessToken?: string | null
   onOptimisticUpdate?: (task: any) => void;
+  pathname?: string
 }
 
 const TaskActivityTimeline = dynamic(() => import("../task-activity/task-activity-timeline").then(m => m.TaskActivityTimeline), { ssr: false })
@@ -94,6 +101,8 @@ type Task = Omit<BaseTask, 'id' | 'assigned_to_id' | 'project_id_int' | 'content
   briefing?: string | null;
   notes?: string | null;
   key_visual_attachment_id?: string | null;
+  is_overdue?: boolean;
+  is_publication_overdue?: boolean;
 };
 
 // Helper to attach abortSignal if available
@@ -136,7 +145,7 @@ function applyNestedOptimisticFields(task: any, updatedFields: any): any {
   return { ...updatedFields, ...patch };
 }
 
-export function TaskDetails({ isCollapsed, selectedTask, onClose, onCollapse, isExpanded = false, onExpand, onRestore, onTaskUpdate, onAddSubtask, attachments = [], threadId, mentions, watchers, currentUser, subtasks = [], project_watchers, accessToken, onOptimisticUpdate }: TaskDetailsProps) {
+export function TaskDetails({ isCollapsed, selectedTask, onClose, onCollapse, isExpanded = false, onExpand, onRestore, onTaskUpdate, onAddSubtask, onDuplicateTask, attachments = [], threadId, mentions, watchers, currentUser, subtasks = [], project_watchers, accessToken, onOptimisticUpdate, pathname: customPathname }: TaskDetailsProps) {
   const isMobile = useMobileDetection();
   
   console.log('TaskDetails props:', { selectedTask, attachments });
@@ -157,6 +166,17 @@ export function TaskDetails({ isCollapsed, selectedTask, onClose, onCollapse, is
   const queryClient = useQueryClient();
   const supabase = createClientComponentClient(); // <-- Move here for all usages
   const searchParams = useSearchParams();
+  const actualPathname = usePathname();
+  const pathname = customPathname || actualPathname || '/tasks';
+  
+  // Get active tab from URL or default to 'details'
+  const activeTab = searchParams.get('detailsTab') || 'details';
+  
+  // Handle AI build state from URL
+  useEffect(() => {
+    const middleView = searchParams.get('middleView');
+    setIsAiBuildOpen(middleView === 'ai-build');
+  }, [searchParams]);
   // Guard: if selectedTask is null, show loading state
 
   // Use threads, mentions, and thread_watchers from props (Edge Function response)
@@ -237,6 +257,9 @@ export function TaskDetails({ isCollapsed, selectedTask, onClose, onCollapse, is
   const [isEditingLanguage, setIsEditingLanguage] = useState(false)
   const [isDeleteDialogOpen, setIsDeleteDialogOpen] = useState(false)
   const [isDeleting, setIsDeleting] = useState(false)
+  const [isAiOpen, setIsAiOpen] = useState(false)
+  const [isAiBuildOpen, setIsAiBuildOpen] = useState(false)
+  const [activeChannelId, setActiveChannelId] = useState<number | null>(null)
 
   // Inline edit states
   const [isEditingTitle, setIsEditingTitle] = useState(false)
@@ -250,9 +273,6 @@ export function TaskDetails({ isCollapsed, selectedTask, onClose, onCollapse, is
   const [isEditingPublicationDate, setIsEditingPublicationDate] = useState(false)
 
   const titleInputRef = useRef<HTMLTextAreaElement>(null)
-  const metaTitleInputRef = useRef<HTMLInputElement>(null)
-  const metaDescriptionInputRef = useRef<HTMLTextAreaElement>(null)
-  const keywordInputRef = useRef<HTMLInputElement>(null)
 
   // Use currentUser prop for chat
   const currentUserName = currentUser?.user_metadata?.full_name || currentUser?.email || '';
@@ -661,6 +681,31 @@ export function TaskDetails({ isCollapsed, selectedTask, onClose, onCollapse, is
     router.push(`/tasks/${task.id}/add-subtask`);
   };
 
+  // Handle AI Build toggle
+  const handleAiBuildToggle = () => {
+    const currentParams = new URLSearchParams(searchParams.toString());
+    if (isAiBuildOpen) {
+      // Close AI build - remove middleView parameter
+      currentParams.delete('middleView');
+    } else {
+      // Open AI build - set middleView to ai-build
+      currentParams.set('middleView', 'ai-build');
+    }
+    const newUrl = currentParams.toString() ? `?${currentParams.toString()}` : '';
+    router.replace(`/tasks${newUrl}`, { scroll: false });
+  };
+
+  // Handle Build with AI from content type editor
+  const handleBuildWithAI = (contentTypeTitle: string, taskId: number) => {
+    // Set AI build state and pass content type context
+    const currentParams = new URLSearchParams(searchParams.toString());
+    currentParams.set('middleView', 'ai-build');
+    currentParams.set('aiContentType', contentTypeTitle);
+    currentParams.set('aiTaskId', taskId.toString());
+    const newUrl = currentParams.toString() ? `?${currentParams.toString()}` : '';
+    router.replace(`/tasks${newUrl}`, { scroll: false });
+  };
+
   // Called when subtask form is cancelled (no subtask created)
   const handleSubtaskFormCancel = async () => {
     if (!task /*|| !pendingMainConversion*/) return;
@@ -721,54 +766,124 @@ export function TaskDetails({ isCollapsed, selectedTask, onClose, onCollapse, is
     if (!task) return;
     setIsDeleteDialogOpen(false); // Close dialog immediately for better UX
     const t = task; // non-null assertion for linter
-    // Remove from all InfiniteList caches immediately for true optimistic UI
+    
+    // Optimistically remove from all caches immediately
     if (typeof t.id === 'number') {
-      removeTaskFromAllStores(t.id)
+      removeTaskFromAllStores(t.id);
     }
-    setIsDeleting(true);
-    // Always close details pane after delete (desktop and mobile)
-    if (typeof onClose === 'function') onClose();
-    try {
-      // Optimistically update cache
-      // Remove the task from the main list
+    
+    // Optimistically remove from all React Query caches
+    queryClient.setQueryData(['tasks'], (old: any) => {
+      if (!old) return old;
+      if (Array.isArray(old)) {
+        return old.filter((x: any) => x.id !== t.id);
+      }
+      return old;
+    });
+    
+    // Remove from all calendar caches
+    const allQueries = queryClient.getQueryCache().getAll();
+    for (const q of allQueries) {
+      const queryKey = q.queryKey;
+      if (!Array.isArray(queryKey) || queryKey[0] !== 'tasks') continue;
+      
+      const oldData = q.state.data;
+      if (Array.isArray(oldData)) {
+        const newData = oldData.filter((x: any) => x.id !== t.id);
+        if (newData.length !== oldData.length) {
+          q.setData([...newData]);
+        }
+      }
+    }
+    
+    // Remove from Kanban caches
+    const kanbanQueries = queryClient.getQueryCache().findAll({ queryKey: ['kanban-bootstrap'] });
+    for (const q of kanbanQueries) {
+      const oldData = q.state.data as any;
+      if (!oldData || !oldData.tasks) continue;
+      
+      const newTasks = { ...oldData.tasks };
+      for (const [groupKey, tasks] of Object.entries(newTasks)) {
+        if (Array.isArray(tasks)) {
+          const filteredTasks = tasks.filter((task: any) => task.id !== t.id);
+          if (filteredTasks.length !== tasks.length) {
+            newTasks[groupKey] = filteredTasks;
+          }
+        }
+      }
+      
+      q.setData({
+        ...oldData,
+        tasks: newTasks
+      });
+    }
+    
+    // Remove from task details cache
+    queryClient.removeQueries({ queryKey: ['task', String(t.id)] });
+    
+    // Remove from Typesense store
+    removeTaskFromTypesenseStore(t.id);
+    
+    // If main task, promote all subtasks to regular tasks optimistically
+    if (String(t.content_type_id) === '39') {
       queryClient.setQueryData(['tasks'], (old: any) => {
         if (!old) return old;
         if (Array.isArray(old)) {
-          return old.filter((x: any) => x.id !== t.id);
+          return old.map((x: any) => x.parent_task_id_int === t.id ? { ...x, parent_task_id_int: null } : x);
         }
         return old;
       });
-      // If main task, promote all subtasks to regular tasks
-      if (String(t.content_type_id) === '39') {
-        queryClient.setQueryData(['tasks'], (old: any) => {
-          if (!old) return old;
-          if (Array.isArray(old)) {
-            return old.map((x: any) => x.parent_task_id_int === t.id ? { ...x, parent_task_id_int: null } : x);
-          }
-          return old;
-        });
-        // Also update subtasks query cache for this main task
-        queryClient.setQueryData(['subtasks', t.id], []);
-      }
+      // Also update subtasks query cache for this main task
+      queryClient.setQueryData(['subtasks', t.id], []);
+    }
+    
+    setIsDeleting(true);
+    
+    // Always close details pane after delete (desktop and mobile)
+    if (typeof onClose === 'function') onClose();
+    
+    try {
       // Backend: promote subtasks, then delete main task
       const supabase = createClientComponentClient();
       if (String(t.content_type_id) === '39') {
         await supabase.from('tasks').update({ parent_task_id_int: null }).eq('parent_task_id_int', t.id);
       }
       await supabase.from('tasks').delete().eq('id', t.id);
+      
+      // Update Typesense if available
+      const typesenseUpdater = getTypesenseUpdater();
+      if (typesenseUpdater) {
+        typesenseUpdater({ ...t, deleted: true });
+      }
+      
+      // Show success message
+      toast({
+        title: 'Task deleted',
+        description: 'The task has been successfully deleted.',
+      });
+      
+      // Invalidate queries to ensure consistency
       queryClient.invalidateQueries({ queryKey: ['tasks'] });
       queryClient.invalidateQueries({ queryKey: ['subtasks'] });
+      queryClient.invalidateQueries({ queryKey: ['kanban-bootstrap'] });
+      
     } catch (err: any) {
+      console.error('Failed to delete task:', err);
+      
       toast({
         title: 'Failed to delete task',
         description: err?.message || 'An error occurred while deleting the task.',
         variant: 'destructive',
       });
-      // Rollback: refetch tasks
+      
+      // Rollback: refetch all data to restore the task
       queryClient.invalidateQueries({ queryKey: ['tasks'] });
       queryClient.invalidateQueries({ queryKey: ['subtasks'] });
+      queryClient.invalidateQueries({ queryKey: ['kanban-bootstrap'] });
+      queryClient.invalidateQueries({ queryKey: ['task'] });
+    } finally {
+      setIsDeleting(false);
     }
-    setIsDeleting(false);
   }
 
   useEffect(() => {
@@ -828,7 +943,6 @@ export function TaskDetails({ isCollapsed, selectedTask, onClose, onCollapse, is
   }, [projectWatchers, currentAuthUserId]);
 
   const [isActivityOpen, setIsActivityOpen] = useState(false);
-  const [isSeoOpen, setIsSeoOpen] = useState(false);
 
   // Add state for key visual attachment
   const [keyVisualId, setKeyVisualId] = useState<string | null>(task?.key_visual_attachment_id ?? null);
@@ -852,17 +966,7 @@ export function TaskDetails({ isCollapsed, selectedTask, onClose, onCollapse, is
     return attachment.mime_type.startsWith('image/') || attachment.mime_type.startsWith('video/');
   }
 
-  // Local state for SEO fields
-  const [metaTitle, setMetaTitle] = useState(task?.meta_title ?? '');
-  const [metaDescription, setMetaDescription] = useState(task?.meta_description ?? '');
-  const [keyword, setKeyword] = useState(task?.keyword ?? '');
 
-  // Sync local state when task changes
-  useEffect(() => {
-    setMetaTitle(task?.meta_title ?? '');
-    setMetaDescription(task?.meta_description ?? '');
-    setKeyword(task?.keyword ?? '');
-  }, [task?.meta_title, task?.meta_description, task?.keyword]);
 
   // Define handleFieldChange before any usage
   // Only these fields should trigger list/kanban/calendar refetches:
@@ -879,8 +983,29 @@ export function TaskDetails({ isCollapsed, selectedTask, onClose, onCollapse, is
    */
   const handleFieldChange = async (field: keyof Task, value: any, extraFields: Partial<Task> = {}) => {
     if (!task) return;
+    
+    // Calculate overdue status if this field affects it
+    let overdueFields = {};
+    if (['delivery_date', 'publication_date', 'project_status_id'].includes(field) && editFields?.project_statuses) {
+      const newDeliveryDate = field === 'delivery_date' ? value : currentDueDate;
+      const newPublicationDate = field === 'publication_date' ? value : currentPublicationDate;
+      const newStatusId = field === 'project_status_id' ? value : currentStatusId;
+      
+      const { isOverdue, isPublicationOverdue } = calculateOverdueStatus(
+        newDeliveryDate,
+        newPublicationDate,
+        newStatusId,
+        editFields.project_statuses
+      );
+      
+      overdueFields = {
+        is_overdue: isOverdue,
+        is_publication_overdue: isPublicationOverdue
+      };
+    }
+    
     if (FIELDS_THAT_REQUIRE_LIST_INVALIDATION.includes(field)) {
-      let updatedFields = { ...task, [field]: value, ...extraFields };
+      let updatedFields = { ...task, [field]: value, ...extraFields, ...overdueFields };
       updatedFields = applyNestedOptimisticFields(task, updatedFields);
       updateTaskInCaches(queryClient, updatedFields); // Optimistic update
       console.log('[TaskDetails] Calling Typesense updater with:', updatedFields);
@@ -888,7 +1013,7 @@ export function TaskDetails({ isCollapsed, selectedTask, onClose, onCollapse, is
       if (onTaskUpdate) onTaskUpdate({ ...updatedFields });
     }
     try {
-      const updatePayload: any = { [field]: value, ...extraFields };
+      const updatePayload: any = { [field]: value, ...extraFields, ...overdueFields };
       const { data, error } = await supabase
         .from('tasks')
         .update(updatePayload)
@@ -1337,74 +1462,161 @@ export function TaskDetails({ isCollapsed, selectedTask, onClose, onCollapse, is
   // Add Typesense updater
   const typesenseQuery = useTypesenseInfiniteQuery({ q: '', pageSize: 25, enabled: false });
 
+  // Helper to calculate overdue status based on dates and project status
+  function calculateOverdueStatus(
+    deliveryDate: string | null,
+    publicationDate: string | null,
+    projectStatusId: string | null,
+    projectStatuses: any[]
+  ): { isOverdue: boolean; isPublicationOverdue: boolean } {
+    const now = new Date();
+    now.setHours(0, 0, 0, 0); // Compare only dates, not time
+
+    // Find the current project status
+    const currentStatus = projectStatuses.find(s => String(s.id) === String(projectStatusId));
+    
+    // Calculate delivery overdue
+    let isOverdue = false;
+    if (deliveryDate && !currentStatus?.is_closed) {
+      const deliveryDateObj = new Date(deliveryDate);
+      deliveryDateObj.setHours(0, 0, 0, 0);
+      isOverdue = deliveryDateObj < now;
+    }
+
+    // Calculate publication overdue
+    let isPublicationOverdue = false;
+    if (publicationDate && !currentStatus?.is_publication_closed) {
+      const publicationDateObj = new Date(publicationDate);
+      publicationDateObj.setHours(0, 0, 0, 0);
+      isPublicationOverdue = publicationDateObj < now;
+    }
+
+    return { isOverdue, isPublicationOverdue };
+  }
+
+  // Helper function to format date based on current year
+  function formatDateWithYear(dateString: string | null | undefined): string {
+    if (!dateString) return "—";
+    try {
+      const date = new Date(dateString);
+      const now = new Date();
+      const currentYear = now.getFullYear();
+      const dateYear = date.getFullYear();
+      
+      if (dateYear === currentYear) {
+        // Current year: dd/mmm format (e.g., "18/jul", "9/jul")
+        const day = date.getDate().toString().padStart(2, '0');
+        const month = date.toLocaleDateString('en-US', { month: 'short' }).toLowerCase();
+        return `${day}/${month}`;
+      } else {
+        // Previous years: dd/mm/yyyy format
+        return date.toLocaleDateString('en-US', {
+          day: '2-digit',
+          month: '2-digit',
+          year: 'numeric'
+        });
+      }
+    } catch (error) {
+      console.error('Error formatting date:', error);
+      return "Invalid date";
+    }
+  }
+
+  // --- Task Duplicate Logic ---
+  const handleDuplicateTask = () => {
+    if (!task) return;
+    
+    // Prepare initial values for the AddTaskForm
+    const initialValues = {
+      title: `${task.title} (Copy)`,
+      notes: task.notes || "",
+      briefing: task.briefing || "",
+      assigned_to_id: task.assigned_to_id || "",
+      project_id_int: task.project_id_int ? String(task.project_id_int) : "",
+      content_type_id: task.content_type_id || "",
+      production_type_id: task.production_type_id || "",
+      language_id: task.language_id || "",
+      project_status_id: task.project_status_id || "",
+      channels: task.channel_names || [],
+      delivery_date: task.delivery_date || "",
+      publication_date: task.publication_date || "",
+    };
+    
+    // Call parent's onDuplicateTask handler
+    if (onDuplicateTask) {
+      onDuplicateTask(initialValues);
+    }
+  };
+
   return (
+    <>
     <div ref={taskDetailsRef} className="h-full flex flex-col relative">
       <div className="p-4 bg-white sticky top-0 z-10">
-        {/* Action bar: left-aligned, expand/collapse right-aligned */}
-        <div className="flex items-center mb-2">
-          <div className="flex items-center gap-2 flex-1">
-            {/* Folder tree icon for regular tasks (not main or subtask) */}
-            {!isLoading && task && task.content_type_id !== '39' && !task.parent_task_id_int && (
-              <button
-                type="button"
-                className="text-gray-500 hover:text-blue-600 focus:outline-none"
-                onClick={handleAddSubtaskForRegular}
-                title="Add Subtask"
-                aria-label="Add Subtask"
-              >
-                <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="w-5 h-5">
-                  <circle cx="6" cy="18" r="2" />
-                  <circle cx="6" cy="6" r="2" />
-                  <circle cx="18" cy="18" r="2" />
-                  <path d="M6 8v8" />
-                  <path d="M8 6h8a2 2 0 0 1 2 2v8" />
-                </svg>
-              </button>
-            )}
-            <Button
-              variant="ghost"
-              size="sm"
-              onClick={() => {/* Implement duplicate */}}
-              title="Duplicate Task"
-              aria-label="Duplicate Task"
-            >
-              <Copy className="w-4 h-4" />
-            </Button>
-            <Button
-              variant="ghost"
-              size="sm"
-              onClick={() => setIsDeleteDialogOpen(true)}
-              title="Delete Task"
-              aria-label="Delete Task"
-            >
-              <Trash2 className="w-4 h-4" />
-            </Button>
-            <Button
-              variant="ghost"
-              size="sm"
-              onClick={() => {/* Implement AI build */}}
-              title="AI Build"
-              aria-label="AI Build"
-            >
-              <Wand2 className="w-4 h-4" />
-            </Button>
-            <ShareButton 
-              url={typeof window !== 'undefined' ? window.location.href : ''} 
-              className="text-gray-500 hover:text-blue-600"
-            />
+        {/* Header: title and actions */}
+        <div className="flex items-center justify-between mb-2">
+          {/* Task Title */}
+          <div className="flex-1 min-w-0 mr-4">
+            <h1 className="text-lg font-semibold text-gray-900 truncate">
+              {isLoading ? "Loading..." : (task?.title || "Untitled Task")}
+            </h1>
           </div>
-          <div className="flex items-center gap-2 flex-1 justify-end">
-            {/* Collapse button - hidden on mobile */}
+          
+          {/* Actions - right aligned */}
+          <div className="flex items-center gap-2">
+            {/* Actions dropdown menu */}
+            <DropdownMenu>
+              <DropdownMenuTrigger asChild>
+                <Button variant="ghost" size="sm" className="h-8 w-8 p-0">
+                  <MoreHorizontal className="h-4 w-4" />
+                </Button>
+              </DropdownMenuTrigger>
+              <DropdownMenuContent align="end">
+                {/* Add subtask - only for regular tasks (not main or subtask) */}
+                {!isLoading && task && task.content_type_id !== '39' && !task.parent_task_id_int && (
+                  <DropdownMenuItem onClick={handleAddSubtaskForRegular}>
+                    <Plus className="w-4 h-4 mr-2" />
+                    Add Subtask
+                  </DropdownMenuItem>
+                )}
+                <DropdownMenuItem onClick={handleDuplicateTask}>
+                  <Copy className="w-4 h-4 mr-2" />
+                  Duplicate Task
+                </DropdownMenuItem>
+                <DropdownMenuItem onClick={() => {
+                  if (typeof window !== 'undefined') {
+                    navigator.clipboard.writeText(window.location.href);
+                    toast({
+                      title: 'Link copied',
+                      description: 'Task link copied to clipboard',
+                    });
+                  }
+                }}>
+                  <Copy className="w-4 h-4 mr-2" />
+                  Copy Link
+                </DropdownMenuItem>
+                <DropdownMenuItem onClick={handleAiBuildToggle}>
+                  <Wand2 className="w-4 h-4 mr-2" />
+                  Build with AI
+                </DropdownMenuItem>
+                <DropdownMenuItem onClick={() => setIsDeleteDialogOpen(true)} className="text-red-600">
+                  <Trash2 className="w-4 h-4 mr-2" />
+                  Delete Task
+                </DropdownMenuItem>
+              </DropdownMenuContent>
+            </DropdownMenu>
+            
+            {/* Close button - hidden on mobile */}
             {onCollapse && !isMobile && (
               <button
                 className="inline-flex items-center justify-center w-7 h-7 text-gray-500 hover:bg-gray-100 transition focus:outline-none focus:ring-2 focus:ring-blue-400"
-                aria-label="Collapse details pane"
+                aria-label="Close details pane"
                 onClick={onCollapse}
                 type="button"
               >
-                <PanelRight className="w-5 h-5" />
+                <X className="w-5 h-5" />
               </button>
             )}
+            
             {/* Expand/restore button - hidden on mobile */}
             {(onExpand || onRestore) && !isMobile && (
               <button
@@ -1419,29 +1631,81 @@ export function TaskDetails({ isCollapsed, selectedTask, onClose, onCollapse, is
             )}
           </div>
         </div>
-        {/* Always-editable task title */}
-        <div>
-          <label className="text-sm font-medium text-gray-400 self-start justify-self-start text-left sr-only" htmlFor="task-title">Title</label>
-          <textarea
-            ref={titleInputRef}
-            id="task-title"
-            value={isLoading ? '' : title}
-            onChange={isLoading ? undefined : (e => setTitle(e.target.value))}
-            onBlur={isLoading ? undefined : (() => { if (title !== task?.title) handleFieldChange('title', title); })}
-            rows={1}
-            className="w-full resize-none text-2xl font-semibold self-start bg-transparent focus:ring-0 outline-none border-none shadow-none p-0 mb-2"
-            aria-label="Task title"
-            style={{ minHeight: '2.5rem', overflow: 'hidden' }}
-            onInput={isLoading ? undefined : (e => { const el = e.currentTarget; el.style.height = '2.5rem'; el.style.height = el.scrollHeight + 'px'; })}
-            onKeyDown={isLoading ? undefined : (e => { if (e.key === 'Enter') { e.preventDefault(); if (title !== task?.title) handleFieldChange('title', title); (e.target as HTMLTextAreaElement).blur(); } })}
-            disabled={isLoading}
-          />
-        </div>
       </div>
-      {/* Main scrollable content */}
-      <div className="flex-1 overflow-auto relative">
-        <div className="p-4 pb-0">
+      {/* Main content with tabs */}
+      <div className="flex-1 flex flex-col overflow-hidden relative">
+        <Tabs 
+          value={activeTab} 
+          onValueChange={(value) => {
+            const newParams = new URLSearchParams(searchParams.toString());
+            newParams.set('detailsTab', value);
+            router.replace(`${pathname}?${newParams.toString()}`, { scroll: false });
+          }}
+          className="h-full flex flex-col"
+        >
+          <TabsList className="grid w-full grid-cols-3 bg-transparent border-b border-gray-200 p-0 h-auto">
+            <TabsTrigger 
+              value="details" 
+              className="px-4 py-2 text-sm font-medium text-gray-600 hover:text-gray-900 data-[state=active]:text-gray-900 data-[state=active]:border-b-2 data-[state=active]:border-blue-500 bg-transparent border-b-2 border-transparent rounded-none"
+            >
+              Details
+            </TabsTrigger>
+            <TabsTrigger 
+              value="content" 
+              className="px-4 py-2 text-sm font-medium text-gray-600 hover:text-gray-900 data-[state=active]:text-gray-900 data-[state=active]:border-b-2 data-[state=active]:border-blue-500 bg-transparent border-b-2 border-transparent rounded-none"
+            >
+              Content
+            </TabsTrigger>
+            <TabsTrigger 
+              value="reviews" 
+              className="px-4 py-2 text-sm font-medium text-gray-600 hover:text-gray-900 data-[state=active]:text-gray-900 data-[state=active]:border-b-2 data-[state=active]:border-blue-500 bg-transparent border-b-2 border-transparent rounded-none"
+            >
+              Reviews
+            </TabsTrigger>
+          </TabsList>
+          
+          <TabsContent value="details" className="flex-1 overflow-auto">
+            <div className="p-4 pb-0">
           <div className="grid grid-cols-[max-content_1fr] gap-x-4 gap-y-2 items-start">
+            {/* Task Title */}
+            <label className="text-sm font-medium text-gray-400 self-center justify-self-start text-left" htmlFor="task-title">Title</label>
+            {isEditingTitle ? (
+              <textarea
+                ref={titleInputRef}
+                id="task-title"
+                value={title}
+                onChange={e => setTitle(e.target.value)}
+                onBlur={() => {
+                  if (title !== task?.title) handleFieldChange('title', title);
+                  setIsEditingTitle(false);
+                }}
+                onKeyDown={e => { 
+                  if (e.key === 'Enter' && !e.shiftKey) { 
+                    if (title !== task?.title) handleFieldChange('title', title);
+                    setIsEditingTitle(false); 
+                  } else if (e.key === 'Escape') {
+                    setTitle(task?.title ?? '');
+                    setIsEditingTitle(false);
+                  }
+                }}
+                className="w-full px-3 py-2 border rounded-md focus:outline-none focus:ring-2 focus:ring-gray-200 resize-none"
+                rows={1}
+                autoFocus
+                disabled={isLoading}
+              />
+            ) : (
+              <div
+                className="w-full px-3 py-2 rounded-md cursor-pointer hover:bg-gray-50 min-h-[40px] flex items-center"
+                tabIndex={0}
+                onClick={isLoading ? undefined : () => setIsEditingTitle(true)}
+                onKeyDown={isLoading ? undefined : (e => { if (e.key === 'Enter') setIsEditingTitle(true) })}
+                aria-label="Edit title"
+                title={title || ''}
+                style={isLoading ? { pointerEvents: 'none', opacity: 0.5 } : {}}
+              >
+                <span className="text-lg font-semibold text-gray-900">{title || <span className="text-gray-400">Click to set title</span>}</span>
+              </div>
+            )}
             {/* Project */}
             <label className="text-sm font-medium text-gray-400 self-center justify-self-start text-left" htmlFor="task-project">Project</label>
             {isEditingProject ? (
@@ -1535,10 +1799,17 @@ export function TaskDetails({ isCollapsed, selectedTask, onClose, onCollapse, is
                 onClick={isLoading ? undefined : (() => setIsEditingDueDate(true))}
                 onKeyDown={isLoading ? undefined : (e => { if (e.key === 'Enter') setIsEditingDueDate(true) })}
                 aria-label="Edit due date"
-                title={currentDueDate ? new Date(currentDueDate).toLocaleDateString() : ''}
+                title={formatDateWithYear(currentDueDate)}
                 style={isLoading ? { pointerEvents: 'none', opacity: 0.5 } : {}}
               >
-                {currentDueDate ? new Date(currentDueDate).toLocaleDateString() : <span className="text-gray-400">Click to set due date</span>}
+                <div className="flex items-center gap-2">
+                  <span className={task?.is_overdue ? "text-red-600 font-medium" : ""}>
+                    {currentDueDate ? formatDateWithYear(currentDueDate) : <span className="text-gray-400">Click to set due date</span>}
+                  </span>
+                  {task?.is_overdue && (
+                    <span className="text-xs text-red-600 font-medium">(delivery overdue)</span>
+                  )}
+                </div>
               </div>
             )}
             {/* Publication Date (as editable date) */}
@@ -1562,10 +1833,17 @@ export function TaskDetails({ isCollapsed, selectedTask, onClose, onCollapse, is
                 onClick={isLoading ? undefined : (() => setIsEditingPublicationDate(true))}
                 onKeyDown={isLoading ? undefined : (e => { if (e.key === 'Enter') setIsEditingPublicationDate(true) })}
                 aria-label="Edit publication date"
-                title={currentPublicationDate ? new Date(currentPublicationDate).toLocaleDateString() : ''}
+                title={formatDateWithYear(currentPublicationDate)}
                 style={isLoading ? { pointerEvents: 'none', opacity: 0.5 } : {}}
               >
-                {currentPublicationDate ? new Date(currentPublicationDate).toLocaleDateString() : <span className="text-gray-400">Click to set publication date</span>}
+                <div className="flex items-center gap-2">
+                  <span className={task?.is_publication_overdue ? "text-red-600 font-medium" : ""}>
+                    {currentPublicationDate ? formatDateWithYear(currentPublicationDate) : <span className="text-gray-400">Click to set publication date</span>}
+                  </span>
+                  {task?.is_publication_overdue && (
+                    <span className="text-xs text-red-600 font-medium">(publication overdue)</span>
+                  )}
+                </div>
               </div>
             )}
             {/* Status (as pill) */}
@@ -1810,7 +2088,11 @@ export function TaskDetails({ isCollapsed, selectedTask, onClose, onCollapse, is
                               )}
                             </td>
                             {/* Due date */}
-                            <td className="py-2 px-2 text-xs text-gray-500 text-right whitespace-nowrap min-w-[80px]">{st.delivery_date ? new Date(st.delivery_date).toLocaleDateString(undefined, { day: 'numeric', month: 'short', year: 'numeric' }) : ''}</td>
+                            <td className="py-2 px-2 text-xs text-right whitespace-nowrap min-w-[80px]">
+                              <span className={st.is_overdue ? "text-red-600 font-medium" : "text-gray-500"}>
+                                {st.delivery_date ? formatDateWithYear(st.delivery_date) : ''}
+                              </span>
+                            </td>
                             {/* Assignee initials */}
                             <td className="py-2 px-2 text-right">
                               {fullName && (
@@ -1906,6 +2188,7 @@ export function TaskDetails({ isCollapsed, selectedTask, onClose, onCollapse, is
               toolbarId="ql-toolbar-rich-briefing"
             />
           </div>
+          
           {/* Notes section (rich text, always editable) */}
           <div className="mt-6">
             <label className="text-sm font-medium text-gray-400 text-left mb-1 block">Notes</label>
@@ -1918,61 +2201,6 @@ export function TaskDetails({ isCollapsed, selectedTask, onClose, onCollapse, is
               readOnly={false}
               toolbarId="ql-toolbar-rich-notes"
             />
-          </div>
-          {/* SEO section (collapsible) */}
-          <div className="mt-6">
-            <button
-              className="flex items-center w-full text-left text-sm font-medium text-gray-400 mb-1 focus:outline-none"
-              onClick={() => setIsSeoOpen((open) => !open)}
-              aria-expanded={isSeoOpen}
-              aria-controls="seo-panel"
-              type="button"
-            >
-              <ChevronRight className={`transition-transform mr-2 ${isSeoOpen ? 'rotate-90' : ''}`} />
-              SEO
-            </button>
-            {isSeoOpen && (
-              <div id="seo-panel">
-                <div className="grid grid-cols-[max-content_1fr] gap-x-4 gap-y-2 items-start">
-                  {/* Meta Title */}
-                  <label className="text-sm font-medium text-gray-400 self-start justify-self-start text-left" htmlFor="task-meta-title">Meta Title</label>
-                  <input
-                    ref={metaTitleInputRef}
-                    id="task-meta-title"
-                    type="text"
-                    value={metaTitle}
-                    onChange={e => setMetaTitle(e.target.value)}
-                    onBlur={() => handleFieldChange('meta_title', metaTitle)}
-                    onKeyDown={e => { if (e.key === 'Enter') { handleFieldChange('meta_title', metaTitle); setIsEditingMetaTitle(false); } }}
-                    className="w-full px-3 py-2 border rounded-md focus:outline-none focus:ring-2 focus:ring-gray-200"
-                  />
-                  {/* Meta Description */}
-                  <label className="text-sm font-medium text-gray-400 self-start justify-self-start text-left" htmlFor="task-meta-description">Meta Description</label>
-                  <textarea
-                    ref={metaDescriptionInputRef}
-                    id="task-meta-description"
-                    value={metaDescription}
-                    onChange={e => setMetaDescription(e.target.value)}
-                    onBlur={() => handleFieldChange('meta_description', metaDescription)}
-                    onKeyDown={e => { if (e.key === 'Enter') { handleFieldChange('meta_description', metaDescription); setIsEditingMetaDescription(false); } }}
-                    className="w-full px-3 py-2 border rounded-md focus:outline-none focus:ring-2 focus:ring-gray-200 max-h-32 overflow-y-auto"
-                    rows={3}
-                  />
-                  {/* Keywords */}
-                  <label className="text-sm font-medium text-gray-400 self-start justify-self-start text-left" htmlFor="task-keyword">Keywords</label>
-                  <input
-                    ref={keywordInputRef}
-                    id="task-keyword"
-                    type="text"
-                    value={keyword}
-                    onChange={e => setKeyword(e.target.value)}
-                    onBlur={() => handleFieldChange('keyword', keyword)}
-                    onKeyDown={e => { if (e.key === 'Enter') { handleFieldChange('keyword', keyword); setIsEditingKeyword(false); } }}
-                    className="w-full px-3 py-2 border rounded-md focus:outline-none focus:ring-2 focus:ring-gray-200"
-                  />
-                </div>
-              </div>
-            )}
           </div>
           {/* Activity section (collapsible) */}
           <div className="mt-6">
@@ -2015,7 +2243,39 @@ export function TaskDetails({ isCollapsed, selectedTask, onClose, onCollapse, is
               />
             )}
           </div>
-        </div>
+            </div>
+          </TabsContent>
+          
+          <TabsContent value="content" className="flex-1 overflow-auto">
+            <div className="p-4 pb-0">
+              {/* Content Tab - Channels, Briefing, Components, SEO */}
+              {taskIdNum && (
+                <TaskContentTab
+                  taskId={taskIdNum}
+                  projectId={task?.project_id_int || undefined}
+                  contentTypeId={task?.content_type_id ? Number(task.content_type_id) : undefined}
+                  languageId={task?.language_id ? Number(task.language_id) : undefined}
+                  onChannelChange={setActiveChannelId}
+                />
+              )}
+            </div>
+          </TabsContent>
+          
+          <TabsContent value="reviews" className="flex-1 overflow-auto">
+            <div className="p-4 pb-0">
+              {/* Reviews section */}
+              <TaskReviewSummary 
+                reviewData={selectedTask?.review_data}
+                taskId={taskIdNum}
+                onReviewsChanged={() => {
+                  // Refetch task details to update the review summary
+                  queryClient.invalidateQueries({ queryKey: ['task', String(task?.id), accessToken] });
+                }}
+              />
+            </div>
+          </TabsContent>
+        </Tabs>
+        
         {/* Chat input sticky at the bottom */}
         {task && (
           <div className="sticky bottom-0 left-0 right-0 bg-white border-t z-30 flex flex-col" style={{ boxShadow: '0 -2px 8px rgba(0,0,0,0.03)' }}>
@@ -2138,6 +2398,17 @@ export function TaskDetails({ isCollapsed, selectedTask, onClose, onCollapse, is
         </DialogContent>
       </Dialog>
       
+
+      
     </div>
+    <AiPane 
+      isOpen={isAiOpen} 
+      onClose={() => setIsAiOpen(false)} 
+      initialScope="task" 
+      taskId={taskIdNum}
+      contentTypeTitle={searchParams.get('aiContentType') || undefined}
+      activeChannelId={activeChannelId}
+    />
+    </>
   )
 } 

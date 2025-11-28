@@ -10,7 +10,7 @@ export async function getUsers(): Promise<User[]> {
     const supabase = createClientComponentClient()
     
     const { data, error } = await supabase
-      .from('users')
+      .from('view_users_i_can_see')
       .select('id, full_name')
       .order('full_name')
 

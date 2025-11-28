@@ -12,28 +12,6 @@ interface UseTypesenseInfiniteQueryOptions {
   enabled?: boolean; // New param to control when queries should run
 }
 
-// Check if Typesense environment variables are available
-const isTypesenseAvailable = () => {
-  if (typeof window === 'undefined') {
-    console.log('[Typesense] Server-side, not available');
-    return false; // Server-side
-  }
-  const host = process.env.NEXT_PUBLIC_TYPESENSE_HOST;
-  const apiKey = process.env.NEXT_PUBLIC_TYPESENSE_SEARCH_ONLY_API_KEY;
-  
-  console.log('[Typesense] Availability check:', {
-    host: host ? 'present' : 'missing',
-    apiKey: apiKey ? 'present' : 'missing',
-    window: typeof window !== 'undefined',
-    hostValue: host,
-    apiKeyLength: apiKey ? apiKey.length : 0
-  });
-  
-  const available = !!(host && apiKey);
-  console.log('[Typesense] Available:', available);
-  return !!(host && apiKey);
-};
-
 // Helper: does the updated task match the current search/filter?
 function doesTaskMatchSearch(task: any, q: string, filters: Record<string, string | string[]>, project?: string): boolean {
   // Check project filter
@@ -86,16 +64,12 @@ export function useTypesenseInfiniteQuery({ q, project, filters = {}, pageSize =
   useEffect(() => {
     if (!enabled) return; // Don't fetch if disabled
     if (isFetching) return; // Don't fetch if already fetching
-    if (!isTypesenseAvailable()) {
-      console.log('[Typesense] Environment variables not available, skipping fetch');
-      return;
-    }
     
     let cancelled = false;
     async function fetchPage() {
       if (!hasMore && page > 1) return;
       
-      console.log(`[Typesense] Starting fetch for page ${page}, q: "${q}"`);
+      console.log(`[Supabase Edge Function] Starting fetch for page ${page}, q: "${q}"`);
       setIsFetching(true);
       setError(null);
       
@@ -103,13 +77,13 @@ export function useTypesenseInfiniteQuery({ q, project, filters = {}, pageSize =
         const result = await fetchTasksFromTypesense({ q, project, filters, page, perPage: pageSize, sortBy, sortOrder });
         if (cancelled) return;
         
-        console.log(`[Typesense] Completed fetch for page ${page}, got ${result.tasks.length} tasks`);
+        console.log(`[Supabase Edge Function] Completed fetch for page ${page}, got ${result.tasks.length} tasks`);
         setTasks(page === 1 ? result.tasks : [...tasks, ...result.tasks]);
         setHasMore(result.tasks.length === pageSize && result.next_page);
         setIsSuccess(true);
       } catch (err: any) {
-        console.error(`[Typesense] Error fetching page ${page}:`, err);
-        setError(err?.message || 'Failed to fetch from Typesense');
+        console.error(`[Supabase Edge Function] Error fetching page ${page}:`, err);
+        setError(err?.message || 'Failed to fetch from Supabase Edge Function');
         setIsSuccess(false);
       } finally {
         setIsFetching(false);
@@ -127,14 +101,23 @@ export function useTypesenseInfiniteQuery({ q, project, filters = {}, pageSize =
     }
   }, [isFetching, hasMore, page, setPage]);
 
-  // Optimistically update a task in the list by id, or remove if it no longer matches
+  // Optimistically update a task in the list by id, add if new and matches, or remove if it no longer matches
   const updateTaskInList = useCallback((updatedTask: any) => {
     if (doesTaskMatchSearch(updatedTask, q, filters, project)) {
-      updateTask(updatedTask);
+      // Check if task already exists in the list
+      const existingTask = tasks.find(task => String(task.id) === String(updatedTask.id));
+      if (existingTask) {
+        // Update existing task
+        updateTask(updatedTask);
+      } else {
+        // Add new task at the beginning (new tasks typically appear at the top)
+        setTasks(prev => [updatedTask, ...prev]);
+      }
     } else {
+      // Remove task if it no longer matches the search/filter criteria
       setTasks(prev => prev.filter(task => String(task.id) !== String(updatedTask.id)));
     }
-  }, [q, filters, project, updateTask, setTasks]);
+  }, [q, filters, project, updateTask, setTasks, tasks]);
 
   return { data: tasks, isFetching, hasMore, fetchNextPage, isSuccess, error, updateTaskInList };
 } 

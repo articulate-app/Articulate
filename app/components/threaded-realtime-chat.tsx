@@ -12,9 +12,11 @@ interface ThreadedRealtimeChatProps {
   currentPublicUserId?: number
   hideInput?: boolean
   initialMessages?: any[]
+  focusedMentionId?: number | null
+  onFocusedMentionCleared?: () => void
 }
 
-export function ThreadedRealtimeChat({ threadId, currentUserId, currentUserName, currentUserAvatar, currentUserEmail, currentPublicUserId, hideInput, initialMessages }: ThreadedRealtimeChatProps) {
+export function ThreadedRealtimeChat({ threadId, currentUserId, currentUserName, currentUserAvatar, currentUserEmail, currentPublicUserId, hideInput, initialMessages, focusedMentionId, onFocusedMentionCleared }: ThreadedRealtimeChatProps) {
   const {
     messages,
     sendMessage,
@@ -53,13 +55,38 @@ export function ThreadedRealtimeChat({ threadId, currentUserId, currentUserName,
     return () => container.removeEventListener('scroll', handleScroll);
   }, [hasMore, isLoadingMore, loadOlderMessages]);
 
-  // Scroll to bottom when a new message is added
+  // Scroll to bottom when a new message is added (unless we're focusing on a specific message)
   React.useEffect(() => {
+    if (focusedMentionId) return; // Don't auto-scroll if we're focusing on a message
     const container = chatContainerRef.current;
     if (!container) return;
     // Scroll to bottom
     container.scrollTop = container.scrollHeight;
-  }, [messages]);
+  }, [messages, focusedMentionId]);
+
+  // Handle focusing on a specific message (from search results)
+  React.useEffect(() => {
+    if (!focusedMentionId || !messages.length) return;
+
+    // Wait a bit for messages to render
+    const timer = setTimeout(() => {
+      const el = document.querySelector(
+        `[data-mention-id="${focusedMentionId}"]`
+      );
+      if (el) {
+        el.scrollIntoView({ behavior: "smooth", block: "center" });
+        el.classList.add("ring-2", "ring-indigo-500", "ring-offset-2");
+        setTimeout(() => {
+          el.classList.remove("ring-2", "ring-indigo-500", "ring-offset-2");
+          if (onFocusedMentionCleared) {
+            onFocusedMentionCleared();
+          }
+        }, 2000);
+      }
+    }, 100);
+
+    return () => clearTimeout(timer);
+  }, [focusedMentionId, messages, onFocusedMentionCleared]);
 
   if (isLoading) return <div className="p-4 text-muted-foreground">Loading chat…</div>
   if (error) return <div className="p-4 text-destructive">{error}</div>
@@ -75,6 +102,7 @@ export function ThreadedRealtimeChat({ threadId, currentUserId, currentUserName,
         onDelete={deleteMessage}
         hideInput={hideInput || !publicUserId}
         currentPublicUserId={publicUserId}
+        focusedMentionId={focusedMentionId}
       />
       {isLoadingMore && <div className="absolute top-0 left-0 w-full text-center text-xs text-muted-foreground">Loading more…</div>}
     </div>

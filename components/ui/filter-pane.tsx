@@ -66,7 +66,7 @@ export function FilterPane({ isOpen, onClose, onFilterChange, className }: Filte
     const fetchOptions = async () => {
       // Fetch users
       const { data: users } = await supabase
-        .from('users')
+        .from('view_users_i_can_see')
         .select('id, full_name')
         .order('full_name');
 

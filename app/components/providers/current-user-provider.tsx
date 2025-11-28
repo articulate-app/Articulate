@@ -8,6 +8,7 @@ export function CurrentUserProvider({ children }: { children: React.ReactNode })
   const setPublicUserId = useCurrentUserStore((s) => s.setPublicUserId);
   const setFullName = useCurrentUserStore((s) => s.setFullName);
   const setUserMetadata = useCurrentUserStore((s) => s.setUserMetadata);
+  const setUserTeams = useCurrentUserStore((s) => s.setUserTeams);
 
   useEffect(() => {
     console.log('CurrentUserProvider useEffect running');
@@ -28,15 +29,34 @@ export function CurrentUserProvider({ children }: { children: React.ReactNode })
         setPublicUserId(userRow.id);
         setFullName(userRow.full_name);
         setUserMetadata(session?.user?.user_metadata);
+
+        // Fetch user teams - only need team IDs for AR/AP detection
+        const { data: teamsData, error: teamsError } = await supabase
+          .from('teams_users')
+          .select('team_id')
+          .eq('user_id', userRow.id);
+
+        if (!teamsError && teamsData) {
+          const userTeams = teamsData.map((item: any) => ({
+            team_id: item.team_id,
+            team_name: `Team ${item.team_id}` // Placeholder name since we only need IDs
+          }));
+          setUserTeams(userTeams);
+          console.log('Fetched user teams:', userTeams);
+        } else {
+          setUserTeams([]);
+          if (teamsError) console.error('Failed to fetch user teams:', teamsError);
+        }
       } else {
         setPublicUserId(null);
         setFullName(null);
         setUserMetadata(null);
+        setUserTeams([]);
         if (error) console.error('Failed to fetch public user ID:', error);
       }
     }
     fetchPublicUserId();
-  }, [setPublicUserId, setFullName, setUserMetadata]);
+  }, [setPublicUserId, setFullName, setUserMetadata, setUserTeams]);
 
   return <>{children}</>;
 } 

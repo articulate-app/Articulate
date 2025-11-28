@@ -21,11 +21,10 @@ interface GetTaskGroupsParams {
 export async function getTaskGroups({ groupBy, filters, users }: GetTaskGroupsParams): Promise<TaskGroup[]> {
   switch (groupBy) {
     case 'assigned_to': {
-      // Query only active users from the users table
+      // Query users from the view_users_i_can_see view (visibility filtered by auth.uid())
       const { data: userData, error } = await supabase
-        .from('users')
+        .from('view_users_i_can_see')
         .select('id, full_name')
-        .eq('active', true)
       
       if (error) throw error
       

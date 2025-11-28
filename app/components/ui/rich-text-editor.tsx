@@ -23,6 +23,10 @@ export function RichTextEditor({ value, onChange, readOnly = false, placeholder,
   const lastPropValue = useRef(value);
   const quillRef = useRef<any>(null);
 
+
+
+
+
   // Update local state if parent value changes and editor is not focused
   useEffect(() => {
     if (!isFocused && value !== lastPropValue.current) {
@@ -68,7 +72,9 @@ export function RichTextEditor({ value, onChange, readOnly = false, placeholder,
             value={localValue}
             onChange={val => {
               setLocalValue(val);
+              // Always call onChange immediately with the full value (no trimming)
               onChange(val);
+              lastPropValue.current = val;
             }}
             readOnly={readOnly}
             placeholder={placeholder}
@@ -126,20 +132,114 @@ export function RichTextEditor({ value, onChange, readOnly = false, placeholder,
             >
               <div className="flex items-center flex-nowrap whitespace-nowrap" style={{ minWidth: 'max-content', gap: '2px' }}>
                 <span className="ql-formats" style={{ display: 'flex', gap: '1px', flexShrink: 0, marginRight: '4px' }}>
-                  <button className={`ql-bold ${isFormatActive('bold') ? 'text-blue-500' : 'text-gray-400'}`} style={{ width: '24px', height: '24px' }} />
-                  <button className={`ql-italic ${isFormatActive('italic') ? 'text-blue-500' : 'text-gray-400'}`} style={{ width: '24px', height: '24px' }} />
-                  <button className={`ql-underline ${isFormatActive('underline') ? 'text-blue-500' : 'text-gray-400'}`} style={{ width: '24px', height: '24px' }} />
-                  <button className={`ql-strike ${isFormatActive('strike') ? 'text-blue-500' : 'text-gray-400'}`} style={{ width: '24px', height: '24px' }} />
+                  <button 
+                    type="button"
+                    className={`ql-bold ${isFormatActive('bold') ? 'text-blue-500' : 'text-gray-400'}`} 
+                    style={{ width: '24px', height: '24px' }} 
+                    title="Bold"
+                    onClick={() => {
+                      if (quillRef.current) {
+                        const quill = quillRef.current.getEditor();
+                        quill.format('bold', !quill.getFormat().bold);
+                      }
+                    }}
+                  />
+                  <button 
+                    type="button"
+                    className={`ql-italic ${isFormatActive('italic') ? 'text-blue-500' : 'text-gray-400'}`} 
+                    style={{ width: '24px', height: '24px' }} 
+                    title="Italic"
+                    onClick={() => {
+                      if (quillRef.current) {
+                        const quill = quillRef.current.getEditor();
+                        quill.format('italic', !quill.getFormat().italic);
+                      }
+                    }}
+                  />
+                  <button 
+                    type="button"
+                    className={`ql-underline ${isFormatActive('underline') ? 'text-blue-500' : 'text-gray-400'}`} 
+                    style={{ width: '24px', height: '24px' }} 
+                    title="Underline"
+                    onClick={() => {
+                      if (quillRef.current) {
+                        const quill = quillRef.current.getEditor();
+                        quill.format('underline', !quill.getFormat().underline);
+                      }
+                    }}
+                  />
+                  <button 
+                    type="button"
+                    className={`ql-strike ${isFormatActive('strike') ? 'text-blue-500' : 'text-gray-400'}`} 
+                    style={{ width: '24px', height: '24px' }} 
+                    title="Strike"
+                    onClick={() => {
+                      if (quillRef.current) {
+                        const quill = quillRef.current.getEditor();
+                        quill.format('strike', !quill.getFormat().strike);
+                      }
+                    }}
+                  />
                 </span>
                 <span className="ql-formats" style={{ display: 'flex', gap: '1px', flexShrink: 0, marginRight: '4px' }}>
-                  <button className={`ql-list ${isFormatActive('list', 'ordered') ? 'text-blue-500' : 'text-gray-400'}`} value="ordered" style={{ width: '24px', height: '24px' }} />
-                  <button className={`ql-list ${isFormatActive('list', 'bullet') ? 'text-blue-500' : 'text-gray-400'}`} value="bullet" style={{ width: '24px', height: '24px' }} />
+                  <button 
+                    type="button"
+                    className={`ql-list ${isFormatActive('list', 'ordered') ? 'text-blue-500' : 'text-gray-400'}`} 
+                    value="ordered" 
+                    style={{ width: '24px', height: '24px' }}
+                    onClick={() => {
+                      if (quillRef.current) {
+                        const quill = quillRef.current.getEditor();
+                        const format = quill.getFormat();
+                        quill.format('list', format.list === 'ordered' ? false : 'ordered');
+                      }
+                    }}
+                  />
+                  <button 
+                    type="button"
+                    className={`ql-list ${isFormatActive('list', 'bullet') ? 'text-blue-500' : 'text-gray-400'}`} 
+                    value="bullet" 
+                    style={{ width: '24px', height: '24px' }}
+                    onClick={() => {
+                      if (quillRef.current) {
+                        const quill = quillRef.current.getEditor();
+                        const format = quill.getFormat();
+                        quill.format('list', format.list === 'bullet' ? false : 'bullet');
+                      }
+                    }}
+                  />
                 </span>
                 <span className="ql-formats" style={{ display: 'flex', gap: '1px', flexShrink: 0, marginRight: '4px' }}>
-                  <button className={`ql-link ${isFormatActive('link') ? 'text-blue-500' : 'text-gray-400'}`} style={{ width: '24px', height: '24px' }} />
+                  <button 
+                    type="button"
+                    className={`ql-link ${isFormatActive('link') ? 'text-blue-500' : 'text-gray-400'}`} 
+                    style={{ width: '24px', height: '24px' }}
+                    onClick={() => {
+                      if (quillRef.current) {
+                        const quill = quillRef.current.getEditor();
+                        const url = prompt('Enter URL:');
+                        if (url) {
+                          const range = quill.getSelection();
+                          if (range) {
+                            quill.format('link', url);
+                          }
+                        }
+                      }
+                    }}
+                  />
                 </span>
                 <span className="ql-formats" style={{ display: 'flex', gap: '1px', flexShrink: 0, marginRight: '4px' }}>
-                  <button className="ql-clean text-gray-400" style={{ width: '24px', height: '24px' }} />
+                  <button 
+                    type="button"
+                    className="ql-clean text-gray-400" 
+                    style={{ width: '24px', height: '24px' }}
+                    onClick={() => {
+                      if (quillRef.current) {
+                        const quill = quillRef.current.getEditor();
+                        quill.removeFormat();
+                      }
+                    }}
+                  />
                 </span>
                 {/* Custom attachment icon */}
                 {onAttachmentClick && (
@@ -193,6 +293,29 @@ export function RichTextEditor({ value, onChange, readOnly = false, placeholder,
         }
         .ql-toolbar button:hover {
           background: #f3f4f6 !important;
+        }
+        
+        /* Ensure Quill icons are visible */
+        .ql-bold::before { content: "B" !important; font-weight: bold !important; }
+        .ql-italic::before { content: "I" !important; font-style: italic !important; }
+        .ql-underline::before { content: "U" !important; text-decoration: underline !important; }
+        .ql-strike::before { content: "S" !important; text-decoration: line-through !important; }
+        .ql-list[value="ordered"]::before { content: "1." !important; }
+        .ql-list[value="bullet"]::before { content: "•" !important; }
+        .ql-link::before { content: "🔗" !important; }
+        .ql-clean::before { content: "×" !important; }
+        
+        /* Override any Quill default styles that might hide icons */
+        .ql-toolbar .ql-bold::before,
+        .ql-toolbar .ql-italic::before,
+        .ql-toolbar .ql-underline::before,
+        .ql-toolbar .ql-strike::before,
+        .ql-toolbar .ql-list::before,
+        .ql-toolbar .ql-link::before,
+        .ql-toolbar .ql-clean::before {
+          display: inline-block !important;
+          visibility: visible !important;
+          opacity: 1 !important;
         }
       `}</style>
     </div>

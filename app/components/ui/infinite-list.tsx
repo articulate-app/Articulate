@@ -33,6 +33,10 @@ export interface InfiniteListProps<TableName extends SupabaseTableName, TData = 
    * Optional queryKey for cache/cancellation
    */
   queryKey?: string
+  /**
+   * Optional external scroll container ref (required when isTableBody is true)
+   */
+  scrollContainerRef?: React.RefObject<HTMLElement>
 }
 
 const DefaultNoResults = () => (
@@ -69,6 +73,7 @@ export function InfiniteList<TableName extends SupabaseTableName, TData = Supaba
   children,
   isTableBody = false,
   queryKey,
+  scrollContainerRef: externalScrollContainerRef,
 }: InfiniteListProps<TableName, TData>) {
   const { data, isFetching, hasMore, fetchNextPage, isSuccess } = useInfiniteQuery({
     tableName,
@@ -78,30 +83,55 @@ export function InfiniteList<TableName extends SupabaseTableName, TData = Supaba
     queryKey,
   })
 
-  // Ref for the scrolling container
-  const scrollContainerRef = React.useRef<HTMLDivElement>(null)
+  // Ref for the scrolling container (internal or external)
+  const internalScrollContainerRef = React.useRef<HTMLDivElement>(null)
+  const scrollContainerRef = externalScrollContainerRef || internalScrollContainerRef
 
   // Intersection observer logic - target the last rendered *item* or a dedicated sentinel
   const loadMoreSentinelRef = React.useRef<HTMLDivElement>(null)
   const observer = React.useRef<IntersectionObserver | null>(null)
+  const isLoadingRef = React.useRef<boolean>(false)
+  const prevDataLengthRef = React.useRef<number>(0)
+
+  // Reset loading lock when data changes (new batch arrived)
+  React.useEffect(() => {
+    if (data.length !== prevDataLengthRef.current) {
+      prevDataLengthRef.current = data.length
+      isLoadingRef.current = false
+    }
+  }, [data.length])
 
   React.useEffect(() => {
+    // Clean up existing observer
     if (observer.current) observer.current.disconnect()
+
+    // Only create observer if there's more data to load
+    if (!hasMore) {
+      isLoadingRef.current = false
+      return
+    }
 
     observer.current = new IntersectionObserver(
       (entries) => {
-        if (entries[0].isIntersecting && hasMore && !isFetching) {
+        const entry = entries[0]
+        // Only trigger if:
+        // 1. Sentinel is intersecting
+        // 2. There's more data (hasMore)
+        // 3. Not currently fetching
+        // 4. Not already triggered (isLoadingRef)
+        if (entry.isIntersecting && hasMore && !isFetching && !isLoadingRef.current) {
+          isLoadingRef.current = true
           fetchNextPage()
         }
       },
       {
         root: scrollContainerRef.current, // Use the scroll container for scroll detection
         threshold: 0.1, // Trigger when 10% of the target is visible
-        rootMargin: '0px 0px 100px 0px', // Trigger loading a bit before reaching the end
+        rootMargin: '200px 0px 200px 0px', // Trigger loading well before reaching the end to prevent flicker
       }
     )
 
-    if (loadMoreSentinelRef.current) {
+    if (loadMoreSentinelRef.current && hasMore) {
       observer.current.observe(loadMoreSentinelRef.current)
     }
 
@@ -112,11 +142,16 @@ export function InfiniteList<TableName extends SupabaseTableName, TData = Supaba
 
   const content = (
     <>
-      {isSuccess && data.length === 0 && renderNoResults()}
-      {children(data as any[], { isFetching, hasMore })}
-      {isFetching && renderSkeleton && renderSkeleton(pageSize)}
-      <div ref={loadMoreSentinelRef} style={{ height: '1px' }} />
-      {!hasMore && data.length > 0 && renderEndMessage()}
+      {isSuccess && data.length === 0 ? (
+        renderNoResults()
+      ) : (
+        <>
+          {children(data as any[], { isFetching, hasMore })}
+          {isFetching && renderSkeleton && renderSkeleton(pageSize)}
+          {hasMore && <div ref={loadMoreSentinelRef} style={{ height: '1px' }} />}
+          {!hasMore && data.length > 0 && renderEndMessage()}
+        </>
+      )}
     </>
   )
 
@@ -125,7 +160,7 @@ export function InfiniteList<TableName extends SupabaseTableName, TData = Supaba
   }
 
   return (
-    <div ref={scrollContainerRef} className={cn('relative h-full overflow-auto', className)}>
+    <div ref={internalScrollContainerRef} className={cn('relative h-full overflow-auto', className)}>
       {content}
     </div>
   )

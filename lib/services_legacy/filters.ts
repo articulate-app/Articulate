@@ -14,7 +14,7 @@ export async function getFilterOptions(): Promise<Record<string, FilterOption[]>
     { data: languages }
   ] = await Promise.all([
     supabase
-      .from('users')
+      .from('view_users_i_can_see')
       .select('id, full_name')
       .order('full_name', { ascending: true }),
     supabase

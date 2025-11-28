@@ -2,7 +2,7 @@ import { createClientComponentClient } from "@supabase/auth-helpers-nextjs"
 
 export interface FilterOptions {
   users: { value: string; label: string }[]
-  statuses: { value: string; label: string; color: string; order_priority?: number; project_id?: string | number }[]
+  statuses: { value: string; label: string; color?: string; order_priority?: number; project_id?: string }[]
   projects: { value: string; label: string }[]
   contentTypes: { value: string; label: string }[]
   productionTypes: { value: string; label: string }[]
@@ -15,41 +15,13 @@ export async function getFilterOptions(): Promise<FilterOptions> {
   
   try {
     const { data: users, error: usersError } = await supabase
-      .from('users')
+      .from('view_users_i_can_see')
       .select('id, full_name')
       .order('full_name')
     if (usersError) throw usersError
     const mappedUsers = (users || [])
       .filter(user => user.id && user.full_name)
       .map(user => ({ value: user.id, label: user.full_name }))
-
-    const { data: statuses, error: statusesError } = await supabase
-      .from('project_statuses')
-      .select('id, name, color, order_priority, project_id')
-      .order('name')
-    if (statusesError) throw statusesError
-    
-    // More robust deduplication by name only
-    const statusMap = new Map<string, any>()
-    
-    ;(statuses || []).forEach(status => {
-      if (!status.name || typeof status.name !== 'string') return
-      
-      // Use the first occurrence of each status name, or the one with the lowest ID
-      if (!statusMap.has(status.name) || (statusMap.get(status.name).id > status.id)) {
-        statusMap.set(status.name, status)
-      }
-    })
-    
-    const dedupedStatuses = Array.from(statusMap.values())
-    
-    const mappedStatuses = dedupedStatuses.map(status => ({ 
-      value: status.name, // Use name as value for Typesense filtering
-      label: status.name, 
-      color: status.color, 
-      order_priority: status.order_priority, 
-      project_id: status.project_id 
-    }))
 
     const { data: projects, error: projectsError } = await supabase
       .from('projects')
@@ -99,7 +71,7 @@ export async function getFilterOptions(): Promise<FilterOptions> {
 
     return {
       users: mappedUsers,
-      statuses: mappedStatuses,
+      statuses: [],
       projects: mappedProjects,
       contentTypes: mappedContentTypes,
       productionTypes: mappedProductionTypes,

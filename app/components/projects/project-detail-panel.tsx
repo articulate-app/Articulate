@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react"
 import { SlidePanel } from "../ui/slide-panel"
 import { getProjectDetails } from "../../lib/services/projects"
+import { ProjectBriefingsPanel } from "../../../features/projects/ProjectSettings/ProjectBriefingsPanel"
 
 interface ProjectDetailPanelProps {
   isOpen: boolean
@@ -98,6 +99,11 @@ export function ProjectDetailPanel({ isOpen, onClose, project }: ProjectDetailPa
                 ))}
               </ul>
             ) : <span className="text-gray-400 text-xs">No task threads.</span>}
+          </div>
+          
+          {/* Briefings Section */}
+          <div className="border-t pt-4 mt-4">
+            <ProjectBriefingsPanel projectId={project.id} />
           </div>
         </div>
       ) : null}

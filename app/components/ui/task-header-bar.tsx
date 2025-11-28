@@ -14,12 +14,15 @@ import {
   DropdownMenuSeparator,
 } from "./dropdown-menu";
 import { ShareButton } from './share-button';
+import { TasksHeaderIcon } from './TasksHeaderIcon';
 
 interface TaskHeaderBarProps {
   searchValue: string;
   onSearchChange: (value: string) => void;
   onFilterClick: () => void;
   onSidebarToggle?: () => void;
+  onKeywordPlannerClick?: () => void;
+  isKeywordPlannerActive?: boolean;
   placeholder?: string;
 }
 
@@ -28,6 +31,8 @@ export function TaskHeaderBar({
   onSearchChange,
   onFilterClick,
   onSidebarToggle,
+  onKeywordPlannerClick,
+  isKeywordPlannerActive = false,
   placeholder,
 }: TaskHeaderBarProps) {
   const router = useRouter();
@@ -95,6 +100,14 @@ export function TaskHeaderBar({
       </div>
       {/* Share button next to user avatar */}
       <ShareButton url={typeof window !== 'undefined' ? window.location.href : ''} className="mr-2" />
+      {/* Keyword Planner icon */}
+      {onKeywordPlannerClick && (
+        <TasksHeaderIcon
+          onClick={onKeywordPlannerClick}
+          isActive={isKeywordPlannerActive}
+          className="mr-2"
+        />
+      )}
       {/* User avatar at top right with initials */}
       <div className="ml-4 flex items-center user-avatar-dropdown relative">
         <div className="w-9 h-9 rounded-full bg-gray-100 flex items-center justify-center text-gray-700 border border-gray-200 font-medium text-sm">

@@ -1,0 +1,2 @@
+export { TeamDetailsPage } from './TeamDetailsPage'
+

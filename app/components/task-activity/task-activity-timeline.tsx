@@ -75,7 +75,7 @@ function useUserNames(userIds: number[]) {
     async function fetchUsers() {
       const supabase = createClientComponentClient()
       const { data, error } = await supabase
-        .from('users')
+        .from('view_users_i_can_see')
         .select('id, full_name')
         .in('id', userIds)
         .abortSignal(controller.signal)
