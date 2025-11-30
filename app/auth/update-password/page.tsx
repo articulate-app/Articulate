@@ -1,8 +1,12 @@
 'use client';
 
-import { useState } from 'react';
+import { useState, ChangeEvent } from 'react';
 import { createClientComponentClient } from '@supabase/auth-helpers-nextjs';
 import { useRouter } from 'next/navigation';
+import { Button } from '../../components/ui/button';
+import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '../../components/ui/card';
+import { Input } from '../../components/ui/input';
+import { Label } from '../../components/ui/label';
 
 export default function UpdatePasswordPage() {
   const [password, setPassword] = useState('');
@@ -36,9 +40,9 @@ export default function UpdatePasswordPage() {
         throw error;
       }
       
-      setMessage('Password updated successfully! Redirecting to dashboard...');
+      setMessage('Password updated successfully! Redirecting to tasks...');
       setTimeout(() => {
-        router.push('/dashboard');
+        router.push('/tasks');
       }, 2000);
     } catch (error: any) {
       setError(error.message || 'An error occurred while updating your password');
@@ -48,67 +52,53 @@ export default function UpdatePasswordPage() {
   };
 
   return (
-    <div className="min-h-screen flex flex-col items-center justify-center bg-gray-50 py-12 px-4 sm:px-6 lg:px-8">
-      <div className="max-w-md w-full space-y-8">
-        <div>
-          <h2 className="mt-6 text-center text-3xl font-extrabold text-gray-900">
-            Update your password
-          </h2>
-        </div>
-        <form className="mt-8 space-y-6" onSubmit={handleUpdatePassword}>
-          <div className="rounded-md shadow-sm -space-y-px">
-            <div>
-              <label htmlFor="password" className="sr-only">
-                New Password
-              </label>
-              <input
-                id="password"
-                name="password"
-                type="password"
-                autoComplete="new-password"
-                required
-                className="appearance-none rounded-none relative block w-full px-3 py-2 border border-gray-300 placeholder-gray-500 text-gray-900 rounded-t-md focus:outline-none focus:ring-indigo-500 focus:border-indigo-500 focus:z-10 sm:text-sm"
-                placeholder="New Password"
-                value={password}
-                onChange={(e) => setPassword(e.target.value)}
-              />
-            </div>
-            <div>
-              <label htmlFor="confirm-password" className="sr-only">
-                Confirm New Password
-              </label>
-              <input
-                id="confirm-password"
-                name="confirm-password"
-                type="password"
-                autoComplete="new-password"
-                required
-                className="appearance-none rounded-none relative block w-full px-3 py-2 border border-gray-300 placeholder-gray-500 text-gray-900 rounded-b-md focus:outline-none focus:ring-indigo-500 focus:border-indigo-500 focus:z-10 sm:text-sm"
-                placeholder="Confirm New Password"
-                value={confirmPassword}
-                onChange={(e) => setConfirmPassword(e.target.value)}
-              />
-            </div>
-          </div>
-
-          {error && (
-            <div className="text-red-500 text-sm text-center">{error}</div>
-          )}
-
-          {message && (
-            <div className="text-green-500 text-sm text-center">{message}</div>
-          )}
-
-          <div>
-            <button
-              type="submit"
-              disabled={loading}
-              className="group relative w-full flex justify-center py-2 px-4 border border-transparent text-sm font-medium rounded-md text-white bg-indigo-600 hover:bg-indigo-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-indigo-500"
-            >
-              {loading ? 'Updating...' : 'Update Password'}
-            </button>
-          </div>
-        </form>
+    <div className="container relative h-screen flex-col items-center justify-center grid lg:max-w-none lg:grid-cols-1 lg:px-0">
+      <div className="mx-auto w-full sm:w-[350px] space-y-6">
+        <Card>
+          <CardHeader className="space-y-1">
+            <CardTitle className="text-2xl font-semibold">
+              Update your password
+            </CardTitle>
+            <CardDescription>
+              Enter your new password below to complete the update
+            </CardDescription>
+          </CardHeader>
+          <CardContent>
+            <form onSubmit={handleUpdatePassword} className="space-y-4">
+              <div className="space-y-2">
+                <Label htmlFor="password">New Password</Label>
+                <Input
+                  id="password"
+                  name="password"
+                  type="password"
+                  autoComplete="new-password"
+                  placeholder="Enter your new password"
+                  value={password}
+                  onChange={(e: ChangeEvent<HTMLInputElement>) => setPassword(e.target.value)}
+                  required
+                />
+              </div>
+              <div className="space-y-2">
+                <Label htmlFor="confirm-password">Confirm New Password</Label>
+                <Input
+                  id="confirm-password"
+                  name="confirm-password"
+                  type="password"
+                  autoComplete="new-password"
+                  placeholder="Confirm your new password"
+                  value={confirmPassword}
+                  onChange={(e: ChangeEvent<HTMLInputElement>) => setConfirmPassword(e.target.value)}
+                  required
+                />
+              </div>
+              {error && <p className="text-sm text-red-500">{error}</p>}
+              {message && <p className="text-sm text-green-500">{message}</p>}
+              <Button type="submit" className="w-full" disabled={loading}>
+                {loading ? 'Updating...' : 'Update Password'}
+              </Button>
+            </form>
+          </CardContent>
+        </Card>
       </div>
     </div>
   );

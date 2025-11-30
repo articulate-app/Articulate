@@ -142,6 +142,7 @@ export function Sidebar({ isCollapsed, isMobileMenuOpen = false, onClose }: Side
 
   const handleSignOut = async () => {
     await supabase.auth.signOut();
+    router.push('/auth');
   };
 
   const handleProjectClick = (projectId: number) => {

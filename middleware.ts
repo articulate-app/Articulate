@@ -54,9 +54,9 @@ export async function middleware(req: NextRequest) {
     }
 
     // If user is signed in and the current path is /auth,
-    // redirect the user to /dashboard
+    // redirect the user to /tasks
     if (session && pathname === '/auth') {
-      const redirectUrl = new URL('/dashboard', req.url);
+      const redirectUrl = new URL('/tasks', req.url);
       return NextResponse.redirect(redirectUrl);
     }
 

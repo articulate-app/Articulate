@@ -10,7 +10,7 @@ export async function GET(request: NextRequest) {
 
   const token_hash = searchParams.get('token_hash');
   const type = searchParams.get('type') as EmailOtpType | null;
-  const redirectUrl = searchParams.get('redirectUrl') ?? '/';
+  const redirectUrl = searchParams.get('redirectUrl') ?? '/tasks';
 
   if (token_hash && type) {
     const supabase = createRouteHandlerClient({ cookies });

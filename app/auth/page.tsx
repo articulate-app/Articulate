@@ -34,7 +34,7 @@ export default function AuthPage() {
         if (redirect) {
           router.push(redirect);
         } else {
-          router.push('/dashboard');
+          router.push('/tasks');
         }
       }
     };
@@ -82,7 +82,7 @@ export default function AuthPage() {
           if (redirect) {
             router.push(redirect);
           } else {
-            router.push('/dashboard');
+            router.push('/tasks');
           }
         } else {
           throw new Error('Failed to create session');

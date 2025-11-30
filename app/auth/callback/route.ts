@@ -26,6 +26,6 @@ export async function GET(request: Request) {
     return NextResponse.redirect(new URL(redirect, request.url));
   }
 
-  // Default: dashboard
-  return NextResponse.redirect(new URL('/dashboard', request.url));
+  // Default: tasks
+  return NextResponse.redirect(new URL('/tasks', request.url));
 } 
