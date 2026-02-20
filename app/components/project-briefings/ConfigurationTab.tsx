@@ -1350,14 +1350,31 @@ function ChannelComponentsInline({
 
   // Handle add global
   const handleAddGlobal = useCallback(async () => {
-    if (!selectedGlobalId) return
+    if (!selectedGlobalId || !briefingTypeId) return
+
+    // Find the component data
+    const component = availableGlobalComponents.find(c => c.id === selectedGlobalId)
+    if (!component) return
+
+    // Calculate last position (max position + 1, or 1 if no components)
+    const lastPosition = components.length > 0
+      ? Math.max(...components.map(c => c.position ?? 0)) + 1
+      : 1
 
     try {
       const { error } = await supabase.rpc('pcctbc_add_global', {
         p_project_id: projectId,
         p_content_type_id: contentTypeId,
         p_channel_id: channelId,
-        p_briefing_component_id: selectedGlobalId
+        p_briefing_type_id: briefingTypeId,
+        p_briefing_component_id: selectedGlobalId,
+        p_position: lastPosition,
+        p_custom_title: component.title || null,
+        p_custom_description: component.description || null,
+        p_purpose: null,
+        p_guidance: null,
+        p_suggested_word_count: null,
+        p_subheads: null,
       })
 
       if (error) throw error
@@ -1373,18 +1390,36 @@ function ChannelComponentsInline({
       console.error('Failed to add global component:', err)
       toast({ title: 'Error', description: err.message, variant: 'destructive' })
     }
-  }, [projectId, contentTypeId, channelId, selectedGlobalId, supabase, queryClient, fetchComponents])
+  }, [projectId, contentTypeId, channelId, briefingTypeId, selectedGlobalId, availableGlobalComponents, components, supabase, queryClient, fetchComponents])
 
   // Handle add project
   const handleAddProject = useCallback(async () => {
     if (!selectedProjectId) return
+    if (!briefingTypeId) return
+
+    // Find the component data
+    const component = availableProjectComponents.find(c => c.id === selectedProjectId)
+    if (!component) return
+
+    // Calculate last position (max position + 1, or 1 if no components)
+    const lastPosition = components.length > 0
+      ? Math.max(...components.map(c => c.position ?? 0)) + 1
+      : 1
 
     try {
       const { error } = await supabase.rpc('pcctbc_add_project', {
         p_project_id: projectId,
         p_content_type_id: contentTypeId,
         p_channel_id: channelId,
-        p_project_component_id: selectedProjectId
+        p_briefing_type_id: briefingTypeId,
+        p_project_component_id: selectedProjectId,
+        p_position: lastPosition,
+        p_custom_title: component.title || null,
+        p_custom_description: component.description || null,
+        p_purpose: null,
+        p_guidance: null,
+        p_suggested_word_count: null,
+        p_subheads: null,
       })
 
       if (error) throw error
@@ -1400,7 +1435,7 @@ function ChannelComponentsInline({
       console.error('Failed to add project component:', err)
       toast({ title: 'Error', description: err.message, variant: 'destructive' })
     }
-  }, [projectId, contentTypeId, channelId, selectedProjectId, supabase, queryClient, fetchComponents])
+  }, [projectId, contentTypeId, channelId, selectedProjectId, availableProjectComponents, components, supabase, queryClient, fetchComponents])
 
   useEffect(() => {
     fetchComponents()
@@ -1555,11 +1590,29 @@ function ChannelComponentsInline({
                           if (!availComp.is_project_component) {
                             // Add as global component (briefing_component)
                             console.log('Adding global component:', availComp.component_id)
+                            
+                            if (!briefingTypeId) {
+                              throw new Error('Briefing type is required')
+                            }
+                            
+                            // Calculate last position (max position + 1, or 1 if no components)
+                            const lastPosition = components.length > 0
+                              ? Math.max(...components.map(c => c.position ?? 0)) + 1
+                              : 1
+                            
                             const { error } = await supabase.rpc('pcctbc_add_global', {
                               p_project_id: projectId,
                               p_content_type_id: contentTypeId,
                               p_channel_id: channelId,
-                              p_briefing_component_id: availComp.component_id
+                              p_briefing_type_id: briefingTypeId,
+                              p_briefing_component_id: availComp.component_id,
+                              p_position: lastPosition,
+                              p_custom_title: availComp.component_title || null,
+                              p_custom_description: availComp.component_description || null,
+                              p_purpose: null,
+                              p_guidance: null,
+                              p_suggested_word_count: null,
+                              p_subheads: null,
                             })
                             if (error) {
                               console.error('RPC Error:', error)
@@ -1573,11 +1626,29 @@ function ChannelComponentsInline({
                           } else {
                             // Add as project component
                             console.log('Adding project component:', availComp.component_id)
+                            
+                            if (!briefingTypeId) {
+                              throw new Error('Briefing type is required')
+                            }
+                            
+                            // Calculate last position (max position + 1, or 1 if no components)
+                            const lastPosition = components.length > 0
+                              ? Math.max(...components.map(c => c.position ?? 0)) + 1
+                              : 1
+                            
                             const { error } = await supabase.rpc('pcctbc_add_project', {
                               p_project_id: projectId,
                               p_content_type_id: contentTypeId,
                               p_channel_id: channelId,
-                              p_project_component_id: availComp.component_id
+                              p_briefing_type_id: briefingTypeId,
+                              p_project_component_id: availComp.component_id,
+                              p_position: lastPosition,
+                              p_custom_title: availComp.component_title || null,
+                              p_custom_description: availComp.component_description || null,
+                              p_purpose: null,
+                              p_guidance: null,
+                              p_suggested_word_count: null,
+                              p_subheads: null,
                             })
                             if (error) {
                               console.error('RPC Error:', error)
@@ -2333,12 +2404,49 @@ function ChannelTemplateEditor({
 
   // Add global component
   const handleAddGlobal = useCallback(async (componentId: number) => {
+    if (!briefingTypeId) {
+      toast({ title: 'Error', description: 'Briefing type is required', variant: 'destructive' })
+      return
+    }
+
+    // Calculate last position (max position + 1, or 1 if no components)
+    const lastPosition = components.length > 0
+      ? Math.max(...components.map(c => c.position ?? 0)) + 1
+      : 1
+
+    // Fetch component data to get title and description
+    let componentTitle: string | null = null
+    let componentDescription: string | null = null
+    
+    try {
+      const { data: componentData, error: fetchError } = await supabase
+        .from('briefing_components')
+        .select('title, description')
+        .eq('id', componentId)
+        .single()
+      
+      if (!fetchError && componentData) {
+        componentTitle = componentData.title || null
+        componentDescription = componentData.description || null
+      }
+    } catch (err) {
+      console.warn('Failed to fetch component data:', err)
+    }
+
     try {
       const { error } = await supabase.rpc('pcctbc_add_global', {
         p_project_id: projectId,
         p_content_type_id: contentTypeId,
         p_channel_id: channelId,
-        p_briefing_component_id: componentId
+        p_briefing_type_id: briefingTypeId,
+        p_briefing_component_id: componentId,
+        p_position: lastPosition,
+        p_custom_title: componentTitle,
+        p_custom_description: componentDescription,
+        p_purpose: null,
+        p_guidance: null,
+        p_suggested_word_count: null,
+        p_subheads: null,
       })
 
       if (error) throw error
@@ -2353,16 +2461,49 @@ function ChannelTemplateEditor({
       console.error('Failed to add global component:', err)
       toast({ title: 'Error', description: err.message, variant: 'destructive' })
     }
-  }, [projectId, contentTypeId, channelId, supabase, queryClient, fetchComponents])
+  }, [projectId, contentTypeId, channelId, briefingTypeId, components, supabase, queryClient, fetchComponents])
 
   // Add project component
   const handleAddProject = useCallback(async (componentId: number) => {
+    if (!briefingTypeId) return
+    // Calculate last position (max position + 1, or 1 if no components)
+    const lastPosition = components.length > 0
+      ? Math.max(...components.map(c => c.position ?? 0)) + 1
+      : 1
+
+    // Fetch component data to get title and description
+    let componentTitle: string | null = null
+    let componentDescription: string | null = null
+    
+    try {
+      const { data: componentData, error: fetchError } = await supabase
+        .from('project_briefing_components')
+        .select('title, description')
+        .eq('id', componentId)
+        .single()
+      
+      if (!fetchError && componentData) {
+        componentTitle = componentData.title || null
+        componentDescription = componentData.description || null
+      }
+    } catch (err) {
+      console.warn('Failed to fetch component data:', err)
+    }
+
     try {
       const { error } = await supabase.rpc('pcctbc_add_project', {
         p_project_id: projectId,
         p_content_type_id: contentTypeId,
         p_channel_id: channelId,
-        p_project_component_id: componentId
+        p_briefing_type_id: briefingTypeId,
+        p_project_component_id: componentId,
+        p_position: lastPosition,
+        p_custom_title: componentTitle,
+        p_custom_description: componentDescription,
+        p_purpose: null,
+        p_guidance: null,
+        p_suggested_word_count: null,
+        p_subheads: null,
       })
 
       if (error) throw error
@@ -2377,7 +2518,7 @@ function ChannelTemplateEditor({
       console.error('Failed to add project component:', err)
       toast({ title: 'Error', description: err.message, variant: 'destructive' })
     }
-  }, [projectId, contentTypeId, channelId, supabase, queryClient, fetchComponents])
+  }, [projectId, contentTypeId, channelId, components, supabase, queryClient, fetchComponents])
 
   // Remove component
   const handleRemove = useCallback(async (componentId: number, isProjectComponent: boolean) => {

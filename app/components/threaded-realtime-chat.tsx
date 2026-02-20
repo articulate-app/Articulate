@@ -1,7 +1,9 @@
+'use client'
+
 import { useThreadedChat } from '../../hooks/useThreadedChat'
 import { RealtimeChat } from '../../components/realtime-chat'
-import { useCurrentUserStore } from '../store/current-user';
-import React from 'react';
+import { useCurrentUserStore } from '../store/current-user'
+import { useEffect, useRef, useState } from 'react'
 
 interface ThreadedRealtimeChatProps {
   threadId: number
@@ -14,9 +16,11 @@ interface ThreadedRealtimeChatProps {
   initialMessages?: any[]
   focusedMentionId?: number | null
   onFocusedMentionCleared?: () => void
+  onReplySelected?: (reply: { id: number; author?: string; preview: string }) => void
+  groupByDate?: boolean
 }
 
-export function ThreadedRealtimeChat({ threadId, currentUserId, currentUserName, currentUserAvatar, currentUserEmail, currentPublicUserId, hideInput, initialMessages, focusedMentionId, onFocusedMentionCleared }: ThreadedRealtimeChatProps) {
+export function ThreadedRealtimeChat({ threadId, currentUserId, currentUserName, currentUserAvatar, currentUserEmail, currentPublicUserId, hideInput, initialMessages, focusedMentionId, onFocusedMentionCleared, onReplySelected, groupByDate }: ThreadedRealtimeChatProps) {
   const {
     messages,
     sendMessage,
@@ -34,16 +38,25 @@ export function ThreadedRealtimeChat({ threadId, currentUserId, currentUserName,
     initialMessages
   )
 
-  const publicUserId = currentPublicUserId ?? useCurrentUserStore((s) => s.publicUserId);
+  // IMPORTANT: always call hooks unconditionally (avoid hook-order bugs).
+  const storePublicUserId = useCurrentUserStore((s) => s.publicUserId)
+  const publicUserId = currentPublicUserId ?? storePublicUserId
+  const [replyTo, setReplyTo] = useState<{ id: string; author?: string; preview: string } | null>(null)
+
+  const stripHtml = (html: string) => html.replace(/<[^>]*>/g, '').trim()
 
   // When sending a new message, include publicUserId as created_by
   const handleSendMessage = async (content: string) => {
-    await sendMessage(content, publicUserId ?? undefined);
+    const replyToId = replyTo?.id ? Number(replyTo.id) : null
+    await sendMessage(content, publicUserId ?? undefined, {
+      replyToId: Number.isFinite(replyToId as any) ? (replyToId as number) : null,
+    });
+    setReplyTo(null)
   };
 
   // Infinite scroll: load older messages when scrolled to top
-  const chatContainerRef = React.useRef<HTMLDivElement>(null);
-  React.useEffect(() => {
+  const chatContainerRef = useRef<HTMLDivElement>(null);
+  useEffect(() => {
     const container = chatContainerRef.current;
     if (!container) return;
     const handleScroll = () => {
@@ -56,7 +69,7 @@ export function ThreadedRealtimeChat({ threadId, currentUserId, currentUserName,
   }, [hasMore, isLoadingMore, loadOlderMessages]);
 
   // Scroll to bottom when a new message is added (unless we're focusing on a specific message)
-  React.useEffect(() => {
+  useEffect(() => {
     if (focusedMentionId) return; // Don't auto-scroll if we're focusing on a message
     const container = chatContainerRef.current;
     if (!container) return;
@@ -65,7 +78,7 @@ export function ThreadedRealtimeChat({ threadId, currentUserId, currentUserName,
   }, [messages, focusedMentionId]);
 
   // Handle focusing on a specific message (from search results)
-  React.useEffect(() => {
+  useEffect(() => {
     if (!focusedMentionId || !messages.length) return;
 
     // Wait a bit for messages to render
@@ -103,6 +116,24 @@ export function ThreadedRealtimeChat({ threadId, currentUserId, currentUserName,
         hideInput={hideInput || !publicUserId}
         currentPublicUserId={publicUserId}
         focusedMentionId={focusedMentionId}
+        groupByDate={groupByDate}
+        onReplyMessage={(messageId) => {
+          const msg = messages.find((m) => String(m.id) === String(messageId))
+          if (!msg) return
+          const payload = {
+            id: Number(msg.id),
+            author: msg.user?.displayName || msg.user?.email,
+            preview: stripHtml(msg.content || '').slice(0, 120) || '…',
+          }
+          // If the inline composer is hidden (TaskDetails), delegate reply selection to parent UI.
+          if (hideInput && onReplySelected) {
+            if (Number.isFinite(payload.id)) onReplySelected(payload)
+            return
+          }
+          setReplyTo({ id: String(payload.id), author: payload.author, preview: payload.preview })
+        }}
+        replyTo={hideInput ? null : replyTo}
+        onClearReply={() => setReplyTo(null)}
       />
       {isLoadingMore && <div className="absolute top-0 left-0 w-full text-center text-xs text-muted-foreground">Loading more…</div>}
     </div>

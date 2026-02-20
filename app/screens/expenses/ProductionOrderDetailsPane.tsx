@@ -2,6 +2,7 @@
 
 import React, { useState, useEffect } from 'react'
 import { useQuery } from '@tanstack/react-query'
+import { useQueryClient } from '@tanstack/react-query'
 import { Badge } from '../../components/ui/badge'
 import { Button } from '../../components/ui/button'
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from '../../components/ui/dialog'
@@ -28,6 +29,7 @@ interface ProductionOrderDetailsPaneProps {
   onClose: () => void
   initialProductionOrder?: any
   showHeader?: boolean
+  onRelatedDocumentSelect?: (document: any, type: string) => void
 }
 
 const formatDate = (dateString: string) => {
@@ -65,10 +67,11 @@ export function ProductionOrderDetailsPane({
   productionOrderId,
   onClose,
   initialProductionOrder,
-  showHeader = false
+  showHeader = false,
+  onRelatedDocumentSelect
 }: ProductionOrderDetailsPaneProps) {
   const supabase = createClientComponentClient()
-  const [invoices, setInvoices] = useState<any[]>([])
+  const queryClient = useQueryClient()
   const [showInvoiceOptionsModal, setShowInvoiceOptionsModal] = useState(false)
   const [showCreateInvoiceModal, setShowCreateInvoiceModal] = useState(false)
   const [showSelectInvoiceModal, setShowSelectInvoiceModal] = useState(false)
@@ -77,51 +80,42 @@ export function ProductionOrderDetailsPane({
   const [showEditAllocationModal, setShowEditAllocationModal] = useState(false)
   const [selectedAllocation, setSelectedAllocation] = useState<any>(null)
 
-  // Fetch production order details
-  const { data: productionOrder, isLoading } = useQuery({
-    queryKey: ['production-order', productionOrderId],
+  /**
+   * AP production order pane is loaded via a single RPC (instead of multiple PostgREST views),
+   * to reduce network chatter and avoid view/RLS issues.
+   */
+  const { data: pane, isLoading } = useQuery({
+    queryKey: ['ap-production-order-pane', productionOrderId],
     queryFn: async () => {
-      if (initialProductionOrder) {
-        return { data: initialProductionOrder, error: null }
+      const { data, error } = await supabase.rpc('fn_ap_production_order_pane', {
+        p_production_order_id: productionOrderId,
+      })
+      if (error) throw error
+
+      const resolved = Array.isArray(data) ? (data[0] ?? null) : (data ?? null)
+      return {
+        header: resolved?.header ?? null,
+        tasks: resolved?.tasks ?? [],
+        received_invoices: resolved?.received_invoices ?? [],
+        projects: resolved?.projects ?? { items: [], text: null },
       }
-
-      const { data, error } = await supabase
-        .from('v_production_orders_list')
-        .select('*')
-        .eq('id', productionOrderId)
-        .single()
-
-      return { data, error }
     },
-    initialData: initialProductionOrder ? { data: initialProductionOrder, error: null } : undefined,
+    // We still render the optimistic list-row values while loading, but we always fetch the RPC.
+    refetchOnMount: 'always',
   })
 
-  // Helper function to get supplier team ID consistently
-  const getSupplierTeamId = () => {
-    return initialProductionOrder?.from_team_id || productionOrder?.data?.supplier_team_id
-  }
+  const paneHeader = (pane?.header ?? null) as any
+  const displayHeader = (paneHeader ?? initialProductionOrder ?? null) as any
+  const tasks = (pane?.tasks ?? []) as any[]
+  const receivedInvoices = (pane?.received_invoices ?? []) as any[]
+  const projects = (pane?.projects ?? { items: [], text: null }) as any
 
-  // Helper function to get period month consistently
-  const getPeriodMonth = () => {
-    return productionOrder?.data?.period_month
-  }
-
-  // Helper function to refresh invoices
-  const refreshInvoices = async () => {
-    try {
-      const { data: invoiceData, error } = await supabase
-        .from('v_po_received_invoices')
-        .select('*')
-        .eq('production_order_id', productionOrderId)
-        .order('invoice_date', { ascending: false })
-
-      if (error) throw error
-      setInvoices(invoiceData || [])
-    } catch (error) {
-      console.error('Failed to fetch invoices:', error)
-      setInvoices([])
-    }
-  }
+  const totalAllocatedNoVat = receivedInvoices.reduce(
+    (sum, inv) => sum + (inv?.amount_subtotal_allocated ?? 0),
+    0
+  )
+  const subtotalNoVat = displayHeader?.subtotal_amount ?? 0
+  const remainingNoVat = subtotalNoVat - totalAllocatedNoVat
 
   // Handle invoice allocation deletion (show confirmation)
   const handleDeleteInvoiceAllocation = (invoice: any) => {
@@ -134,16 +128,22 @@ export function ProductionOrderDetailsPane({
     if (!invoiceToDelete) return
 
     try {
+      const receivedInvoiceId =
+        invoiceToDelete.received_invoice_id ?? invoiceToDelete.received_invoice?.id ?? invoiceToDelete.id ?? invoiceToDelete.doc_id
+      if (!receivedInvoiceId) {
+        throw new Error('Missing received_invoice_id for allocation delete')
+      }
+
       const { error } = await supabase
         .from('received_invoice_allocations')
         .delete()
-        .eq('received_invoice_id', invoiceToDelete.received_invoice_id)
+        .eq('received_invoice_id', receivedInvoiceId)
         .eq('production_order_id', productionOrderId)
 
       if (error) throw error
 
-      // Refresh invoices list
-      refreshInvoices()
+      // Refresh the pane (single RPC)
+      queryClient.invalidateQueries({ queryKey: ['ap-production-order-pane', productionOrderId] })
 
       const { toast } = await import('../../components/ui/use-toast')
       toast({
@@ -164,13 +164,6 @@ export function ProductionOrderDetailsPane({
     }
   }
 
-  // Fetch related invoices
-  useEffect(() => {
-    if (productionOrder?.data || initialProductionOrder) {
-      refreshInvoices()
-    }
-  }, [productionOrder?.data, initialProductionOrder, supabase])
-
   if (isLoading) {
     return (
       <div className="p-6">
@@ -183,7 +176,7 @@ export function ProductionOrderDetailsPane({
     )
   }
 
-  if (!productionOrder?.data) {
+  if (!displayHeader) {
     return (
       <div className="p-6">
         <div className="text-center text-gray-500">
@@ -193,14 +186,25 @@ export function ProductionOrderDetailsPane({
     )
   }
 
-  const po = productionOrder.data
+  // If RPC returns header=null, treat as not found/unauthorized.
+  if (pane && pane.header === null) {
+    return (
+      <div className="p-6">
+        <div className="text-center text-gray-500">
+          <p>Production order not found</p>
+        </div>
+      </div>
+    )
+  }
+
+  const po = displayHeader
 
   return (
     <div className="flex-1 overflow-auto">
       {showHeader && (
         <div className="flex items-center justify-between p-4 border-b border-gray-200">
           <h2 className="text-lg font-semibold">
-            AP Order #{po.id}
+            AP Order #{po.doc_number ?? po.id}
           </h2>
           <div className="flex items-center space-x-2">
             <DropdownMenu>
@@ -237,7 +241,7 @@ export function ProductionOrderDetailsPane({
         <div className="space-y-3">
           <div className="flex justify-between items-center">
             <span className="text-sm font-medium text-gray-500">Period</span>
-            <span className="text-sm text-gray-900">{po.period_month}</span>
+            <span className="text-sm text-gray-900">{po.period_month ?? po.doc_month_key ?? '-'}</span>
           </div>
           <div className="flex justify-between items-center">
             <span className="text-sm font-medium text-gray-500">Status</span>
@@ -247,11 +251,11 @@ export function ProductionOrderDetailsPane({
           </div>
           <div className="flex justify-between items-center">
             <span className="text-sm font-medium text-gray-500">Supplier Team</span>
-            <span className="text-sm text-gray-900">{initialProductionOrder?.from_team_name || po.supplier_team_name}</span>
+            <span className="text-sm text-gray-900">{po.supplier_team_name ?? po.from_team_name ?? initialProductionOrder?.from_team_name ?? '-'}</span>
           </div>
           <div className="flex justify-between items-center">
             <span className="text-sm font-medium text-gray-500">Payer Team</span>
-            <span className="text-sm text-gray-900">{initialProductionOrder?.to_team_name || po.payer_team_name}</span>
+            <span className="text-sm text-gray-900">{po.payer_team_name ?? po.to_team_name ?? initialProductionOrder?.to_team_name ?? '-'}</span>
           </div>
           <div className="flex justify-between items-center">
             <span className="text-sm font-medium text-gray-500">Currency</span>
@@ -264,16 +268,13 @@ export function ProductionOrderDetailsPane({
           <div className="flex justify-between items-center">
             <span className="text-sm font-medium text-gray-500">Remaining (no VAT)</span>
             <span className="text-sm text-gray-900">
-              {formatCurrency(
-                (po.subtotal_amount || 0) - invoices.reduce((sum, inv) => sum + (inv.amount_subtotal_allocated || 0), 0),
-                po.currency_code
-              )}
+              {formatCurrency(remainingNoVat, po.currency_code)}
             </span>
           </div>
           <div className="flex justify-between items-center">
             <span className="text-sm font-medium text-gray-500">Fully Allocated</span>
             <span className="text-sm text-gray-900">
-              {invoices.reduce((sum, inv) => sum + (inv.amount_subtotal_allocated || 0), 0) >= (po.subtotal_amount || 0) ? 'Yes' : 'No'}
+              {totalAllocatedNoVat >= (po.subtotal_amount || 0) ? 'Yes' : 'No'}
             </span>
           </div>
         </div>
@@ -282,37 +283,40 @@ export function ProductionOrderDetailsPane({
       {/* Projects Section */}
       <div>
         <h3 className="text-sm font-medium text-gray-900 mb-3">Projects</h3>
-        {po.projects && po.projects.length > 0 ? (
+        {Array.isArray(projects?.items) && projects.items.length > 0 ? (
           <div className="space-y-3">
-            {po.projects.map((project: any, index: number) => (
-              <div key={index} className="p-3 bg-white border rounded-lg">
-                <div className="space-y-2">
-                  <div className="flex justify-between items-center">
-                    <span className="text-sm font-medium text-gray-500">Project</span>
-                    <span className="text-sm text-gray-900 font-medium">{project.project_name}</span>
-                  </div>
-                  <div className="flex justify-between items-center">
-                    <span className="text-sm font-medium text-gray-500">Task Count</span>
-                    <span className="text-sm text-gray-900">{project.task_count}</span>
-                  </div>
-                  <div className="flex justify-between items-center">
-                    <span className="text-sm font-medium text-gray-500">Subtotal (no VAT)</span>
-                    <span className="text-sm text-gray-900">{formatCurrency(project.project_subtotal_novat, po.currency_code)}</span>
-                  </div>
-                  <div className="flex justify-between items-center">
-                    <span className="text-sm font-medium text-gray-500">Delivery Period</span>
-                    <span className="text-sm text-gray-900">
-                      {formatDate(project.earliest_delivery_date)} - {formatDate(project.latest_delivery_date)}
-                    </span>
-                  </div>
-                </div>
-              </div>
-            ))}
+            <div className="flex flex-wrap gap-2">
+              {projects.items.map((p: any) => {
+                const projectId = p.project_id ?? p.id
+                const projectName = p.project_name ?? p.name ?? 'Project'
+                return (
+                  <button
+                    key={projectId ?? projectName}
+                    type="button"
+                    onClick={() => {
+                      if (!onRelatedDocumentSelect || !projectId) return
+                      onRelatedDocumentSelect(
+                        {
+                          id: projectId,
+                          project_id: projectId,
+                          name: projectName,
+                        },
+                        'project'
+                      )
+                    }}
+                    className="inline-flex"
+                    aria-label={`Open project ${projectName}`}
+                  >
+                    <Badge variant="secondary" className="cursor-pointer hover:bg-gray-200">
+                      {projectName}
+                    </Badge>
+                  </button>
+                )
+              })}
+            </div>
           </div>
         ) : (
-          <div className="text-center py-4 text-gray-500 text-sm">
-            No projects found
-          </div>
+          <div className="text-center py-4 text-gray-500 text-sm">No projects found</div>
         )}
       </div>
 
@@ -320,9 +324,21 @@ export function ProductionOrderDetailsPane({
       <div>
         <ProductionOrderTasksSection
           productionOrderId={productionOrderId}
-          onTaskClick={(taskId) => {
-            // TODO: Handle task click - open task details
-            console.log('Task clicked:', taskId)
+          preloadedTasks={tasks as any}
+          onTaskClick={(taskId, taskData) => {
+            if (!onRelatedDocumentSelect) return
+            onRelatedDocumentSelect(
+              {
+                id: taskId,
+                task_id: taskId,
+                doc_id: taskId,
+                doc_kind: 'task',
+                direction: 'ap',
+                title: taskData?.title || `Task ${taskId}`,
+                delivery_date: taskData?.delivery_date,
+              },
+              'task'
+            )
           }}
         />
       </div>
@@ -330,20 +346,58 @@ export function ProductionOrderDetailsPane({
       {/* Invoices Section */}
       <div>
         <h3 className="text-sm font-medium text-gray-900 mb-3">Invoices</h3>
-        {invoices.length > 0 ? (
+        {receivedInvoices.length > 0 ? (
           <div className="mb-4">
             <div className="space-y-2">
-              {invoices.map((invoice) => (
-                <div 
-                  key={invoice.received_invoice_id} 
+              {receivedInvoices.map((invoice) => {
+                const receivedInvoiceId =
+                  invoice.received_invoice_id ?? invoice.received_invoice?.id ?? invoice.id ?? invoice.doc_id
+                const invoiceNumber = invoice.invoice_number ?? invoice.doc_number ?? '-'
+                const invoiceDate = invoice.invoice_date ?? invoice.doc_date
+                const currencyCode = invoice.currency_code ?? invoice.payment_currency ?? po.currency_code
+                const allocated = invoice.amount_subtotal_allocated ?? invoice.subtotal_amount ?? 0
+                return (
+                <div
+                  key={receivedInvoiceId} 
                   className="flex items-center justify-between p-3 bg-white border rounded-lg hover:bg-gray-50 transition-colors"
+                  role={onRelatedDocumentSelect ? 'button' : undefined}
+                  tabIndex={onRelatedDocumentSelect ? 0 : undefined}
+                  onClick={() => {
+                    if (!onRelatedDocumentSelect || !receivedInvoiceId) return
+                    onRelatedDocumentSelect(
+                      {
+                        id: receivedInvoiceId,
+                        doc_id: receivedInvoiceId,
+                        doc_kind: 'invoice',
+                        direction: 'ap',
+                        doc_number: invoiceNumber,
+                        doc_date: invoiceDate,
+                        currency_code: currencyCode,
+                        subtotal_amount: invoice.subtotal_amount ?? allocated,
+                        vat_amount: invoice.vat_amount,
+                        total_amount: invoice.total_amount,
+                        status: invoice.status,
+                        from_team_id: po?.supplier_team_id ?? po?.from_team_id,
+                        from_team_name: po?.supplier_team_name ?? po?.from_team_name,
+                        to_team_id: po?.payer_team_id ?? po?.to_team_id,
+                        to_team_name: po?.payer_team_name ?? po?.to_team_name,
+                      },
+                      'invoice'
+                    )
+                  }}
+                  onKeyDown={(e) => {
+                    if (!onRelatedDocumentSelect) return
+                    if (e.key !== 'Enter' && e.key !== ' ') return
+                    e.preventDefault()
+                    ;(e.currentTarget as HTMLDivElement).click()
+                  }}
                 >
                   <div className="flex-1">
                     <div className="font-medium text-sm text-gray-900">
-                      Invoice #{invoice.invoice_number}
+                      Invoice #{invoiceNumber}
                     </div>
                     <div className="text-xs text-gray-500">
-                      {formatDate(invoice.invoice_date)} • Amount: {formatCurrency(invoice.amount_subtotal_allocated, invoice.currency_code)}
+                      {invoiceDate ? formatDate(invoiceDate) : '-'} • Amount: {formatCurrency(allocated, currencyCode)}
                     </div>
                   </div>
                   <div className="flex items-center space-x-1">
@@ -354,12 +408,12 @@ export function ProductionOrderDetailsPane({
                       onClick={(e) => {
                         e.stopPropagation()
                         setSelectedAllocation({
-                          received_invoice_id: invoice.received_invoice_id,
+                          received_invoice_id: receivedInvoiceId,
                           production_order_id: productionOrderId,
-                          amount_subtotal_allocated: invoice.amount_subtotal_allocated,
-                          invoice_number: invoice.invoice_number,
-                          invoice_date: invoice.invoice_date,
-                          currency_code: invoice.currency_code
+                          amount_subtotal_allocated: allocated,
+                          invoice_number: invoiceNumber,
+                          invoice_date: invoiceDate,
+                          currency_code: currencyCode
                         })
                         setShowEditAllocationModal(true)
                       }}
@@ -381,7 +435,7 @@ export function ProductionOrderDetailsPane({
                     </Button>
                   </div>
                 </div>
-              ))}
+              )})}
             </div>
           </div>
         ) : (
@@ -444,18 +498,18 @@ export function ProductionOrderDetailsPane({
           onClose={() => setShowCreateInvoiceModal(false)}
           onSuccess={() => {
             setShowCreateInvoiceModal(false)
-            // Refresh invoices list
-            refreshInvoices()
+            // Refresh the pane (single RPC)
+            queryClient.invalidateQueries({ queryKey: ['ap-production-order-pane', productionOrderId] })
           }}
           fromContext={{
-            issuerTeamId: initialProductionOrder?.from_team_id || productionOrder?.data?.supplier_team_id,
-            issuerTeamName: initialProductionOrder?.from_team_name || productionOrder?.data?.supplier_team_name,
-            payerTeamId: initialProductionOrder?.to_team_id || productionOrder?.data?.payer_team_id,
-            payerTeamName: initialProductionOrder?.to_team_name || productionOrder?.data?.payer_team_name,
-            subtotalAmount: productionOrder?.data?.subtotal_amount,
-            currencyCode: productionOrder?.data?.currency_code,
+            issuerTeamId: po?.supplier_team_id ?? po?.from_team_id ?? initialProductionOrder?.from_team_id,
+            issuerTeamName: po?.supplier_team_name ?? po?.from_team_name ?? initialProductionOrder?.from_team_name,
+            payerTeamId: po?.payer_team_id ?? po?.to_team_id ?? initialProductionOrder?.to_team_id,
+            payerTeamName: po?.payer_team_name ?? po?.to_team_name ?? initialProductionOrder?.to_team_name,
+            subtotalAmount: po?.subtotal_amount,
+            currencyCode: po?.currency_code,
             orderId: productionOrderId,
-            orderSubtotal: productionOrder?.data?.subtotal_amount
+            orderSubtotal: po?.subtotal_amount
           }}
         />
       )}
@@ -469,12 +523,12 @@ export function ProductionOrderDetailsPane({
             </DialogHeader>
             <AddExistingSupplierInvoiceModal
               productionOrderId={productionOrderId}
-              payerTeamId={initialProductionOrder?.to_team_id || productionOrder?.data?.payer_team_id || 0}
-              supplierTeamId={initialProductionOrder?.from_team_id || productionOrder?.data?.supplier_team_id || 0}
+              payerTeamId={po?.payer_team_id ?? po?.to_team_id ?? initialProductionOrder?.to_team_id ?? 0}
+              supplierTeamId={po?.supplier_team_id ?? po?.from_team_id ?? initialProductionOrder?.from_team_id ?? 0}
               onClose={() => setShowSelectInvoiceModal(false)}
               onInvoiceLinked={(invoice) => {
-                // Refresh invoices list
-                refreshInvoices()
+                // Refresh the pane (single RPC)
+                queryClient.invalidateQueries({ queryKey: ['ap-production-order-pane', productionOrderId] })
               }}
             />
           </DialogContent>
@@ -529,7 +583,7 @@ export function ProductionOrderDetailsPane({
           setSelectedAllocation(null)
         }}
         onSuccess={() => {
-          refreshInvoices()
+          queryClient.invalidateQueries({ queryKey: ['ap-production-order-pane', productionOrderId] })
         }}
         allocation={selectedAllocation}
       />

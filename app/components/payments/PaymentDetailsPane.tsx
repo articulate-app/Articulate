@@ -757,7 +757,25 @@ export function PaymentDetailsPane({ paymentId, initialPayment, direction = 'ar'
       
       {/* Select Existing Invoice Modal */}
       {showSelectInvoiceModal && (
-        <Dialog open={showSelectInvoiceModal} onOpenChange={setShowSelectInvoiceModal}>
+        <Dialog 
+          open={showSelectInvoiceModal} 
+          onOpenChange={(open) => {
+            if (!open) {
+              const handleClose = () => {
+                setShowSelectInvoiceModal(false)
+                // Manually restore body pointer-events in case Radix UI didn't clean up properly
+                // This is a safety net to prevent the app from freezing
+                setTimeout(() => {
+                  const computedStyle = window.getComputedStyle(document.body)
+                  if (computedStyle.pointerEvents === 'none') {
+                    document.body.style.pointerEvents = 'auto'
+                  }
+                }, 300) // Wait for Dialog closing animation to complete
+              }
+              handleClose()
+            }
+          }}
+        >
           <DialogContent className="sm:max-w-2xl">
             <DialogHeader>
               <DialogTitle>Select Existing Invoice</DialogTitle>
@@ -768,7 +786,16 @@ export function PaymentDetailsPane({ paymentId, initialPayment, direction = 'ar'
               fromTeamId={payment?.payer_team_id || initialPayment?.from_team_id || 0}
               toTeamId={payment?.paid_to_team_id || initialPayment?.to_team_id || 0}
               paymentCurrency={payment?.payment_currency || 'EUR'}
-              onClose={() => setShowSelectInvoiceModal(false)}
+              onClose={() => {
+                setShowSelectInvoiceModal(false)
+                // Manually restore body pointer-events in case Radix UI didn't clean up properly
+                setTimeout(() => {
+                  const computedStyle = window.getComputedStyle(document.body)
+                  if (computedStyle.pointerEvents === 'none') {
+                    document.body.style.pointerEvents = 'auto'
+                  }
+                }, 300)
+              }}
               onInvoiceLinked={(invoice) => {
                 setShowSelectInvoiceModal(false)
                 refetch()

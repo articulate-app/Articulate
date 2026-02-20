@@ -12,10 +12,11 @@ export interface ChatMessage {
   }
   createdAt: string
   created_by?: number
+  attachment?: string
+  reply_to_id?: number | null
 }
 
 export function useThreadedChat(threadId: number, currentUserId?: number, currentUserInfo?: { displayName: string; avatar?: string; email?: string }, initialMentions?: any[], pageSize: number = 20) {
-  console.log('[useThreadedChat] called for threadId:', threadId);
   const supabase = createClientComponentClient()
   const [mentions, setMentions] = useState<any[]>(initialMentions || [])
   const [usersById, setUsersById] = useState<Record<number, any>>({})
@@ -49,17 +50,18 @@ export function useThreadedChat(threadId: number, currentUserId?: number, curren
 
   // Initial load: fetch most recent N messages
   useEffect(() => {
-    console.log('[useThreadedChat] fetching initial mentions for threadId:', threadId);
     let isMounted = true;
     setError(null);
 
     if (initialMentions && initialMentions.length > 0) {
-      setMentions(initialMentions);
-      setHasMore(initialMentions.length === pageSize);
-      setOldestLoaded(initialMentions.length > 0 ? initialMentions[initialMentions.length - 1].created_at : null);
+      // Filter out any invalid mentions before setting
+      const validMentions = initialMentions.filter(m => m && m.id != null && m.created_at && m.created_by != null);
+      setMentions(validMentions);
+      setHasMore(validMentions.length === pageSize);
+      setOldestLoaded(validMentions.length > 0 ? validMentions[validMentions.length - 1].created_at : null);
       // Build user map
       const userMap: Record<number, any> = {};
-      for (const m of initialMentions) {
+      for (const m of validMentions) {
         if (m.users) userMap[m.created_by] = m.users;
       }
       setUsersById(userMap);
@@ -122,7 +124,6 @@ export function useThreadedChat(threadId: number, currentUserId?: number, curren
 
   // Real-time subscription for new messages only
   useEffect(() => {
-    console.log('[useThreadedChat] setting up real-time subscription for threadId:', threadId);
     if (!mentions.length) return
     const latestCreatedAt = mentions[0].created_at
     const sub = supabase
@@ -171,19 +172,19 @@ export function useThreadedChat(threadId: number, currentUserId?: number, curren
   }, [supabase, threadId, mentions, usersById, refreshMentions])
 
   // Send a new message (mention)
-  const sendMessage = useCallback(async (text: string, currentUserId?: number) => {
-    console.log('sendMessage called with:', { text, currentUserId });
+  const sendMessage = useCallback(async (
+    text: string,
+    currentUserId?: number,
+    options?: { replyToId?: number | null; attachment?: string | null }
+  ) => {
     if (!text.trim() || !currentUserId) return
-    console.log('Inserting mention:', {
-      comment: text,
-      thread_id: threadId,
-      created_by: currentUserId,
-    });
     // Optimistically add a temp message
     const tempId = `temp-${Date.now()}`
     const optimisticMessage = {
       id: tempId,
       comment: text,
+      attachment: options?.attachment || null,
+      reply_to_id: options?.replyToId || null,
       created_by: currentUserId,
       created_at: new Date().toISOString(),
       users: currentUserInfo ? {
@@ -199,12 +200,14 @@ export function useThreadedChat(threadId: number, currentUserId?: number, curren
       comment: text,
       thread_id: threadId,
       created_by: currentUserId,
+      reply_to_id: options?.replyToId || null,
+      attachment: options?.attachment || null,
     })
     if (error) {
       setError('Failed to send message: ' + error.message)
       setMentions(prev => prev.filter(m => m.id !== tempId))
     }
-  }, [threadId, currentUserInfo])
+  }, [threadId, currentUserInfo, supabase])
 
   // Edit a message (mention)
   const editMessage = useCallback(async (id: string, newContent: string) => {
@@ -227,40 +230,43 @@ export function useThreadedChat(threadId: number, currentUserId?: number, curren
   }, [supabase, refreshMentions])
 
   // Map mentions to ChatMessage type
-  const messages: ChatMessage[] = useMemo(() => mentions.map(m => {
+  const messages: ChatMessage[] = useMemo(() => mentions
+    .filter(m => m && m.id != null) // Filter out invalid mentions
+    .map(m => {
+    const baseMessage = {
+      id: String(m.id),
+      content: m.comment || '',
+      createdAt: m.created_at || new Date().toISOString(),
+      created_by: m.created_by,
+      attachment: m.attachment || undefined,
+      reply_to_id: m.reply_to_id || undefined,
+    }
     // Use m.users if present (optimistic or real)
     if (m.users) {
       return {
-        id: m.id.toString(),
-        content: m.comment,
+        ...baseMessage,
         user: {
           userId: m.users.id?.toString() || (currentUserId ? currentUserId.toString() : 'unknown'),
           displayName: m.users.full_name || m.users.email || 'You',
           avatar: m.users.photo,
           email: m.users.email || undefined,
         },
-        createdAt: m.created_at,
-        created_by: m.created_by,
       }
     }
     // Fallback to previous logic
     if (currentUserId && m.created_by === currentUserId) {
       return {
-        id: m.id.toString(),
-        content: m.comment,
+        ...baseMessage,
         user: {
           userId: currentUserId.toString(),
           displayName: currentUserInfo?.displayName || 'You',
           avatar: currentUserInfo?.avatar,
           email: currentUserInfo?.email,
         },
-        createdAt: m.created_at,
-        created_by: m.created_by,
       }
     }
     return {
-      id: m.id.toString(),
-      content: m.comment,
+      ...baseMessage,
       user: {
         userId: usersById[m.created_by]?.id?.toString() || 'unknown',
         displayName:
@@ -278,8 +284,6 @@ export function useThreadedChat(threadId: number, currentUserId?: number, curren
             : undefined),
         email: usersById[m.created_by]?.email || undefined,
       },
-      createdAt: m.created_at,
-      created_by: m.created_by,
     }
   }), [mentions, usersById, currentUserId, currentUserInfo]);
 

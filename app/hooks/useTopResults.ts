@@ -42,17 +42,23 @@ export function useTopResults() {
   ): Promise<TopResultsData | null> => {
     const serpKey = getSerpKey(keyword, languageId, regionId);
     
-    // Rate limiting: 1 request per second per keyword
-    const now = Date.now();
-    const lastClick = lastClickTime.get(serpKey) || 0;
-    if (now - lastClick < 1000) {
-      throw new Error('Please wait a moment before requesting top results again');
-    }
-    
     // Check cache first
     const cached = topResultsByKey.get(serpKey);
     if (cached) {
       return cached;
+    }
+
+    // If a request for this key is already in-flight, don't start another.
+    if (loadingKeys.has(serpKey)) {
+      return null;
+    }
+
+    // Rate limiting: 1 request per second per keyword.
+    // Important: never throw here (auto-fetching callers should not crash the UI).
+    const now = Date.now();
+    const lastClick = lastClickTime.get(serpKey) || 0;
+    if (now - lastClick < 1000) {
+      return null;
     }
 
     // Set loading state
@@ -105,7 +111,7 @@ export function useTopResults() {
       
       const errorMessage = error.message || 'Failed to fetch top results';
       setErrorKeys(prev => new Map(prev).set(serpKey, errorMessage));
-      throw error;
+      return null;
     } finally {
       setLoadingKeys(prev => {
         const newSet = new Set(prev);
@@ -114,7 +120,7 @@ export function useTopResults() {
       });
       abortControllerRef.current = null;
     }
-  }, [topResultsByKey, lastClickTime, getSerpKey]);
+  }, [topResultsByKey, loadingKeys, lastClickTime, getSerpKey]);
 
   const getTopResults = useCallback((keyword: string, languageId?: string | number, regionId?: string | number): TopResultsData | undefined => {
     const serpKey = getSerpKey(keyword, languageId, regionId);

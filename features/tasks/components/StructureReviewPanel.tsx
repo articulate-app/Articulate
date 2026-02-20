@@ -370,10 +370,10 @@ export function StructureReviewPanel({
         {isAnalyzing ? (
           <>
             <Loader2 className="w-4 h-4 mr-2 animate-spin" />
-            A analisar...
+            Analyzing…
           </>
         ) : (
-          reviewData ? 'Re-analyze' : 'Analisar estrutura'
+          reviewData ? 'Re-analyze' : 'Import'
         )}
       </Button>
       
@@ -468,7 +468,7 @@ function EnhancedStructureReview({
                 Adding...
               </>
             ) : (
-              `Adicionar todas as secções selecionadas (${selectedComponents.length})`
+              `Add all selected (${selectedComponents.length})`
             )}
           </Button>
         )}
@@ -486,7 +486,7 @@ function EnhancedStructureReview({
           {/* Global notes */}
           {review.global_notes && (
             <div className="mt-3 p-3 bg-gray-50 rounded-md border">
-              <div className="text-xs font-semibold text-gray-700 mb-1">Notas globais</div>
+              <div className="text-xs font-semibold text-gray-700 mb-1">Global notes</div>
               <p className="text-xs text-gray-600 whitespace-pre-wrap">{review.global_notes}</p>
             </div>
           )}
@@ -601,7 +601,7 @@ function SectionNode({ node, nodeIndex, onApplyComponent, appliedComponents, dep
           {/* Instructions (description) */}
           <div className="mt-3">
             <div className="text-[11px] font-semibold text-gray-700 mb-1">
-              Instruções
+              Instructions
             </div>
             <p className="text-xs text-gray-600 whitespace-pre-wrap">
               {node.description || '---'}
@@ -612,10 +612,10 @@ function SectionNode({ node, nodeIndex, onApplyComponent, appliedComponents, dep
           {node.output && (
             <div>
               <div className="text-[11px] font-semibold text-gray-700 mb-1">
-                Conteúdo atual
+                Current content
               </div>
               <div 
-                className="border rounded-md p-3 overflow-auto bg-white resize-y prose prose-sm max-w-none text-xs prose-img:max-w-full prose-img:max-h-96 prose-img:object-contain"
+                className="w-full border rounded-md p-3 overflow-auto bg-white resize-y prose prose-sm max-w-none text-xs break-words prose-img:max-w-full prose-img:max-h-96 prose-img:object-contain"
                 style={{ minHeight: '120px', maxHeight: '600px', height: '240px' }}
               >
                 <ReactMarkdown>
@@ -658,7 +658,7 @@ function SectionNode({ node, nodeIndex, onApplyComponent, appliedComponents, dep
                 ) : isApplied ? (
                   'Added'
                 ) : (
-                  'Adicionar esta secção'
+                  'Add'
                 )}
               </Button>
             </div>
@@ -938,10 +938,10 @@ export function SuggestedComponentsList({
               <div>
                 <Label className="text-xs font-medium text-gray-700">Original Content</Label>
                 <div 
-                  className="mt-1 border rounded-md p-3 overflow-auto bg-white resize-y"
+                  className="mt-1 w-full border rounded-md p-3 overflow-auto bg-white resize-y"
                   style={{ minHeight: '120px', maxHeight: '600px', height: '240px' }}
                 >
-                  <div className="prose prose-sm max-w-none text-xs prose-img:max-w-full prose-img:max-h-96 prose-img:object-contain">
+                  <div className="prose prose-sm max-w-none text-xs break-words prose-img:max-w-full prose-img:max-h-96 prose-img:object-contain">
                     <ReactMarkdown>
                       {component.output}
                     </ReactMarkdown>

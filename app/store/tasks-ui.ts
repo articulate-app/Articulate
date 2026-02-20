@@ -16,6 +16,13 @@ export interface TaskFilters {
   overdueStatus: string[]
 }
 
+export type PlannerItemKind = 'task' | 'suggestion'
+
+export type PlannerVisibilityFilters = {
+  showTasks: boolean
+  showSuggestions: boolean
+}
+
 function parseFiltersFromParams(params: URLSearchParams): TaskFilters {
   const parseDate = (val?: string | null) => (val ? new Date(val) : undefined)
   return {
@@ -48,6 +55,8 @@ interface TasksUIState {
   syncFromUrl: (params: URLSearchParams) => void
   selectedTaskId: string | number | null
   setSelectedTaskId: (id: string | number | null) => void
+  plannerVisibility: PlannerVisibilityFilters
+  setPlannerVisibility: (patch: Partial<PlannerVisibilityFilters>) => void
 }
 
 export const useTasksUI = create<TasksUIState>((set, get) => ({
@@ -78,4 +87,7 @@ export const useTasksUI = create<TasksUIState>((set, get) => ({
   },
   selectedTaskId: null,
   setSelectedTaskId: (id) => set({ selectedTaskId: id }),
+  plannerVisibility: { showTasks: true, showSuggestions: true },
+  setPlannerVisibility: (patch) =>
+    set((state) => ({ plannerVisibility: { ...state.plannerVisibility, ...patch } })),
 })) 

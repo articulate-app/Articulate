@@ -40,31 +40,24 @@ export function BillableTasksSection({ ctxType, ctxId, title, onTaskClick, onExp
     try {
       setIsLoading(true)
       
-      // First get the count
-      const { count, error: countError } = await supabase
-        .from('v_billing_period_tasks')
-        .select('task_id', { count: 'exact', head: true })
-        .eq('ctx_type', ctxType)
-        .eq('ctx_id', ctxId)
-
-      if (countError) throw countError
-      setTotalCount(count || 0)
-
-      // Then get the first page of tasks
-      const { data, error } = await supabase
-        .from('v_billing_period_tasks')
+      // RPC replaces v_billing_period_tasks (same response shape).
+      const { data, error, count } = await supabase
+        .rpc(
+          'fn_billing_period_tasks',
+          { p_ctx_type: ctxType, p_ctx_id: ctxId },
+          { count: 'exact' }
+        )
         .select('task_id,title,delivery_date,publication_date,production_type_title,content_type_title,language_code,assigned_to_name,is_billable_candidate,project_name,project_status_name,project_status_color,is_overdue,is_publication_overdue')
-        .eq('ctx_type', ctxType)
-        .eq('ctx_id', ctxId)
         .order('delivery_date', { ascending: false })
-        .limit(50)
+        .range(0, 49)
 
       if (error) throw error
-      setTasks(data || [])
+      setTasks((data || []) as any[])
+      setTotalCount(typeof count === 'number' ? count : ((data || []).length))
       
       // Notify parent component that data has been loaded
       if (onDataLoaded) {
-        onDataLoaded(data || [], count || 0)
+        onDataLoaded((data || []) as any[], typeof count === 'number' ? count : ((data || []).length))
       }
     } catch (err: any) {
       console.error('Error fetching billable tasks:', err)
@@ -108,10 +101,8 @@ export function BillableTasksSection({ ctxType, ctxId, title, onTaskClick, onExp
   const handleExportCSV = async () => {
     try {
       const { data, error } = await supabase
-        .from('v_billing_period_tasks')
+        .rpc('fn_billing_period_tasks', { p_ctx_type: ctxType, p_ctx_id: ctxId })
         .select('task_id,title,delivery_date,publication_date,production_type_title,content_type_title,language_code,assigned_to_name,is_billable_candidate,project_name,project_status_name,project_status_color,is_overdue,is_publication_overdue')
-        .eq('ctx_type', ctxType)
-        .eq('ctx_id', ctxId)
         .order('delivery_date', { ascending: false })
 
       if (error) throw error
@@ -141,10 +132,8 @@ export function BillableTasksSection({ ctxType, ctxId, title, onTaskClick, onExp
   const handleExportXLSX = async () => {
     try {
       const { data, error } = await supabase
-        .from('v_billing_period_tasks')
+        .rpc('fn_billing_period_tasks', { p_ctx_type: ctxType, p_ctx_id: ctxId })
         .select('task_id,title,delivery_date,publication_date,production_type_title,content_type_title,language_code,assigned_to_name,is_billable_candidate,project_name,project_status_name,project_status_color,is_overdue,is_publication_overdue')
-        .eq('ctx_type', ctxType)
-        .eq('ctx_id', ctxId)
         .order('delivery_date', { ascending: false })
 
       if (error) throw error

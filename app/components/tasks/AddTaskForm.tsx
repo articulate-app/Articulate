@@ -5,9 +5,6 @@ import { zodResolver } from "@hookform/resolvers/zod"
 import * as z from "zod"
 import { Button } from "../ui/button"
 import { Input } from "../ui/input"
-import { Textarea } from "../ui/textarea"
-import { MultiSelect } from "../ui/multi-select"
-import { DatePicker } from "../ui/date-picker"
 import { addTask } from '../../../lib/services/tasks'
 import { getUsersForProject } from '../../lib/services/users'
 import { createClientComponentClient } from '@supabase/auth-helpers-nextjs'
@@ -17,11 +14,15 @@ import { useFilterOptions } from '../../hooks/use-filter-options'
 import { useQueryClient } from '@tanstack/react-query'
 import dynamic from 'next/dynamic'
 import { Dropzone } from '../dropzone'
-import { normalizeTask, updateTaskInCaches, addTaskToCalendarCaches, addTaskToKanbanCaches } from './task-cache-utils'
+import { addTaskToGroupedTaskCaches, normalizeTask, updateTaskInCaches, addTaskToCalendarCaches, addTaskToKanbanCaches } from './task-cache-utils'
 import { getTypesenseUpdater } from '../../store/typesense-tasks'
 import { OccupationAwarenessDisplay } from './occupation-awareness-display'
 import { OccupationAwareDatePicker } from '../ui/occupation-aware-date-picker'
 import { cn } from '@/lib/utils'
+import { ChevronDown, ChevronUp, Calendar, Tag, Paperclip, Check, Plus } from 'lucide-react'
+import { getImageUrl } from '@/lib/public-media'
+import { UserAvatar } from '../UserAvatar'
+import { ProjectBadge } from '../ProjectBadge'
 
 const RichTextEditor = dynamic(() => import('../ui/rich-text-editor').then(mod => ({ default: mod.RichTextEditor })), {
   ssr: false,
@@ -30,7 +31,6 @@ const RichTextEditor = dynamic(() => import('../ui/rich-text-editor').then(mod =
 
 const schema = z.object({
   title: z.string().min(1, "Title is required"),
-  notes: z.string().optional(),
   briefing: z.string().optional(),
   assigned_to_id: z.string().optional(),
   project_id_int: z.string().optional(),
@@ -39,6 +39,7 @@ const schema = z.object({
   language_id: z.string().optional(),
   project_status_id: z.string().optional(),
   channels: z.array(z.string()).optional(),
+  watchers: z.array(z.string()).optional(),
   parent_task_id_int: z.string().optional(),
   delivery_date: z.string().optional(),
   publication_date: z.string().optional(),
@@ -46,13 +47,18 @@ const schema = z.object({
 
 type FormValues = z.infer<typeof schema>
 
-type Option = { value: string; label: string; active?: boolean }
+type Option = { value: string; label: string; active?: boolean; photo?: string | null; color?: string | null; logo?: string | null }
 
 type StatusOption = { value: string; label: string; color: string; order_priority?: number };
+type ProjectWatcherOption = { value: string; label: string; photo?: string | null; photoUrl?: string | null };
 
 type AddTaskFormProps = {
   onSuccess?: (task: any) => void
+  /** When provided, form calls this instead of onSuccess and stays open (for Create & add another) */
+  onCreateAndAddAnother?: (task: any) => void
   defaultProjectId?: number
+  /** Pre-fill form fields (e.g. from Kanban group context when opening composer from "+ Add task") */
+  initialValues?: Partial<FormValues>
   parentTaskId?: string
   onMainTaskCreated?: (mainTaskId: string | number) => void
   parentTaskTitle?: string
@@ -61,11 +67,17 @@ type AddTaskFormProps = {
   onClose?: () => void
   children?: React.ReactNode
   isModal?: boolean // New prop to indicate if used in modal context
+  /** Composer variant: staged layout with Stage 1 always visible, Stage 2 in expandable section */
+  variant?: 'default' | 'composer'
+  /** Sync form values and dirty state for composer minimized bar */
+  onFormChange?: (values: Partial<FormValues>, dirty: boolean) => void
 }
 
 export function AddTaskForm({
   onSuccess,
+  onCreateAndAddAnother,
   defaultProjectId,
+  initialValues,
   parentTaskId,
   onMainTaskCreated,
   parentTaskTitle,
@@ -74,25 +86,64 @@ export function AddTaskForm({
   onClose,
   children,
   isModal = false,
+  variant = 'default',
+  onFormChange,
 }: AddTaskFormProps) {
+  const baseDefaults: FormValues = {
+    title: "",
+    briefing: "",
+    assigned_to_id: "",
+    project_id_int: defaultProjectId !== undefined ? String(defaultProjectId) : "",
+    content_type_id: "",
+    production_type_id: "",
+    language_id: "",
+    project_status_id: "",
+    channels: [],
+    watchers: [],
+    delivery_date: new Date().toISOString().slice(0, 10),
+    publication_date: new Date(new Date().getTime() + 2 * 24 * 60 * 60 * 1000).toISOString().slice(0, 10),
+  };
+  const mergedDefaults: FormValues = initialValues
+    ? {
+        ...baseDefaults,
+        project_id_int: (initialValues.project_id_int != null && String(initialValues.project_id_int).trim() !== "")
+          ? String(initialValues.project_id_int)
+          : baseDefaults.project_id_int,
+        project_status_id: (initialValues.project_status_id != null && String(initialValues.project_status_id).trim() !== "")
+          ? String(initialValues.project_status_id)
+          : baseDefaults.project_status_id,
+        assigned_to_id: (initialValues.assigned_to_id != null && String(initialValues.assigned_to_id).trim() !== "")
+          ? String(initialValues.assigned_to_id)
+          : baseDefaults.assigned_to_id,
+        content_type_id: (initialValues.content_type_id != null && String(initialValues.content_type_id).trim() !== "")
+          ? String(initialValues.content_type_id)
+          : baseDefaults.content_type_id,
+        production_type_id: (initialValues.production_type_id != null && String(initialValues.production_type_id).trim() !== "")
+          ? String(initialValues.production_type_id)
+          : baseDefaults.production_type_id,
+        language_id: (initialValues.language_id != null && String(initialValues.language_id).trim() !== "")
+          ? String(initialValues.language_id)
+          : baseDefaults.language_id,
+      }
+    : baseDefaults;
   const methods = useForm<z.infer<typeof schema>>({
     resolver: zodResolver(schema),
-    defaultValues: {
-      title: "",
-      notes: "",
-      briefing: "",
-      assigned_to_id: "",
-      project_id_int: defaultProjectId !== undefined ? String(defaultProjectId) : "",
-      content_type_id: "",
-      production_type_id: "",
-      language_id: "",
-      project_status_id: "",
-      channels: [],
-      delivery_date: new Date().toISOString().slice(0, 10),
-      publication_date: new Date(new Date().getTime() + 2 * 24 * 60 * 60 * 1000).toISOString().slice(0, 10),
-    },
+    defaultValues: mergedDefaults,
   })
-  const { handleSubmit, register, setValue, watch, formState: { errors, isSubmitting } } = methods
+  const { handleSubmit, register, setValue, watch, formState: { errors, isSubmitting, isDirty } } = methods
+  const createAndAddAnotherRef = useRef(false)
+  const formRef = useRef<HTMLFormElement>(null)
+
+  // Sync form state to composer for minimized bar (use subscription to avoid infinite loop)
+  useEffect(() => {
+    if (variant !== 'composer' || !onFormChange) return
+    const subscription = watch((values, meta) => {
+      // Ignore initial subscription fire to avoid store feedback loops
+      if (!meta?.name) return
+      onFormChange(values as Partial<FormValues>, methods.formState.isDirty)
+    })
+    return () => subscription.unsubscribe()
+  }, [variant, onFormChange, watch])
 
   // Fetch filter options only when form is rendered
   const { data: options, isLoading: isOptionsLoading } = useFilterOptions()
@@ -103,6 +154,15 @@ export function AddTaskForm({
   const [filteredContentTypes, setFilteredContentTypes] = useState<Option[]>([])
   const [filteredLanguages, setFilteredLanguages] = useState<Option[]>([])
   const [filteredProductionTypes, setFilteredProductionTypes] = useState<Option[]>([])
+  const [projectWatchers, setProjectWatchers] = useState<ProjectWatcherOption[]>([])
+  const [projectChannels, setProjectChannels] = useState<{ id: string; label: string; isDefault: boolean }[]>([])
+  const [watchersExpanded, setWatchersExpanded] = useState(false)
+  const [watcherSearch, setWatcherSearch] = useState('')
+  const [projectExpanded, setProjectExpanded] = useState(false)
+  const [statusExpanded, setStatusExpanded] = useState(false)
+  const [assigneeExpanded, setAssigneeExpanded] = useState(false)
+  const [channelsExpanded, setChannelsExpanded] = useState(false)
+  const [attachmentsExpanded, setAttachmentsExpanded] = useState(false)
 
   // State for parent task info
   const [parentTaskInfo, setParentTaskInfo] = useState<{ title: string; projectName: string } | null>(
@@ -118,12 +178,20 @@ export function AddTaskForm({
 
   // Watch selected project and fetch users for it
   const selectedProjectId = watch('project_id_int')
+  const selectedWatchers = watch('watchers') || []
 
   // Add this near the top of the component, after options is available
-  const channelOptions = (options?.channels || []).map(opt => ({
-    id: String(opt.value),
-    label: opt.label,
-  }));
+  const channelOptions = React.useMemo(
+    () =>
+      (options?.channels || []).map(opt => ({
+        id: String(opt.value),
+        label: opt.label,
+      })),
+    [options?.channels]
+  )
+  const effectiveChannelOptions = projectChannels.length > 0
+    ? projectChannels.map(ch => ({ id: ch.id, label: ch.label }))
+    : channelOptions
 
   useEffect(() => {
     if (isOptionsLoading) return
@@ -142,6 +210,81 @@ export function AddTaskForm({
       })
     if (watch('assigned_to_id') !== '') setValue('assigned_to_id', '')
   }, [selectedProjectId, options?.projects, isOptionsLoading])
+
+  // Load project watchers (default: all selected as task watchers)
+  useEffect(() => {
+    if (!selectedProjectId) {
+      setProjectWatchers([])
+      setValue('watchers', [], { shouldDirty: false })
+      return
+    }
+    let isMounted = true
+    const loadProjectWatchers = async () => {
+      const supabase = createClientComponentClient()
+      const { data, error } = await supabase
+        .from('v_project_watchers_with_user')
+        .select('user_id, full_name, photo')
+        .eq('project_id', selectedProjectId)
+        .order('full_name')
+      if (error || !isMounted) return
+      const mapped = (data || [])
+        .filter((w: any) => w.user_id && w.full_name)
+        .map((w: any) => ({
+          value: String(w.user_id),
+          label: w.full_name,
+          photo: w.photo ?? null,
+          photoUrl: getImageUrl(w.photo ?? null),
+        }))
+      setProjectWatchers(mapped)
+      setValue('watchers', mapped.map(w => w.value), { shouldDirty: false })
+    }
+    loadProjectWatchers()
+    return () => {
+      isMounted = false
+    }
+  }, [selectedProjectId, setValue])
+
+  // Load project channels from v_project_channels_resolved (defaults preselected).
+  // If the project has no rows (or view is unavailable), fallback to global channels.
+  useEffect(() => {
+    if (!selectedProjectId) {
+      setProjectChannels([])
+      setValue('channels', channelOptions.map((ch) => ch.id), { shouldDirty: false })
+      return
+    }
+    let isMounted = true
+    const loadProjectChannels = async () => {
+      const supabase = createClientComponentClient()
+      const { data, error } = await supabase
+        .from('v_project_channels_resolved')
+        .select('channel_id, name, is_enabled, is_default, position')
+        .eq('project_id', selectedProjectId)
+        .order('position', { ascending: true, nullsFirst: false })
+      if (!isMounted) return
+      if (error) {
+        // Keep form usable even if view is missing/unavailable.
+        setProjectChannels([])
+        setValue('channels', channelOptions.map((ch) => ch.id), { shouldDirty: false })
+        return
+      }
+
+      const projectDefined = (data || [])
+        .map((ch: any) => ({
+          id: String(ch.channel_id),
+          label: ch.name,
+          isDefault: Boolean(ch.is_default),
+        }))
+      setProjectChannels(projectDefined)
+      const defaultIds = projectDefined.length > 0
+        ? projectDefined.map((ch) => ch.id)
+        : channelOptions.map((ch) => ch.id)
+      setValue('channels', defaultIds, { shouldDirty: false })
+    }
+    loadProjectChannels()
+    return () => {
+      isMounted = false
+    }
+  }, [selectedProjectId, setValue, channelOptions])
 
   // Watch selected user and filter content types, languages, production types
   const selectedUserId = watch('assigned_to_id')
@@ -522,14 +665,16 @@ export function AddTaskForm({
     }
   }, [projectStatuses, selectedProjectId, setValue, hasSetInitialStatus]);
 
-  console.log('selectedProjectId', selectedProjectId, typeof selectedProjectId);
-  console.log('projectStatuses', projectStatuses.map(s => ({ value: s.value, label: s.label, order_priority: s.order_priority })));
-  console.log('filteredStatuses', filteredStatuses.map(s => ({ value: s.value, label: s.label, order_priority: s.order_priority })));
 
   const [pendingFiles, setPendingFiles] = useState<File[]>([]);
   const [uploading, setUploading] = useState(false);
   const [uploadError, setUploadError] = useState<string | null>(null);
   const [formError, setFormError] = useState<string | null>(null);
+  const [activeDetailPanel, setActiveDetailPanel] = useState<null | 'project' | 'assignee' | 'dates' | 'types' | 'language' | 'channels' | 'attachments' | 'watchers'>(null);
+  const [datePanelMode, setDatePanelMode] = useState<'delivery' | 'publication'>('delivery')
+  const detailPanelRef = useRef<HTMLDivElement | null>(null)
+  const iconRowRef = useRef<HTMLDivElement | null>(null)
+  const statusPanelRef = useRef<HTMLDivElement | null>(null)
 
   const handleDropzoneFiles = async (files: FileList | File[]) => {
     setPendingFiles(prev => [...prev, ...Array.from(files)]);
@@ -554,6 +699,21 @@ export function AddTaskForm({
 
   const onSubmit = async (values: FormValues) => {
     setFormError(null);
+    const handleSuccess = (task: any) => {
+      if (createAndAddAnotherRef.current && onCreateAndAddAnother) {
+        createAndAddAnotherRef.current = false;
+        onCreateAndAddAnother(task);
+        // Keep project for "add another" flow; reset title and briefing
+        const current = methods.getValues();
+        methods.reset({
+          ...current,
+          title: "",
+          briefing: "",
+        });
+      } else {
+        onSuccess?.(task);
+      }
+    };
     console.log('Submitting task', values);
     try {
       // Debug: log Supabase client, user, session
@@ -649,7 +809,7 @@ export function AddTaskForm({
           // Set the subtasks query data for the optimistic main task ID for instant UI
           queryClient.setQueryData(['subtasks', optimisticMainTaskId], [optimisticRegularTask, optimisticSubtask])
           // Call onSuccess and close the form immediately after optimistic update
-          onSuccess?.(optimisticSubtask)
+          handleSuccess(optimisticSubtask)
           // 4. Now do the real network requests in parallel
           // Create the real main task (no assignee/status)
           const { data: newMainTask, error: mainTaskError } = await supabase
@@ -718,7 +878,7 @@ export function AddTaskForm({
           }
           // Invalidate the subtasks query for the new main task to force re-render
           queryClient.invalidateQueries({ queryKey: ['subtasks', newMainTaskId] })
-          onSuccess?.(joinedSubtask)
+          handleSuccess(joinedSubtask)
           return
         }
         // If already a main task, fall through to normal logic
@@ -763,7 +923,7 @@ export function AddTaskForm({
         // --- Patch Typesense store for subtask list optimistic updates ---
         getTypesenseUpdater()?.(hydratedOptimisticSubtask)
         queryClient.invalidateQueries({ queryKey: ['subtasks', parentTaskId] })
-        onSuccess?.(hydratedOptimisticSubtask) // Open details pane for the new task
+        handleSuccess(hydratedOptimisticSubtask) // Open details pane for the new task
       } else {
         newTask = await addTask(subtaskPayload as any)
         // --- Hydrate all fields for optimistic update ---
@@ -785,6 +945,8 @@ export function AddTaskForm({
         addItemToStore('tasks', undefined, hydratedOptimisticTask)
         // --- Patch all caches for tasks (list, kanban, calendar) ---
         updateTaskInCaches(queryClient, normalizeTask(hydratedOptimisticTask))
+        // --- Patch grouped (left pane) caches so grouped list updates instantly ---
+        addTaskToGroupedTaskCaches(hydratedOptimisticTask)
         // --- Patch calendar caches for new task optimistic updates ---
         addTaskToCalendarCaches(queryClient, hydratedOptimisticTask)
         // --- Patch Kanban caches for new task optimistic updates ---
@@ -826,7 +988,7 @@ export function AddTaskForm({
             });
           });
         });
-        onSuccess?.(hydratedOptimisticTask)
+        handleSuccess(hydratedOptimisticTask)
       }
 
       if (pendingFiles.length > 0 && newTask?.id) {
@@ -882,6 +1044,69 @@ export function AddTaskForm({
     )
   }
 
+  const selectedWatcherItems = projectWatchers.filter(w => (selectedWatchers || []).includes(w.value))
+  const filteredWatcherItems = projectWatchers.filter((w) =>
+    w.label.toLowerCase().includes(watcherSearch.toLowerCase())
+  )
+  const selectedProject = uniqueProjects.find((p) => String(p.value) === String(watch('project_id_int')))
+  const selectedStatus = filteredStatuses.find((s) => String(s.value) === String(watch('project_status_id')))
+  const selectedAssignee = uniqueAssignees.find((u) => String(u.value) === String(watch('assigned_to_id')))
+  const selectedLanguage = uniqueLanguages.find((l) => String(l.value) === String(watch('language_id')))
+  const selectedChannels = effectiveChannelOptions.filter((opt) => (watch('channels') || []).includes(opt.id))
+  const languageCode = (() => {
+    if (!selectedLanguage?.label) return 'LA'
+    const words = selectedLanguage.label.trim().split(/\s+/).filter(Boolean)
+    if (words.length >= 2) return `${words[0][0]}${words[1][0]}`.toUpperCase()
+    return selectedLanguage.label.replace(/[^a-zA-Z]/g, '').slice(0, 2).toUpperCase() || 'LA'
+  })()
+  const dateChip = (() => {
+    const fallback = new Date(Date.now() + 2 * 24 * 60 * 60 * 1000)
+    const source = watch('publication_date') || fallback.toISOString().slice(0, 10)
+    const d = new Date(source)
+    if (Number.isNaN(d.getTime())) return ''
+    return d.toLocaleDateString('en-GB', { day: '2-digit', month: 'short' }).replace(' ', '/')
+  })()
+  const getInitials = (name: string) =>
+    name
+      .split(' ')
+      .map(part => part[0])
+      .join('')
+      .slice(0, 2)
+      .toUpperCase()
+
+  const toggleWatcher = (watcherId: string) => {
+    const current = new Set(selectedWatchers || [])
+    if (current.has(watcherId)) current.delete(watcherId)
+    else current.add(watcherId)
+    setValue('watchers', Array.from(current), { shouldDirty: true })
+  }
+
+  const toggleChannel = (channelId: string) => {
+    const current = new Set((watch('channels') || []) as string[])
+    if (current.has(channelId)) current.delete(channelId)
+    else current.add(channelId)
+    setValue('channels', Array.from(current), { shouldDirty: true })
+  }
+
+  useEffect(() => {
+    if (variant !== 'composer' || (!activeDetailPanel && !statusExpanded)) return
+    const onPointerDown = (event: MouseEvent) => {
+      const target = event.target as Node
+      const panel = detailPanelRef.current
+      const icons = iconRowRef.current
+      const statusPanel = statusPanelRef.current
+      if (panel?.contains(target) || icons?.contains(target) || statusPanel?.contains(target)) return
+      setActiveDetailPanel(null)
+      setAssigneeExpanded(false)
+      setChannelsExpanded(false)
+      setAttachmentsExpanded(false)
+      setProjectExpanded(false)
+      setStatusExpanded(false)
+    }
+    document.addEventListener('mousedown', onPointerDown)
+    return () => document.removeEventListener('mousedown', onPointerDown)
+  }, [variant, activeDetailPanel, statusExpanded])
+
   return (
     <FormProvider {...methods}>
       <div
@@ -891,8 +1116,8 @@ export function AddTaskForm({
         )}
         style={{ boxSizing: 'border-box' }}
       >
-        {/* Show header only when not in modal context */}
-        {!isModal && (
+        {/* Show header only when not in modal context and not in composer (composer has its own header) */}
+        {!isModal && variant !== 'composer' && (
           <div className="sticky top-0 z-10 bg-white py-4 px-6 flex items-center justify-between relative min-w-0 w-full">
             <h2 className="text-lg font-semibold">Add Task</h2>
             {onClose && (
@@ -909,199 +1134,811 @@ export function AddTaskForm({
         )}
         {children}
         <div className={cn("flex-1 min-h-0", isModal ? "" : "overflow-y-auto")}>
-                          <form onSubmit={handleSubmit(onSubmit)} className={cn("space-y-4 px-6 w-full min-w-0 flex flex-col h-full", isModal ? "pt-4 pb-4" : "pt-2 pb-4 overflow-y-auto")}>
+          <form ref={formRef} onSubmit={handleSubmit(onSubmit)} className={cn("space-y-4 px-6 w-full min-w-0 flex flex-col h-full", isModal ? "pt-4 pb-4" : "pt-2 pb-4 overflow-y-auto", variant === 'composer' && "relative")}>
+            {/* Stage 1: Title, Project, Status, Briefing (composer) or full form (default) */}
             {/* Title */}
             <div className="w-full">
-              <label className="block text-sm font-medium mb-1">Title *</label>
+              {variant !== 'composer' && <label className="block text-sm font-medium mb-1">Title *</label>}
               <Input {...register("title")}
-                className="w-full px-3 py-2 border rounded-md focus:outline-none focus:ring-2 focus:ring-gray-200"
+                className="w-full px-3 py-2 border rounded-md text-sm focus:outline-none focus:ring-2 focus:ring-gray-200"
                 placeholder="Write an exciting title"
               />
               {errors.title && <div className="text-red-500 text-xs mt-1">{errors.title.message}</div>}
             </div>
             {/* Project */}
-            <div className="w-full">
+            {variant !== 'composer' && <div className="w-full">
               <label className="block text-sm font-medium mb-1">Project</label>
-              <select {...register("project_id_int")} className="w-full px-3 py-2 border rounded-md focus:outline-none focus:ring-2 focus:ring-gray-200" disabled={!!parentTaskId}>
-                <option value="">Select project</option>
-                {(uniqueProjects || []).map(opt => (
-                  <option key={opt.value} value={opt.value}>{opt.label}</option>
-                ))}
-              </select>
-            </div>
-            {/* Assignee */}
-            <div className="w-full">
-              <label className="block text-sm font-medium mb-1">Assignee</label>
-              <select {...register("assigned_to_id")} className="w-full px-3 py-2 border rounded-md focus:outline-none focus:ring-2 focus:ring-gray-200">
-                <option value="">Select assignee</option>
-                {uniqueAssignees.map(opt => (
-                  <option key={opt.value} value={opt.value}>{opt.label}</option>
-                ))}
-              </select>
-            </div>
-            {/* Delivery Date */}
-            <div className="w-full">
-              <label className="block text-sm font-medium mb-1">Delivery Date</label>
-              <Controller
-                control={methods.control}
-                name="delivery_date"
-                render={({ field }) => (
-                  <OccupationAwareDatePicker
-                    value={field.value ?? ''}
-                    onChange={field.onChange}
-                    userId={watch('assigned_to_id')}
-                    contentTypeId={watch('content_type_id')}
-                    productionTypeId={watch('production_type_id')}
-                    placeholder="Select delivery date"
-                    className="w-full"
-                  />
+              <button
+                type="button"
+                disabled={!!parentTaskId}
+                onClick={() => !parentTaskId && setProjectExpanded((v) => !v)}
+                className="w-full min-h-[40px] px-3 py-2 border rounded-md text-left hover:bg-gray-50 transition flex items-center justify-between disabled:opacity-60 disabled:cursor-not-allowed"
+              >
+                <div className="min-w-0">
+                  {selectedProject ? (
+                    <ProjectBadge
+                      name={selectedProject.label}
+                      logoUrl={getImageUrl((selectedProject as any).logo)}
+                      color={(selectedProject as any).color ?? null}
+                      size="sm"
+                    />
+                  ) : (
+                    <span className="text-sm text-gray-500">Select project</span>
+                  )}
+                </div>
+                <ChevronDown className="w-4 h-4 text-gray-500" />
+              </button>
+              {projectExpanded && !parentTaskId && (
+                <div className="mt-2 border rounded-md max-h-52 overflow-y-auto">
+                  {uniqueProjects.map((opt) => (
+                    <button
+                      key={opt.value}
+                      type="button"
+                      onClick={() => {
+                        setValue('project_id_int', String(opt.value), { shouldDirty: true })
+                        setProjectExpanded(false)
+                      }}
+                      className="w-full px-3 py-2 text-left hover:bg-gray-50 flex items-center justify-between"
+                    >
+                      <ProjectBadge
+                        name={opt.label}
+                        logoUrl={getImageUrl((opt as any).logo)}
+                        color={(opt as any).color ?? null}
+                        size="sm"
+                      />
+                      {String(opt.value) === String(watch('project_id_int')) && <Check className="w-4 h-4 text-gray-700" />}
+                    </button>
+                  ))}
+                </div>
+              )}
+            </div>}
+            {/* Task Watchers */}
+            {variant !== 'composer' && <div className="w-full">
+              <label className="block text-sm font-medium mb-1">Task Watchers</label>
+              <button
+                type="button"
+                onClick={() => setWatchersExpanded((v) => !v)}
+                className="w-full min-h-[40px] px-3 py-2 border rounded-md text-left hover:bg-gray-50 transition flex items-center justify-between"
+              >
+                <div className="flex items-center gap-2 overflow-hidden">
+                  {selectedWatcherItems.length === 0 ? (
+                    <span className="text-sm text-gray-500">No watchers selected</span>
+                  ) : (
+                    <div className="flex items-center gap-1">
+                      {selectedWatcherItems.slice(0, 6).map((watcher) => (
+                        <span
+                          key={watcher.value}
+                          className="inline-flex items-center justify-center w-6 h-6 rounded-full bg-gray-200 text-[10px] text-gray-700 overflow-hidden"
+                          title={watcher.label}
+                        >
+                          {watcher.photoUrl ? (
+                            // eslint-disable-next-line @next/next/no-img-element
+                            <img src={watcher.photoUrl} alt={watcher.label} className="w-full h-full object-cover" />
+                          ) : (
+                            getInitials(watcher.label)
+                          )}
+                        </span>
+                      ))}
+                      {selectedWatcherItems.length > 6 && (
+                        <span className="text-xs text-gray-500">+{selectedWatcherItems.length - 6}</span>
+                      )}
+                    </div>
+                  )}
+                </div>
+                {watchersExpanded ? <ChevronUp className="w-4 h-4 text-gray-500" /> : <ChevronDown className="w-4 h-4 text-gray-500" />}
+              </button>
+              {watchersExpanded && (
+                <div className="mt-2 border rounded-md max-h-48 overflow-y-auto">
+                  {projectWatchers.length === 0 ? (
+                    <div className="px-3 py-2 text-sm text-gray-500">No project watchers available.</div>
+                  ) : (
+                    projectWatchers.map((watcher) => {
+                      const isSelected = (selectedWatchers || []).includes(watcher.value)
+                      return (
+                        <button
+                          key={watcher.value}
+                          type="button"
+                          onClick={() => toggleWatcher(watcher.value)}
+                          className={cn(
+                            "w-full px-3 py-2 text-left flex items-center justify-between hover:bg-gray-50",
+                            isSelected && "bg-gray-50"
+                          )}
+                        >
+                          <span className="flex items-center gap-2 min-w-0">
+                            <span className="inline-flex items-center justify-center w-6 h-6 rounded-full bg-gray-200 text-[10px] text-gray-700 overflow-hidden">
+                              {watcher.photoUrl ? (
+                                // eslint-disable-next-line @next/next/no-img-element
+                                <img src={watcher.photoUrl} alt={watcher.label} className="w-full h-full object-cover" />
+                              ) : (
+                                getInitials(watcher.label)
+                              )}
+                            </span>
+                            <span className="text-sm text-gray-700 truncate">{watcher.label}</span>
+                          </span>
+                          <span className={cn("text-xs", isSelected ? "text-gray-900" : "text-gray-400")}>
+                            {isSelected ? "Selected" : "Add"}
+                          </span>
+                        </button>
+                      )
+                    })
+                  )}
+                </div>
+              )}
+            </div>}
+            {/* Status - moved up for composer Stage 1 */}
+            {variant === 'composer' && (
+              <div ref={statusPanelRef} className="w-full">
+                <button
+                  type="button"
+                  onClick={() => setStatusExpanded((v) => !v)}
+                  className="w-full min-h-[40px] px-3 py-2 border rounded-md text-left hover:bg-gray-50 transition flex items-center justify-between"
+                >
+                  {selectedStatus ? (
+                    <span
+                      className="inline-flex items-center px-2 py-1 rounded-full text-xs font-medium"
+                      style={{ backgroundColor: `${selectedStatus.color || '#e5e7eb'}22`, color: selectedStatus.color || '#374151' }}
+                    >
+                      {selectedStatus.label}
+                    </span>
+                  ) : (
+                    <span className="text-sm text-gray-500">Select status</span>
+                  )}
+                  <ChevronDown className="w-4 h-4 text-gray-500" />
+                </button>
+                {statusExpanded && (
+                  <div className="mt-2 border rounded-md max-h-52 overflow-y-auto">
+                    {filteredStatuses.map((opt) => (
+                      <button
+                        key={opt.value}
+                        type="button"
+                        onClick={() => {
+                          setValue('project_status_id', String(opt.value), { shouldDirty: true })
+                          setStatusExpanded(false)
+                        }}
+                        className="w-full px-3 py-2 text-left hover:bg-gray-50 flex items-center justify-between"
+                      >
+                        <span
+                          className="inline-flex items-center px-2 py-1 rounded-full text-xs font-medium"
+                          style={{ backgroundColor: `${opt.color || '#e5e7eb'}22`, color: opt.color || '#374151' }}
+                        >
+                          {opt.label}
+                        </span>
+                        {String(opt.value) === String(watch('project_status_id')) && <Check className="w-4 h-4 text-gray-700" />}
+                      </button>
+                    ))}
+                  </div>
                 )}
-              />
-              
-              {/* Occupation Awareness Display */}
-              <div className="mt-2">
-                <OccupationAwarenessDisplay
-                  userId={watch('assigned_to_id')}
-                  contentTypeId={watch('content_type_id')}
-                  productionTypeId={watch('production_type_id')}
-                  deliveryDate={watch('delivery_date')}
-                  onDateSelect={(date) => setValue('delivery_date', date)}
+              </div>
+            )}
+            {/* Briefing - Stage 1 for composer */}
+            {variant === 'composer' && (
+              <div className="w-full">
+                <Controller
+                  control={methods.control}
+                  name="briefing"
+                  render={({ field }) => (
+                    <RichTextEditor
+                      value={field.value || ''}
+                      onChange={field.onChange}
+                      placeholder="Add briefing..."
+                      height={220}
+                      fontSize={16}
+                      toolbarId="ql-toolbar-rich-briefing-composer"
+                    />
+                  )}
                 />
               </div>
-            </div>
-            {/* Publication Date */}
-            <div className="w-full">
-              <label className="block text-sm font-medium mb-1">Publication Date</label>
-              <Controller
-                control={methods.control}
-                name="publication_date"
-                render={({ field }) => (
-                  <input
-                    type="date"
-                    className="w-full px-3 py-2 border rounded-md focus:outline-none focus:ring-2 focus:ring-gray-200"
-                    value={field.value ?? ''}
-                    min={new Date().toISOString().slice(0, 10)}
-                    onChange={e => field.onChange(e.target.value)}
+            )}
+            {/* Composer details area controlled by footer icon row */}
+            {variant === 'composer' && activeDetailPanel && (
+              <div ref={detailPanelRef} className="absolute bottom-[118px] left-6 right-6 z-20">
+                <div className="px-3 pb-3 pt-3 space-y-4 border rounded-md bg-white shadow-lg">
+                    {activeDetailPanel === 'project' && <div className="w-full border rounded-md max-h-52 overflow-y-auto">
+                      {uniqueProjects.map((opt) => (
+                        <button
+                          key={`overlay-project-${opt.value}`}
+                          type="button"
+                          onClick={() => {
+                            setValue('project_id_int', String(opt.value), { shouldDirty: true })
+                            setActiveDetailPanel(null)
+                          }}
+                          className="w-full px-3 py-2 text-left hover:bg-gray-50 flex items-center justify-between"
+                        >
+                          <ProjectBadge
+                            name={opt.label}
+                            logoUrl={getImageUrl((opt as any).logo)}
+                            color={(opt as any).color ?? null}
+                            size="sm"
+                          />
+                          {String(opt.value) === String(watch('project_id_int')) && <Check className="w-4 h-4 text-gray-700" />}
+                        </button>
+                      ))}
+                    </div>}
+                    {activeDetailPanel === 'assignee' && <div className="w-full border rounded-md max-h-52 overflow-y-auto">
+                      {uniqueAssignees.map((opt) => (
+                        <button
+                          key={`overlay-assignee-${opt.value}`}
+                          type="button"
+                          onClick={() => {
+                            setValue('assigned_to_id', String(opt.value), { shouldDirty: true })
+                            setActiveDetailPanel(null)
+                          }}
+                          className="w-full px-3 py-2 text-left hover:bg-gray-50 flex items-center justify-between"
+                        >
+                          <span className="inline-flex items-center gap-2">
+                            <UserAvatar name={opt.label} photoUrl={getImageUrl((opt as any).photo)} size="sm" />
+                            <span className="text-sm text-gray-800">{opt.label}</span>
+                          </span>
+                          {String(opt.value) === String(watch('assigned_to_id')) && <Check className="w-4 h-4 text-gray-700" />}
+                        </button>
+                      ))}
+                    </div>}
+                    {activeDetailPanel === 'dates' && <div className="w-full space-y-3">
+                      <div className="inline-flex rounded-md border p-0.5">
+                        <button
+                          type="button"
+                          onClick={() => setDatePanelMode('delivery')}
+                          className={cn(
+                            "px-2 py-1 text-xs rounded",
+                            datePanelMode === 'delivery' ? "bg-gray-100 text-gray-900" : "text-gray-600 hover:bg-gray-50"
+                          )}
+                        >
+                          Delivery
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => setDatePanelMode('publication')}
+                          className={cn(
+                            "px-2 py-1 text-xs rounded",
+                            datePanelMode === 'publication' ? "bg-gray-100 text-gray-900" : "text-gray-600 hover:bg-gray-50"
+                          )}
+                        >
+                          Publication
+                        </button>
+                      </div>
+                      {datePanelMode === 'delivery' ? (
+                        <div className="w-full">
+                          <label className="block text-sm font-medium mb-1">Delivery Date</label>
+                          <Controller
+                            control={methods.control}
+                            name="delivery_date"
+                            render={({ field }) => (
+                              <OccupationAwareDatePicker
+                                value={field.value ?? ''}
+                                onChange={field.onChange}
+                                userId={watch('assigned_to_id')}
+                                contentTypeId={watch('content_type_id')}
+                                productionTypeId={watch('production_type_id')}
+                                placeholder="Select delivery date"
+                                className="w-full text-sm"
+                              />
+                            )}
+                          />
+                          <div className="mt-2">
+                            <OccupationAwarenessDisplay
+                              userId={watch('assigned_to_id')}
+                              contentTypeId={watch('content_type_id')}
+                              productionTypeId={watch('production_type_id')}
+                              deliveryDate={watch('delivery_date')}
+                              onDateSelect={(date) => setValue('delivery_date', date)}
+                            />
+                          </div>
+                        </div>
+                      ) : (
+                        <div className="w-full">
+                          <label className="block text-sm font-medium mb-1">Publication Date</label>
+                          <Controller
+                            control={methods.control}
+                            name="publication_date"
+                            render={({ field }) => (
+                              <input
+                                type="date"
+                                className="w-full px-3 py-2 border rounded-md text-sm focus:outline-none focus:ring-2 focus:ring-gray-200"
+                                value={field.value ?? ''}
+                                min={new Date().toISOString().slice(0, 10)}
+                                onChange={e => field.onChange(e.target.value)}
+                              />
+                            )}
+                          />
+                        </div>
+                      )}
+                    </div>}
+                    {activeDetailPanel === 'types' && <div className="w-full">
+                      <label className="block text-sm font-medium mb-1">Content Type</label>
+                      <select {...register("content_type_id")} className="w-full px-3 py-2 border rounded-md text-sm focus:outline-none focus:ring-2 focus:ring-gray-200">
+                        <option value="">Select content type</option>
+                        {uniqueContentTypes.map(opt => (
+                          <option key={opt.value} value={opt.value}>{opt.label}</option>
+                        ))}
+                      </select>
+                    </div>}
+                    {activeDetailPanel === 'types' && <div className="w-full">
+                      <label className="block text-sm font-medium mb-1">Production Type</label>
+                      <select {...register("production_type_id")} className="w-full px-3 py-2 border rounded-md text-sm focus:outline-none focus:ring-2 focus:ring-gray-200">
+                        <option value="">Select production type</option>
+                        {uniqueProductionTypes.map(opt => (
+                          <option key={opt.value} value={opt.value}>{opt.label}</option>
+                        ))}
+                      </select>
+                    </div>}
+                    {activeDetailPanel === 'language' && <div className="w-full border rounded-md max-h-52 overflow-y-auto">
+                      {uniqueLanguages.map((opt) => (
+                        <button
+                          key={`overlay-language-${opt.value}`}
+                          type="button"
+                          onClick={() => setValue('language_id', String(opt.value), { shouldDirty: true })}
+                          className="w-full px-3 py-2 text-left hover:bg-gray-50 flex items-center justify-between"
+                        >
+                          <span className="text-sm text-gray-800">{opt.label}</span>
+                          {String(opt.value) === String(watch('language_id')) && <Check className="w-4 h-4 text-gray-700" />}
+                        </button>
+                      ))}
+                    </div>}
+                    {activeDetailPanel === 'channels' && <div className="w-full border rounded-md max-h-52 overflow-y-auto">
+                      {effectiveChannelOptions.map((opt) => {
+                        const active = (watch('channels') || []).includes(opt.id)
+                        return (
+                          <button
+                            key={`overlay-channel-${opt.id}`}
+                            type="button"
+                            onClick={() => toggleChannel(opt.id)}
+                            className="w-full px-3 py-2 text-left hover:bg-gray-50 flex items-center justify-between"
+                          >
+                            <span className="text-sm text-gray-800">{opt.label}</span>
+                            {active && <Check className="w-4 h-4 text-gray-700" />}
+                          </button>
+                        )
+                      })}
+                    </div>}
+                    {activeDetailPanel === 'attachments' && <div className="w-full">
+                      <button
+                        type="button"
+                        onClick={() => setAttachmentsExpanded((v) => !v)}
+                        className="inline-flex items-center gap-2 px-3 py-2 border rounded-md hover:bg-gray-50"
+                      >
+                        <Paperclip className="w-4 h-4 text-gray-600" />
+                        <span className="text-sm text-gray-700">
+                          {pendingFiles.length > 0 ? `Attachments (${pendingFiles.length})` : "Add attachments"}
+                        </span>
+                      </button>
+                      {attachmentsExpanded && (
+                        <div className="mt-2">
+                          <Dropzone
+                            tableName="tasks"
+                            recordId={''}
+                            attachments={[]}
+                            signedUrls={{}}
+                            isUploading={uploading}
+                            uploadError={uploadError}
+                            uploadFiles={handleDropzoneFiles}
+                            deleteAttachment={att => handleRemoveFile(att as unknown as File)}
+                            onChange={() => {}}
+                          />
+                          {pendingFiles.length > 0 && (
+                            <ul className="mt-2 space-y-1 text-sm">
+                              {pendingFiles.map((file, idx) => (
+                                <li key={file.name + idx} className="flex items-center gap-2">
+                                  <span>{file.name}</span>
+                                  <button type="button" className="ml-2 text-xs text-red-500" onClick={() => handleRemoveFile(file)}>Remove</button>
+                                </li>
+                              ))}
+                            </ul>
+                          )}
+                        </div>
+                      )}
+                    </div>}
+                    {activeDetailPanel === 'watchers' && <div className="w-full">
+                      <div className="border rounded-md max-h-44 overflow-y-auto">
+                        <div className="p-2 border-b">
+                          <Input
+                            value={watcherSearch}
+                            onChange={(e) => setWatcherSearch(e.target.value)}
+                            placeholder="Search watchers"
+                            className="h-8"
+                          />
+                        </div>
+                        {filteredWatcherItems.map((watcher) => {
+                          const isSelected = (selectedWatchers || []).includes(watcher.value)
+                          return (
+                            <button
+                              key={`overlay-watcher-${watcher.value}`}
+                              type="button"
+                              onClick={() => toggleWatcher(watcher.value)}
+                              className="w-full px-3 py-2 text-left hover:bg-gray-50 flex items-center justify-between"
+                            >
+                              <span className="inline-flex items-center gap-2">
+                                <UserAvatar name={watcher.label} photoUrl={watcher.photoUrl ?? null} size="sm" />
+                                <span className="text-sm text-gray-800">{watcher.label}</span>
+                              </span>
+                              {isSelected && <Check className="w-4 h-4 text-gray-700" />}
+                            </button>
+                          )
+                        })}
+                      </div>
+                    </div>}
+                  </div>
+              </div>
+            )}
+            {/* Default variant: full form fields */}
+            {variant === 'default' && (
+              <>
+                <div className="w-full">
+                  <label className="block text-sm font-medium mb-1">Assignee</label>
+                  <button
+                    type="button"
+                    onClick={() => setAssigneeExpanded((v) => !v)}
+                    className="w-full min-h-[40px] px-3 py-2 border rounded-md text-left hover:bg-gray-50 transition flex items-center justify-between"
+                  >
+                    {selectedAssignee ? (
+                      <span className="inline-flex items-center gap-2">
+                        <UserAvatar name={selectedAssignee.label} photoUrl={getImageUrl((selectedAssignee as any).photo)} size="sm" />
+                        <span className="text-sm text-gray-800">{selectedAssignee.label}</span>
+                      </span>
+                    ) : (
+                      <span className="text-sm text-gray-500">Select assignee</span>
+                    )}
+                    <ChevronDown className="w-4 h-4 text-gray-500" />
+                  </button>
+                  {assigneeExpanded && (
+                    <div className="mt-2 border rounded-md max-h-52 overflow-y-auto">
+                      {uniqueAssignees.map((opt) => (
+                        <button
+                          key={opt.value}
+                          type="button"
+                          onClick={() => {
+                            setValue('assigned_to_id', String(opt.value), { shouldDirty: true })
+                            setAssigneeExpanded(false)
+                          }}
+                          className="w-full px-3 py-2 text-left hover:bg-gray-50 flex items-center justify-between"
+                        >
+                          <span className="inline-flex items-center gap-2">
+                            <UserAvatar name={opt.label} photoUrl={getImageUrl((opt as any).photo)} size="sm" />
+                            <span className="text-sm text-gray-800">{opt.label}</span>
+                          </span>
+                          {String(opt.value) === String(watch('assigned_to_id')) && <Check className="w-4 h-4 text-gray-700" />}
+                        </button>
+                      ))}
+                    </div>
+                  )}
+                </div>
+                <div className="w-full">
+                  <label className="block text-sm font-medium mb-1">Delivery Date</label>
+                  <Controller
+                    control={methods.control}
+                    name="delivery_date"
+                    render={({ field }) => (
+                      <OccupationAwareDatePicker
+                        value={field.value ?? ''}
+                        onChange={field.onChange}
+                        userId={watch('assigned_to_id')}
+                        contentTypeId={watch('content_type_id')}
+                        productionTypeId={watch('production_type_id')}
+                        placeholder="Select delivery date"
+                        className="w-full"
+                      />
+                    )}
                   />
-                )}
-              />
-            </div>
-            {/* Content Type */}
-            <div className="w-full">
-              <label className="block text-sm font-medium mb-1">Content Type</label>
-              <select {...register("content_type_id")} className="w-full px-3 py-2 border rounded-md focus:outline-none focus:ring-2 focus:ring-gray-200">
-                <option value="">Select content type</option>
-                {uniqueContentTypes.map(opt => (
-                  <option key={opt.value} value={opt.value}>{opt.label}</option>
-                ))}
-              </select>
-            </div>
-            {/* Production Type */}
-            <div className="w-full">
-              <label className="block text-sm font-medium mb-1">Production Type</label>
-              <select {...register("production_type_id")} className="w-full px-3 py-2 border rounded-md focus:outline-none focus:ring-2 focus:ring-gray-200">
-                <option value="">Select production type</option>
-                {uniqueProductionTypes.map(opt => (
-                  <option key={opt.value} value={opt.value}>{opt.label}</option>
-                ))}
-              </select>
-            </div>
-            {/* Language */}
-            <div className="w-full">
-              <label className="block text-sm font-medium mb-1">Language</label>
-              <select {...register("language_id")} className="w-full px-3 py-2 border rounded-md focus:outline-none focus:ring-2 focus:ring-gray-200">
-                <option value="">Select language</option>
-                {uniqueLanguages.map(opt => (
-                  <option key={opt.value} value={opt.value}>{opt.label}</option>
-                ))}
-              </select>
-            </div>
-            {/* Status */}
-            <div className="w-full">
-              <label className="block text-sm font-medium mb-1">Status</label>
-              <select {...register("project_status_id")} className="w-full px-3 py-2 border rounded-md focus:outline-none focus:ring-2 focus:ring-gray-200">
-                <option value="">Select status</option>
-                {filteredStatuses.map(opt => (
-                  <option key={opt.value} value={opt.value}>{opt.label}</option>
-                ))}
-              </select>
-            </div>
-            {/* Channels MultiSelect */}
-            <div className="w-full">
-              <label className="block text-sm font-medium mb-1">Channels</label>
-              <Controller
-                control={methods.control}
-                name="channels"
-                render={({ field }) => (
-                  <MultiSelect
-                    options={channelOptions}
-                    value={field.value || []}
-                    onChange={field.onChange}
-                    placeholder="Select channels"
+                  <div className="mt-2">
+                    <OccupationAwarenessDisplay
+                      userId={watch('assigned_to_id')}
+                      contentTypeId={watch('content_type_id')}
+                      productionTypeId={watch('production_type_id')}
+                      deliveryDate={watch('delivery_date')}
+                      onDateSelect={(date) => setValue('delivery_date', date)}
+                    />
+                  </div>
+                </div>
+                <div className="w-full">
+                  <label className="block text-sm font-medium mb-1">Publication Date</label>
+                  <Controller
+                    control={methods.control}
+                    name="publication_date"
+                    render={({ field }) => (
+                      <input
+                        type="date"
+                        className="w-full px-3 py-2 border rounded-md focus:outline-none focus:ring-2 focus:ring-gray-200"
+                        value={field.value ?? ''}
+                        min={new Date().toISOString().slice(0, 10)}
+                        onChange={e => field.onChange(e.target.value)}
+                      />
+                    )}
                   />
-                )}
-              />
-            </div>
-            {/* Notes (RichTextEditor) */}
-            <div className="w-full">
-              <label className="block text-sm font-medium mb-1">Notes</label>
-              <Controller
-                control={methods.control}
-                name="notes"
-                render={({ field }) => (
-                  <RichTextEditor
-                    value={field.value || ''}
-                    onChange={field.onChange}
-                    placeholder="Add notes..."
-                    toolbarId="ql-toolbar-notes"
+                </div>
+                <div className="w-full">
+                  <label className="block text-sm font-medium mb-1">Content Type</label>
+                  <select {...register("content_type_id")} className="w-full px-3 py-2 border rounded-md focus:outline-none focus:ring-2 focus:ring-gray-200">
+                    <option value="">Select content type</option>
+                    {uniqueContentTypes.map(opt => (
+                      <option key={opt.value} value={opt.value}>{opt.label}</option>
+                    ))}
+                  </select>
+                </div>
+                <div className="w-full">
+                  <label className="block text-sm font-medium mb-1">Production Type</label>
+                  <select {...register("production_type_id")} className="w-full px-3 py-2 border rounded-md focus:outline-none focus:ring-2 focus:ring-gray-200">
+                    <option value="">Select production type</option>
+                    {uniqueProductionTypes.map(opt => (
+                      <option key={opt.value} value={opt.value}>{opt.label}</option>
+                    ))}
+                  </select>
+                </div>
+                <div className="w-full">
+                  <label className="block text-sm font-medium mb-1">Language</label>
+                  <select {...register("language_id")} className="w-full px-3 py-2 border rounded-md focus:outline-none focus:ring-2 focus:ring-gray-200">
+                    <option value="">Select language</option>
+                    {uniqueLanguages.map(opt => (
+                      <option key={opt.value} value={opt.value}>{opt.label}</option>
+                    ))}
+                  </select>
+                </div>
+                <div className="w-full">
+                  <label className="block text-sm font-medium mb-1">Status</label>
+                  <button
+                    type="button"
+                    onClick={() => setStatusExpanded((v) => !v)}
+                    className="w-full min-h-[40px] px-3 py-2 border rounded-md text-left hover:bg-gray-50 transition flex items-center justify-between"
+                  >
+                    {selectedStatus ? (
+                      <span
+                        className="inline-flex items-center px-2 py-1 rounded-full text-xs font-medium"
+                        style={{ backgroundColor: `${selectedStatus.color || '#e5e7eb'}22`, color: selectedStatus.color || '#374151' }}
+                      >
+                        {selectedStatus.label}
+                      </span>
+                    ) : (
+                      <span className="text-sm text-gray-500">Select status</span>
+                    )}
+                    <ChevronDown className="w-4 h-4 text-gray-500" />
+                  </button>
+                  {statusExpanded && (
+                    <div className="mt-2 border rounded-md max-h-52 overflow-y-auto">
+                      {filteredStatuses.map((opt) => (
+                        <button
+                          key={opt.value}
+                          type="button"
+                          onClick={() => {
+                            setValue('project_status_id', String(opt.value), { shouldDirty: true })
+                            setStatusExpanded(false)
+                          }}
+                          className="w-full px-3 py-2 text-left hover:bg-gray-50 flex items-center justify-between"
+                        >
+                          <span
+                            className="inline-flex items-center px-2 py-1 rounded-full text-xs font-medium"
+                            style={{ backgroundColor: `${opt.color || '#e5e7eb'}22`, color: opt.color || '#374151' }}
+                          >
+                            {opt.label}
+                          </span>
+                          {String(opt.value) === String(watch('project_status_id')) && <Check className="w-4 h-4 text-gray-700" />}
+                        </button>
+                      ))}
+                    </div>
+                  )}
+                </div>
+                <div className="w-full">
+                  <label className="block text-sm font-medium mb-1">Channels</label>
+                  <button
+                    type="button"
+                    onClick={() => setChannelsExpanded((v) => !v)}
+                    className="w-full min-h-[40px] px-3 py-2 border rounded-md text-left hover:bg-gray-50 transition flex items-center justify-between"
+                  >
+                    <span className="text-sm text-gray-700">
+                      {selectedChannels.length > 0 ? `${selectedChannels.length} selected` : "Select channels"}
+                    </span>
+                    <ChevronDown className="w-4 h-4 text-gray-500" />
+                  </button>
+                  {channelsExpanded && (
+                    <div className="mt-2 border rounded-md max-h-52 overflow-y-auto">
+                      {effectiveChannelOptions.map((opt) => {
+                        const active = (watch('channels') || []).includes(opt.id)
+                        return (
+                          <button
+                            key={opt.id}
+                            type="button"
+                            onClick={() => toggleChannel(opt.id)}
+                            className="w-full px-3 py-2 text-left hover:bg-gray-50 flex items-center justify-between"
+                          >
+                            <span className="text-sm text-gray-800">{opt.label}</span>
+                            {active && <Check className="w-4 h-4 text-gray-700" />}
+                          </button>
+                        )
+                      })}
+                    </div>
+                  )}
+                </div>
+                <div className="w-full">
+                  <label className="block text-sm font-medium mb-1">Briefing</label>
+                  <Controller
+                    control={methods.control}
+                    name="briefing"
+                    render={({ field }) => (
+                      <RichTextEditor
+                        value={field.value || ''}
+                        onChange={field.onChange}
+                        placeholder="Add briefing..."
+                        fontSize={16}
+                        toolbarId="ql-toolbar-rich-briefing"
+                      />
+                    )}
                   />
-                )}
-              />
-            </div>
-            {/* Briefing (RichTextEditor) */}
-            <div className="w-full">
-              <label className="block text-sm font-medium mb-1">Briefing</label>
-              <Controller
-                control={methods.control}
-                name="briefing"
-                render={({ field }) => (
-                  <RichTextEditor
-                    value={field.value || ''}
-                    onChange={field.onChange}
-                    placeholder="Add briefing..."
-                    toolbarId="ql-toolbar-briefing"
-                  />
-                )}
-              />
-            </div>
-            {/* Attachments */}
-            <div className="w-full">
-              <label className="block text-sm font-medium mb-1">Attachments</label>
-              <Dropzone
-                tableName="tasks"
-                recordId={''} // No record yet
-                attachments={[]}
-                signedUrls={{}}
-                isUploading={uploading}
-                uploadError={uploadError}
-                uploadFiles={handleDropzoneFiles}
-                deleteAttachment={att => handleRemoveFile(att as unknown as File)}
-                onChange={() => {}}
-              />
-              {pendingFiles.length > 0 && (
-                <ul className="mt-2 space-y-1 text-sm">
-                  {pendingFiles.map((file, idx) => (
-                    <li key={file.name + idx} className="flex items-center gap-2">
-                      <span>{file.name}</span>
-                      <button type="button" className="ml-2 text-xs text-red-500" onClick={() => handleRemoveFile(file)}>Remove</button>
-                    </li>
-                  ))}
-                </ul>
-              )}
-            </div>
-            <div className="flex gap-2 justify-end pt-4">
+                </div>
+                <div className="w-full">
+                  <button
+                    type="button"
+                    onClick={() => setAttachmentsExpanded((v) => !v)}
+                    className="inline-flex items-center gap-2 px-3 py-2 border rounded-md hover:bg-gray-50"
+                  >
+                    <Paperclip className="w-4 h-4 text-gray-600" />
+                    <span className="text-sm text-gray-700">
+                      {pendingFiles.length > 0 ? `Attachments (${pendingFiles.length})` : "Add attachments"}
+                    </span>
+                  </button>
+                  {attachmentsExpanded && (
+                    <div className="mt-2">
+                      <Dropzone
+                        tableName="tasks"
+                        recordId={''}
+                        attachments={[]}
+                        signedUrls={{}}
+                        isUploading={uploading}
+                        uploadError={uploadError}
+                        uploadFiles={handleDropzoneFiles}
+                        deleteAttachment={att => handleRemoveFile(att as unknown as File)}
+                        onChange={() => {}}
+                      />
+                      {pendingFiles.length > 0 && (
+                        <ul className="mt-2 space-y-1 text-sm">
+                          {pendingFiles.map((file, idx) => (
+                            <li key={file.name + idx} className="flex items-center gap-2">
+                              <span>{file.name}</span>
+                              <button type="button" className="ml-2 text-xs text-red-500" onClick={() => handleRemoveFile(file)}>Remove</button>
+                            </li>
+                          ))}
+                        </ul>
+                      )}
+                    </div>
+                  )}
+                </div>
+              </>
+            )}
+            {variant === 'composer' && (
+              <div className="pt-2 space-y-2">
+                <div ref={iconRowRef} className="flex items-center justify-between gap-2">
+                  <div className="flex min-w-0 items-center gap-1">
+                    <button
+                      type="button"
+                      disabled={!!parentTaskId}
+                      onClick={() => !parentTaskId && setActiveDetailPanel((p) => (p === 'project' ? null : 'project'))}
+                      className={cn("h-6 w-6 inline-flex items-center justify-center rounded hover:bg-gray-100 disabled:opacity-60 disabled:cursor-not-allowed", activeDetailPanel === 'project' && "bg-gray-100")}
+                      title="Project"
+                    >
+                      {selectedProject ? (
+                        <span
+                          className="inline-flex items-center justify-center w-6 h-6 rounded-full bg-gray-100 overflow-hidden text-[10px] text-gray-700"
+                          title={selectedProject.label}
+                        >
+                          {getImageUrl((selectedProject as any).logo) ? (
+                            // eslint-disable-next-line @next/next/no-img-element
+                            <img src={getImageUrl((selectedProject as any).logo)!} alt={selectedProject.label} className="w-full h-full object-cover" />
+                          ) : (
+                            getInitials(selectedProject.label)
+                          )}
+                        </span>
+                      ) : (
+                        <span className="inline-flex items-center justify-center w-6 h-6 rounded-full border text-[10px] text-gray-500">P</span>
+                      )}
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setActiveDetailPanel((p) => (p === 'assignee' ? null : 'assignee'))}
+                      className={cn("h-6 w-6 inline-flex items-center justify-center rounded hover:bg-gray-100", activeDetailPanel === 'assignee' && "bg-gray-100")}
+                      title="Assignee"
+                    >
+                      {selectedAssignee ? (
+                        <span
+                          className="inline-flex items-center justify-center w-6 h-6 rounded-full bg-gray-100 overflow-hidden text-[10px] text-gray-700"
+                          title={selectedAssignee.label}
+                        >
+                          {getImageUrl((selectedAssignee as any).photo) ? (
+                            // eslint-disable-next-line @next/next/no-img-element
+                            <img
+                              src={getImageUrl((selectedAssignee as any).photo)!}
+                              alt={selectedAssignee.label}
+                              className="w-full h-full object-cover"
+                            />
+                          ) : (
+                            getInitials(selectedAssignee.label)
+                          )}
+                        </span>
+                      ) : (
+                        <span className="inline-flex items-center justify-center w-6 h-6 rounded-full border text-[10px] text-gray-500">A</span>
+                      )}
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setDatePanelMode('delivery')
+                        setActiveDetailPanel((p) => (p === 'dates' ? null : 'dates'))
+                      }}
+                      className={cn("h-6 inline-flex items-center gap-1 px-2 rounded hover:bg-gray-100 text-xs text-gray-700", activeDetailPanel === 'dates' && "bg-gray-100")}
+                      title="Dates"
+                    >
+                      <Calendar className="w-3.5 h-3.5 text-gray-600" />
+                      <span>{dateChip || '--/---'}</span>
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setActiveDetailPanel((p) => (p === 'types' ? null : 'types'))}
+                      className={cn("h-6 w-6 inline-flex items-center justify-center rounded hover:bg-gray-100", activeDetailPanel === 'types' && "bg-gray-100")}
+                      title="Types"
+                    >
+                      <Tag className="w-4 h-4 text-gray-600" />
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setActiveDetailPanel((p) => (p === 'language' ? null : 'language'))}
+                      className={cn("h-6 min-w-6 px-1 inline-flex items-center justify-center rounded hover:bg-gray-100 text-[10px] font-semibold text-gray-700", activeDetailPanel === 'language' && "bg-gray-100")}
+                      title="Language"
+                    >
+                      {languageCode}
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setActiveDetailPanel((p) => (p === 'channels' ? null : 'channels'))}
+                      className={cn("h-6 w-6 inline-flex items-center justify-center rounded hover:bg-gray-100", activeDetailPanel === 'channels' && "bg-gray-100")}
+                      title="Channels"
+                    >
+                      <Check className="w-4 h-4 text-gray-600" />
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setActiveDetailPanel((p) => (p === 'attachments' ? null : 'attachments'))}
+                      className={cn("h-6 w-6 inline-flex items-center justify-center rounded hover:bg-gray-100", activeDetailPanel === 'attachments' && "bg-gray-100")}
+                      title="Attachments"
+                    >
+                      <Paperclip className="w-4 h-4 text-gray-600" />
+                    </button>
+                  </div>
+
+                  <div className="flex min-w-0 flex-shrink-0 items-center gap-1">
+                    <span className="px-1 text-gray-300 select-none" aria-hidden="true">|</span>
+                    {selectedWatcherItems.slice(0, 2).map((watcher) => (
+                      <span
+                        key={`footer-watcher-${watcher.value}`}
+                        className="inline-flex items-center justify-center w-6 h-6 rounded-full bg-gray-200 overflow-hidden"
+                        title={watcher.label}
+                      >
+                        {watcher.photoUrl ? (
+                          // eslint-disable-next-line @next/next/no-img-element
+                          <img src={watcher.photoUrl} alt={watcher.label} className="w-full h-full object-cover" />
+                        ) : (
+                          <span className="text-[10px] text-gray-700">{getInitials(watcher.label)}</span>
+                        )}
+                      </span>
+                    ))}
+                    {selectedWatcherItems.length > 2 && (
+                      <span
+                        className="inline-flex items-center justify-center h-6 min-w-6 px-1 rounded-full border text-[10px] text-gray-600"
+                        title={`${selectedWatcherItems.length - 2} more watchers`}
+                      >
+                        +{selectedWatcherItems.length - 2}
+                      </span>
+                    )}
+                    <button
+                      type="button"
+                      onClick={() => setActiveDetailPanel((p) => (p === 'watchers' ? null : 'watchers'))}
+                      className="inline-flex items-center justify-center w-6 h-6 rounded-full border hover:bg-gray-50"
+                      title="Add/remove task watchers"
+                    >
+                      <Plus className="w-3.5 h-3.5 text-gray-600" />
+                    </button>
+                  </div>
+                </div>
+              </div>
+            )}
+
+            <div className={cn("flex gap-2 justify-end pt-4", variant === 'composer' && "flex-wrap")}>
               <Button type="submit" disabled={isSubmitting}>
-                {isSubmitting ? "Adding..." : "Add Task"}
+                {isSubmitting ? "Adding..." : variant === 'composer' ? "Create" : "Add Task"}
               </Button>
             </div>
           </form>

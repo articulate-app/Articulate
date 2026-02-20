@@ -1,6 +1,7 @@
 import { createClientComponentClient } from '@supabase/auth-helpers-nextjs'
 import type { DocumentsFilters, DocumentsSortConfig, DocumentRow, DocumentsSummary } from '../types/documents'
 import type { GroupingMode } from '../utils/document-grouping'
+import { getDocumentsDefaultDateFrom, supabaseRpcFetch } from './documents-postgrest-rpc'
 
 export function parseDocumentsFiltersFromUrl(params: URLSearchParams): DocumentsFilters {
   return {
@@ -206,107 +207,81 @@ export function buildDocumentsTrailingQuery(
 }
 
 export async function fetchDocumentsSummary(filters: DocumentsFilters): Promise<DocumentsSummary> {
-  const supabase = createClientComponentClient()
-  
-  let query = supabase
-    .from('v_documents_min')
-    .select('doc_kind, direction, subtotal_amount, balance_due')
+  // ✅ Use the same date window logic as the documents LIST RPC (never "all time")
+  const p_date_from = filters.fromDate || getDocumentsDefaultDateFrom()
+  const p_date_to = filters.toDate || null
 
-  // Apply the same filters as the main query
-  if (filters.direction) {
-    query = query.eq('direction', filters.direction)
+  // ✅ Use the same filter semantics as the list RPC:
+  // - send arrays when present
+  // - send null when absent
+  const p_currency_code = filters.currency ? [filters.currency] : null
+  const p_status = filters.status.length > 0 ? filters.status : null
+  const p_from_team_id =
+    filters.fromTeam.length > 0
+      ? filters.fromTeam.map(Number).filter((n) => Number.isFinite(n))
+      : null
+  const p_to_team_id =
+    filters.toTeam.length > 0
+      ? filters.toTeam.map(Number).filter((n) => Number.isFinite(n))
+      : null
+
+  type RpcRow = {
+    invoiced: number
+    costs: number
+    ar_credit: number
+    ap_credit: number
+    result: number
+    pending_ar: number
+    pending_ap: number
+    pending_net: number
   }
 
-  if (filters.currency) {
-    query = query.eq('currency_code', filters.currency)
-  }
+  try {
+    const { data } = await supabaseRpcFetch<RpcRow[] | RpcRow>('fn_documents_summary_cards', {
+      p_date_from,
+      p_date_to,
+      p_currency_code,
+      p_status,
+      p_from_team_id,
+      p_to_team_id,
+    })
 
-  if (filters.kind.length > 0) {
-    query = query.in('doc_kind', filters.kind)
-  }
+    const row = Array.isArray(data) ? (data[0] ?? null) : (data ?? null)
+    if (!row) {
+      return {
+        invoiced: 0,
+        costs: 0,
+        arCredit: 0,
+        apCredit: 0,
+        result: 0,
+        pendingAR: 0,
+        pendingAP: 0,
+        pendingNet: 0,
+      }
+    }
 
-  if (filters.status.length > 0) {
-    query = query.in('status', filters.status)
-  }
-
-  if (filters.fromTeam.length > 0) {
-    query = query.in('from_team_id', filters.fromTeam.map(Number))
-  }
-
-  if (filters.toTeam.length > 0) {
-    query = query.in('to_team_id', filters.toTeam.map(Number))
-  }
-
-  if (filters.fromDate) {
-    query = query.gte('doc_date', filters.fromDate)
-  }
-
-  if (filters.toDate) {
-    query = query.lt('doc_date', filters.toDate)
-  }
-
-  // Projects filter
-  if (filters.projects.length > 0) {
-    // Filter by projects_text containing any of the selected projects
-    const projectFilters = filters.projects.map(project => 
-      `projects_text.ilike.%${project}%`
-    )
-    query = query.or(projectFilters.join(','))
-  }
-
-  // Global search
-  if (filters.q) {
-    const searchTerm = filters.q.trim()
-    query = query.or([
-      `doc_number.ilike.%${searchTerm}%`,
-      `from_team_name.ilike.%${searchTerm}%`,
-      `to_team_name.ilike.%${searchTerm}%`,
-      `projects_text.ilike.%${searchTerm}%`
-    ].join(','))
-  }
-
-  const { data, error } = await query
-
-  if (error) {
-    console.error('Error fetching documents summary:', error)
+    return {
+      invoiced: row.invoiced ?? 0,
+      costs: row.costs ?? 0,
+      arCredit: row.ar_credit ?? 0,
+      apCredit: row.ap_credit ?? 0,
+      result: row.result ?? 0,
+      pendingAR: row.pending_ar ?? 0,
+      pendingAP: row.pending_ap ?? 0,
+      pendingNet: row.pending_net ?? 0,
+    }
+  } catch (error) {
+    console.error('[fetchDocumentsSummary] Error fetching summary cards via RPC:', error)
     return {
       invoiced: 0,
       costs: 0,
+      arCredit: 0,
+      apCredit: 0,
       result: 0,
       pendingAR: 0,
       pendingAP: 0,
       pendingNet: 0,
     }
-  }
-
-  // Calculate summary values
-  let invoiced = 0
-  let costs = 0
-  let pendingAR = 0
-  let pendingAP = 0
-
-  data?.forEach((doc: any) => {
-    if (doc.doc_kind === 'invoice') {
-      if (doc.direction === 'ar') {
-        invoiced += doc.subtotal_amount || 0
-        pendingAR += doc.balance_due || 0
-      } else if (doc.direction === 'ap') {
-        costs += doc.subtotal_amount || 0
-        pendingAP += doc.balance_due || 0
-      }
-    }
-  })
-
-  const result = invoiced - costs
-  const pendingNet = pendingAR - pendingAP
-
-  return {
-    invoiced,
-    costs,
-    result,
-    pendingAR,
-    pendingAP,
-    pendingNet,
   }
 }
 
@@ -320,6 +295,8 @@ export function formatDocumentType(direction: string, docKind: string): string {
     'invoice': 'Invoice',
     'credit_note': 'Credit Note',
     'order': 'Order',
+    'invoice_order': 'Invoice Order',
+    'production_order': 'Production Order',
     'payment': 'Payment',
   }
   
@@ -331,6 +308,8 @@ export function formatDocumentKind(docKind: string): string {
     'invoice': 'Invoice',
     'credit_note': 'Credit Note',
     'order': 'Order',
+    'invoice_order': 'Invoice Order',
+    'production_order': 'Production Order',
     'payment': 'Payment',
   }
   

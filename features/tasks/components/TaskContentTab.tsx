@@ -2,15 +2,17 @@
 
 import React, { useState, useEffect, useCallback, useMemo, useRef } from "react"
 import { useSearchParams, usePathname, useRouter } from "next/navigation"
+import { useQuery, useQueryClient } from "@tanstack/react-query"
 import { Textarea } from "../../../app/components/ui/textarea"
 import { createClientComponentClient } from "@supabase/auth-helpers-nextjs"
 import { Button } from "../../../app/components/ui/button"
 import { Badge } from "../../../app/components/ui/badge"
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "../../../app/components/ui/select"
 import { Input } from "../../../app/components/ui/input"
 import { Label } from "../../../app/components/ui/label"
 import { Checkbox } from "../../../app/components/ui/checkbox"
 import { Popover, PopoverContent, PopoverTrigger } from "../../../app/components/ui/popover"
+import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger } from "../../../app/components/ui/dialog"
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "../../../app/components/ui/select"
 import { toast } from "../../../app/components/ui/use-toast"
 import { useAiBuildContent } from "../../ai-chat/hooks"
 import { 
@@ -22,12 +24,14 @@ import {
   Circle,
   MoreVertical,
   Save,
+  Download,
   ChevronDown,
   ChevronRight,
   Move,
   Edit,
   Trash2,
-  History
+  History,
+  Search
 } from "lucide-react"
 import { RadioGroup, RadioGroupItem } from "../../../app/components/ui/radio-group"
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger, DropdownMenuSeparator } from "../../../app/components/ui/dropdown-menu"
@@ -69,24 +73,59 @@ interface TaskChannel {
   name: string
 }
 
-interface BriefingType {
-  id: number
-  title: string
-  description: string | null
-  is_default?: boolean
-}
-
 interface TaskChannelBriefing {
   briefing_type_id: number | null
 }
 
 type ComponentScope = 'task' | 'project' | 'channel'
 
+type ComponentOrigin = 'global' | 'project' | 'task'
+
+function normalizeComponentOrigin(origin: unknown): ComponentOrigin | null {
+  if (typeof origin !== 'string') return null
+  const v = origin.trim().toLowerCase()
+  if (!v) return null
+
+  // Handle expanded backend variants (examples seen in RPC output):
+  // - task_global -> Global
+  // - task_project -> Project
+  // - task_ad_hoc -> Task
+  if (v === 'global' || v.endsWith('_global') || v.includes('global')) return 'global'
+  if (v === 'project' || v.endsWith('_project') || v.includes('project')) return 'project'
+  if (v === 'task' || v.startsWith('task') || v.includes('ad_hoc')) return 'task'
+
+  return null
+}
+
+function getComponentOrigin(component: Pick<TaskChannelComponent, 'origin' | 'task_component_id' | 'briefing_component_id' | 'project_component_id'>): ComponentOrigin {
+  const normalized = normalizeComponentOrigin(component.origin)
+  if (normalized) return normalized
+
+  // Fallback heuristic (legacy behavior) for older RPC payloads
+  if (component.task_component_id && !component.briefing_component_id && !component.project_component_id) return 'task'
+  if (component.project_component_id) return 'project'
+  if (component.briefing_component_id) return 'global'
+  return 'task'
+}
+
 interface TaskChannelComponent {
   // From tc_components_for_task_channel RPC
   task_component_id: string | null // UUID if component is added to this task, null if just available from template
   briefing_component_id: number | null // ID from briefing_components table, or null for ad-hoc
   project_component_id: number | null // ID from project_components table, or null
+  /**
+   * New backend field. Use this for UI labeling instead of legacy `source`.
+   * - global: global (system) component
+   * - project: project component
+   * - task: task ad-hoc component
+   */
+  origin?: string
+  /**
+   * New backend field.
+   * True when a global component is overridden (customized) at project/channel level.
+   * Only meaningful when origin === 'global'.
+   */
+  global_overridden?: boolean
   title: string
   description: string | null
   selected: boolean // True = top area, False = bottom area (explicitly deselected)
@@ -101,6 +140,30 @@ interface TaskChannelComponent {
   component_scope?: ComponentScope
 }
 
+type AvailableComponentTag =
+  | 'Removed from task'
+  | 'Recommended'
+  | 'Removed'
+  | 'System'
+  | 'System (other briefings)'
+  | 'Custom'
+
+interface TaskChannelAvailableComponent {
+  // Stable identifier like "g:<id>" or "p:<id>"
+  key: string
+  tag: AvailableComponentTag | string
+  title: string
+  description: string | null
+  // for insert behavior
+  is_project_component: boolean
+  briefing_component_id: number | null
+  project_component_id: number | null
+  custom_title: string | null
+  custom_description: string | null
+  // present when tag === "Removed from task"
+  task_component_id: string | null
+}
+
 interface TaskComponentOutput {
   content_text: string | null
   updated_at: string | null
@@ -112,6 +175,9 @@ interface EffectiveSEO {
   primary_keyword: string | null
   secondary_keywords: string[] | null
 }
+
+// Special "Main" component ID for channels without a structured briefing
+const MAIN_BRIEFING_COMPONENT_ID = 80
 
 // Resizable Rich Text Editor Component
 function ResizableEditor({
@@ -239,8 +305,9 @@ function AddComponentRow({
         const projectComponentId = created?.project_component_id || created?.id || created
         if (!projectComponentId) throw new Error('Missing project_component_id')
         
-        // Step 2: Link to project briefing type template using pbtc_add_project
-        const { error: addErr } = await supabase.rpc('pbtc_add_project', {
+        // Step 2: Link to project briefing type template across ALL CT×Channel combos
+        // that use this briefing type in project_ct_channel_briefings.
+        const { error: addErr } = await supabase.rpc('pbtc_add_project_all_channels', {
           p_project_id: projectId,
           p_briefing_type_id: briefingTypeId,
           p_project_component_id: Number(projectComponentId),
@@ -287,6 +354,7 @@ function AddComponentRow({
           p_project_id: projectId,
           p_content_type_id: contentTypeId,
           p_channel_id: channelId,
+          p_briefing_type_id: briefingTypeId,
           p_project_component_id: Number(projectComponentId),
           p_position: null,
           p_custom_title: title.trim(),
@@ -525,7 +593,7 @@ function SortableComponentItem({
   briefingTypeId?: number | null
   onEditInTemplate?: (componentBriefingId: number, title: string, description: string, scope: ComponentScope, projectComponentId?: number | null) => void
   onRemoveFromTemplate?: (componentBriefingId: number, scope: ComponentScope, projectComponentId?: number | null, keepInTask?: boolean) => void
-  onBuildWithAI?: (componentId: number) => void
+  onBuildWithAI?: (componentId: number | string) => void
   autoExpandComponentId?: number | null
 }) {
   // Use task_component_id (UUID) or generate a unique ID from other fields
@@ -592,28 +660,45 @@ function SortableComponentItem({
   const isTemplateBacked = !!(component.briefing_component_id || component.project_component_id)
   const componentScope: ComponentScope = component.component_scope || (component.project_component_id ? 'project' : component.briefing_component_id ? 'channel' : 'task')
   
-  // Determine scope label for display
-  const scopeLabel = componentScope === 'project' 
-    ? 'Project template' 
-    : componentScope === 'channel' 
-    ? 'Channel template' 
-    : 'Task only'
+  const derivedOrigin = useMemo((): ComponentOrigin => {
+    return getComponentOrigin(component)
+  }, [component.origin, component.task_component_id, component.briefing_component_id, component.project_component_id])
+
+  const originLabel = useMemo(() => {
+    if (derivedOrigin === 'global') return 'Global'
+    if (derivedOrigin === 'project') return 'Project'
+    return 'Task'
+  }, [derivedOrigin])
+
+  const originBadgeClass = useMemo(() => {
+    if (derivedOrigin === 'project') return 'border-blue-200 bg-blue-50 text-blue-700'
+    if (derivedOrigin === 'global') return 'border-gray-200 bg-gray-50 text-gray-700'
+    return 'border-purple-200 bg-purple-50 text-purple-700'
+  }, [derivedOrigin])
+
+  const shouldShowOverriddenBadge = useMemo(() => {
+    return derivedOrigin === 'global' && component.global_overridden === true
+  }, [derivedOrigin, component.global_overridden])
+
+  const aiBuildTargetId: number | string | null =
+    component.task_component_id || component.briefing_component_id || component.project_component_id || null
 
   return (
     <div 
       ref={setNodeRef} 
       style={style}
-      className={`border rounded-lg mb-2 bg-white ${isDragging ? 'shadow-lg' : ''}`}
+      className={`border rounded-lg mb-2 p-3 bg-white border-gray-200 ${isDragging ? 'shadow-lg' : ''}`}
     >
       {!isExpanded ? (
         // Collapsed: Single row with title, checkbox, and chevron
-        <div className="flex items-center gap-2 p-3">
-          <div {...attributes} {...listeners} className="cursor-move p-1 hover:bg-gray-100 rounded">
-            <GripVertical className="w-4 h-4 text-gray-400" />
+        <div className="flex items-start gap-3">
+          <div {...attributes} {...listeners} className="cursor-move p-1 hover:bg-gray-200 rounded mt-1">
+            <GripVertical className="w-3 h-3 text-gray-400" />
           </div>
           <button
             type="button"
             onClick={onToggle}
+            className="mt-0.5"
           >
             {isSelected ? (
               <CheckCircle2 className="w-5 h-5 text-blue-600" />
@@ -621,14 +706,14 @@ function SortableComponentItem({
               <Circle className="w-5 h-5 text-gray-300" />
             )}
           </button>
-          <div className="flex-1 min-w-0">
+          <div className="flex-1 min-w-0 space-y-2">
             {isEditing ? (
-              <div className="flex items-center gap-2">
+              <div className="flex flex-col sm:flex-row sm:items-center gap-1 sm:gap-2 min-w-0">
                 <Input
                   value={customTitle}
                   onChange={(e) => handleTitleChange(e.target.value)}
                   placeholder="Component title"
-                  className="text-sm font-medium flex-1"
+                  className="text-sm font-semibold border-none p-0 h-auto focus:ring-0 focus:border-none bg-transparent flex-1"
                   onBlur={onCancelEdit}
                   onKeyDown={(e) => {
                     if (e.key === 'Enter') {
@@ -640,29 +725,78 @@ function SortableComponentItem({
                   }}
                   autoFocus
                 />
+                <div className="flex flex-wrap sm:flex-nowrap items-center gap-1 sm:shrink-0">
+                  <Badge variant="outline" className={["text-[10px] px-2 py-0.5", originBadgeClass].join(' ')}>
+                    {originLabel}
+                  </Badge>
+                  {shouldShowOverriddenBadge && (
+                    <Badge variant="secondary" className="text-[10px] px-1.5 py-0.5 leading-none">
+                      Overridden
+                    </Badge>
+                  )}
+                </div>
               </div>
             ) : (
-              <h4 
-                className="text-sm font-medium text-gray-900 truncate flex-1 cursor-text hover:text-blue-600"
-                onClick={onStartEdit}
-                title="Click to edit"
-              >
-                {customTitle}
-              </h4>
+              <div className="flex flex-col sm:flex-row sm:items-center gap-1 sm:gap-2 min-w-0">
+                <h4
+                  className="text-sm font-semibold text-gray-900 flex-1 cursor-text hover:text-gray-700 line-clamp-2 sm:truncate"
+                  onClick={onStartEdit}
+                  title="Click to edit"
+                >
+                  {customTitle}
+                </h4>
+                <div className="flex flex-wrap sm:flex-nowrap items-center gap-1 sm:shrink-0">
+                  <Badge variant="outline" className={["text-[10px] px-2 py-0.5", originBadgeClass].join(' ')}>
+                    {originLabel}
+                  </Badge>
+                  {shouldShowOverriddenBadge && (
+                    <Badge variant="secondary" className="text-[10px] px-1.5 py-0.5 leading-none">
+                      Overridden
+                    </Badge>
+                  )}
+                </div>
+              </div>
             )}
           </div>
           {/* Build with AI button in collapsed view */}
-          {onBuildWithAI && (component.briefing_component_id || component.project_component_id) && (
-            <button
-              type="button"
-              onClick={(e) => {
-                e.stopPropagation()
-                onBuildWithAI(component.briefing_component_id || component.project_component_id || 0)
-              }}
-              className="text-xs text-blue-600 hover:text-blue-700 hover:underline px-2 py-1"
-            >
-              Build with AI
-            </button>
+          {onBuildWithAI && aiBuildTargetId && (
+            <>
+              <Button
+                type="button"
+                size="sm"
+                variant="outline"
+                className="hidden sm:inline-flex"
+                onClick={(e) => {
+                  e.stopPropagation()
+                  onBuildWithAI(aiBuildTargetId)
+                }}
+              >
+                <Plus className="w-3 h-3 mr-1" />
+                Build with AI
+              </Button>
+              <DropdownMenu modal={false}>
+                <DropdownMenuTrigger asChild>
+                  <button
+                    type="button"
+                    className="sm:hidden p-1 hover:bg-gray-100 rounded mt-1 text-gray-500"
+                    title="More actions"
+                    onClick={(e) => e.stopPropagation()}
+                  >
+                    <MoreVertical className="w-4 h-4" />
+                  </button>
+                </DropdownMenuTrigger>
+                <DropdownMenuContent align="end">
+                  <DropdownMenuItem
+                    onSelect={(e) => {
+                      e.preventDefault()
+                      onBuildWithAI(aiBuildTargetId)
+                    }}
+                  >
+                    Build with AI
+                  </DropdownMenuItem>
+                </DropdownMenuContent>
+              </DropdownMenu>
+            </>
           )}
           <button
             type="button"
@@ -677,7 +811,7 @@ function SortableComponentItem({
                 onToggle()
               }
             }}
-            className="p-1 hover:bg-gray-100 rounded"
+            className="p-1 hover:bg-gray-100 rounded mt-1"
           >
             <ChevronRight className="w-4 h-4 text-gray-400" />
           </button>
@@ -686,13 +820,14 @@ function SortableComponentItem({
         // Expanded: Full details with description and editor
         <div>
           {/* Header row (same as collapsed) */}
-          <div className="flex items-center gap-2 p-3 border-b">
-            <div {...attributes} {...listeners} className="cursor-move p-1 hover:bg-gray-100 rounded">
-              <GripVertical className="w-4 h-4 text-gray-400" />
+          <div className="flex items-start gap-3">
+            <div {...attributes} {...listeners} className="cursor-move p-1 hover:bg-gray-200 rounded mt-1">
+              <GripVertical className="w-3 h-3 text-gray-400" />
             </div>
             <button
               type="button"
               onClick={onToggle}
+              className="mt-0.5"
             >
               {isSelected ? (
                 <CheckCircle2 className="w-5 h-5 text-blue-600" />
@@ -700,14 +835,14 @@ function SortableComponentItem({
                 <Circle className="w-5 h-5 text-gray-300" />
               )}
             </button>
-            <div className="flex-1 min-w-0">
+            <div className="flex-1 min-w-0 space-y-2">
               {isEditing ? (
-                <div className="flex items-center gap-2">
+                <div className="flex items-center gap-2 min-w-0">
                   <Input
                     value={customTitle}
                     onChange={(e) => handleTitleChange(e.target.value)}
                     placeholder="Component title"
-                    className="text-sm font-medium flex-1"
+                    className="text-sm font-semibold border-none p-0 h-auto focus:ring-0 focus:border-none bg-transparent flex-1"
                     onBlur={onCancelEdit}
                     onKeyDown={(e) => {
                       if (e.key === 'Enter') {
@@ -719,18 +854,65 @@ function SortableComponentItem({
                     }}
                     autoFocus
                   />
+                  <div className="flex flex-wrap sm:flex-nowrap items-center gap-1 sm:shrink-0">
+                    <Badge variant="outline" className={["text-[10px] px-2 py-0.5", originBadgeClass].join(' ')}>
+                      {originLabel}
+                    </Badge>
+                    {shouldShowOverriddenBadge && (
+                      <Badge variant="secondary" className="text-[10px] px-1.5 py-0.5 leading-none">
+                        Overridden
+                      </Badge>
+                    )}
+                  </div>
                 </div>
               ) : (
-                <h4 
-                  className="text-sm font-medium text-gray-900 truncate flex-1 cursor-text hover:text-blue-600"
-                  onClick={onStartEdit}
-                  title="Click to edit"
-                >
-                  {customTitle}
-                </h4>
+                <div className="flex flex-col sm:flex-row sm:items-center gap-1 sm:gap-2 min-w-0">
+                  <h4
+                    className="text-sm font-semibold text-gray-900 flex-1 cursor-text hover:text-gray-700 line-clamp-2 sm:truncate"
+                    onClick={onStartEdit}
+                    title="Click to edit"
+                  >
+                    {customTitle}
+                  </h4>
+                  <div className="flex flex-wrap sm:flex-nowrap items-center gap-1 sm:shrink-0">
+                    <Badge variant="outline" className={["text-[10px] px-2 py-0.5", originBadgeClass].join(' ')}>
+                      {originLabel}
+                    </Badge>
+                    {shouldShowOverriddenBadge && (
+                      <Badge variant="secondary" className="text-[10px] px-1.5 py-0.5 leading-none">
+                        Overridden
+                      </Badge>
+                    )}
+                  </div>
+                </div>
               )}
             </div>
             <div className="flex items-center gap-1">
+              {/* Mobile: keep Build with AI inside the ... menu */}
+              {onBuildWithAI && aiBuildTargetId && (
+                <DropdownMenu modal={false}>
+                  <DropdownMenuTrigger asChild>
+                    <button
+                      type="button"
+                      className="sm:hidden p-1 hover:bg-gray-100 rounded mt-1 text-gray-500"
+                      title="More actions"
+                      onClick={(e) => e.stopPropagation()}
+                    >
+                      <MoreVertical className="w-4 h-4" />
+                    </button>
+                  </DropdownMenuTrigger>
+                  <DropdownMenuContent align="end">
+                    <DropdownMenuItem
+                      onSelect={(e) => {
+                        e.preventDefault()
+                        onBuildWithAI(aiBuildTargetId)
+                      }}
+                    >
+                      Build with AI
+                    </DropdownMenuItem>
+                  </DropdownMenuContent>
+                </DropdownMenu>
+              )}
               {isTemplateBacked && projectId && (
                 <DropdownMenu>
                   <DropdownMenuTrigger asChild>
@@ -797,7 +979,7 @@ function SortableComponentItem({
               <button
                 type="button"
                 onClick={() => setIsExpanded(false)}
-                className="p-1 hover:bg-gray-100 rounded"
+                className="p-1 hover:bg-gray-100 rounded mt-1"
               >
                 <ChevronDown className="w-4 h-4 text-gray-400" />
               </button>
@@ -805,15 +987,8 @@ function SortableComponentItem({
           </div>
           
           {/* Expanded content */}
-          <div className="p-3 space-y-3">
-            {/* Scope badge */}
-            {isTemplateBacked && (
-              <div className="flex items-center gap-2">
-                <Badge variant="outline" className="text-xs">
-                  {scopeLabel}
-                </Badge>
-              </div>
-            )}
+          <div className="mt-3 pt-3 border-t space-y-3">
+            {/* (Legacy) template-scope badge removed from UI to avoid confusing "source"/"override" semantics. */}
             
             {/* Description and metadata */}
             {isEditingDescription ? (
@@ -855,15 +1030,18 @@ function SortableComponentItem({
             )}
             
             {/* Build with AI button */}
-            {onBuildWithAI && (component.briefing_component_id || component.project_component_id) && (
+            {onBuildWithAI && aiBuildTargetId && (
               <div className="pt-1">
-                <button
+                <Button
                   type="button"
-                  onClick={() => onBuildWithAI(component.briefing_component_id || component.project_component_id || 0)}
-                  className="text-xs text-blue-600 hover:text-blue-700 hover:underline"
+                  size="sm"
+                  variant="outline"
+                  className="hidden sm:inline-flex"
+                  onClick={() => onBuildWithAI(aiBuildTargetId)}
                 >
+                  <Plus className="w-3 h-3 mr-1" />
                   Build with AI
-                </button>
+                </Button>
               </div>
             )}
             
@@ -905,13 +1083,21 @@ export function TaskContentTab({ taskId, projectId, contentTypeId, languageId, o
   const pathname = usePathname()
   const router = useRouter()
   const aiBuildContent = useAiBuildContent()
+  const queryClient = useQueryClient()
   
   // State
   const [channels, setChannels] = useState<TaskChannel[]>([])
   const [availableChannels, setAvailableChannels] = useState<TaskChannel[]>([])
   const [selectedChannelId, setSelectedChannelId] = useState<number | null>(null)
-  const [briefingTypes, setBriefingTypes] = useState<BriefingType[]>([])
   const [selectedBriefingTypeId, setSelectedBriefingTypeId] = useState<number | null>(null)
+  const [effectiveDefaultBriefingTypeId, setEffectiveDefaultBriefingTypeId] = useState<number | null>(null)
+  const [isNoBriefing, setIsNoBriefing] = useState<boolean>(false)
+  const [briefingTypeOptions, setBriefingTypeOptions] = useState<Array<{
+    id: number
+    title: string
+    description: string | null
+    isDefault: boolean
+  }>>([])
   const [components, setComponents] = useState<TaskChannelComponent[]>([]) // Active components (top area)
   const [removedComponents, setRemovedComponents] = useState<TaskChannelComponent[]>([]) // Removed from task (bottom area - first list)
   const [availableTemplates, setAvailableTemplates] = useState<TaskChannelComponent[]>([]) // Available from template (bottom area - second list)
@@ -924,13 +1110,24 @@ export function TaskContentTab({ taskId, projectId, contentTypeId, languageId, o
   const [isUpdatingKeywords, setIsUpdatingKeywords] = useState(false)
   const [isTogglingSEO, setIsTogglingSEO] = useState(false)
   const [isLoading, setIsLoading] = useState(true)
+  const [isChannelMetaLoading, setIsChannelMetaLoading] = useState(false)
+  const [removingChannelIds, setRemovingChannelIds] = useState<Set<number>>(new Set())
   const [isSavingOutput, setIsSavingOutput] = useState<Map<number, boolean>>(new Map())
   const [taskTitle, setTaskTitle] = useState<string>('')
   const [isGeneratingAI, setIsGeneratingAI] = useState(false)
+  const [isExporting, setIsExporting] = useState(false)
   const [autoExpandComponentId, setAutoExpandComponentId] = useState<number | null>(null)
   const [aiThreads, setAiThreads] = useState<Array<{ id: string; title: string | null; last_message_at: string | null; created_at: string }>>([])
   const [isLoadingThreads, setIsLoadingThreads] = useState(false)
   const [taskSourceUrl, setTaskSourceUrl] = useState<string>("")
+  const [isImportTemplateOpen, setIsImportTemplateOpen] = useState(false)
+  const [availableSearchQuery, setAvailableSearchQuery] = useState('')
+  const [availableTagFilter, setAvailableTagFilter] = useState<'__all__' | AvailableComponentTag | string>('__all__')
+
+  const selectedChannelIdRef = useRef<number | null>(null)
+  useEffect(() => {
+    selectedChannelIdRef.current = selectedChannelId
+  }, [selectedChannelId])
   
   // Watch for expandComponent URL param to auto-expand component
   useEffect(() => {
@@ -956,6 +1153,10 @@ export function TaskContentTab({ taskId, projectId, contentTypeId, languageId, o
   
   // Use refs to store latest values for debounced save
   const outputValuesRef = useRef<Map<number, string>>(new Map())
+  // Track which channels have already loaded main content (component 80) to prevent infinite loops
+  const mainLoadedRef = useRef<Set<number>>(new Set())
+  // Track in-flight component output loads (stable ref, not state)
+  const loadingOutputsRef = useRef<Set<number>>(new Set())
   
   // Debounced save for component outputs - uses refs to always get latest value
   const debouncedSaveOutput = useMemo(
@@ -1031,7 +1232,7 @@ export function TaskContentTab({ taskId, projectId, contentTypeId, languageId, o
       setChannels(taskChannels)
       
       // Auto-select first channel if available and none selected
-      if (taskChannels.length > 0 && !selectedChannelId) {
+      if (taskChannels.length > 0 && !selectedChannelIdRef.current) {
         const firstChannelId = taskChannels[0].channel_id
         setSelectedChannelId(firstChannelId)
         onChannelChange?.(firstChannelId)
@@ -1044,7 +1245,7 @@ export function TaskContentTab({ taskId, projectId, contentTypeId, languageId, o
         variant: 'destructive'
       })
     }
-  }, [supabase, taskId, selectedChannelId])
+  }, [supabase, taskId, onChannelChange])
   
   // Fetch available channels for adding
   const fetchAvailableChannels = useCallback(async () => {
@@ -1114,92 +1315,94 @@ export function TaskContentTab({ taskId, projectId, contentTypeId, languageId, o
     }
   }, [supabase, projectId, contentTypeId, channels])
   
-  // Fetch briefing type for selected channel
-  const fetchBriefingType = useCallback(async () => {
+  // Fetch explicit briefing override for selected channel (task_channel_briefings)
+  const fetchBriefingType = useCallback(async (): Promise<{ briefingTypeId: number | null; disableBriefing: boolean }> => {
     if (!selectedChannelId) {
-      setSelectedBriefingTypeId(null)
-      return
+      return { briefingTypeId: null, disableBriefing: false }
     }
     
     try {
       const { data, error } = await supabase
         .from('task_channel_briefings')
-        .select('briefing_type_id')
+        .select('briefing_type_id, disable_briefing')
         .eq('task_id', taskId)
         .eq('channel_id', selectedChannelId)
         .maybeSingle()
       
-      if (error) throw error
+      if (error && error.code !== 'PGRST116') throw error
       
-      setSelectedBriefingTypeId(data?.briefing_type_id || null)
+      const briefingTypeId = data?.briefing_type_id ?? null
+      const disableBriefing = data?.disable_briefing ?? false
+      
+      return { briefingTypeId, disableBriefing }
     } catch (err: any) {
-      console.error('Failed to fetch briefing type:', err)
+      console.error('Failed to fetch briefing type override:', err)
+      return { briefingTypeId: null, disableBriefing: false }
     }
   }, [supabase, taskId, selectedChannelId])
   
-  // Fetch briefing types for project
-  const fetchBriefingTypes = useCallback(async () => {
-    if (!projectId) return
+  // Fetch briefing types for project × content type × channel (with channel default info)
+  const fetchChannelBriefingTypes = useCallback(async (): Promise<number | null> => {
+    if (!projectId || !contentTypeId || !selectedChannelId) {
+      setBriefingTypeOptions([])
+      setEffectiveDefaultBriefingTypeId(null)
+      return null
+    }
     
     try {
-      const { data, error } = await supabase
-        .from('project_briefing_types')
-        .select(`
-          briefing_type_id,
-          is_default,
-          position,
-          briefing_types!inner(id, title, description)
-        `)
-        .eq('project_id', projectId)
-        .order('is_default', { ascending: false })
-        .order('position', { ascending: true })
+      const { data, error } = await supabase.rpc('project_channel_briefing_types', {
+        p_project_id: projectId,
+        p_content_type_id: contentTypeId,
+        p_channel_id: selectedChannelId
+      })
       
       if (error) throw error
       
-      const types = (data || []).map((pbt: any) => ({
-        id: pbt.briefing_type_id,
-        title: pbt.briefing_types.title,
-        description: pbt.briefing_types.description,
-        is_default: pbt.is_default || false,
-        position: pbt.position
-      })).sort((a, b) => {
-        // First sort by is_default (true first), then by position, then by title
-        if (a.is_default !== b.is_default) {
-          return a.is_default ? -1 : 1
+      let effectiveId: number | null = null
+      // Preserve server order from RPC (already correctly ordered)
+      const options = (data || []).map((row: any) => {
+        if (row.effective_default_briefing_type_id && typeof row.effective_default_briefing_type_id === 'number') {
+          effectiveId = row.effective_default_briefing_type_id
         }
-        const posA = a.position ?? 999
-        const posB = b.position ?? 999
-        if (posA !== posB) return posA - posB
-        return a.title.localeCompare(b.title)
+        return {
+          id: row.briefing_type_id as number,
+          title: row.title as string,
+          description: (row.description as string | null) ?? null,
+          isDefault: !!row.is_default_for_channel
+        }
       })
       
-      setBriefingTypes(types)
+      setBriefingTypeOptions(options)
+      setEffectiveDefaultBriefingTypeId(effectiveId)
+      return effectiveId
     } catch (err: any) {
-      console.error('Failed to fetch briefing types:', err)
+      console.error('Failed to fetch channel briefing types:', err)
+      setBriefingTypeOptions([])
+      setEffectiveDefaultBriefingTypeId(null)
+      return null
     }
-  }, [supabase, projectId])
+  }, [supabase, projectId, contentTypeId, selectedChannelId])
   
-  // Fetch components for selected channel using tc_components_for_task_channel RPC
-  const fetchComponents = useCallback(async (channelIdOverride?: number) => {
-    const targetChannelId = channelIdOverride ?? selectedChannelId
-    if (!targetChannelId) {
-      setComponents([])
-      return
-    }
-    
-    try {
+  type ComponentsQueryResult = {
+    activeComponents: TaskChannelComponent[]
+    outputsByBriefingId: Record<number, TaskComponentOutput>
+  }
+
+  const fetchComponentsForChannel = useCallback(
+    async (channelId: number): Promise<ComponentsQueryResult> => {
       const { data, error } = await supabase.rpc('tc_components_for_task_channel', {
         p_task_id: taskId,
-        p_channel_id: targetChannelId
+        p_channel_id: channelId,
       })
-      
+
       if (error) throw error
-      
-      // Map RPC results to our component interface
+
       const rows = (data || []).map((row: any) => ({
         task_component_id: row.task_component_id || null,
         briefing_component_id: row.briefing_component_id || null,
         project_component_id: row.project_component_id || null,
+        origin: row.origin || undefined,
+        global_overridden: typeof row.global_overridden === 'boolean' ? row.global_overridden : undefined,
         title: row.title || '',
         description: row.description || null,
         selected: row.selected || false,
@@ -1211,48 +1414,138 @@ export function TaskContentTab({ taskId, projectId, contentTypeId, languageId, o
         suggested_word_count: row.suggested_word_count || null,
         subheads: row.subheads || null,
         is_ad_hoc: row.is_ad_hoc || false,
-        component_scope: row.task_component_id ? 'task' : undefined
-      }))
-      
-      // Split components according to new specification:
-      // 1. Separate real task rows from template extras
-      const realTaskRows = rows.filter((r: any) => r.task_component_id !== null)
-      const templateExtras = rows.filter((r: any) => r.task_component_id === null)
-      
-      // 2. Split real task rows into active and removed
-      const activeComponents = realTaskRows
-        .filter((r: any) => r.selected)
-        .sort((a: any, b: any) => (a.position ?? 0) - (b.position ?? 0))
-      
-      const removedComponentsList = realTaskRows
-        .filter((r: any) => !r.selected)
-        .sort((a: any, b: any) => (a.position ?? 0) - (b.position ?? 0))
-      
-      // 3. Template extras are always unselected and available to add
-      const availableTemplatesList = templateExtras
-        .sort((a: any, b: any) => (a.position ?? 0) - (b.position ?? 0))
-      
-      // Store all three lists
-      setComponents(activeComponents)
-      setRemovedComponents(removedComponentsList)
-      setAvailableTemplates(availableTemplatesList)
-      
-    } catch (err: any) {
-      console.error('Failed to fetch components:', err)
-      toast({
-        title: 'Error loading components',
-        description: err.message,
-        variant: 'destructive'
+        component_scope: row.task_component_id ? 'task' : undefined,
+      })) as TaskChannelComponent[]
+
+      // In-task components list: render only selected=true items in the main list
+      const activeComponents = rows
+        .filter((r) => r.selected === true)
+        .sort((a, b) => (a.position ?? 0) - (b.position ?? 0))
+
+      const visibleRows = [...activeComponents]
+      const briefingIds = Array.from(
+        new Set(visibleRows.map((r) => r.briefing_component_id).filter((id): id is number => typeof id === 'number'))
+      )
+
+      const outputsByBriefingId: Record<number, TaskComponentOutput> = {}
+      if (briefingIds.length > 0) {
+        const { data: outputsData, error: outputsError } = await supabase
+          .from('task_component_outputs')
+          .select('briefing_component_id, content_text, updated_at')
+          .eq('task_id', taskId)
+          .eq('channel_id', channelId)
+          .in('briefing_component_id', briefingIds)
+
+        if (outputsError) throw outputsError
+
+        ;(outputsData || []).forEach((row: any) => {
+          if (typeof row.briefing_component_id === 'number') {
+            outputsByBriefingId[row.briefing_component_id] = {
+              content_text: row.content_text,
+              updated_at: row.updated_at,
+            }
+          }
+        })
+      }
+
+      return {
+        activeComponents,
+        outputsByBriefingId,
+      }
+    },
+    [supabase, taskId]
+  )
+
+  const effectiveBriefingTypeId = selectedBriefingTypeId ?? effectiveDefaultBriefingTypeId
+
+  const componentsQuery = useQuery<ComponentsQueryResult>({
+    queryKey: ['taskComponents', taskId, selectedChannelId, effectiveBriefingTypeId ?? null],
+    enabled: !!selectedChannelId && !!effectiveBriefingTypeId && !isNoBriefing,
+    // TanStack Query v5: keep previous results visible while fetching the next key
+    placeholderData: (previousData) => previousData,
+    queryFn: async () => {
+      if (!selectedChannelId) throw new Error('No channel selected')
+      return fetchComponentsForChannel(selectedChannelId)
+    },
+  })
+
+  const availableQuery = useQuery<TaskChannelAvailableComponent[]>({
+    queryKey: ['taskAvailableComponents', taskId, selectedChannelId, effectiveBriefingTypeId ?? null],
+    enabled: !!selectedChannelId && !!effectiveBriefingTypeId && !isNoBriefing,
+    placeholderData: (previousData) => previousData,
+    queryFn: async () => {
+      if (!selectedChannelId) throw new Error('No channel selected')
+      const { data, error } = await supabase.rpc('tc_available_components_for_task_channel', {
+        p_task_id: taskId,
+        p_channel_id: selectedChannelId,
       })
-    }
-  }, [supabase, taskId, selectedChannelId])
+      if (error) throw error
+      // Normalize payloads (some RPC versions may return `id` instead of `task_component_id`)
+      return ((data || []) as any[]).map((row) => ({
+        ...row,
+        task_component_id: row.task_component_id ?? row.id ?? null,
+      })) as TaskChannelAvailableComponent[]
+    },
+  })
+
+  const refreshComponents = useCallback(
+    async (channelIdOverride?: number) => {
+      const channelId = channelIdOverride ?? selectedChannelId
+      if (!channelId) return
+      await queryClient.invalidateQueries({ queryKey: ['taskComponents', taskId, channelId] })
+    },
+    [queryClient, taskId, selectedChannelId]
+  )
+
+  const refreshAvailableComponents = useCallback(
+    async (channelIdOverride?: number) => {
+      const channelId = channelIdOverride ?? selectedChannelId
+      if (!channelId) return
+      await queryClient.invalidateQueries({ queryKey: ['taskAvailableComponents', taskId, channelId] })
+    },
+    [queryClient, taskId, selectedChannelId]
+  )
+
+  const refreshAllComponentLists = useCallback(
+    async (channelIdOverride?: number) => {
+      await Promise.all([refreshComponents(channelIdOverride), refreshAvailableComponents(channelIdOverride)])
+    },
+    [refreshComponents, refreshAvailableComponents]
+  )
+
+  useEffect(() => {
+    if (!componentsQuery.data) return
+
+    setComponents(componentsQuery.data.activeComponents)
+    // no longer derived from tc_components_for_task_channel
+    setRemovedComponents([])
+    setAvailableTemplates([])
+
+    setComponentOutputs((prev) => {
+      const next = new Map(prev)
+      for (const [key, value] of Object.entries(componentsQuery.data.outputsByBriefingId)) {
+        const id = Number(key)
+        const local = outputValuesRef.current.get(id)
+        next.set(id, {
+          content_text: typeof local === 'string' ? local : value.content_text,
+          updated_at: value.updated_at,
+        })
+      }
+      return next
+    })
+  }, [componentsQuery.data])
   
   // Fetch component output
   const fetchComponentOutput = useCallback(async (componentId: number) => {
-    if (!selectedChannelId || loadingOutputs.has(componentId)) return
-    
+    if (!selectedChannelId) return
+
+    // ✅ guard with ref (stable, not tied to state updates)
+    if (loadingOutputsRef.current.has(componentId)) return
+    loadingOutputsRef.current.add(componentId)
+
+    // still keep state for UI spinner
     setLoadingOutputs(prev => new Set(prev).add(componentId))
-    
+
     try {
       const { data, error } = await supabase
         .from('task_component_outputs')
@@ -1261,9 +1554,9 @@ export function TaskContentTab({ taskId, projectId, contentTypeId, languageId, o
         .eq('channel_id', selectedChannelId)
         .eq('briefing_component_id', componentId)
         .maybeSingle()
-      
+
       if (error && error.code !== 'PGRST116') throw error
-      
+
       if (data) {
         setComponentOutputs(prev => {
           const newMap = new Map(prev)
@@ -1274,13 +1567,14 @@ export function TaskContentTab({ taskId, projectId, contentTypeId, languageId, o
     } catch (err: any) {
       console.error('Failed to fetch component output:', err)
     } finally {
+      loadingOutputsRef.current.delete(componentId)
       setLoadingOutputs(prev => {
         const newSet = new Set(prev)
         newSet.delete(componentId)
         return newSet
       })
     }
-  }, [supabase, taskId, selectedChannelId, loadingOutputs])
+  }, [supabase, taskId, selectedChannelId])
   
   // Fetch SEO data
   const fetchSEO = useCallback(async () => {
@@ -1361,7 +1655,22 @@ export function TaskContentTab({ taskId, projectId, contentTypeId, languageId, o
   
   // Add channel
   const handleAddChannel = async (channelId: number) => {
+    const previousChannels = channels
+    const previousAvailableChannels = availableChannels
+    const previousSelectedChannelId = selectedChannelId
+
     try {
+      const channelMeta = availableChannels.find((c) => c.channel_id === channelId) ?? null
+
+      // Optimistic UI: add channel pill immediately
+      if (channelMeta) {
+        setChannels((prev) => {
+          if (prev.some((c) => c.channel_id === channelId)) return prev
+          return [...prev, channelMeta].sort((a, b) => a.name.localeCompare(b.name))
+        })
+        setAvailableChannels((prev) => prev.filter((c) => c.channel_id !== channelId))
+      }
+
       // Insert into task_channels
       const { error: insertError } = await supabase
         .from('task_channels')
@@ -1371,22 +1680,54 @@ export function TaskContentTab({ taskId, projectId, contentTypeId, languageId, o
         })
       
       if (insertError) throw insertError
-      
-      // Refresh channels
-      await fetchTaskChannels()
-      await fetchAvailableChannels()
-      
+
       // Select the newly added channel
       setSelectedChannelId(channelId)
+      onChannelChange?.(channelId)
       
-      // Fetch the briefing type for this channel (may be null for project defaults)
-      await fetchBriefingType()
+      // Ensure default briefing type components load immediately (no user toggle required)
+      if (projectId && contentTypeId) {
+        const { data, error } = await supabase.rpc('project_channel_briefing_types', {
+          p_project_id: projectId,
+          p_content_type_id: contentTypeId,
+          p_channel_id: channelId
+        })
+
+        if (!error) {
+          let effectiveId: number | null = null
+          ;(data || []).forEach((row: any) => {
+            if (row.effective_default_briefing_type_id && typeof row.effective_default_briefing_type_id === 'number') {
+              effectiveId = row.effective_default_briefing_type_id
+            }
+          })
+
+          if (effectiveId) {
+            await supabase.rpc('tc_set_briefing_mode', {
+              p_task_id: taskId,
+              p_channel_id: channelId,
+              p_briefing_type_id: effectiveId,
+              p_disable_briefing: false
+            })
+            setSelectedBriefingTypeId(effectiveId)
+            setIsNoBriefing(false)
+          }
+        }
+      }
+
+      fetchAvailableChannels()
+      await refreshComponents(channelId)
       
       toast({
         title: 'Channel added',
         description: 'Channel has been added and briefing initialized.'
       })
     } catch (err: any) {
+      // Roll back optimistic UI
+      setChannels(previousChannels)
+      setAvailableChannels(previousAvailableChannels)
+      setSelectedChannelId(previousSelectedChannelId)
+      onChannelChange?.(previousSelectedChannelId)
+
       console.error('Failed to add channel:', err)
       toast({
         title: 'Failed to add channel',
@@ -1398,7 +1739,23 @@ export function TaskContentTab({ taskId, projectId, contentTypeId, languageId, o
   
   // Remove channel
   const handleRemoveChannel = async (channelId: number) => {
+    const previousChannels = channels
+    const previousSelectedChannelId = selectedChannelId
+
     try {
+      setRemovingChannelIds((prev) => new Set(prev).add(channelId))
+
+      const remainingChannels = channels.filter((c) => c.channel_id !== channelId)
+      const nextActiveChannelId =
+        selectedChannelId === channelId ? (remainingChannels[0]?.channel_id ?? null) : selectedChannelId
+
+      // Optimistic UI: update channel pills immediately
+      setChannels(remainingChannels)
+      if (selectedChannelId === channelId) {
+        setSelectedChannelId(nextActiveChannelId)
+        onChannelChange?.(nextActiveChannelId)
+      }
+
       const { error } = await supabase
         .from('task_channels')
         .delete()
@@ -1406,26 +1763,30 @@ export function TaskContentTab({ taskId, projectId, contentTypeId, languageId, o
         .eq('channel_id', channelId)
       
       if (error) throw error
-      
-      await fetchTaskChannels()
-      await fetchAvailableChannels()
-      
-      // If removed channel was selected, select another or clear
-      if (selectedChannelId === channelId) {
-        const remaining = channels.filter(c => c.channel_id !== channelId)
-        setSelectedChannelId(remaining.length > 0 ? remaining[0].channel_id : null)
-      }
+
+      fetchAvailableChannels()
       
       toast({
         title: 'Channel removed',
         description: 'Channel has been removed.'
       })
     } catch (err: any) {
+      // Roll back optimistic UI
+      setChannels(previousChannels)
+      setSelectedChannelId(previousSelectedChannelId)
+      onChannelChange?.(previousSelectedChannelId)
+
       console.error('Failed to remove channel:', err)
       toast({
         title: 'Failed to remove channel',
         description: err.message,
         variant: 'destructive'
+      })
+    } finally {
+      setRemovingChannelIds((prev) => {
+        const next = new Set(prev)
+        next.delete(channelId)
+        return next
       })
     }
   }
@@ -1435,20 +1796,21 @@ export function TaskContentTab({ taskId, projectId, contentTypeId, languageId, o
     if (!selectedChannelId) return
     
     try {
-      // Call tc_set_briefing RPC (this clears and re-seeds task_channel_components)
-      const { error } = await supabase.rpc('tc_set_briefing', {
+      // Call tc_set_briefing_mode RPC with disable_briefing: false
+      const { error } = await supabase.rpc('tc_set_briefing_mode', {
         p_task_id: taskId,
         p_channel_id: selectedChannelId,
-        p_briefing_type_id: briefingTypeId
+        p_briefing_type_id: briefingTypeId,
+        p_disable_briefing: false
       })
       
       if (error) throw error
       
       setSelectedBriefingTypeId(briefingTypeId)
+      setIsNoBriefing(false)
       
-      // Re-fetch components using tc_components_for_task_channel
-      // This will show the new briefing's template components
-      await fetchComponents()
+      // Re-fetch components (scoped query) to pick up the new briefing template
+      await refreshComponents()
       
       toast({
         title: 'Briefing type updated',
@@ -1464,6 +1826,45 @@ export function TaskContentTab({ taskId, projectId, contentTypeId, languageId, o
     }
   }
   
+  // Handle clearing briefing (set to "No briefing" mode)
+  const handleClearBriefing = async () => {
+    if (!selectedChannelId) return
+    
+    try {
+      // Call tc_set_briefing_mode RPC with disable_briefing: true
+      const { error } = await supabase.rpc('tc_set_briefing_mode', {
+        p_task_id: taskId,
+        p_channel_id: selectedChannelId,
+        p_briefing_type_id: null,
+        p_disable_briefing: true
+      })
+      
+      if (error) throw error
+      
+      // Update local state to show Main content immediately
+      setSelectedBriefingTypeId(null)
+      setIsNoBriefing(true)
+      
+      // Clear the mainLoadedRef for this channel so it can be loaded
+      mainLoadedRef.current.delete(selectedChannelId)
+      
+      // Load main content (component 80)
+      await fetchComponentOutput(MAIN_BRIEFING_COMPONENT_ID)
+      
+      toast({
+        title: 'Briefing cleared',
+        description: 'Main content editor is now active.'
+      })
+    } catch (err: any) {
+      console.error('Failed to clear briefing:', err)
+      toast({
+        title: 'Failed to clear briefing',
+        description: err.message,
+        variant: 'destructive'
+      })
+    }
+  }
+  
   // Toggle component selection
   const handleToggleComponent = async (
     row: TaskChannelComponent,
@@ -1473,49 +1874,33 @@ export function TaskContentTab({ taskId, projectId, contentTypeId, languageId, o
     
     // Store previous state for rollback
     const previousComponents = [...components]
-    const previousRemovedComponents = [...removedComponents]
     
-    // Optimistic update - update UI immediately
-    const updatedComponent = { ...row, selected: checked }
-    
-    if (checked) {
-      // Moving from removed to active
-      setComponents(prev => [...prev, updatedComponent])
-      setRemovedComponents(prev => 
-        prev.filter(c => 
-          (c.briefing_component_id || c.project_component_id) !== 
-          (row.briefing_component_id || row.project_component_id)
-        )
-      )
-    } else {
-      // Moving from active to removed
-      setRemovedComponents(prev => [...prev, updatedComponent])
-      setComponents(prev => 
-        prev.filter(c => 
-          (c.briefing_component_id || c.project_component_id) !== 
-          (row.briefing_component_id || row.project_component_id)
-        )
-      )
+    if (!row.task_component_id) {
+      toast({
+        title: 'Cannot update component',
+        description: 'This component is missing a task row.',
+        variant: 'destructive',
+      })
+      return
+    }
+
+    // Optimistic: if removing from main list, remove immediately
+    if (!checked) {
+      setComponents((prev) => prev.filter((c) => c.task_component_id !== row.task_component_id))
     }
     
     try {
-      // Use tcc_set_component to create/update task row
-      const { error } = await supabase.rpc('tcc_set_component', {
-        p_task_id: taskId,
-        p_channel_id: selectedChannelId,
-        p_task_component_id: row.task_component_id ?? null,
-        p_briefing_component_id: row.briefing_component_id ?? null,
-        p_project_component_id: row.project_component_id ?? null,
-        p_selected: checked,
-        p_custom_title: row.custom_title || row.title,
-        p_custom_description: row.custom_description || row.description,
-        p_position: row.position
-      })
+      const { error } = await supabase
+        .from('task_channel_components')
+        .update({ selected: checked })
+        .eq('task_id', taskId)
+        .eq('channel_id', selectedChannelId)
+        .eq('id', row.task_component_id)
       
       if (error) throw error
       
-      // Re-fetch components to get updated state (including any server-side changes)
-      await fetchComponents()
+      // Re-fetch BOTH RPCs (main list + available list)
+      await refreshAllComponentLists()
       
       // If selected, fetch output if it hasn't been loaded yet
       const componentIdForOutput = row.briefing_component_id || row.project_component_id
@@ -1527,7 +1912,6 @@ export function TaskContentTab({ taskId, projectId, contentTypeId, languageId, o
       
       // Rollback optimistic update on error
       setComponents(previousComponents)
-      setRemovedComponents(previousRemovedComponents)
       
       toast({
         title: 'Failed to update component',
@@ -1537,44 +1921,68 @@ export function TaskContentTab({ taskId, projectId, contentTypeId, languageId, o
     }
   }
   
-  // Add component from available templates
-  const handleAddFromTemplate = async (template: TaskChannelComponent) => {
+  const [addingAvailableKeys, setAddingAvailableKeys] = useState<Set<string>>(new Set())
+
+  const handleAddAvailableComponent = async (item: TaskChannelAvailableComponent) => {
     if (!selectedChannelId) return
-    
+
     try {
-      // Optimistic update
-      const previousAvailableTemplates = [...availableTemplates]
-      setAvailableTemplates(prev => 
-        prev.filter(c => 
-          (c.briefing_component_id || c.project_component_id) !== 
-          (template.briefing_component_id || template.project_component_id)
-        )
-      )
-      
-      // Insert into task_channel_components with selected=true
-      const { error } = await supabase.rpc('tcc_set_component', {
-        p_task_id: taskId,
-        p_channel_id: selectedChannelId,
-        p_task_component_id: null, // New component
-        p_briefing_component_id: template.briefing_component_id ?? null,
-        p_project_component_id: template.project_component_id ?? null,
-        p_selected: true,
-        p_custom_title: template.title,
-        p_custom_description: template.description,
-        p_position: template.position
-      })
-      
-      if (error) throw error
-      
-      // Re-fetch all components to get updated state
-      await fetchComponents()
-      
-      toast({
-        title: 'Component added',
-        description: `"${template.title}" has been added to this task.`
-      })
+      setAddingAvailableKeys((prev) => new Set(prev).add(item.key))
+
+      if (item.tag === 'Removed from task') {
+        // Prefer updating by task row UUID (table PK is `id`)
+        if (item.task_component_id) {
+          const { error } = await supabase
+            .from('task_channel_components')
+            .update({ selected: true })
+            .eq('task_id', taskId)
+            .eq('channel_id', selectedChannelId)
+            .eq('id', item.task_component_id)
+
+          if (error) throw error
+        } else {
+          // Fallback: update by the unique key columns (RPC sometimes omits the task row UUID)
+          const q = supabase
+            .from('task_channel_components')
+            .update({ selected: true })
+            .eq('task_id', taskId)
+            .eq('channel_id', selectedChannelId)
+
+          if (item.is_project_component && typeof item.project_component_id !== 'number') {
+            throw new Error('Missing project_component_id for removed item')
+          }
+          if (!item.is_project_component && typeof item.briefing_component_id !== 'number') {
+            throw new Error('Missing briefing_component_id for removed item')
+          }
+
+          const { error } = item.is_project_component
+            ? await q.eq('project_component_id', item.project_component_id as number)
+            : await q.eq('briefing_component_id', item.briefing_component_id as number)
+
+          if (error) throw error
+        }
+      } else {
+        const insertPayload: any = {
+          task_id: taskId,
+          channel_id: selectedChannelId,
+          selected: true,
+          custom_title: item.custom_title ?? item.title ?? null,
+          custom_description: item.custom_description ?? item.description ?? null,
+        }
+
+        if (item.is_project_component) {
+          insertPayload.project_component_id = item.project_component_id
+        } else {
+          insertPayload.briefing_component_id = item.briefing_component_id
+        }
+
+        const { error } = await supabase.from('task_channel_components').insert(insertPayload)
+        if (error) throw error
+      }
+
+      await refreshAllComponentLists()
     } catch (err: any) {
-      console.error('Failed to add component from template:', err)
+      console.error('Failed to add component:', err)
       
       toast({
         title: 'Failed to add component',
@@ -1583,7 +1991,13 @@ export function TaskContentTab({ taskId, projectId, contentTypeId, languageId, o
       })
       
       // Re-fetch to ensure consistent state
-      await fetchComponents()
+      await refreshAllComponentLists()
+    } finally {
+      setAddingAvailableKeys((prev) => {
+        const next = new Set(prev)
+        next.delete(item.key)
+        return next
+      })
     }
   }
   
@@ -1621,6 +2035,7 @@ export function TaskContentTab({ taskId, projectId, contentTypeId, languageId, o
       const { error } = await supabase.rpc('tcc_set_component', {
         p_task_id: taskId,
         p_channel_id: selectedChannelId,
+        p_task_component_id: taskComponentId,
         p_briefing_component_id: briefingComponentId,
         p_project_component_id: projectComponentId,
         p_selected: true, // Keep it selected
@@ -1632,7 +2047,7 @@ export function TaskContentTab({ taskId, projectId, contentTypeId, languageId, o
       if (error) throw error
       
       // Re-fetch to get updated state
-      await fetchComponents()
+      await refreshComponents()
     } catch (err: any) {
       console.error('Failed to update component custom fields:', err)
       toast({
@@ -1681,7 +2096,7 @@ export function TaskContentTab({ taskId, projectId, contentTypeId, languageId, o
       }
       
       // Refresh components to get updated template values
-      await fetchComponents()
+      await refreshComponents()
       
       toast({
         title: 'Template updated',
@@ -1729,11 +2144,27 @@ export function TaskContentTab({ taskId, projectId, contentTypeId, languageId, o
       
       // If not keeping in task, remove from task as well
       if (!keepInTask) {
+        const allTaskComponents = [...components, ...removedComponents]
+        const taskRow = allTaskComponents.find((c) => {
+          if (typeof projectComponentId === 'number') return c.project_component_id === projectComponentId
+          return c.briefing_component_id === componentBriefingId
+        })
+
         const { error: removeErr } = await supabase.rpc('tcc_set_component', {
           p_task_id: taskId,
           p_channel_id: selectedChannelId,
-          p_component_id: componentBriefingId,
-          p_selected: false
+          p_task_component_id: taskRow?.task_component_id ?? null,
+          p_briefing_component_id: typeof projectComponentId === 'number' ? null : componentBriefingId,
+          p_project_component_id:
+            typeof projectComponentId === 'number'
+              ? projectComponentId
+              : componentScope === 'project'
+                ? componentBriefingId
+                : null,
+          p_selected: false,
+          p_custom_title: taskRow?.custom_title || taskRow?.title || null,
+          p_custom_description: taskRow?.custom_description || taskRow?.description || null,
+          p_position: taskRow?.position ?? null,
         })
         
         if (removeErr) {
@@ -1742,7 +2173,7 @@ export function TaskContentTab({ taskId, projectId, contentTypeId, languageId, o
       }
       
       // Refresh components
-      await fetchComponents()
+      await refreshComponents()
       
       toast({
         title: 'Removed from template',
@@ -1821,7 +2252,7 @@ export function TaskContentTab({ taskId, projectId, contentTypeId, languageId, o
         variant: 'destructive'
       })
       // Revert on error
-      await fetchComponents()
+      await refreshComponents()
     }
   }
   
@@ -1908,6 +2339,308 @@ export function TaskContentTab({ taskId, projectId, contentTypeId, languageId, o
       console.error('Failed to fetch task data:', err)
     }
   }, [supabase, taskId])
+
+  function sanitizeFilename(value: string) {
+    return value
+      .trim()
+      .replaceAll(/[\/\\?%*:|"<>]/g, '-')
+      .replaceAll(/\s+/g, ' ')
+      .slice(0, 160)
+  }
+
+  function downloadBlob(blob: Blob, filename: string) {
+    const url = URL.createObjectURL(blob)
+    const a = document.createElement('a')
+    a.href = url
+    a.download = filename
+    document.body.appendChild(a)
+    a.click()
+    a.remove()
+    URL.revokeObjectURL(url)
+  }
+
+  function extractText(el: Element): string {
+    return (el.textContent || '').replaceAll('\u00A0', ' ').trim()
+  }
+
+  function htmlToDocxParagraphs(
+    html: string,
+    docx: {
+      Paragraph: any
+      TextRun: any
+      HeadingLevel: any
+    }
+  ) {
+    const { Paragraph, TextRun, HeadingLevel } = docx
+    const paragraphs: any[] = []
+    if (!html || !html.trim()) return paragraphs
+
+    const parser = new DOMParser()
+    const parsed = parser.parseFromString(`<div>${html}</div>`, 'text/html')
+    const container = parsed.body.firstElementChild ?? parsed.body
+
+    const pushHeading = (level: any, text: string) => {
+      const t = text.trim()
+      if (!t) return
+      paragraphs.push(new Paragraph({ text: t, heading: level }))
+    }
+
+    const createInlineRuns = (node: Node, active: { bold?: boolean; italics?: boolean }): any[] => {
+      if (node.nodeType === Node.TEXT_NODE) {
+        const text = (node.textContent || '').replaceAll('\u00A0', ' ')
+        // Ignore whitespace-only text nodes (often introduced by HTML formatting)
+        if (!text.trim()) return []
+        return [new TextRun({ text, bold: !!active.bold, italics: !!active.italics })]
+      }
+      if (node.nodeType !== Node.ELEMENT_NODE) return []
+
+      const el = node as Element
+      const tag = el.tagName.toLowerCase()
+      if (tag === 'br') {
+        return [new TextRun({ text: '', break: 1 })]
+      }
+
+      const nextActive = { ...active }
+      if (tag === 'strong' || tag === 'b') nextActive.bold = true
+      if (tag === 'em' || tag === 'i') nextActive.italics = true
+
+      const runs: any[] = []
+      el.childNodes.forEach((child) => {
+        runs.push(...createInlineRuns(child, nextActive))
+      })
+      return runs
+    }
+
+    const pushParagraphFromElement = (el: Element, listPrefix?: string) => {
+      const runs: any[] = []
+      if (listPrefix) runs.push(new TextRun({ text: listPrefix }))
+      el.childNodes.forEach((child) => {
+        runs.push(...createInlineRuns(child, {}))
+      })
+
+      // Preserve blank lines (e.g. <p><br></p>) as empty paragraphs
+      if (runs.length === 0) {
+        paragraphs.push(new Paragraph({ children: [new TextRun({ text: '' })] }))
+        return
+      }
+
+      paragraphs.push(new Paragraph({ children: runs }))
+    }
+
+    const isBlock = (el: Element) => {
+      const tag = el.tagName.toLowerCase()
+      return tag === 'p' || tag === 'h1' || tag === 'h2' || tag === 'h3' || tag === 'h4' || tag === 'ul' || tag === 'ol'
+    }
+
+    const isBlockishDivParagraph = (el: Element) => {
+      const tag = el.tagName.toLowerCase()
+      if (tag !== 'div') return false
+      // If it contains other block elements, let traversal reach those instead.
+      if (el.querySelector('p,h1,h2,h3,h4,ul,ol')) return false
+      // Treat a plain div with meaningful text as a paragraph.
+      return !!extractText(el)
+    }
+
+    // Collect block elements in document order (including nested ones)
+    const blocks: Element[] = []
+    const walk = (node: Node) => {
+      if (node.nodeType !== Node.ELEMENT_NODE) return
+      const el = node as Element
+      if (isBlock(el)) {
+        blocks.push(el)
+        return
+      }
+      if (isBlockishDivParagraph(el)) {
+        blocks.push(el)
+        return
+      }
+      el.childNodes.forEach(walk)
+    }
+    container.childNodes.forEach(walk)
+
+    for (const el of blocks) {
+      const tag = el.tagName.toLowerCase()
+
+      if (tag === 'h3') {
+        pushHeading(HeadingLevel.HEADING_3, extractText(el))
+        continue
+      }
+      if (tag === 'h4') {
+        pushHeading(HeadingLevel.HEADING_4, extractText(el))
+        continue
+      }
+
+      // If pasted output includes h1/h2, downgrade so we keep Task title (H1) and Component title (H2)
+      if (tag === 'h1' || tag === 'h2') {
+        pushHeading(HeadingLevel.HEADING_3, extractText(el))
+        continue
+      }
+
+      if (tag === 'p') {
+        pushParagraphFromElement(el)
+        continue
+      }
+      if (tag === 'div') {
+        pushParagraphFromElement(el)
+        continue
+      }
+
+      if (tag === 'ul' || tag === 'ol') {
+        const items = Array.from(el.querySelectorAll(':scope > li'))
+        items.forEach((li, idx) => {
+          const prefix = tag === 'ol' ? `${idx + 1}. ` : '- '
+          // Prefer paragraph children if present; otherwise use li itself
+          const liParagraphs = Array.from(li.querySelectorAll(':scope > p'))
+          if (liParagraphs.length > 0) {
+            liParagraphs.forEach((p) => pushParagraphFromElement(p, prefix))
+          } else {
+            pushParagraphFromElement(li, prefix)
+          }
+        })
+        continue
+      }
+    }
+
+    return paragraphs
+  }
+
+  const handleExportComponentsToWord = useCallback(async () => {
+    if (isExporting) return
+    if (!taskId) return
+
+    setIsExporting(true)
+    try {
+      const channelsToExport = channels
+      if (channelsToExport.length === 0) {
+        toast({ title: 'Nothing to export', description: 'This task has no channels.' })
+        return
+      }
+
+      const exportedChannels = await Promise.all(
+        channelsToExport.map(async (channel) => {
+          // 1) Fetch selected components (preserve current order)
+          const { data: compsData, error: compsError } = await supabase.rpc('tc_components_for_task_channel', {
+            p_task_id: taskId,
+            p_channel_id: channel.channel_id,
+          })
+          if (compsError) throw compsError
+
+          const rows = (compsData || []).map((row: any) => ({
+            task_component_id: row.task_component_id || null,
+            briefing_component_id: row.briefing_component_id || null,
+            title: row.title || '',
+            custom_title: row.custom_title || null,
+            selected: !!row.selected,
+            position: row.position ?? null,
+          })) as Array<Pick<TaskChannelComponent, 'task_component_id' | 'briefing_component_id' | 'title' | 'custom_title' | 'selected' | 'position'>>
+
+          const selected = rows
+            .filter((r) => r.task_component_id !== null && r.selected)
+            .sort((a, b) => (a.position ?? 0) - (b.position ?? 0))
+
+          const briefingIds = Array.from(
+            new Set(selected.map((r) => r.briefing_component_id).filter((id): id is number => typeof id === 'number'))
+          )
+
+          // 2) Fetch outputs for selected components
+          const outputsById = new Map<number, string>()
+          if (briefingIds.length > 0) {
+            const { data: outData, error: outError } = await supabase
+              .from('task_component_outputs')
+              .select('briefing_component_id, content_text')
+              .eq('task_id', taskId)
+              .eq('channel_id', channel.channel_id)
+              .in('briefing_component_id', briefingIds)
+            if (outError) throw outError
+            for (const row of outData || []) {
+              if (typeof (row as any).briefing_component_id === 'number') {
+                outputsById.set((row as any).briefing_component_id, ((row as any).content_text as string | null) || '')
+              }
+            }
+          }
+
+          // 3) If no selected components, fallback to "Main content" (component 80) if it has any content
+          if (selected.length === 0) {
+            const { data: mainData, error: mainError } = await supabase
+              .from('task_component_outputs')
+              .select('content_text')
+              .eq('task_id', taskId)
+              .eq('channel_id', channel.channel_id)
+              .eq('briefing_component_id', MAIN_BRIEFING_COMPONENT_ID)
+              .maybeSingle()
+            if (mainError && mainError.code !== 'PGRST116') throw mainError
+            const mainText = (mainData?.content_text as string | null) || ''
+            return {
+              channelName: channel.name,
+              components: mainText.trim()
+                ? [
+                    {
+                      title: 'Main content',
+                      outputHtml: mainText,
+                    },
+                  ]
+                : [],
+            }
+          }
+
+          return {
+            channelName: channel.name,
+            components: selected.map((c) => ({
+              title: (c.custom_title && String(c.custom_title).trim()) ? String(c.custom_title) : c.title,
+              outputHtml: typeof c.briefing_component_id === 'number' ? outputsById.get(c.briefing_component_id) || '' : '',
+            })),
+          }
+        })
+      )
+
+      // Remove channels that have no exported components/content
+      const nonEmpty = exportedChannels.filter((c) => c.components.length > 0)
+      if (nonEmpty.length === 0) {
+        toast({ title: 'Nothing to export', description: 'No component outputs found across channels.' })
+        return
+      }
+
+      const safeTaskTitle = taskTitle?.trim() || `Task ${taskId}`
+
+      // Lazy-load docx only when exporting
+      const { Document, Packer, Paragraph, HeadingLevel, TextRun } = await import('docx')
+
+      const children: any[] = []
+      children.push(new Paragraph({ text: safeTaskTitle, heading: HeadingLevel.HEADING_1 }))
+
+      for (const ch of nonEmpty) {
+        children.push(
+          new Paragraph({
+            children: [new TextRun({ text: ch.channelName, bold: true })],
+            spacing: { before: 240, after: 80 },
+          })
+        )
+
+        for (const cmp of ch.components) {
+          children.push(new Paragraph({ text: cmp.title || 'Untitled Component', heading: HeadingLevel.HEADING_2 }))
+          children.push(...htmlToDocxParagraphs(cmp.outputHtml || '', { Paragraph, TextRun, HeadingLevel }))
+        }
+      }
+
+      const doc = new Document({
+        sections: [{ properties: {}, children }],
+      })
+
+      const blob = await Packer.toBlob(doc)
+      const filename = `${sanitizeFilename(safeTaskTitle)} - components.docx`
+      downloadBlob(blob, filename)
+      toast({ title: 'Exported', description: 'Word document downloaded.' })
+    } catch (err: any) {
+      console.error('Failed to export components:', err)
+      toast({
+        title: 'Export failed',
+        description: err?.message || 'An error occurred while exporting.',
+        variant: 'destructive',
+      })
+    } finally {
+      setIsExporting(false)
+    }
+  }, [channels, isExporting, supabase, taskId, taskTitle])
   
   // Fetch AI threads for this task
   const fetchAiThreads = useCallback(async () => {
@@ -1975,13 +2708,13 @@ export function TaskContentTab({ taskId, projectId, contentTypeId, languageId, o
       }
       
       // Refresh components list
-      await fetchComponents()
+      await refreshComponents()
       
     } catch (err: any) {
       console.error('Failed to add component to task:', err)
       throw err
     }
-  }, [supabase, taskId, selectedChannelId, fetchComponents])
+  }, [supabase, taskId, selectedChannelId, refreshComponents])
   
   // Add all selected components to the task
   const handleApplyAllComponents = useCallback(async (components: ReviewedComponent[]) => {
@@ -2009,13 +2742,19 @@ export function TaskContentTab({ taskId, projectId, contentTypeId, languageId, o
   // Open an existing AI thread
   const handleOpenThread = useCallback((threadId: string) => {
     const newParams = new URLSearchParams(searchParams.toString())
+    // Ensure middle pane is visible when opening AI build
+    const layoutRaw = newParams.get('layout')
+    const layoutParts = (layoutRaw ? layoutRaw.split(',').filter(Boolean) : ['left', 'middle', 'right'])
+    if (!layoutParts.includes('middle')) layoutParts.splice(1, 0, 'middle')
+    newParams.set('layout', layoutParts.join(','))
+    newParams.delete('focus')
     newParams.set('middleView', 'ai-build')
     newParams.set('aiThreadId', threadId)
     router.push(`${pathname}?${newParams.toString()}`, { scroll: false })
   }, [searchParams, pathname, router])
   
   // AI build for component-level generation (NEW SPEC: pre-fill input, don't call immediately)
-  const handleBuildWithAI = useCallback(async (componentId?: number) => {
+  const handleBuildWithAI = useCallback(async (componentId?: number | string) => {
     if (!selectedChannelId) {
       toast({
         title: 'Missing information',
@@ -2035,11 +2774,28 @@ export function TaskContentTab({ taskId, projectId, contentTypeId, languageId, o
       let mode: "build_component" | "build_briefing" | null = null
       let taskChannelComponentId: string | null = null
       
-      if (componentId) {
+      if (componentId === 'main') {
+        // Main content generation (no structured components)
+        const taskName = taskTitle || `Task ${taskId}`
+        const channelName = channels.find(c => c.channel_id === selectedChannelId)?.name || `Channel ${selectedChannelId}`
+        const existing = componentOutputs.get(MAIN_BRIEFING_COMPONENT_ID)?.content_text || ''
+
+        preFillMessage = `Build the **Main content** for task **${taskName}** (channel: **${channelName}**).
+
+Output requirements:
+- Use clear structure with headings and paragraphs.
+- Keep it ready to paste into the Main content editor.
+
+${existing?.trim() ? `Current draft (for context, improve it):\n${existing}` : ''}`
+
+        mode = "build_briefing"
+      } else if (componentId) {
         // Component-level generation
-        let component = components.find(
-          c => (c.briefing_component_id || c.project_component_id) === componentId
-        )
+        const allComponents = [...components, ...removedComponents]
+        let component =
+          typeof componentId === 'string'
+            ? allComponents.find(c => c.task_component_id === componentId)
+            : allComponents.find(c => (c.briefing_component_id || c.project_component_id) === componentId)
         
         if (!component) {
           throw new Error('Component not found')
@@ -2047,6 +2803,9 @@ export function TaskContentTab({ taskId, projectId, contentTypeId, languageId, o
         
         // If component doesn't have a task_component_id yet, add it to the task first
         if (!component.task_component_id) {
+          if (typeof componentId === 'string') {
+            throw new Error('Component is missing an internal task id. Please refresh and try again.')
+          }
           const { error } = await supabase.rpc('tcc_set_component', {
             p_task_id: taskId,
             p_channel_id: selectedChannelId,
@@ -2078,7 +2837,7 @@ export function TaskContentTab({ taskId, projectId, contentTypeId, languageId, o
           }
           
           component = updatedComponent
-          fetchComponents()
+          refreshComponents()
         }
         
         // Build pre-fill message for component (per spec)
@@ -2123,6 +2882,12 @@ ${componentList}`
       
       // Step 3: Open AI chat pane with context (per spec)
       const newParams = new URLSearchParams(searchParams.toString())
+      // Ensure middle pane is visible when opening AI build
+      const layoutRaw = newParams.get('layout')
+      const layoutParts = (layoutRaw ? layoutRaw.split(',').filter(Boolean) : ['left', 'middle', 'right'])
+      if (!layoutParts.includes('middle')) layoutParts.splice(1, 0, 'middle')
+      newParams.set('layout', layoutParts.join(','))
+      newParams.delete('focus')
       newParams.set('middleView', 'ai-build')
       newParams.set('aiThreadId', threadId)
       newParams.set('chatMode', mode)
@@ -2130,6 +2895,8 @@ ${componentList}`
         newParams.set('chatComponentId', taskChannelComponentId)
       }
       newParams.set('chatPreFill', encodeURIComponent(preFillMessage))
+      newParams.set('activeChannelId', String(selectedChannelId))
+      newParams.set('chatAutoRun', 'false') // Manual send - auto_run should be false
       router.push(`${pathname}?${newParams.toString()}`, { scroll: false })
       
       // Step 4: User will edit the message and click Send (per spec)
@@ -2146,13 +2913,16 @@ ${componentList}`
   }, [
     selectedChannelId,
     components,
+    removedComponents,
+    channels,
+    componentOutputs,
     taskId,
     taskTitle,
     searchParams,
     pathname,
     router,
     supabase,
-    fetchComponents
+    refreshComponents
   ])
   
   // Initialize
@@ -2161,28 +2931,91 @@ ${componentList}`
       setIsLoading(true)
       await Promise.all([
         fetchTaskChannels(),
-        fetchBriefingTypes(),
         fetchTaskTitle()
       ])
       setIsLoading(false)
     }
     init()
-  }, [fetchTaskChannels, fetchBriefingTypes, fetchTaskTitle])
+  }, [taskId, fetchTaskChannels, fetchTaskTitle])
   
   // When selected channel changes, fetch related data
   useEffect(() => {
-    if (selectedChannelId) {
-      Promise.all([
-        fetchBriefingType(),
-        fetchComponents(),
+    if (!selectedChannelId) {
+      setSelectedBriefingTypeId(null)
+      setEffectiveDefaultBriefingTypeId(null)
+      setIsNoBriefing(false)
+      setBriefingTypeOptions([])
+      setSeoData(null)
+      setVariantSEOData(null)
+      return
+    }
+
+    let cancelled = false
+
+    // Clear mainLoadedRef for the new channel (only when channel changes, not on every rerun)
+    mainLoadedRef.current.delete(selectedChannelId)
+
+    const loadForChannel = async () => {
+      setIsChannelMetaLoading(true)
+      const [defaultId] = await Promise.all([
+        fetchChannelBriefingTypes(),
         fetchSEO()
       ])
-    } else {
-      setSelectedBriefingTypeId(null)
-      setComponents([])
-      setSeoData(null)
+      if (cancelled) return
+
+      const { briefingTypeId, disableBriefing } = await fetchBriefingType()
+      if (cancelled) return
+
+      // Handle three states:
+      // A) Explicit briefing type -> show Components UI
+      // B) Inherit default -> show Components UI with effective default selected in dropdown
+      // C) No briefing -> show Main content editor (component 80)
+      
+      if (disableBriefing) {
+        // State C: No briefing
+        setSelectedBriefingTypeId(null)
+        setIsNoBriefing(true)
+        
+        // Only call fetchComponentOutput(80) once per channel to prevent infinite loops
+        if (!mainLoadedRef.current.has(selectedChannelId)) {
+          mainLoadedRef.current.add(selectedChannelId)
+          await fetchComponentOutput(MAIN_BRIEFING_COMPONENT_ID)
+        }
+        return
+      } else if (briefingTypeId) {
+        // State A: Explicit briefing type
+        setSelectedBriefingTypeId(briefingTypeId)
+        setIsNoBriefing(false)
+        
+        // Components query will load automatically (keepPreviousData preserves UI while fetching)
+      } else {
+        // State B: Inherit default
+        // Keep selectedBriefingTypeId as null to indicate inheritance
+        // The UI will use effectiveDefaultBriefingTypeId to show the default in dropdown
+        setSelectedBriefingTypeId(null)
+        setIsNoBriefing(false)
+        
+        // If no default exists, show Main content editor
+        if (!defaultId) {
+          if (!mainLoadedRef.current.has(selectedChannelId)) {
+            mainLoadedRef.current.add(selectedChannelId)
+            await fetchComponentOutput(MAIN_BRIEFING_COMPONENT_ID)
+          }
+        } else {
+          // When a briefing type exists (inherited), components query will load automatically
+        }
+      }
+
+      setIsChannelMetaLoading(false)
     }
-  }, [selectedChannelId])
+
+    loadForChannel()
+
+    return () => {
+      cancelled = true
+      setIsChannelMetaLoading(false)
+    }
+  }, [selectedChannelId, fetchChannelBriefingTypes, fetchBriefingType, fetchSEO, fetchComponentOutput])
   
   // Fetch available channels when project/contentType changes
   useEffect(() => {
@@ -2199,18 +3032,6 @@ ${componentList}`
 
   return (
     <div className="space-y-6">
-      {/* Structure Review Panel - Show at the top */}
-      {selectedChannelId && (
-        <StructureReviewPanel
-          taskId={taskId}
-          existingComponents={components}
-          onSuggestionsReceived={() => {}}
-          onApplyComponent={handleApplyComponent}
-          onApplyAll={handleApplyAllComponents}
-          initialSourceUrl={taskSourceUrl}
-        />
-      )}
-      
       {/* Channels Selector */}
       <div>
         <Label className="text-sm font-medium text-gray-900 mb-2 block">Channels</Label>
@@ -2219,8 +3040,9 @@ ${componentList}`
             <Badge
               key={channel.channel_id}
               variant={selectedChannelId === channel.channel_id ? "default" : "outline"}
-              className="cursor-pointer"
+              className={`${removingChannelIds.has(channel.channel_id) ? "opacity-60 cursor-not-allowed" : "cursor-pointer"} h-9 px-3 py-0`}
               onClick={() => {
+                if (removingChannelIds.has(channel.channel_id)) return
                 setSelectedChannelId(channel.channel_id)
                 onChannelChange?.(channel.channel_id)
               }}
@@ -2230,16 +3052,22 @@ ${componentList}`
                 type="button"
                 onClick={(e) => {
                   e.stopPropagation()
+                  if (removingChannelIds.has(channel.channel_id)) return
                   handleRemoveChannel(channel.channel_id)
                 }}
                 className="ml-2 hover:text-red-600"
+                disabled={removingChannelIds.has(channel.channel_id)}
               >
-                <X className="w-3 h-3" />
+                {removingChannelIds.has(channel.channel_id) ? (
+                  <Loader2 className="w-3 h-3 animate-spin" />
+                ) : (
+                  <X className="w-3 h-3" />
+                )}
               </button>
             </Badge>
           ))}
           
-          {availableChannels.length > 0 && (
+          {availableChannels.filter((c) => !channels.some((t) => t.channel_id === c.channel_id)).length > 0 && (
             <Popover>
               <PopoverTrigger asChild>
                 <Button size="sm" variant="ghost" className="text-gray-600 hover:text-gray-900">
@@ -2249,7 +3077,9 @@ ${componentList}`
               </PopoverTrigger>
               <PopoverContent className="w-56 p-2">
                 <div className="space-y-1 max-h-60 overflow-y-auto">
-                  {availableChannels.map((channel) => (
+                  {availableChannels
+                    .filter((c) => !channels.some((t) => t.channel_id === c.channel_id))
+                    .map((channel) => (
                     <button
                       key={channel.channel_id}
                       type="button"
@@ -2271,41 +3101,61 @@ ${componentList}`
       {/* Briefing Type Selector (only show if channel selected) */}
       {selectedChannelId && (
         <div>
-          <Label className="text-sm font-medium text-gray-900 mb-2 block">Briefing Type</Label>
-          <Select
-            value={selectedBriefingTypeId?.toString() || '__project_default__'}
-            onValueChange={(value) => {
-              if (value === '__project_default__') {
-                // Use project defaults - set to null, will auto-pick from project_ct_channel_briefings
-                handleBriefingTypeChange(null)
-              } else {
-                handleBriefingTypeChange(Number(value))
-              }
-            }}
-          >
-            <SelectTrigger className="w-full">
-              <SelectValue placeholder="Select briefing type" />
-            </SelectTrigger>
-            <SelectContent>
-              <SelectItem value="__project_default__">
-                <span className="font-medium">Use project defaults</span>
-              </SelectItem>
-              {briefingTypes.map((type) => (
-                <SelectItem key={type.id} value={type.id.toString()}>
+          <div className="flex items-center justify-between mb-2">
+            <Label className="text-sm font-medium text-gray-900 block">Briefing Type</Label>
+            {isChannelMetaLoading && (
+              <span className="text-xs text-gray-400 inline-flex items-center gap-1">
+                <Loader2 className="w-3 h-3 animate-spin" />
+                Loading…
+              </span>
+            )}
+          </div>
+          <div className="flex flex-wrap gap-2">
+            {briefingTypeOptions.map((type) => {
+              const effectiveId = selectedBriefingTypeId ?? effectiveDefaultBriefingTypeId ?? null
+              const isActive = !isNoBriefing && effectiveId === type.id
+
+              return (
+                <Badge
+                  key={type.id}
+                  variant={isActive ? "default" : "outline"}
+                  className={`${isChannelMetaLoading ? "opacity-60 cursor-not-allowed" : "cursor-pointer"} h-9 px-3 py-0`}
+                  onClick={() => {
+                    if (isChannelMetaLoading) return
+                    handleBriefingTypeChange(type.id)
+                  }}
+                  title={type.description ?? type.title}
+                >
                   {type.title}
-                </SelectItem>
-              ))}
-            </SelectContent>
-          </Select>
-          {selectedBriefingTypeId === null ? (
-            <p className="text-xs text-gray-500 mt-1">
-              Using default briefing from project configuration for this content type × channel.
-            </p>
-          ) : briefingTypes.find(t => t.id === selectedBriefingTypeId)?.description && (
-            <p className="text-xs text-gray-500 mt-1">
-              {briefingTypes.find(t => t.id === selectedBriefingTypeId)?.description}
-            </p>
-          )}
+                </Badge>
+              )
+            })}
+            {/* Clear briefing (minimal action, like Add Channel) */} 
+            {!isNoBriefing && (selectedBriefingTypeId ?? effectiveDefaultBriefingTypeId) && (
+              <Button
+                type="button"
+                size="sm"
+                variant="ghost"
+                className="text-gray-600 hover:text-gray-900"
+                disabled={isChannelMetaLoading}
+                onClick={handleClearBriefing}
+                title="Clear briefing"
+              >
+                <X className="w-4 h-4 mr-1" />
+                Clear briefing
+              </Button>
+            )}
+          </div>
+          {(() => {
+            const effectiveId = selectedBriefingTypeId ?? effectiveDefaultBriefingTypeId ?? null
+            const active = briefingTypeOptions.find(t => t.id === effectiveId)
+            if (!active?.description) return null
+            return (
+              <p className="text-xs text-gray-500 mt-1">
+                {active.description}
+              </p>
+            )
+          })()}
           {projectId && (
             <div className="mt-2 flex items-center gap-3">
               <button
@@ -2315,6 +3165,34 @@ ${componentList}`
               >
                 Manage templates
               </button>
+              <Dialog open={isImportTemplateOpen} onOpenChange={setIsImportTemplateOpen}>
+                <DialogTrigger asChild>
+                  <button
+                    type="button"
+                    className="text-xs text-blue-600 hover:text-blue-700 hover:underline"
+                  >
+                    Import template
+                  </button>
+                </DialogTrigger>
+                <DialogContent className="w-[calc(100vw-2rem)] sm:w-full max-w-3xl max-h-[85vh] overflow-hidden p-0">
+                  <div className="flex flex-col h-full max-h-[85vh]">
+                    <DialogHeader className="shrink-0 px-6 pt-6 pb-2">
+                      <DialogTitle>Import template (from source)</DialogTitle>
+                    </DialogHeader>
+                    <div className="flex-1 min-h-0 px-6 pb-6 overflow-auto">
+                      {/* Same UI + same calls as before — just moved into a dialog */}
+                      <StructureReviewPanel
+                        taskId={taskId}
+                        existingComponents={components}
+                        onSuggestionsReceived={() => {}}
+                        onApplyComponent={handleApplyComponent}
+                        onApplyAll={handleApplyAllComponents}
+                        initialSourceUrl={taskSourceUrl}
+                      />
+                    </div>
+                  </div>
+                </DialogContent>
+              </Dialog>
               <div className="flex items-center gap-1">
                 <button
                   type="button"
@@ -2375,10 +3253,56 @@ ${componentList}`
         </div>
       )}
 
-      {/* Components Panel (only show if channel selected - briefing can be null for project defaults) */}
-      {selectedChannelId && (
+      {/* Main content panel - only when no briefing mode is active (explicit no briefing or no briefing type available) */}
+      {selectedChannelId && (isNoBriefing || (!selectedBriefingTypeId && !effectiveDefaultBriefingTypeId)) && (
+        <div>
+          <div className="flex items-center justify-between mb-2">
+            <Label className="text-sm font-medium text-gray-900 block">Main content</Label>
+            <button
+              type="button"
+              onClick={() => handleBuildWithAI('main')}
+              className="text-xs text-blue-600 hover:text-blue-700 hover:underline"
+            >
+              Build with AI
+            </button>
+          </div>
+          <div className="border rounded-lg bg-white p-3">
+            <ResizableEditor
+              componentId={MAIN_BRIEFING_COMPONENT_ID}
+              value={componentOutputs.get(MAIN_BRIEFING_COMPONENT_ID)?.content_text || ''}
+              onChange={(text) => {
+                // Update ref immediately with latest value
+                outputValuesRef.current.set(MAIN_BRIEFING_COMPONENT_ID, text)
+                // Update local state for immediate UI update
+                setComponentOutputs(prev => {
+                  const newMap = new Map(prev)
+                  newMap.set(MAIN_BRIEFING_COMPONENT_ID, {
+                    content_text: text,
+                    updated_at: new Date().toISOString()
+                  })
+                  return newMap
+                })
+                // Persist using the shared debounced saver
+                debouncedSaveOutput(MAIN_BRIEFING_COMPONENT_ID)
+              }}
+              toolbarId={`ql-toolbar-main-${taskId}-${selectedChannelId}`}
+            />
+            {componentOutputs.get(MAIN_BRIEFING_COMPONENT_ID)?.updated_at && (
+              <p className="text-xs text-gray-400 mt-2">
+                Last updated: {new Date(componentOutputs.get(MAIN_BRIEFING_COMPONENT_ID)!.updated_at as string).toLocaleString()}
+              </p>
+            )}
+          </div>
+        </div>
+      )}
+
+      {/* Components Panel (only show if channel + briefing type selected and not in no-briefing mode) */}
+      {selectedChannelId && (selectedBriefingTypeId ?? effectiveDefaultBriefingTypeId) && !isNoBriefing && (
         <div>
           <Label className="text-sm font-medium text-gray-900 mb-2 block">Components</Label>
+          {componentsQuery.isFetching && components.length > 0 && (
+            <div className="text-xs text-gray-400 mb-2">Updating components…</div>
+          )}
           {components.length === 0 ? (
             <p className="text-sm text-gray-500 py-4">
               {selectedBriefingTypeId === null 
@@ -2387,16 +3311,17 @@ ${componentList}`
               }
             </p>
           ) : (
-            <DndContext
-              sensors={sensors}
-              collisionDetection={closestCenter}
-              onDragEnd={handleDragEnd}
-            >
-              <SortableContext
-                items={components.map(c => c.task_component_id || `temp-${c.briefing_component_id || c.project_component_id || Math.random()}`)}
-                strategy={verticalListSortingStrategy}
+            <div className={componentsQuery.isFetching ? "opacity-70 transition-opacity" : "transition-opacity"}>
+              <DndContext
+                sensors={sensors}
+                collisionDetection={closestCenter}
+                onDragEnd={handleDragEnd}
               >
-                <div className="space-y-2">
+                <SortableContext
+                  items={components.map(c => c.task_component_id || `temp-${c.briefing_component_id || c.project_component_id || Math.random()}`)}
+                  strategy={verticalListSortingStrategy}
+                >
+                  <div className="space-y-2">
                   {components.map((component) => (
                     <SortableComponentItem
                       key={component.task_component_id || `temp-${component.briefing_component_id || component.project_component_id}`}
@@ -2426,9 +3351,9 @@ ${componentList}`
                         setEditingDescriptionComponentId(null)
                         // Don't update state here - the useEffect in SortableComponentItem will reset values from props
                       }}
-                      output={componentOutputs.get(component.briefing_component_id || component.project_component_id || 0) || null}
+                      output={componentOutputs.get(component.briefing_component_id || 0) || null}
                       onOutputChange={(text) => {
-                        const componentIdForOutput = component.briefing_component_id || component.project_component_id || 0
+                        const componentIdForOutput = component.briefing_component_id || 0
                         // Update ref immediately with latest value (no trimming)
                         outputValuesRef.current.set(componentIdForOutput, text)
                         // Update local state for immediate UI update
@@ -2444,8 +3369,12 @@ ${componentList}`
                       onSaveOutput={(componentId) => {
                         debouncedSaveOutput(componentId)
                       }}
-                      isLoadingOutput={loadingOutputs.has(component.briefing_component_id || component.project_component_id || 0)}
-                      onLoadOutput={() => fetchComponentOutput(component.briefing_component_id || component.project_component_id || 0)}
+                      isLoadingOutput={loadingOutputs.has(component.briefing_component_id || 0)}
+                      onLoadOutput={() => {
+                        if (component.briefing_component_id) {
+                          fetchComponentOutput(component.briefing_component_id)
+                        }
+                      }}
                       projectId={projectId}
                       contentTypeId={contentTypeId}
                       channelId={selectedChannelId}
@@ -2466,134 +3395,207 @@ ${componentList}`
                       briefingTypeId={selectedBriefingTypeId}
                       contentTypeId={contentTypeId}
                       onComponentAdded={() => {
-                        fetchComponents()
+                        refreshComponents()
                         fetchAvailableChannels()
                       }}
                     />
                   )}
                 </div>
-              </SortableContext>
-            </DndContext>
-          )}
-          
-          {/* Removed Components (Bottom Area - First List) */}
-          {removedComponents.length > 0 && (
-            <>
-              <div className="my-4 border-t border-gray-200" />
-              <div className="mb-2">
-                <p className="text-xs font-medium text-gray-500 uppercase tracking-wide">
-                  Removed from this task
-                </p>
-              </div>
-              <DndContext
-                sensors={sensors}
-                collisionDetection={closestCenter}
-                onDragEnd={handleDragEnd}
-              >
-                <SortableContext
-                  items={removedComponents.map(c => c.task_component_id || `temp-${c.briefing_component_id || c.project_component_id || Math.random()}`)}
-                  strategy={verticalListSortingStrategy}
-                >
-                  <div className="space-y-2">
-                    {removedComponents.map((component) => (
-                      <SortableComponentItem
-                        key={component.task_component_id || `temp-${component.briefing_component_id || component.project_component_id}`}
-                        component={component}
-                        isSelected={component.selected}
-                        onToggle={() => handleToggleComponent(component, !component.selected)}
-                        onEditCustom={(taskComponentId, briefingComponentId, projectComponentId, title, desc, scope) => 
-                          handleEditComponentCustom(
-                            taskComponentId,
-                            briefingComponentId,
-                            projectComponentId,
-                            title,
-                            desc,
-                            scope
-                          )
-                        }
-                        onReorder={(id, pos) => {}}
-                        isEditing={editingComponentId === (component.task_component_id || `temp-${component.briefing_component_id || component.project_component_id}`)}
-                        onStartEdit={() => setEditingComponentId(component.task_component_id || `temp-${component.briefing_component_id || component.project_component_id}`)}
-                        onCancelEdit={() => {
-                          setEditingComponentId(null)
-                          // Reset to original values handled by useEffect in SortableComponentItem
-                        }}
-                        isEditingDescription={editingDescriptionComponentId === (component.task_component_id || `temp-${component.briefing_component_id || component.project_component_id}`)}
-                        onStartEditDescription={() => setEditingDescriptionComponentId(component.task_component_id || `temp-${component.briefing_component_id || component.project_component_id}`)}
-                        onCancelEditDescription={() => {
-                          setEditingDescriptionComponentId(null)
-                          // Don't update state here - the useEffect in SortableComponentItem will reset values from props
-                        }}
-                        output={componentOutputs.get(component.briefing_component_id || component.project_component_id || 0) || null}
-                        onOutputChange={(text) => {
-                          const componentIdForOutput = component.briefing_component_id || component.project_component_id || 0
-                          outputValuesRef.current.set(componentIdForOutput, text)
-                          setComponentOutputs(prev => {
-                            const newMap = new Map(prev)
-                            newMap.set(componentIdForOutput, {
-                              content_text: text,
-                              updated_at: new Date().toISOString()
-                            })
-                            return newMap
-                          })
-                        }}
-                        onSaveOutput={(componentId) => {
-                          debouncedSaveOutput(componentId)
-                        }}
-                        isLoadingOutput={loadingOutputs.has(component.briefing_component_id || component.project_component_id || 0)}
-                        onLoadOutput={() => fetchComponentOutput(component.briefing_component_id || component.project_component_id || 0)}
-                        projectId={projectId}
-                        contentTypeId={contentTypeId}
-                        channelId={selectedChannelId}
-                        briefingTypeId={selectedBriefingTypeId}
-                        onEditInTemplate={handleEditInTemplate}
-                        onRemoveFromTemplate={handleRemoveFromTemplate}
-                        onBuildWithAI={handleBuildWithAI}
-                        autoExpandComponentId={autoExpandComponentId}
-                      />
-                    ))}
-                  </div>
                 </SortableContext>
               </DndContext>
-            </>
+            </div>
           )}
-          
-          {/* Available from Template (Bottom Area - Second List) */}
-          {availableTemplates.length > 0 && (
-            <>
-              <div className="my-4 border-t border-gray-200" />
-              <div className="mb-2">
-                <p className="text-xs font-medium text-gray-500 uppercase tracking-wide">
-                  Available from project template
-                </p>
-              </div>
-              <div className="space-y-2">
-                {availableTemplates.map((template) => (
-                  <div 
-                    key={`template-${template.briefing_component_id || template.project_component_id}`}
-                    className="flex items-start gap-3 p-3 border border-gray-200 rounded-lg bg-gray-50 hover:bg-gray-100 transition-colors"
-                  >
-                    <div className="flex-1 min-w-0">
-                      <div className="flex items-center gap-2">
-                        <span className="font-medium text-gray-900">{template.title}</span>
-                      </div>
-                      {template.description && (
-                        <p className="mt-1 text-sm text-gray-600 whitespace-pre-wrap">{template.description}</p>
-                      )}
-                    </div>
-                    <Button
-                      size="sm"
-                      variant="outline"
-                      onClick={() => handleAddFromTemplate(template)}
-                      className="flex-shrink-0"
-                    >
-                      Add
-                    </Button>
+
+          {/* Export (all channels) */}
+          <div className="mt-3 flex justify-end">
+            <Button
+              type="button"
+              variant="outline"
+              size="sm"
+              onClick={handleExportComponentsToWord}
+              disabled={isExporting}
+              className="gap-2"
+              title="Export component outputs for all channels (.docx)"
+            >
+              {isExporting ? <Loader2 className="w-4 h-4 animate-spin" /> : <Download className="w-4 h-4" />}
+              Export
+            </Button>
+          </div>
+
+          {/* Available to add (unified) */}
+          {(() => {
+            const rawItems = Array.isArray(availableQuery.data) ? [...availableQuery.data] : []
+
+            const tagOrder: Record<string, number> = {
+              'Removed from task': 0,
+              Recommended: 1,
+              Removed: 2,
+              System: 3,
+              'System (other briefings)': 4,
+              Custom: 5,
+            }
+
+            const query = availableSearchQuery.trim().toLowerCase()
+            const items = rawItems
+              .filter((item) => {
+                if (availableTagFilter !== '__all__') {
+                  if ((item.tag || '').toLowerCase() !== String(availableTagFilter).toLowerCase()) return false
+                }
+
+                if (query) {
+                  const title = (item.custom_title || item.title || '').toString()
+                  const desc = (item.custom_description || item.description || '').toString()
+                  const haystack = `${title}\n${desc}`.toLowerCase()
+                  if (!haystack.includes(query)) return false
+                }
+
+                return true
+              })
+
+            items.sort((a, b) => {
+              const ta = tagOrder[a.tag] ?? 999
+              const tb = tagOrder[b.tag] ?? 999
+              if (ta !== tb) return ta - tb
+              return (a.title || '').localeCompare(b.title || '')
+            })
+
+            return (
+              <>
+                <div className="my-4 border-t border-gray-200" />
+                <div className="mb-3">
+                  <span className="text-xs text-gray-500">Available to add</span>
+                </div>
+
+                <div className="flex flex-col sm:flex-row gap-2 mb-3">
+                  <div className="relative flex-1 min-w-[260px]">
+                    <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-400" />
+                    <Input
+                      type="search"
+                      placeholder="Search available components..."
+                      value={availableSearchQuery}
+                      onChange={(e) => setAvailableSearchQuery(e.target.value)}
+                      className="pl-10"
+                    />
                   </div>
-                ))}
-              </div>
-            </>
-          )}
+                  <Select value={availableTagFilter} onValueChange={(v) => setAvailableTagFilter(v as any)}>
+                    <SelectTrigger className="w-full sm:w-[200px]">
+                      <SelectValue placeholder="All types" />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="__all__">All</SelectItem>
+                      <SelectItem value="Removed from task">Removed from task</SelectItem>
+                      <SelectItem value="Recommended">Recommended</SelectItem>
+                      <SelectItem value="Removed">Removed</SelectItem>
+                      <SelectItem value="System">System</SelectItem>
+                      <SelectItem value="System (other briefings)">System (other briefings)</SelectItem>
+                      <SelectItem value="Custom">Custom</SelectItem>
+                    </SelectContent>
+                  </Select>
+                </div>
+
+                {items.length === 0 ? (
+                  <div className="text-xs text-gray-500 border border-dashed rounded p-3 bg-gray-50">
+                    No results. Try clearing your search or changing the type filter.
+                  </div>
+                ) : (
+                  <div className="space-y-2">
+                    {items.map((item) => {
+                      const isAdding = addingAvailableKeys.has(item.key)
+                      const origin = item.key.startsWith('p:') ? 'project' : 'global'
+                      const effectiveTitle = item.custom_title || item.title
+                      const effectiveDescription = item.custom_description || item.description
+
+                      const isRecommended = item.tag === 'Recommended'
+                      const isRemoved = item.tag === 'Removed'
+
+                      const showTagPill = !isRecommended && !isRemoved && typeof item.tag === 'string' && item.tag.trim().length > 0
+
+                      return (
+                        <div
+                          key={item.key}
+                          className="border rounded-lg p-3 bg-white border-gray-200 hover:bg-gray-50 min-h-[96px]"
+                        >
+                          <div className="flex items-stretch gap-3">
+                            <div className="flex-1 min-w-0">
+                              <div className="flex items-center gap-2">
+                                <h4 className="text-sm font-semibold text-gray-900">
+                                  {effectiveTitle}
+                                </h4>
+                                <Badge
+                                  variant="outline"
+                                  className={[
+                                    'text-[10px] px-2 py-0.5',
+                                    origin === 'project'
+                                      ? 'border-blue-200 bg-blue-50 text-blue-700'
+                                      : 'border-gray-200 bg-gray-50 text-gray-700',
+                                  ].join(' ')}
+                                >
+                                  {origin === 'project' ? 'Project' : 'System'}
+                                </Badge>
+                                {isRecommended ? (
+                                  <Badge
+                                    variant="outline"
+                                    className="text-[10px] px-2 py-0.5 border-emerald-200 bg-emerald-50 text-emerald-700"
+                                  >
+                                    Recommended
+                                  </Badge>
+                                ) : null}
+                                {isRemoved ? (
+                                  <Badge
+                                    variant="outline"
+                                    className="text-[10px] px-2 py-0.5 border-gray-200 bg-gray-50 text-gray-600"
+                                  >
+                                    Removed
+                                  </Badge>
+                                ) : null}
+                                {showTagPill ? (
+                                  <Badge
+                                    variant="outline"
+                                    className={
+                                      item.tag === 'Custom'
+                                        ? 'text-[10px] px-2 py-0.5 border-purple-200 bg-purple-50 text-purple-700'
+                                        : 'text-[10px] px-2 py-0.5 border-gray-200 bg-gray-50 text-gray-600'
+                                    }
+                                  >
+                                    {item.tag}
+                                  </Badge>
+                                ) : null}
+                              </div>
+
+                              {effectiveDescription ? (
+                                <p className="text-xs text-gray-500 mt-1 whitespace-pre-wrap line-clamp-2">
+                                  {effectiveDescription}
+                                </p>
+                              ) : null}
+                            </div>
+
+                            <Button
+                              size="sm"
+                              variant="outline"
+                              onClick={() => handleAddAvailableComponent(item)}
+                              disabled={isAdding}
+                            >
+                              {isAdding ? (
+                                <>
+                                  <Loader2 className="w-3 h-3 mr-1 animate-spin" />
+                                  Adding...
+                                </>
+                              ) : (
+                                <>
+                                  <Plus className="w-3 h-3 mr-1" />
+                                  Add
+                                </>
+                              )}
+                            </Button>
+                          </div>
+                        </div>
+                      )
+                    })}
+                  </div>
+                )}
+              </>
+            )
+          })()}
         </div>
       )}
 

@@ -1,6 +1,6 @@
 export interface DocumentRow {
   direction: 'ar' | 'ap'
-  doc_kind: 'invoice' | 'credit_note' | 'order' | 'payment'
+  doc_kind: 'invoice' | 'credit_note' | 'order' | 'invoice_order' | 'production_order' | 'payment'
   doc_id: number
   doc_number: string
   doc_date: string
@@ -42,6 +42,8 @@ export interface DocumentsSortConfig {
 export interface DocumentsSummary {
   invoiced: number
   costs: number
+  arCredit: number
+  apCredit: number
   result: number
   pendingAR: number
   pendingAP: number

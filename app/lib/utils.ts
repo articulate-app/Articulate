@@ -22,6 +22,64 @@ export function formatDate(date: string | null | undefined): string {
   }
 }
 
+/** UI locale for date display (Europe/Lisbon → dd/mm/yyyy) */
+const DATE_DISPLAY_LOCALE = 'pt-PT'
+
+/**
+ * Format a date for display in dd/mm/yyyy (pt-PT locale).
+ * Use for both hover display and edit mode to avoid format flipping.
+ */
+export function formatDateDisplay(date: string | Date | null | undefined): string {
+  if (!date) return ''
+  try {
+    const d = typeof date === 'string' ? new Date(date) : date
+    if (isNaN(d.getTime())) return ''
+    return d.toLocaleDateString(DATE_DISPLAY_LOCALE, {
+      day: '2-digit',
+      month: '2-digit',
+      year: 'numeric',
+    })
+  } catch {
+    return ''
+  }
+}
+
+/**
+ * Parse dd/mm/yyyy or dd-mm-yyyy to ISO yyyy-mm-dd.
+ * Returns empty string if invalid.
+ */
+export function toISODate(value: string | Date | null | undefined): string {
+  if (!value) return ''
+  if (value instanceof Date) {
+    return isNaN(value.getTime()) ? '' : value.toISOString().split('T')[0]
+  }
+  const s = String(value).trim()
+  if (!s) return ''
+  // Already ISO format
+  if (/^\d{4}-\d{2}-\d{2}$/.test(s)) return s
+  // dd/mm/yyyy or dd-mm-yyyy
+  const m = s.match(/^(\d{1,2})[\/\-](\d{1,2})[\/\-](\d{4})$/)
+  if (m) {
+    const [, d, mo, y] = m
+    const day = d!.padStart(2, '0')
+    const month = mo!.padStart(2, '0')
+    return `${y}-${month}-${day}`
+  }
+  // Try parsing as Date
+  const parsed = new Date(s)
+  return isNaN(parsed.getTime()) ? '' : parsed.toISOString().split('T')[0]
+}
+
+/**
+ * Convert ISO yyyy-mm-dd to dd/mm/yyyy for display.
+ */
+export function fromISOToDisplay(iso: string | null | undefined): string {
+  if (!iso) return ''
+  const d = new Date(iso + 'T12:00:00')
+  if (isNaN(d.getTime())) return ''
+  return formatDateDisplay(d)
+}
+
 export function isDateInRange(date: Date, from?: Date, to?: Date): boolean {
   if (from && date < from) return false
   if (to && date > to) return false
@@ -84,9 +142,14 @@ export type CalendarOptions = {
   showSubtasks: boolean 
 };
 
+export type KanbanTaskSortKey = 'delivery_date' | 'publication_date' | 'title' | 'assigned_to_name' | 'project_status_name' | 'updated_at';
+export type KanbanTaskSortDir = 'asc' | 'desc';
+
 export type KanbanOptions = { 
   groupBy: 'assignee' | 'project' | 'status' | 'priority' | 'content_type' | 'production_type' | 'language' | 'delivery_date' | 'publication_date' | 'channel'; 
-  showSubtasks: boolean 
+  showSubtasks: boolean;
+  taskSort?: KanbanTaskSortKey;
+  taskSortDir?: KanbanTaskSortDir;
 };
 
 /**
@@ -110,9 +173,14 @@ export function readCalendarOptions(sp: URLSearchParams): CalendarOptions {
 /**
  * Read kanban options from URL search params with defaults and validation
  */
+const VALID_TASK_SORT: KanbanTaskSortKey[] = ['delivery_date', 'publication_date', 'title', 'assigned_to_name', 'project_status_name', 'updated_at'];
+const VALID_TASK_SORT_DIR: KanbanTaskSortDir[] = ['asc', 'desc'];
+
 export function readKanbanOptions(sp: URLSearchParams): KanbanOptions {
   const groupByParam = sp.get('kanban_group_by');
   const showSubtasksParam = sp.get('kanban_show_subtasks');
+  const taskSortParam = sp.get('kanban_task_sort');
+  const taskSortDirParam = sp.get('kanban_task_sort_dir');
   
   // Validate groupBy - must be one of the allowed values
   const validGroupByValues = ['assignee', 'project', 'status', 'priority', 'content_type', 'production_type', 'language', 'delivery_date', 'publication_date', 'channel'] as const;
@@ -123,7 +191,10 @@ export function readKanbanOptions(sp: URLSearchParams): KanbanOptions {
   // Validate showSubtasks - must be 'true' or 'false'
   const showSubtasks = showSubtasksParam === 'true';
   
-  return { groupBy, showSubtasks };
+  const taskSort = VALID_TASK_SORT.includes(taskSortParam as KanbanTaskSortKey) ? (taskSortParam as KanbanTaskSortKey) : undefined;
+  const taskSortDir = VALID_TASK_SORT_DIR.includes(taskSortDirParam as KanbanTaskSortDir) ? (taskSortDirParam as KanbanTaskSortDir) : undefined;
+  
+  return { groupBy, showSubtasks, taskSort, taskSortDir };
 }
 
 /**

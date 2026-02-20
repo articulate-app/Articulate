@@ -16,7 +16,7 @@ export type TaskEditFields = {
   languages: { id: number; code: string; long_name: string }[];
   channels: { id: number; name: string; project_id?: number }[];
   project_watchers: { user_id: number; project_id: number; users: { id: number; email: string; photo: string; full_name: string } }[];
-  projects: { id: number; name: string; active?: boolean }[];
+  projects: { id: number; name: string; active?: boolean; color?: string | null; logo?: string | null }[];
   costs: { user_id: number; content_type_id: number; production_type_id: number; language_id: number }[];
 };
 

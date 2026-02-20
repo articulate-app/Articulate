@@ -1,7 +1,7 @@
 "use client"
 
 import React, { useState, useEffect } from 'react'
-import { X, ArrowLeft, MoreHorizontal, Copy, Plus, Edit, Trash2, AlertTriangle, FileText } from 'lucide-react'
+import { X, ArrowLeft, MoreHorizontal, Copy, Plus, Edit, Trash2, AlertTriangle, FileText, Mail } from 'lucide-react'
 import { Button } from '../../components/ui/button'
 import { Badge } from '../../components/ui/badge'
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from '../../components/ui/dropdown-menu'
@@ -26,6 +26,7 @@ import { removeCreditNoteFromCaches } from '../../components/credit-notes/credit
 import { useQueryClient } from '@tanstack/react-query'
 import { toast } from '../../components/ui/use-toast'
 import { createClientComponentClient } from '@supabase/auth-helpers-nextjs'
+import { fetchIssuedInvoice } from '../../lib/services/billing'
 
 interface DocumentDetailsPaneProps {
   document: DocumentRow
@@ -78,6 +79,120 @@ export function DocumentDetailsPane({ document, onClose, onDocumentUpdate, onDoc
   
   // State for invoice deletion functionality
   const [showDeleteInvoiceConfirmation, setShowDeleteInvoiceConfirmation] = useState(false)
+
+  // State for "Send invoice email"
+  const [isSendInvoiceEmailOpen, setIsSendInvoiceEmailOpen] = useState(false)
+  const [isLoadingInvoiceRecipients, setIsLoadingInvoiceRecipients] = useState(false)
+  const [invoiceRecipientsText, setInvoiceRecipientsText] = useState<string>('')
+  const [isSendingInvoiceEmail, setIsSendingInvoiceEmail] = useState(false)
+
+  // Radix Dialog edge-case: if a dialog unmount/close leaves body pointer-events disabled,
+  // restore it after the close animation completes.
+  const wasSendInvoiceEmailOpenRef = React.useRef(false)
+  useEffect(() => {
+    const wasOpen = wasSendInvoiceEmailOpenRef.current
+    wasSendInvoiceEmailOpenRef.current = isSendInvoiceEmailOpen
+
+    if (isSendInvoiceEmailOpen || !wasOpen) return
+
+    const timeoutId = window.setTimeout(() => {
+      try {
+        // NOTE: `document` is also a prop name in this component; use the global DOM document explicitly.
+        const domDocument = globalThis.document
+        if (!domDocument?.body) return
+
+        const computedStyle = window.getComputedStyle(domDocument.body)
+        if (computedStyle.pointerEvents === 'none') {
+          domDocument.body.style.pointerEvents = 'auto'
+        }
+      } catch {
+        // ignore
+      }
+    }, 300)
+
+    return () => window.clearTimeout(timeoutId)
+  }, [isSendInvoiceEmailOpen])
+
+  const buildInvoiceRecipientsText = (invoice: any): string => {
+    const recipients = invoice?.recipients
+    const names = Array.isArray(recipients?.recipient_names) ? recipients.recipient_names : []
+    const emails = Array.isArray(recipients?.recipient_emails) ? recipients.recipient_emails : []
+
+    const formatted = names.map((name: string, idx: number) => {
+      const trimmedName = typeof name === 'string' ? name.trim() : ''
+      const email = typeof emails[idx] === 'string' ? emails[idx].trim() : ''
+      if (trimmedName && email) return `${trimmedName} <${email}>`
+      return trimmedName || email
+    }).filter(Boolean)
+
+    // If we have emails but no names
+    if (formatted.length === 0 && emails.length > 0) {
+      return emails.filter((e: unknown) => typeof e === 'string' && e.trim().length > 0).join(', ')
+    }
+
+    return formatted.join(', ')
+  }
+
+  const openSendInvoiceEmailDialog = async () => {
+    setIsSendInvoiceEmailOpen(true)
+
+    // Prefer cached invoice pane data (loaded by IssuedInvoiceDetail) to avoid extra calls.
+    const cachedInvoice = queryClient.getQueryData(['issued-invoice', document.doc_id]) as any
+    const cachedRecipientsText = cachedInvoice ? buildInvoiceRecipientsText(cachedInvoice) : ''
+
+    if (cachedRecipientsText) {
+      setInvoiceRecipientsText(cachedRecipientsText)
+      return
+    }
+
+    setIsLoadingInvoiceRecipients(true)
+    try {
+      const { data, error } = await fetchIssuedInvoice(document.doc_id)
+      if (error) {
+        throw new Error(error.message || 'Failed to load invoice recipients')
+      }
+      setInvoiceRecipientsText(buildInvoiceRecipientsText(data))
+    } catch (err: any) {
+      setInvoiceRecipientsText('')
+      toast({
+        title: 'Error',
+        description: err?.message || 'Failed to load invoice recipients',
+        variant: 'destructive',
+      })
+    } finally {
+      setIsLoadingInvoiceRecipients(false)
+    }
+  }
+
+  const handleConfirmSendInvoiceEmail = async () => {
+    if (isSendingInvoiceEmail) return
+    setIsSendingInvoiceEmail(true)
+    try {
+      const { data, error } = await supabase.rpc('fn_send_ar_invoice_email', {
+        p_issued_invoice_id: document.doc_id,
+      })
+
+      if (error) throw new Error(error.message)
+      if (!data?.ok) throw new Error('Failed to queue invoice email')
+
+      const queued = Number(data.queued ?? 0)
+      const deduped = Number(data.deduped ?? 0)
+      toast({
+        title: 'Success',
+        description: `Queued ${queued} email(s)${deduped > 0 ? ` (${deduped} deduped)` : ''}`,
+      })
+
+      setIsSendInvoiceEmailOpen(false)
+    } catch (err: any) {
+      toast({
+        title: 'Error',
+        description: err?.message || 'Failed to send invoice email',
+        variant: 'destructive',
+      })
+    } finally {
+      setIsSendingInvoiceEmail(false)
+    }
+  }
   
   // Handle invoice updates for optimistic UI
   const handleInvoiceUpdate = (updatedInvoice: any) => {
@@ -160,6 +275,7 @@ export function DocumentDetailsPane({ document, onClose, onDocumentUpdate, onDoc
                   case 'delete-invoice':
                     setShowDeleteInvoiceConfirmation(true)
                     break
+                  // AP invoice menu actions are handled by SupplierInvoiceDetailsPane via menuAction prop
                 }
               }
     }
@@ -178,8 +294,10 @@ export function DocumentDetailsPane({ document, onClose, onDocumentUpdate, onDoc
         return 'AR_CREDIT_NOTE'
       case 'ap:credit_note':
         return 'AP_CREDIT_NOTE'
+      case 'ar:invoice_order':
       case 'ar:order':
         return 'AR_ORDER'
+      case 'ap:production_order':
       case 'ap:order':
         return 'AP_ORDER'
       case 'ar:payment':
@@ -496,6 +614,8 @@ export function DocumentDetailsPane({ document, onClose, onDocumentUpdate, onDoc
             onInvoiceUpdate={handleInvoiceUpdate}
             {...commonProps}
             onRelatedDocumentSelect={onRelatedDocumentSelect}
+            menuAction={menuAction}
+            onMenuActionHandled={onMenuActionHandled}
           />
         )
       
@@ -544,7 +664,25 @@ export function DocumentDetailsPane({ document, onClose, onDocumentUpdate, onDoc
             onExpandInvoiceLines={() => {}}
             hasOpenInvoiceDetail={false}
             hasOpenTaskDetails={false}
-            onTaskClick={() => {}}
+            isEmbedded={true}
+            onTaskClick={(taskId, taskData) => {
+              // Open task details in third pane (same approach as DocumentsPage)
+              if (onRelatedDocumentSelect) {
+                onRelatedDocumentSelect({
+                  task_id: taskId,
+                  title: taskData?.title || `Task ${taskId}`,
+                  delivery_date: taskData?.delivery_date,
+                  project_id: (taskData as any)?.project_id,
+                  id: taskId,
+                  doc_id: taskId,
+                  doc_kind: 'task',
+                  direction: 'ar',
+                  doc_number: `TASK-${taskId}`,
+                  doc_date: taskData?.delivery_date || new Date().toISOString()
+                }, 'task')
+              }
+            }}
+            onRelatedDocumentSelect={onRelatedDocumentSelect}
           />
         )
       
@@ -660,6 +798,10 @@ export function DocumentDetailsPane({ document, onClose, onDocumentUpdate, onDoc
               <Copy className="w-4 h-4 mr-2" />
               Copy link
             </DropdownMenuItem>
+            <DropdownMenuItem onClick={openSendInvoiceEmailDialog} disabled={isSendingInvoiceEmail}>
+              <Mail className="w-4 h-4 mr-2" />
+              Send invoice email
+            </DropdownMenuItem>
             <DropdownMenuItem onClick={() => onMenuAction?.('add-invoice-order')}>
               <Plus className="w-4 h-4 mr-2" />
               Add invoice order
@@ -689,6 +831,10 @@ export function DocumentDetailsPane({ document, onClose, onDocumentUpdate, onDoc
               <Copy className="w-4 h-4 mr-2" />
               Copy link
             </DropdownMenuItem>
+            <DropdownMenuItem onClick={() => onMenuAction?.('add-production-order')}>
+              <Plus className="w-4 h-4 mr-2" />
+              Add production order
+            </DropdownMenuItem>
             <DropdownMenuItem onClick={() => onMenuAction?.('add-payment')}>
               <Plus className="w-4 h-4 mr-2" />
               Add payment
@@ -696,10 +842,6 @@ export function DocumentDetailsPane({ document, onClose, onDocumentUpdate, onDoc
             <DropdownMenuItem onClick={() => onMenuAction?.('add-credit-note')}>
               <Plus className="w-4 h-4 mr-2" />
               Add credit note
-            </DropdownMenuItem>
-            <DropdownMenuItem onClick={() => onMenuAction?.('edit-invoice')}>
-              <Edit className="w-4 h-4 mr-2" />
-              Edit invoice
             </DropdownMenuItem>
             <DropdownMenuItem 
               onClick={() => onMenuAction?.('delete-invoice')}
@@ -828,7 +970,8 @@ export function DocumentDetailsPane({ document, onClose, onDocumentUpdate, onDoc
 
   return (
     <>
-      <div className="flex items-center justify-between p-4 border-b border-gray-200 flex-shrink-0">
+      {/* Match the global top header bar height so the bottom border aligns visually across panes */}
+      <div className="flex items-center justify-between h-16 px-4 border-b border-gray-200 flex-shrink-0">
         <div className="flex-1 min-w-0">
           <h2 className="text-lg font-semibold text-gray-900 truncate">
             {formatDocumentType(document.direction, document.doc_kind)} #{document.doc_number}
@@ -1093,6 +1236,37 @@ export function DocumentDetailsPane({ document, onClose, onDocumentUpdate, onDoc
             </DialogContent>
           </Dialog>
         </>
+      )}
+
+      {/* Send Invoice Email Modal (AR invoices only) */}
+      {document.direction === 'ar' && document.doc_kind === 'invoice' && (
+        <Dialog open={isSendInvoiceEmailOpen} onOpenChange={setIsSendInvoiceEmailOpen}>
+          <DialogContent>
+            <DialogHeader>
+              <DialogTitle>Send invoice {document.doc_number}?</DialogTitle>
+              <DialogDescription>
+                {isLoadingInvoiceRecipients
+                  ? 'Loading recipients…'
+                  : `This will email the invoice to ${invoiceRecipientsText || 'no recipients configured for this invoice'}.`}
+              </DialogDescription>
+            </DialogHeader>
+            <DialogFooter>
+              <Button
+                variant="outline"
+                onClick={() => setIsSendInvoiceEmailOpen(false)}
+                disabled={isSendingInvoiceEmail}
+              >
+                Cancel
+              </Button>
+              <Button
+                onClick={handleConfirmSendInvoiceEmail}
+                disabled={isSendingInvoiceEmail || isLoadingInvoiceRecipients}
+              >
+                Send
+              </Button>
+            </DialogFooter>
+          </DialogContent>
+        </Dialog>
       )}
     </>
   )

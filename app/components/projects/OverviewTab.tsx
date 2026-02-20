@@ -16,6 +16,7 @@ import {
 import { ChannelsLanguagesContentTypes, ProjectChannels } from "../project-briefings/ConfigurationTab"
 import { ProjectWatchers } from "./ProjectWatchers"
 import { ProjectStatusesSection } from "./ProjectStatusesSection"
+import { ProjectOverviewPlanningSection } from "./planning/ProjectOverviewPlanningSection"
 
 interface OverviewTabProps {
   projectId: number
@@ -419,6 +420,11 @@ export function OverviewTab({ projectId }: OverviewTabProps) {
             />
           </div>
         </div>
+
+      {/* Planning Section */}
+      <div className="mt-8 pt-8 border-t">
+        <ProjectOverviewPlanningSection projectId={projectId} />
+      </div>
 
       {/* Project Channels Section */}
       <div className="mt-8 pt-8 border-t">

@@ -2,9 +2,10 @@
 
 import React from 'react';
 import { Button } from './button';
-import { Filter } from 'lucide-react';
+import { Filter, Bot } from 'lucide-react';
 import { createClient } from '@/lib/supabase/client';
 import { useCurrentUserStore } from '../../store/current-user';
+import { useTasksUI } from '../../store/tasks-ui';
 import { useRouter } from 'next/navigation';
 import {
   DropdownMenu,
@@ -24,6 +25,15 @@ interface TaskHeaderBarProps {
   onKeywordPlannerClick?: () => void;
   isKeywordPlannerActive?: boolean;
   placeholder?: string;
+  onAiChatClick?: () => void;
+  /**
+   * High-level tasks view mode for the global toggle.
+   * - 'list' -> Expanded task list (left pane focused)
+   * - 'calendar' -> List (left) + calendar (middle)
+   * - 'kanban' -> List (left) + kanban (middle)
+   */
+  viewMode?: 'list' | 'calendar' | 'kanban';
+  onViewModeChange?: (view: 'list' | 'calendar' | 'kanban') => void;
 }
 
 export function TaskHeaderBar({
@@ -34,11 +44,16 @@ export function TaskHeaderBar({
   onKeywordPlannerClick,
   isKeywordPlannerActive = false,
   placeholder,
+  onAiChatClick,
+  viewMode,
+  onViewModeChange,
 }: TaskHeaderBarProps) {
   const router = useRouter();
   const publicUserId = useCurrentUserStore((s) => s.publicUserId);
   const fullName = useCurrentUserStore((s) => s.fullName);
   const userMetadata = useCurrentUserStore((s) => s.userMetadata);
+  const plannerVisibility = useTasksUI((s) => s.plannerVisibility)
+  const setPlannerVisibility = useTasksUI((s) => s.setPlannerVisibility)
 
   // Helper to get user initials
   function getUserInitials() {
@@ -75,8 +90,78 @@ export function TaskHeaderBar({
       >
         <svg width="24" height="24" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24"><line x1="3" y1="12" x2="21" y2="12"/><line x1="3" y1="6" x2="21" y2="6"/><line x1="3" y1="18" x2="21" y2="18"/></svg>
       </button>
-      {/* App name */}
-      <span className="text-2xl font-bold tracking-tight text-gray-900 select-none mr-4">Articulate</span>
+      {/* App name + global view toggle */}
+      <div className="flex items-center gap-3 mr-2">
+        <span className="text-2xl font-bold tracking-tight text-gray-900 select-none">
+          Articulate
+        </span>
+        {/* Global view toggle: Task list / Calendar / Kanban */}
+        {onViewModeChange && (
+          <div className="hidden md:inline-flex items-center bg-gray-100 rounded-full p-0.5 text-xs font-medium text-gray-700">
+            <button
+              type="button"
+              className={`px-3 py-1 rounded-full transition-colors ${
+                viewMode === 'list'
+                  ? 'bg-gray-900 text-white shadow-sm'
+                  : 'text-gray-700 hover:bg-gray-200'
+              }`}
+              onClick={() => onViewModeChange('list')}
+            >
+              Task list
+            </button>
+            <button
+              type="button"
+              className={`px-3 py-1 rounded-full transition-colors ${
+                viewMode === 'calendar'
+                  ? 'bg-gray-900 text-white shadow-sm'
+                  : 'text-gray-700 hover:bg-gray-200'
+              }`}
+              onClick={() => onViewModeChange('calendar')}
+            >
+              Calendar
+            </button>
+            <button
+              type="button"
+              className={`px-3 py-1 rounded-full transition-colors ${
+                viewMode === 'kanban'
+                  ? 'bg-gray-900 text-white shadow-sm'
+                  : 'text-gray-700 hover:bg-gray-200'
+              }`}
+              onClick={() => onViewModeChange('kanban')}
+            >
+              Kanban
+            </button>
+          </div>
+        )}
+
+        {/* Planner filters: Tasks / Suggestions */}
+        <div className="hidden md:inline-flex items-center bg-gray-100 rounded-full p-0.5 text-xs font-medium text-gray-700">
+          <button
+            type="button"
+            className={`px-3 py-1 rounded-full transition-colors ${
+              plannerVisibility.showTasks ? 'bg-white text-gray-900 shadow-sm' : 'text-gray-600 hover:bg-gray-200'
+            }`}
+            onClick={() => setPlannerVisibility({ showTasks: !plannerVisibility.showTasks })}
+            aria-pressed={plannerVisibility.showTasks}
+            title="Toggle tasks"
+          >
+            Tasks
+          </button>
+          <button
+            type="button"
+            className={`px-3 py-1 rounded-full transition-colors ${
+              plannerVisibility.showSuggestions
+                ? 'bg-white text-gray-900 shadow-sm'
+                : 'text-gray-600 hover:bg-gray-200'
+            }`}
+            onClick={() => setPlannerVisibility({ showSuggestions: !plannerVisibility.showSuggestions })}
+            aria-pressed={plannerVisibility.showSuggestions}
+            title="Toggle AI suggestions"
+          >
+            Suggestions
+          </button>
+        </div>
+      </div>
       {/* Centered search bar */}
       <div className="flex-1 flex justify-center">
         <div className="relative w-full max-w-xl">
@@ -100,6 +185,18 @@ export function TaskHeaderBar({
       </div>
       {/* Share button next to user avatar */}
       <ShareButton url={typeof window !== 'undefined' ? window.location.href : ''} className="mr-2" />
+      {/* AI Chat icon */}
+      {onAiChatClick && (
+        <button
+          type="button"
+          onClick={onAiChatClick}
+          className="p-2 rounded hover:bg-gray-100 focus:outline-none mr-2"
+          title="Open AI Assistant"
+          aria-label="Open AI Assistant"
+        >
+          <Bot className="w-5 h-5" />
+        </button>
+      )}
       {/* Keyword Planner icon */}
       {onKeywordPlannerClick && (
         <TasksHeaderIcon

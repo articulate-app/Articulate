@@ -1,6 +1,6 @@
 "use client"
 
-import React, { useMemo, useState, useEffect } from "react"
+import React, { useMemo, useState, useEffect, useRef } from "react"
 import type { AiScope, AiThread } from "./types"
 import { ChatWindow } from "./ChatWindow"
 import { HistoryDropdown } from "./HistoryDrawer"
@@ -9,6 +9,7 @@ import { Plus, X, X as XIcon, MoreHorizontal, Edit2, Trash2, Maximize2, Copy, XC
 import { useCreateThread, useRenameThread, useSoftDeleteThread } from "./hooks"
 import { getSupabaseBrowser } from "../../lib/supabase-browser"
 import { useRouter, useSearchParams } from "next/navigation"
+import { ensureProjectThread, ensureGlobalThread } from "./ai-utils"
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from "../../app/components/ui/dropdown-menu"
 import { Dialog, DialogContent, DialogTitle, DialogFooter } from "../../app/components/ui/dialog"
 import { Button } from "../../app/components/ui/button"
@@ -42,20 +43,50 @@ export function AiPane({ isOpen, onClose, initialScope = 'global', projectId, ta
   const deleteThread = useSoftDeleteThread()
   const router = useRouter()
   const searchParams = useSearchParams()
+  const isUpdatingFromStateRef = useRef(false)
+  const previousActiveIdRef = useRef<string | null>(null)
 
   // Handle thread ID from URL parameters
   useEffect(() => {
+    // Skip if we're currently updating the URL from state changes
+    if (isUpdatingFromStateRef.current) {
+      return
+    }
+
     const threadId = searchParams.get('aiThreadId')
+    
     if (threadId && isOpen) {
+      // Check if this thread is already in open tabs (might be a closed tab)
+      const isInOpenTabs = openTabs.some(tab => tab.id === threadId)
+      
       // If there's a thread ID in the URL, load that thread
-      if (!active || active.id !== threadId) {
+      // Only load if it's different from the current active thread and not already in tabs
+      if ((!active || active.id !== threadId) && !isInOpenTabs) {
         loadThread(threadId)
+      } else if (isInOpenTabs && (!active || active.id !== threadId)) {
+        // Thread is in tabs but not active, just switch to it
+        const tab = openTabs.find(tab => tab.id === threadId)
+        if (tab) {
+          isUpdatingFromStateRef.current = true
+          previousActiveIdRef.current = tab.id
+          setActive(tab)
+          requestAnimationFrame(() => {
+            isUpdatingFromStateRef.current = false
+          })
+        }
       }
     } else if (isOpen && !active && !isCreating && !threadId) {
-      // Only create new chat if there's no threadId in URL
-      handleNewChat()
+      // For project/global scope, try to load existing thread first
+      if (initialScope === 'project' && projectId) {
+        loadProjectThread()
+      } else if (initialScope === 'global') {
+        loadGlobalThread()
+      } else {
+        // For task scope or other cases, create new chat
+        handleNewChat()
+      }
     }
-  }, [isOpen, active, isCreating, searchParams])
+  }, [isOpen, active, isCreating, searchParams, openTabs, initialScope, projectId])
   
   // Load an existing thread
   const loadThread = async (threadId: string) => {
@@ -73,11 +104,20 @@ export function AiPane({ isOpen, onClose, initialScope = 'global', projectId, ta
       if (error) throw error
       
       if (data) {
+        // Set flag before updating active to prevent URL effect loop
+        isUpdatingFromStateRef.current = true
+        previousActiveIdRef.current = data.id
+        
         setActive(data as AiThread)
         // Add to tabs if not already there
         setOpenTabs(prev => {
           const exists = prev.some(tab => tab.id === data.id)
           return exists ? prev : [...prev, data as AiThread]
+        })
+        
+        // Reset flag after state update
+        requestAnimationFrame(() => {
+          isUpdatingFromStateRef.current = false
         })
       }
     } catch (error) {
@@ -92,21 +132,122 @@ export function AiPane({ isOpen, onClose, initialScope = 'global', projectId, ta
     }
   }
 
+  // Load or create project thread
+  const loadProjectThread = async () => {
+    if (isCreating || !projectId) return
+    
+    setIsCreating(true)
+    try {
+      const threadId = await ensureProjectThread(projectId)
+      await loadThread(threadId)
+    } catch (error) {
+      console.error('Failed to load project thread:', error)
+      toast({
+        title: 'Failed to load project chat',
+        description: 'Could not load the project AI thread',
+        variant: 'destructive'
+      })
+    } finally {
+      setIsCreating(false)
+    }
+  }
+
+  // Load or create global thread
+  const loadGlobalThread = async () => {
+    if (isCreating) return
+    
+    setIsCreating(true)
+    try {
+      const threadId = await ensureGlobalThread()
+      await loadThread(threadId)
+    } catch (error) {
+      console.error('Failed to load global thread:', error)
+      toast({
+        title: 'Failed to load global chat',
+        description: 'Could not load the global AI thread',
+        variant: 'destructive'
+      })
+    } finally {
+      setIsCreating(false)
+    }
+  }
+
   // Update URL when active thread changes (only when pane is open)
   useEffect(() => {
     if (active && isOpen) {
-      const currentParams = new URLSearchParams(searchParams.toString())
-      currentParams.set('aiThreadId', active.id)
-      const newUrl = currentParams.toString() ? `?${currentParams.toString()}` : ''
-      router.replace(`/tasks${newUrl}`, { scroll: false })
+      // Skip if we're already updating from a state change
+      if (isUpdatingFromStateRef.current && previousActiveIdRef.current === active.id) {
+        return
+      }
+      
+      const currentThreadId = searchParams.get('aiThreadId')
+      // Only update URL if it's different from current active thread
+      // This prevents loops while still keeping URL in sync
+      if (currentThreadId !== active.id) {
+        isUpdatingFromStateRef.current = true
+        previousActiveIdRef.current = active.id
+        
+        const currentParams = new URLSearchParams(searchParams.toString())
+        currentParams.set('aiThreadId', active.id)
+        const newUrl = currentParams.toString() ? `?${currentParams.toString()}` : ''
+        router.replace(`/tasks${newUrl}`, { scroll: false })
+        
+        // Reset flag after router update completes
+        // Use requestAnimationFrame for immediate next frame, minimal delay
+        requestAnimationFrame(() => {
+          isUpdatingFromStateRef.current = false
+        })
+      } else {
+        // URL is already in sync, just update the ref
+        previousActiveIdRef.current = active.id
+      }
     }
-  }, [active, isOpen, router, searchParams])
+  }, [active?.id, isOpen, router])
 
   const handleNewChat = async () => {
     if (isCreating) return
     
     setIsCreating(true)
+    
+    // Create optimistic thread immediately for instant UI feedback
+    const tempId = `temp-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`
+    const scope = initialScope === 'task' && taskId
+      ? 'task' as const
+      : initialScope === 'project' && projectId
+      ? 'project' as const
+      : 'global' as const
+    
+    const optimisticThread: AiThread = {
+      id: tempId,
+      scope,
+      visibility: 'private',
+      is_collaborative: scope !== 'global',
+      title: scope === 'task' ? 'Task AI Assistant' : scope === 'project' ? 'Project chat' : 'New chat',
+      created_at: new Date().toISOString(),
+      last_message_at: null,
+      is_deleted: false,
+      ...(scope === 'task' && taskId ? { task_id: taskId } : {}),
+      ...(scope === 'project' && projectId ? { project_id: projectId } : {}),
+    }
+    
+    // Set flag before updating active to prevent URL effect loop
+    isUpdatingFromStateRef.current = true
+    previousActiveIdRef.current = optimisticThread.id
+    
+    // Add optimistic thread to tabs and set as active immediately
+    setActive(optimisticThread)
+    setOpenTabs(prev => {
+      const exists = prev.some(tab => tab.id === optimisticThread.id)
+      return exists ? prev : [...prev, optimisticThread]
+    })
+    
+    // Reset flag after state update
+    requestAnimationFrame(() => {
+      isUpdatingFromStateRef.current = false
+    })
+    
     try {
+      // Create real thread in the background
       const payload: Partial<AiThread> =
         initialScope === 'task' && taskId
           ? { scope: 'task', task_id: taskId, visibility: 'private' }
@@ -115,11 +256,19 @@ export function AiPane({ isOpen, onClose, initialScope = 'global', projectId, ta
           : { scope: 'global', visibility: 'private' }
       
       const newThread = await createThread(payload)
+      
+      // Replace optimistic thread with real thread
+      isUpdatingFromStateRef.current = true
+      previousActiveIdRef.current = newThread.id
+      
       setActive(newThread)
-      // Add to tabs if not already there
-      setOpenTabs(prev => {
-        const exists = prev.some(tab => tab.id === newThread.id)
-        return exists ? prev : [...prev, newThread]
+      setOpenTabs(prev => prev.map(tab => 
+        tab.id === tempId ? newThread : tab
+      ))
+      
+      // Reset flag after state update
+      requestAnimationFrame(() => {
+        isUpdatingFromStateRef.current = false
       })
       
       // Auto-send message if content type is provided
@@ -128,6 +277,17 @@ export function AiPane({ isOpen, onClose, initialScope = 'global', projectId, ta
       }
     } catch (error) {
       console.error('Failed to create new chat:', error)
+      // On error, remove the optimistic thread
+      setOpenTabs(prev => prev.filter(tab => tab.id !== tempId))
+      if (active?.id === tempId) {
+        const remainingTabs = openTabs.filter(tab => tab.id !== tempId)
+        setActive(remainingTabs.length > 0 ? remainingTabs[remainingTabs.length - 1] : null)
+      }
+      toast({
+        title: 'Failed to create chat',
+        description: 'Could not create a new chat thread',
+        variant: 'destructive'
+      })
     } finally {
       setIsCreating(false)
     }
@@ -163,20 +323,88 @@ export function AiPane({ isOpen, onClose, initialScope = 'global', projectId, ta
   }
 
   const handleSelectThread = (thread: AiThread) => {
+    // Set flag before updating to prevent URL effect from triggering load
+    isUpdatingFromStateRef.current = true
+    previousActiveIdRef.current = thread.id
+    
+    // Update URL directly when selecting a thread to avoid race conditions
+    const currentParams = new URLSearchParams(searchParams.toString())
+    currentParams.set('aiThreadId', thread.id)
+    const newUrl = currentParams.toString() ? `?${currentParams.toString()}` : ''
+    router.replace(`/tasks${newUrl}`, { scroll: false })
+    
     setActive(thread)
     // Add to tabs if not already there
     setOpenTabs(prev => {
       const exists = prev.some(tab => tab.id === thread.id)
       return exists ? prev : [...prev, thread]
     })
+    
+    // Reset flag after a brief delay
+    requestAnimationFrame(() => {
+      setTimeout(() => {
+        isUpdatingFromStateRef.current = false
+      }, 0)
+    })
+  }
+
+  const handleTabClick = (tab: AiThread) => {
+    // Set flag and previous ID before updating
+    isUpdatingFromStateRef.current = true
+    previousActiveIdRef.current = tab.id
+    setActive(tab)
+    
+    // Reset flag after state update
+    requestAnimationFrame(() => {
+      setTimeout(() => {
+        isUpdatingFromStateRef.current = false
+      }, 0)
+    })
   }
 
   const handleCloseTab = (threadId: string) => {
-    setOpenTabs(prev => prev.filter(tab => tab.id !== threadId))
-    // If we're closing the active tab, switch to another tab or clear active
-    if (active?.id === threadId) {
-      const remainingTabs = openTabs.filter(tab => tab.id !== threadId)
-      setActive(remainingTabs.length > 0 ? remainingTabs[remainingTabs.length - 1] : null)
+    // Check if we're closing the active tab
+    const isClosingActive = active?.id === threadId
+    
+    // Calculate updated tabs
+    const updatedTabs = openTabs.filter(tab => tab.id !== threadId)
+    
+    // Update tabs first
+    setOpenTabs(updatedTabs)
+    
+    // If we're closing the active tab, switch to another or clear
+    if (isClosingActive) {
+      const newActive = updatedTabs.length > 0 ? updatedTabs[updatedTabs.length - 1] : null
+      
+      // Set flag to prevent URL effect from triggering load of the closed thread
+      isUpdatingFromStateRef.current = true
+      
+      if (newActive) {
+        previousActiveIdRef.current = newActive.id
+        
+        // Update URL to the new active tab
+        const currentParams = new URLSearchParams(searchParams.toString())
+        currentParams.set('aiThreadId', newActive.id)
+        const newUrl = currentParams.toString() ? `?${currentParams.toString()}` : ''
+        router.replace(`/tasks${newUrl}`, { scroll: false })
+        
+        setActive(newActive)
+      } else {
+        previousActiveIdRef.current = null
+        
+        // No tabs left, remove thread ID from URL
+        const currentParams = new URLSearchParams(searchParams.toString())
+        currentParams.delete('aiThreadId')
+        const newUrl = currentParams.toString() ? `?${currentParams.toString()}` : ''
+        router.replace(`/tasks${newUrl}`, { scroll: false })
+        
+        setActive(null)
+      }
+      
+      // Reset flag after state update
+      requestAnimationFrame(() => {
+        isUpdatingFromStateRef.current = false
+      })
     }
   }
 
@@ -280,7 +508,7 @@ export function AiPane({ isOpen, onClose, initialScope = 'global', projectId, ta
                         ? 'bg-blue-50 border-b-2 border-blue-500' 
                         : 'hover:bg-gray-50'
                     }`}
-                    onClick={() => setActive(tab)}
+                    onClick={() => handleTabClick(tab)}
                     onDoubleClick={() => handleStartEdit(tab)}
                   >
                     {editingTabId === tab.id ? (
@@ -408,12 +636,17 @@ export function AiPane({ isOpen, onClose, initialScope = 'global', projectId, ta
               <ChatWindow 
                 thread={active} 
                 taskId={taskId} 
-                activeChannelId={activeChannelId}
+                activeChannelId={
+                  searchParams.get('activeChannelId') 
+                    ? Number(searchParams.get('activeChannelId')) 
+                    : activeChannelId
+                }
                 chatContext={{
                   componentId: searchParams.get('chatComponentId'),
                   briefingMode: searchParams.get('chatMode') === 'build_briefing',
                   preFillMessage: searchParams.get('chatPreFill') ? decodeURIComponent(searchParams.get('chatPreFill') || '') : undefined,
-                  mode: (searchParams.get('chatMode') as "build_component" | "build_briefing") || null
+                  mode: (searchParams.get('chatMode') as "build_component" | "build_briefing") || null,
+                  autoRun: searchParams.get('chatAutoRun') === 'true' // Default to false - only true if explicitly set
                 }}
               />
             ) : isCreating ? (
@@ -463,7 +696,7 @@ export function AiPane({ isOpen, onClose, initialScope = 'global', projectId, ta
                           ? 'bg-blue-50 border-b-2 border-blue-500' 
                           : 'hover:bg-gray-50'
                       }`}
-                      onClick={() => setActive(tab)}
+                      onClick={() => handleTabClick(tab)}
                       onDoubleClick={() => handleStartEdit(tab)}
                     >
                       {editingTabId === tab.id ? (

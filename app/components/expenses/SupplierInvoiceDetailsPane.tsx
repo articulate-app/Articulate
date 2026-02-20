@@ -4,7 +4,7 @@ import React, { useState, useEffect, useMemo } from 'react'
 import { useQuery, useQueryClient, useMutation } from '@tanstack/react-query'
 import { Badge } from '../ui/badge'
 import { Button } from '../ui/button'
-import { getSupplierInvoiceDetails, getSupplierInvoicePDFSignedUrl, getInvoiceAllocations } from '../../lib/services/expenses'
+import { getSupplierInvoicePDFSignedUrl } from '../../lib/services/expenses'
 import { Dropzone } from '../dropzone'
 import { createClientComponentClient } from '@supabase/auth-helpers-nextjs'
 import { toast } from '../ui/use-toast'
@@ -29,6 +29,8 @@ interface SupplierInvoiceDetailsPaneProps {
   initialInvoice?: any
   onRelatedDocumentSelect?: (document: any, type: string) => void
   showHeader?: boolean
+  menuAction?: string | null
+  onMenuActionHandled?: () => void
 }
 
 const formatCurrency = (amount: number, currencyCode: string | null = 'EUR') => {
@@ -65,7 +67,7 @@ const getStatusBadgeVariant = (status: string) => {
   }
 }
 
-export function SupplierInvoiceDetailsPane({ invoiceId, onClose, onInvoiceUpdate, initialInvoice, onRelatedDocumentSelect, showHeader = false }: SupplierInvoiceDetailsPaneProps) {
+export function SupplierInvoiceDetailsPane({ invoiceId, onClose, onInvoiceUpdate, initialInvoice, onRelatedDocumentSelect, showHeader = false, menuAction, onMenuActionHandled }: SupplierInvoiceDetailsPaneProps) {
   const [isUploading, setIsUploading] = useState(false)
   const [pdfAttachments, setPdfAttachments] = useState<any[]>([])
   const [pdfSignedUrls, setPdfSignedUrls] = useState<{ [key: string]: string }>({})
@@ -93,12 +95,55 @@ export function SupplierInvoiceDetailsPane({ invoiceId, onClose, onInvoiceUpdate
   const { data: invoice, isLoading, error } = useQuery({
     queryKey: ['supplier-invoice', invoiceId],
     queryFn: async () => {
-      const { data, error } = await getSupplierInvoiceDetails(invoiceId)
+      // Single-call AP invoice pane loader.
+      // This RPC replaces:
+      // - v_supplier_invoice_payments_min
+      // - v_received_credit_notes_summary
+      // - v_received_invoice_tasks_min
+      // - received_invoice_allocations (read)
+      const { data: pane, error } = await supabase.rpc('fn_ap_invoice_pane', {
+        p_received_invoice_id: invoiceId,
+      })
       if (error) throw error
-      return data
+
+      const header = (pane as any)?.header
+      if (!header) {
+        throw new Error('Invoice not found or unauthorized')
+      }
+
+      const safeArray = <T,>(v: unknown): T[] => (Array.isArray(v) ? (v as T[]) : [])
+
+      const allocationsRaw = safeArray<any>((pane as any)?.allocations)
+      // Normalize `production_order` (RPC shape) -> `production_orders` (legacy UI shape)
+      const allocations = allocationsRaw.map((a: any) => ({
+        ...a,
+        production_orders: a?.production_orders ?? a?.production_order ?? null,
+      }))
+
+      return {
+        // Keep the header as-is (doc_* fields) but also map to the existing pane UI model
+        // which expects invoice_* field names.
+        ...header,
+        id: (header as any)?.id ?? (header as any)?.doc_id ?? invoiceId,
+        invoice_number: (header as any)?.invoice_number ?? (header as any)?.doc_number ?? null,
+        invoice_date: (header as any)?.invoice_date ?? (header as any)?.doc_date ?? null,
+        supplier_team_id: (header as any)?.supplier_team_id ?? (header as any)?.from_team_id ?? null,
+        supplier_team_name: (header as any)?.supplier_team_name ?? (header as any)?.from_team_name ?? null,
+        issuer_team_id: (header as any)?.issuer_team_id ?? (header as any)?.from_team_id ?? null, // EditableSupplierInvoiceFields expects this
+        payer_team_id: (header as any)?.payer_team_id ?? (header as any)?.to_team_id ?? null,
+        payer_team_name: (header as any)?.payer_team_name ?? (header as any)?.to_team_name ?? null,
+        projects_text: (header as any)?.projects_text ?? null,
+        pdf_path: (header as any)?.pdf_path ?? null,
+        payments: safeArray((pane as any)?.payments),
+        credit_notes: safeArray((pane as any)?.credit_notes),
+        allocations,
+        tasks: safeArray((pane as any)?.tasks),
+      }
     },
     enabled: !!invoiceId,
-    initialData: initialInvoice
+    initialData: initialInvoice,
+    // Ensure we still hit fn_ap_invoice_pane even when we have initialInvoice from v_documents_min.
+    refetchOnMount: 'always',
   })
 
   // Local state for optimistic updates
@@ -110,6 +155,26 @@ export function SupplierInvoiceDetailsPane({ invoiceId, onClose, onInvoiceUpdate
       setLocalInvoice(invoice)
     }
   }, [invoice])
+
+  // Handle menu actions from parent
+  useEffect(() => {
+    if (menuAction && invoice) {
+      switch (menuAction) {
+        case 'add-production-order':
+          setIsAddPOModalOpen(true)
+          onMenuActionHandled?.()
+          break
+        case 'add-payment':
+          setIsPaymentModalOpen(true)
+          onMenuActionHandled?.()
+          break
+        case 'add-credit-note':
+          setIsCreditNoteModalOpen(true)
+          onMenuActionHandled?.()
+          break
+      }
+    }
+  }, [menuAction, invoice, onMenuActionHandled])
 
   // Wrapper function to handle invoice updates
   const handleInvoiceUpdate = (updatedInvoice: any) => {
@@ -152,70 +217,15 @@ export function SupplierInvoiceDetailsPane({ invoiceId, onClose, onInvoiceUpdate
     }
   }, [invoice?.pdf_path])
 
-  // Fetch payments for this invoice
+  // Pane sections are loaded via fn_ap_invoice_pane (embedded into the invoice fetch).
+  // Defensive defaults: treat missing arrays as [] so the pane doesn't go blank.
   useEffect(() => {
-    if (invoiceId) {
-      const fetchPayments = async () => {
-        try {
-          const { data, error } = await supabase
-            .from('v_supplier_invoice_payments_min')
-            .select('*')
-            .eq('received_invoice_id', invoiceId)
-          
-          if (error) throw error
-          setPayments(data || [])
-        } catch (error) {
-          console.error('Failed to fetch payments:', error)
-        }
-      }
-      
-      fetchPayments()
-    }
-  }, [invoiceId, supabase])
-
-  // Fetch credit notes for this invoice
-  useEffect(() => {
-    if (invoiceId) {
-      const fetchCreditNotes = async () => {
-        try {
-          const { data, error } = await supabase
-            .from('v_received_credit_notes_summary')
-            .select('*')
-            .eq('received_invoice_id', invoiceId)
-          
-          if (error) throw error
-          setCreditNotes(data || [])
-        } catch (error) {
-          console.error('Failed to fetch credit notes:', error)
-        }
-      }
-      
-      fetchCreditNotes()
-    }
-  }, [invoiceId, supabase])
-
-  // Fetch invoiced tasks for this invoice
-  useEffect(() => {
-    if (invoiceId) {
-      const fetchInvoicedTasks = async () => {
-        try {
-          const { data, error } = await supabase
-            .from('v_received_invoice_tasks_min')
-            .select('task_id, title, delivery_date, project_id, production_order_id, period_month, task_agreed_subtotal')
-            .eq('received_invoice_id', invoiceId)
-            .order('delivery_date', { ascending: false })
-            .order('task_id', { ascending: true })
-          
-          if (error) throw error
-          setInvoicedTasks(data || [])
-        } catch (error) {
-          console.error('Failed to fetch invoiced tasks:', error)
-        }
-      }
-      
-      fetchInvoicedTasks()
-    }
-  }, [invoiceId, supabase])
+    if (!invoice) return
+    setPayments(Array.isArray((invoice as any).payments) ? (invoice as any).payments : [])
+    setCreditNotes(Array.isArray((invoice as any).credit_notes) ? (invoice as any).credit_notes : [])
+    setInvoicedTasks(Array.isArray((invoice as any).tasks) ? (invoice as any).tasks : [])
+    setProductionOrderAllocations(Array.isArray((invoice as any).allocations) ? (invoice as any).allocations : [])
+  }, [invoiceId, invoice])
 
   // Calculate allocated subtotal and fully allocated status
   const allocatedSubtotal = useMemo(() => {
@@ -252,22 +262,7 @@ export function SupplierInvoiceDetailsPane({ invoiceId, onClose, onInvoiceUpdate
     return invoice.total_amount - paymentsTotal - creditNotesTotalAmount
   }, [invoice, payments, creditNotesTotalAmount])
 
-  // Fetch production order allocations
-  useEffect(() => {
-    if (invoiceId) {
-      const fetchAllocations = async () => {
-        try {
-          const data = await getInvoiceAllocations(invoiceId)
-          setProductionOrderAllocations(data || [])
-        } catch (error) {
-          console.error('Failed to fetch production order allocations:', error)
-          setProductionOrderAllocations([])
-        }
-      }
-      
-      fetchAllocations()
-    }
-  }, [invoiceId])
+  // Production order allocations are loaded via fn_ap_invoice_pane (no separate fetch).
 
   // PDF upload handlers
   const handlePdfUpload = async (files: File[] | FileList) => {
@@ -437,11 +432,7 @@ export function SupplierInvoiceDetailsPane({ invoiceId, onClose, onInvoiceUpdate
 
       if (error) throw error
 
-      // Refresh allocations
-      const data = await getInvoiceAllocations(invoiceId)
-      setProductionOrderAllocations(data || [])
-      
-      // Invalidate invoice query to refresh totals
+      // Refresh invoice pane data via fn_ap_invoice_pane (includes allocations + totals)
       queryClient.invalidateQueries({ queryKey: ['supplier-invoice', invoiceId] })
       
       toast({
@@ -653,7 +644,7 @@ export function SupplierInvoiceDetailsPane({ invoiceId, onClose, onInvoiceUpdate
                 {productionOrderAllocations.map((allocation: any) => {
                   const order = allocation.production_orders
                   const allocatedAmount = allocation.amount_subtotal_allocated
-                  const periodMonth = order.period_month ? formatDate(order.period_month) : '-'
+                  const periodMonth = order?.period_month ? formatDate(order.period_month) : '-'
                   return (
                     <div 
                       key={allocation.id} 
@@ -669,7 +660,7 @@ export function SupplierInvoiceDetailsPane({ invoiceId, onClose, onInvoiceUpdate
                           Period: {periodMonth}
                         </div>
                         <div className="text-xs text-gray-500 mt-1">
-                          Subtotal allocated: {formatCurrency(allocatedAmount, order.currency_code)}
+                          Subtotal allocated: {formatCurrency(allocatedAmount, order?.currency_code)}
                         </div>
                       </div>
                       <div className="flex items-center space-x-2 ml-4">
@@ -1082,21 +1073,8 @@ export function SupplierInvoiceDetailsPane({ invoiceId, onClose, onInvoiceUpdate
             isOpen={isPaymentModalOpen}
             onClose={() => setIsPaymentModalOpen(false)}
             onPaymentAdded={async () => {
-              // Refresh payments list
-              try {
-                const { data, error } = await supabase
-                  .from('v_supplier_invoice_payments_min')
-                  .select('*')
-                  .eq('received_invoice_id', invoiceId)
-                
-                if (error) throw error
-                setPayments(data || [])
-                
-                // Invalidate invoice query to refresh totals
-                queryClient.invalidateQueries({ queryKey: ['supplier-invoice', invoiceId] })
-              } catch (error) {
-                console.error('Failed to refresh payments:', error)
-              }
+              // Refresh invoice pane data via fn_ap_invoice_pane
+              queryClient.invalidateQueries({ queryKey: ['supplier-invoice', invoiceId] })
             }}
           />
 
@@ -1113,21 +1091,8 @@ export function SupplierInvoiceDetailsPane({ invoiceId, onClose, onInvoiceUpdate
             isOpen={isCreditNoteModalOpen}
             onClose={() => setIsCreditNoteModalOpen(false)}
             onCreditNoteAdded={async () => {
-              // Refresh credit notes list
-              try {
-                const { data, error } = await supabase
-                  .from('v_received_credit_notes_summary')
-                  .select('*')
-                  .eq('received_invoice_id', invoiceId)
-                
-                if (error) throw error
-                setCreditNotes(data || [])
-                
-                // Invalidate invoice query to refresh totals
-                queryClient.invalidateQueries({ queryKey: ['supplier-invoice', invoiceId] })
-              } catch (error) {
-                console.error('Failed to fetch credit notes:', error)
-              }
+              // Refresh invoice pane data via fn_ap_invoice_pane
+              queryClient.invalidateQueries({ queryKey: ['supplier-invoice', invoiceId] })
             }}
           />
         </>
@@ -1142,14 +1107,7 @@ export function SupplierInvoiceDetailsPane({ invoiceId, onClose, onInvoiceUpdate
           setEditingAllocation(null)
         }}
         onAllocationUpdated={async () => {
-          // Refresh allocations
-          try {
-            const data = await getInvoiceAllocations(invoiceId)
-            setProductionOrderAllocations(data || [])
-          } catch (error) {
-            console.error('Failed to refresh allocations:', error)
-          }
-          // Invalidate invoice query to refresh totals
+          // Refresh invoice pane data via fn_ap_invoice_pane (includes allocations)
           queryClient.invalidateQueries({ queryKey: ['supplier-invoice', invoiceId] })
         }}
       />
@@ -1209,20 +1167,7 @@ export function SupplierInvoiceDetailsPane({ invoiceId, onClose, onInvoiceUpdate
           setEditingPaymentAllocation(null)
         }}
         onSuccess={async () => {
-          // Refresh the payment allocations immediately
-          try {
-            const { data, error } = await supabase
-              .from('v_supplier_invoice_payments_min')
-              .select('*')
-              .eq('received_invoice_id', invoiceId)
-            
-            if (error) throw error
-            setPayments(data || [])
-          } catch (err: any) {
-            console.error('Error refreshing payments:', err)
-          }
-          
-          // Also refresh the invoice data
+          // Refresh invoice pane data via fn_ap_invoice_pane (includes payments)
           queryClient.invalidateQueries({ queryKey: ['supplier-invoice', invoiceId] })
           
           // Close the modal
@@ -1277,15 +1222,7 @@ export function SupplierInvoiceDetailsPane({ invoiceId, onClose, onInvoiceUpdate
                   }
                   
                   // Refresh the payment data
-                  const { data, error } = await supabase
-                    .from('v_supplier_invoice_payments_min')
-                    .select('*')
-                    .eq('received_invoice_id', invoiceId)
-                  
-                  if (error) throw error
-                  setPayments(data || [])
-                  
-                  // Also refresh the invoice data
+                  // Refresh invoice pane data via fn_ap_invoice_pane (includes payments)
                   queryClient.invalidateQueries({ queryKey: ['supplier-invoice', invoiceId] })
                   
                   toast({
@@ -1363,15 +1300,7 @@ export function SupplierInvoiceDetailsPane({ invoiceId, onClose, onInvoiceUpdate
                   }
                   
                   // Refresh the credit note data
-                  const { data, error } = await supabase
-                    .from('v_received_credit_notes_summary')
-                    .select('*')
-                    .eq('received_invoice_id', invoiceId)
-                  
-                  if (error) throw error
-                  setCreditNotes(data || [])
-                  
-                  // Also refresh the invoice data
+                  // Refresh invoice pane data via fn_ap_invoice_pane (includes credit notes)
                   queryClient.invalidateQueries({ queryKey: ['supplier-invoice', invoiceId] })
                   
                   toast({

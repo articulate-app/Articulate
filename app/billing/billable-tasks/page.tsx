@@ -130,7 +130,7 @@ export default function BillableTasksPage() {
       const supabase = createClientComponentClient()
       const { data, error } = await buildQuery(
         supabase
-          .from('v_billing_period_tasks')
+          .rpc('fn_billing_period_tasks', { p_ctx_type: ctxType, p_ctx_id: ctxId })
           .select('task_id,title,delivery_date,production_type_title,content_type_title,language_code,assigned_to_name,is_billable_candidate')
       )
 
@@ -163,7 +163,7 @@ export default function BillableTasksPage() {
       const supabase = createClientComponentClient()
       const { data, error } = await buildQuery(
         supabase
-          .from('v_billing_period_tasks')
+          .rpc('fn_billing_period_tasks', { p_ctx_type: ctxType, p_ctx_id: ctxId })
           .select('task_id,title,delivery_date,production_type_title,content_type_title,language_code,assigned_to_name,is_billable_candidate')
       )
 

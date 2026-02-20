@@ -22,9 +22,11 @@ interface AddCommentInputProps {
   pendingParticipants?: { value: string; label: string }[]
   setPendingParticipants?: (p: { value: string; label: string }[]) => void
   currentUserId?: number | null
+  replyTo?: { id: number; author?: string; preview: string } | null
+  onClearReply?: () => void
 }
 
-export function AddCommentInput({ taskId, threadId, onCommentAdded, onThreadCreated, pendingParticipants, setPendingParticipants }: AddCommentInputProps) {
+export function AddCommentInput({ taskId, threadId, onCommentAdded, onThreadCreated, pendingParticipants, setPendingParticipants, replyTo, onClearReply }: AddCommentInputProps) {
   const [comment, setComment] = useState("")
   const [file, setFile] = useState<File | null>(null)
   const [isPosting, setIsPosting] = useState(false)
@@ -115,6 +117,7 @@ export function AddCommentInput({ taskId, threadId, onCommentAdded, onThreadCrea
           thread_id: thread,
           comment,
           attachment: attachmentUrl,
+          reply_to_id: replyTo?.id ?? null,
           created_at: new Date().toISOString(),
           created_by: publicUserId,
         })
@@ -122,6 +125,7 @@ export function AddCommentInput({ taskId, threadId, onCommentAdded, onThreadCrea
       setComment("");
       setFile(null);
       fileInputRef.current && (fileInputRef.current.value = "");
+      onClearReply?.()
       // Refocus the editor after send
       setTimeout(() => {
         const quill = document.querySelector('.ql-editor');
@@ -151,6 +155,25 @@ export function AddCommentInput({ taskId, threadId, onCommentAdded, onThreadCrea
       style={{ boxShadow: "0 -2px 8px rgba(0,0,0,0.03)" }}
       tabIndex={0} // ensure form is always focusable
     >
+      {replyTo ? (
+        <div className="flex items-start justify-between gap-3 rounded-md border bg-gray-50 px-3 py-2">
+          <div className="min-w-0">
+            <div className="text-xs font-medium text-gray-700">
+              Replying to {replyTo.author || 'message'}
+            </div>
+            <div className="text-xs text-gray-600 truncate">{replyTo.preview}</div>
+          </div>
+          <button
+            type="button"
+            className="text-xs text-gray-500 hover:text-gray-900"
+            onClick={onClearReply}
+            aria-label="Cancel reply"
+            title="Cancel reply"
+          >
+            ×
+          </button>
+        </div>
+      ) : null}
       <RichTextEditor
         value={comment}
         onChange={val => {

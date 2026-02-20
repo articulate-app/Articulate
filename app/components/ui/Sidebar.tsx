@@ -2,7 +2,7 @@
 
 import Link from "next/link"
 import { usePathname, useRouter, useSearchParams } from "next/navigation"
-import { Home, ListTodo, FolderKanban, Users, Inbox, BarChart, FileText, Settings, LogOut, ChevronDown, ChevronRight, Plus } from "lucide-react"
+import { Home, ListTodo, FolderKanban, Users, User, Inbox, BarChart, FileText, Settings, LogOut, ChevronDown, ChevronRight, Plus } from "lucide-react"
 import { cn } from "@/lib/utils"
 import { createClientComponentClient } from '@supabase/auth-helpers-nextjs'
 import { useCurrentUserStore } from '../../store/current-user'
@@ -24,9 +24,8 @@ const navigation = [
   { name: "Tasks", href: "/tasks", icon: ListTodo },
   { name: "Projects", href: "/projects", icon: FolderKanban, isExpandable: true },
   { name: "Teams", href: "/teams", icon: Users, isExpandable: true },
-  { name: "Users", href: "/users", icon: Users, isExpandable: true },
+  { name: "Users", href: "/users", icon: User, isExpandable: true },
   { name: "Inbox", href: "/inbox", icon: Inbox },
-  { name: "Reports", href: "/reports", icon: BarChart },
   { name: "Financials", href: "/financials", icon: FileText },
   { name: "Settings", href: "/settings", icon: Settings },
 ]

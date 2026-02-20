@@ -39,6 +39,55 @@ export function MultiSelect({
 }: MultiSelectProps) {
   const [open, setOpen] = React.useState(false)
   const [search, setSearch] = React.useState("")
+  const popoverContentRef = React.useRef<HTMLDivElement | null>(null)
+
+  // Fix pointer-events and scrolling when Popover is inside a Dialog
+  // Radix UI sets pointer-events: none on PopoverContent when inside a modal Dialog
+  React.useEffect(() => {
+    if (open) {
+      // Use a small delay to ensure DOM is updated
+      const timer = setTimeout(() => {
+        // Important: target *this* MultiSelect's popover, not the first one in the DOM.
+        const popoverEl = popoverContentRef.current?.closest(
+          '[data-radix-popper-content-wrapper]'
+        ) as HTMLElement | null
+        if (popoverEl) {
+          
+          // Find and fix the Command element (parent of CommandGroup)
+          const commandEl = popoverEl.querySelector('[cmdk-root]') as HTMLElement
+          if (commandEl) {
+            commandEl.style.setProperty('overflow', 'visible', 'important')
+            commandEl.style.setProperty('pointer-events', 'auto', 'important')
+          }
+          
+          // Find and fix the CommandGroup (scrollable container)
+          const commandGroup = popoverEl.querySelector('[cmdk-group]') as HTMLElement
+          if (commandGroup) {
+            commandGroup.style.setProperty('pointer-events', 'auto', 'important')
+            commandGroup.style.setProperty('overflow-y', 'auto', 'important')
+            commandGroup.style.setProperty('touch-action', 'pan-y', 'important')
+            // Ensure it can receive wheel events
+            commandGroup.addEventListener('wheel', (e) => {
+              e.stopPropagation()
+            }, { passive: true })
+          }
+          
+          // Set pointer-events on all interactive elements
+          const setPointerEvents = (element: HTMLElement) => {
+            element.style.setProperty('pointer-events', 'auto', 'important')
+            Array.from(element.children).forEach(child => {
+              if (child instanceof HTMLElement) {
+                setPointerEvents(child)
+              }
+            })
+          }
+          
+          setPointerEvents(popoverEl)
+        }
+      }, 10)
+      return () => clearTimeout(timer)
+    }
+  }, [open])
 
   // Defensive: ensure value is always an array
   const safeValue = Array.isArray(value) ? value : [];
@@ -65,6 +114,12 @@ export function MultiSelect({
     onSearch?.(searchValue)
   }
 
+  const handleClearAll = () => {
+    onChange([])
+    setSearch("")
+    setOpen(false)
+  }
+
   const filteredOptions = React.useMemo(() => {
     if (!search) return options
     return options.filter(option =>
@@ -72,10 +127,56 @@ export function MultiSelect({
     )
   }, [options, search])
 
+  const renderSelectedContent = () => {
+    if (selectedOptions.length === 0) {
+      return <span className="text-gray-500">{placeholder}</span>
+    }
+
+    if (singleSelect || selectedOptions.length === 1) {
+      return selectedOptions.map((option, index) => (
+        <Badge
+          key={`${option.id}-badge-${index}`}
+          variant="secondary"
+          className="mr-1 mb-1"
+        >
+          {option.label}
+          {!singleSelect && (
+            <button
+              type="button"
+              className="ml-1 ring-offset-background rounded-full outline-none focus:ring-2 focus:ring-ring focus:ring-offset-2"
+              onClick={(e) => {
+                e.preventDefault()
+                e.stopPropagation()
+                handleSelect(option.id)
+              }}
+            >
+              <X className="h-3 w-3 hover:text-gray-600" />
+            </button>
+          )}
+        </Badge>
+      ))
+    }
+
+    const [first, ...rest] = selectedOptions
+    const remainingCount = rest.length
+
+    return (
+      <Badge variant="secondary" className="mr-1 mb-1">
+        {first.label}
+        {remainingCount > 0 && (
+          <span className="ml-1 text-[11px] text-gray-600">
+            +{remainingCount}
+          </span>
+        )}
+      </Badge>
+    )
+  }
+
   return (
     <Popover open={open} onOpenChange={setOpen}>
       <PopoverTrigger asChild>
         <Button
+          type="button"
           variant="outline"
           role="combobox"
           aria-expanded={open}
@@ -85,39 +186,17 @@ export function MultiSelect({
             className
           )}
         >
-          <div className="flex flex-wrap gap-1">
-            {selectedOptions.length > 0 ? (
-              selectedOptions.map((option, index) => (
-                <Badge
-                  key={`${option.id}-badge-${index}`}
-                  variant="secondary"
-                  className="mr-1 mb-1"
-                >
-                  {option.label}
-                  {!singleSelect && (
-                    <button
-                      type="button"
-                      className="ml-1 ring-offset-background rounded-full outline-none focus:ring-2 focus:ring-ring focus:ring-offset-2"
-                      onClick={(e) => {
-                        e.preventDefault()
-                        e.stopPropagation()
-                        handleSelect(option.id)
-                      }}
-                    >
-                      <X className="h-3 w-3 hover:text-gray-600" />
-                    </button>
-                  )}
-                </Badge>
-              ))
-            ) : (
-              <span className="text-gray-500">{placeholder}</span>
-            )}
-          </div>
+          <div className="flex flex-wrap gap-1">{renderSelectedContent()}</div>
           <ChevronsUpDown className="ml-2 h-4 w-4 shrink-0 opacity-50" />
         </Button>
       </PopoverTrigger>
-      <PopoverContent className="w-full min-w-[220px] p-0" align="start">
-        <Command shouldFilter={false}>
+      <PopoverContent 
+        ref={popoverContentRef}
+        className="z-[60] w-full min-w-[220px] p-0" 
+        align="start"
+        style={{ pointerEvents: 'auto' }}
+      >
+        <Command shouldFilter={false} style={{ pointerEvents: 'auto', overflow: 'visible' }}>
           <CommandInput
             placeholder="Search..."
             value={search}
@@ -125,39 +204,54 @@ export function MultiSelect({
             className="text-gray-900"
           />
           {filteredOptions.length === 0 && (
-          <CommandEmpty className="py-2 text-sm text-gray-600">
-            No results found.
-          </CommandEmpty>
+            <CommandEmpty className="py-2 text-sm text-gray-600">
+              No results found.
+            </CommandEmpty>
           )}
-          <CommandGroup className="max-h-64 overflow-auto">
-            {filteredOptions.length > 0 ? filteredOptions.map((option, index) => {
-              const isSelected = safeValue.includes(option.id)
-              return (
-                <div
-                  key={`${option.id}-option-${index}`}
-                  className="flex items-center px-2 py-1.5 text-sm text-gray-900 cursor-pointer hover:bg-gray-100"
-                  onClick={(e) => {
-                    e.preventDefault()
-                    e.stopPropagation()
-                    handleSelect(option.id)
-                  }}
-                  role="option"
-                  aria-selected={isSelected}
-                >
-                  <div className="flex h-4 w-4 items-center justify-center mr-2">
-                    <Check
-                      className={cn(
-                        "h-4 w-4",
-                        isSelected ? "opacity-100" : "opacity-0"
-                      )}
-                    />
-                  </div>
-                  <span>{option.label}</span>
+          <CommandGroup
+            className="max-h-64 overflow-y-auto overflow-x-hidden"
+            style={{ pointerEvents: 'auto', overscrollBehavior: 'contain' }}
+          >
+            {filteredOptions.length > 0
+              ? filteredOptions.map((option, index) => {
+                  const isSelected = safeValue.includes(option.id)
+                  return (
+                    <CommandItem
+                      key={`${option.id}-option-${index}`}
+                      value={option.label}
+                      onSelect={() => {
+                        handleSelect(option.id)
+                      }}
+                      className="flex items-center px-2 py-1.5 text-sm text-gray-900"
+                      style={{ pointerEvents: 'auto' }}
+                    >
+                      <div className="flex h-4 w-4 items-center justify-center mr-2">
+                        <Check
+                          className={cn(
+                            "h-4 w-4",
+                            isSelected ? "opacity-100" : "opacity-0"
+                          )}
+                        />
+                      </div>
+                      <span>{option.label}</span>
+                    </CommandItem>
+                  )
+                })
+              : (
+                <div className="px-3 py-2 text-sm text-gray-500">
+                  No options found
                 </div>
-              )}) : (
-                <div className="px-3 py-2 text-sm text-gray-500">No options found</div>
-            )}
+              )}
           </CommandGroup>
+          <div className="flex items-center justify-between border-t px-3 py-1.5">
+            <button
+              type="button"
+              className="text-xs text-gray-600 hover:text-gray-900"
+              onClick={handleClearAll}
+            >
+              Clear all
+            </button>
+          </div>
         </Command>
       </PopoverContent>
     </Popover>

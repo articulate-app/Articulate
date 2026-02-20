@@ -263,3 +263,4 @@ export async function getMinimalProjects() {
   return { data, error }
 }
 
+

@@ -5,6 +5,7 @@ import { useQuery } from '@tanstack/react-query'
 import { Card, CardContent, CardHeader, CardTitle } from '../ui/card'
 import { fetchDocumentsSummary } from '../../lib/services/documents'
 import type { DocumentsFilters } from '../../lib/types/documents'
+import { getDocumentsDefaultDateFrom } from '../../lib/services/documents-postgrest-rpc'
 
 interface DocumentsSummaryCardsProps {
   filters: DocumentsFilters
@@ -22,8 +23,17 @@ const formatCurrency = (amount: number, currencyCode: string = 'EUR'): string =>
 }
 
 export function DocumentsSummaryCards({ filters, onTimeFrameChange }: DocumentsSummaryCardsProps) {
+  const dateFrom = filters.fromDate || getDocumentsDefaultDateFrom()
+  const dateTo = filters.toDate || null
+  const currencyCode = filters.currency ? [filters.currency] : null
+  const status = filters.status.length > 0 ? filters.status : null
+  const fromTeamId = filters.fromTeam.length > 0 ? filters.fromTeam.map(Number).filter(Number.isFinite) : null
+  const toTeamId = filters.toTeam.length > 0 ? filters.toTeam.map(Number).filter(Number.isFinite) : null
+
   const { data: summary, isLoading, error } = useQuery({
-    queryKey: ['documents-summary', filters],
+    // Only re-run when list-scoping inputs change (same date window + same filters as list RPC).
+    // Avoid refetching on search text / doc kind / direction since RPC doesn't accept them.
+    queryKey: ['documents-summary-cards', { dateFrom, dateTo, currencyCode, status, fromTeamId, toTeamId }],
     queryFn: () => fetchDocumentsSummary(filters),
     staleTime: 30000, // 30 seconds
   })
@@ -63,6 +73,16 @@ export function DocumentsSummaryCards({ filters, onTimeFrameChange }: DocumentsS
       title: 'Costs',
       value: formatCurrency(summary.costs),
       description: 'AP Invoices',
+    },
+    {
+      title: 'AR Credits',
+      value: formatCurrency(summary.arCredit),
+      description: 'Credit notes (AR)',
+    },
+    {
+      title: 'AP Credits',
+      value: formatCurrency(summary.apCredit),
+      description: 'Credit notes (AP)',
     },
     {
       title: 'Result',

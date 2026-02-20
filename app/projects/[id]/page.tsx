@@ -4,8 +4,10 @@ import { BriefingsPage } from '../../components/project-briefings/BriefingsPage'
 import { useParams, useRouter } from 'next/navigation'
 import { Sidebar } from '../../components/ui/Sidebar'
 import { useState } from 'react'
-import { Share2, MoreVertical, Trash2, Copy } from 'lucide-react'
+import { Share2, MoreVertical, Trash2, Copy, Bot } from 'lucide-react'
 import { Button } from '../../components/ui/button'
+import { AiPane } from '../../../features/ai-chat/AiPane'
+import { ensureProjectThread } from '../../../features/ai-chat/ai-utils'
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -38,6 +40,7 @@ export default function ProjectPage() {
   const [duplicateProjectName, setDuplicateProjectName] = useState("")
   const [isDeleting, setIsDeleting] = useState(false)
   const [isDuplicating, setIsDuplicating] = useState(false)
+  const [isAiPaneOpen, setIsAiPaneOpen] = useState(false)
 
   const handleDeleteProject = async () => {
     setIsDeleting(true)
@@ -123,6 +126,21 @@ export default function ProjectPage() {
     })
   }
 
+  const handleAskAI = async () => {
+    try {
+      // Ensure project thread exists
+      await ensureProjectThread(projectId)
+      // Open AI pane
+      setIsAiPaneOpen(true)
+    } catch (error: any) {
+      toast({
+        title: "Error",
+        description: error.message || "Failed to open AI chat",
+        variant: "destructive",
+      })
+    }
+  }
+
   if (isNaN(projectId)) {
     return (
       <div className="flex items-center justify-center h-screen">
@@ -154,6 +172,15 @@ export default function ProjectPage() {
         
         {/* Action buttons */}
         <div className="flex items-center gap-2 ml-auto">
+          <Button
+            variant="outline"
+            onClick={handleAskAI}
+            title="Ask AI about this project"
+            className="h-9"
+          >
+            <Bot className="w-4 h-4 mr-2" />
+            Ask AI about this project
+          </Button>
           <Button
             variant="outline"
             size="icon"
@@ -274,6 +301,14 @@ export default function ProjectPage() {
           </DialogFooter>
         </DialogContent>
       </Dialog>
+
+      {/* AI Chat Pane */}
+      <AiPane 
+        isOpen={isAiPaneOpen} 
+        onClose={() => setIsAiPaneOpen(false)} 
+        initialScope="project"
+        projectId={projectId}
+      />
     </div>
   )
 }

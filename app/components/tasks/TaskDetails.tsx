@@ -5,7 +5,7 @@ import { cn } from "@/lib/utils"
 import { useEffect, useState, useRef, useCallback, useMemo, Dispatch, SetStateAction } from "react"
 import { Thread } from '../../types/task'
 import { Button } from "../ui/button"
-import { Trash2, Copy, Wand2, Upload, Image as ImageIcon, X, ChevronLeft, ChevronsLeft, Maximize2, Minimize2, ChevronRight, PanelRight, ExternalLink, Bot, MoreHorizontal, Plus } from "lucide-react"
+import { Trash2, Copy, Wand2, Upload, Image as ImageIcon, X, ChevronLeft, ChevronsLeft, Maximize2, Minimize2, ChevronRight, PanelRight, ExternalLink, Bot, MoreHorizontal, Plus, Loader2, Check } from "lucide-react"
 import { AiPane } from "../../../features/ai-chat/AiPane"
 import { RichTextEditor } from "../ui/rich-text-editor"
 import { createClientComponentClient } from "@supabase/auth-helpers-nextjs"
@@ -25,6 +25,7 @@ import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { flushSync } from 'react-dom'
 import { Dropzone } from '../dropzone'
 import { useTaskAttachmentsUpload } from '../../hooks/use-task-attachments-upload'
+import { useTaskWatchers } from '../../hooks/use-task-watchers'
 import { AddTaskForm } from './AddTaskForm'
 import { Dialog, DialogContent, DialogTitle, DialogTrigger, DialogFooter } from '../ui/dialog'
 import { MultiSelect } from '../ui/multi-select'
@@ -38,10 +39,19 @@ import { StickyAddCommentInput } from "../comments-section/sticky-add-comment-in
 import { useTaskEditFields } from '../../hooks/use-task-edit-fields';
 import { useTypesenseInfiniteQuery } from '../../hooks/use-typesense-infinite-query';
 import { getTypesenseUpdater, removeTaskFromTypesenseStore } from '../../store/typesense-tasks';
+import { useTaskGrouping } from '../../store/task-grouping'
 import { useMobileDetection } from '../../hooks/use-mobile-detection';
 import { TaskReviewSummary } from './TaskReviewSummary';
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from '../ui/dropdown-menu'
 import { TaskContentTab } from '../../../features/tasks/components/TaskContentTab'
+import { UserAvatar } from "@/components/UserAvatar";
+import { ProjectBadge } from "@/components/ProjectBadge";
+import { Command, CommandEmpty, CommandGroup, CommandInput, CommandItem, CommandList } from "../ui/command"
+import { getImageUrl } from "../../lib/public-media"
+import { flushPendingEdits } from "../../lib/task-suggestions/pending-edits"
+import { usePlannerOptimisticTasks } from "../../store/planner-optimistic-tasks"
+
+const EMPTY_ARR: any[] = []
 
 interface TaskDetailsProps {
   isCollapsed: boolean
@@ -51,6 +61,11 @@ interface TaskDetailsProps {
     thread_watchers?: any[];
     review_data?: ReviewData | null;
   };
+  /**
+   * Render TaskDetails for a suggestion (AI-generated), in read-only mode.
+   * Uses the same UI but avoids task-only behaviors (mutations, watchers, attachments, comments).
+   */
+  mode?: 'task' | 'suggestion'
   onClose: () => void
   onCollapse?: () => void
   isExpanded?: boolean
@@ -69,6 +84,12 @@ interface TaskDetailsProps {
   accessToken?: string | null
   onOptimisticUpdate?: (task: any) => void;
   pathname?: string
+  /**
+   * When true, TaskDetails will NOT read/write tab state into the URL.
+   * This is important when TaskDetails is embedded inside other pages (e.g. Inbox 3rd pane),
+   * so changing tabs doesn't trigger unrelated page rerenders.
+   */
+  disableUrlSync?: boolean
 }
 
 const TaskActivityTimeline = dynamic(() => import("../task-activity/task-activity-timeline").then(m => m.TaskActivityTimeline), { ssr: false })
@@ -145,8 +166,34 @@ function applyNestedOptimisticFields(task: any, updatedFields: any): any {
   return { ...updatedFields, ...patch };
 }
 
-export function TaskDetails({ isCollapsed, selectedTask, onClose, onCollapse, isExpanded = false, onExpand, onRestore, onTaskUpdate, onAddSubtask, onDuplicateTask, attachments = [], threadId, mentions, watchers, currentUser, subtasks = [], project_watchers, accessToken, onOptimisticUpdate, pathname: customPathname }: TaskDetailsProps) {
+export function TaskDetails({
+  isCollapsed,
+  selectedTask,
+  mode = 'task',
+  onClose,
+  onCollapse,
+  isExpanded = false,
+  onExpand,
+  onRestore,
+  onTaskUpdate,
+  onAddSubtask,
+  onDuplicateTask,
+  attachments = [],
+  threadId,
+  mentions,
+  watchers,
+  currentUser,
+  subtasks = [],
+  project_watchers,
+  accessToken,
+  onOptimisticUpdate,
+  pathname: customPathname,
+  disableUrlSync = false,
+}: TaskDetailsProps) {
   const isMobile = useMobileDetection();
+  const isSuggestionMode = mode === 'suggestion' || (selectedTask as any)?.kind === 'suggestion'
+  // Allow edits in suggestion mode; the first meaningful edit will implicitly approve the suggestion.
+  const canEdit = !!selectedTask
   
   console.log('TaskDetails props:', { selectedTask, attachments });
   console.log('DEBUG: selectedTask', selectedTask);
@@ -160,17 +207,42 @@ export function TaskDetails({ isCollapsed, selectedTask, onClose, onCollapse, is
   const task = selectedTask ? normalizeTask(selectedTask) : undefined;
   console.log('TaskDetails task:', task);
 
-  const taskIdNum = task ? (typeof task.id === 'number' ? task.id : Number(task.id)) : undefined;
+  // Derived media URLs (storage path -> public URL) for rendering.
+  const projectLogoUrl = useMemo(() => getImageUrl((task as any)?.project?.logo), [(task as any)?.project?.logo])
+  const assignedUserPhotoUrl = useMemo(() => getImageUrl((task as any)?.assigned_user?.photo), [(task as any)?.assigned_user?.photo])
+
+  const taskIdNum = isSuggestionMode
+    ? undefined
+    : (task ? (typeof task.id === 'number' ? task.id : Number(task.id)) : undefined);
   const contextOnClose = onClose;
   const router = useRouter();
   const queryClient = useQueryClient();
   const supabase = createClientComponentClient(); // <-- Move here for all usages
+  const upsertOptimisticPlannerTask = usePlannerOptimisticTasks((s) => s.upsert)
   const searchParams = useSearchParams();
   const actualPathname = usePathname();
   const pathname = customPathname || actualPathname || '/tasks';
   
   // Get active tab from URL or default to 'details'
-  const activeTab = searchParams.get('detailsTab') || 'details';
+  const urlActiveTab = searchParams.get('detailsTab') || 'details';
+  const [localActiveTab, setLocalActiveTab] = useState('details');
+  const activeTab = disableUrlSync ? localActiveTab : urlActiveTab;
+
+  const {
+    watchers: taskWatchers,
+    eligible: eligibleTaskWatchers,
+    isWatchersLoading: isTaskWatchersLoading,
+    isEligibleLoading: isEligibleTaskWatchersLoading,
+    isMutating: isTaskWatchersMutating,
+    watchersError: taskWatchersError,
+    eligibleError: eligibleTaskWatchersError,
+    mutationError: taskWatchersMutationError,
+    addWatchers,
+    removeWatcher,
+    loadEligible: loadEligibleTaskWatchers,
+  } = useTaskWatchers(taskIdNum);
+  const [isAddWatcherOpen, setIsAddWatcherOpen] = useState(false);
+  const [selectedWatcherUserIdsToAdd, setSelectedWatcherUserIdsToAdd] = useState<number[]>([]);
   
   // Handle AI build state from URL
   useEffect(() => {
@@ -311,15 +383,33 @@ export function TaskDetails({ isCollapsed, selectedTask, onClose, onCollapse, is
   // Handler to add a channel optimistically
   const handleAddChannel = (channelName: string) => {
     if (!optimisticChannels.includes(channelName)) {
-      setOptimisticChannels([...optimisticChannels, channelName]);
-      // Optionally, trigger a mutation or update the backend here
+      const next = [...optimisticChannels, channelName]
+      setOptimisticChannels(next);
+      if (isSuggestionMode) {
+        // Meaningful edit → implicit approval. Best-effort persist to the new task if the column exists.
+        void ensureSuggestionApproved('channel_names').then((taskId) => {
+          if (!taskId) return
+          void supabase.from('tasks').update({ channel_names: next }).eq('id', taskId)
+        })
+      } else {
+        // Best-effort persist for tasks (if supported by schema)
+        void supabase.from('tasks').update({ channel_names: next }).eq('id', task.id)
+      }
     }
   };
 
   // Handler to remove a channel optimistically
   const handleRemoveChannel = (channelName: string) => {
-    setOptimisticChannels(optimisticChannels.filter(name => name !== channelName));
-    // Optionally, trigger a mutation or update the backend here
+    const next = optimisticChannels.filter(name => name !== channelName)
+    setOptimisticChannels(next);
+    if (isSuggestionMode) {
+      void ensureSuggestionApproved('channel_names').then((taskId) => {
+        if (!taskId) return
+        void supabase.from('tasks').update({ channel_names: next }).eq('id', taskId)
+      })
+    } else {
+      void supabase.from('tasks').update({ channel_names: next }).eq('id', task.id)
+    }
   };
 
   const [isEditingAssignee, setIsEditingAssignee] = useState(false)
@@ -681,18 +771,41 @@ export function TaskDetails({ isCollapsed, selectedTask, onClose, onCollapse, is
     router.push(`/tasks/${task.id}/add-subtask`);
   };
 
-  // Handle AI Build toggle
-  const handleAiBuildToggle = () => {
-    const currentParams = new URLSearchParams(searchParams.toString());
-    if (isAiBuildOpen) {
-      // Close AI build - remove middleView parameter
-      currentParams.delete('middleView');
-    } else {
-      // Open AI build - set middleView to ai-build
+  // Handle AI Build toggle - Generic Build with AI
+  const handleAiBuildToggle = async () => {
+    if (!task || !taskIdNum) return;
+
+    try {
+      // Step 1: Ensure thread exists and build the prompt
+      const { ensureTaskThread, buildGenericTaskPrompt } = await import('../../../features/ai-chat/ai-utils');
+      const threadId = await ensureTaskThread(taskIdNum);
+
+      // Step 2: Build the prompt
+      const initialMsg = buildGenericTaskPrompt({
+        projectTitle: task.project_name || null,
+        contentTypeTitle: task.content_type_title || null,
+        taskTitle: task.title,
+        taskNotes: task.notes || null,
+        taskBriefing: task.briefing || null,
+        languageCode: task.language_code || null,
+      });
+
+      // Step 3: Open chat drawer and prefill input
+      const currentParams = new URLSearchParams(searchParams.toString());
       currentParams.set('middleView', 'ai-build');
+      currentParams.set('aiThreadId', threadId);
+      currentParams.set('chatPreFill', encodeURIComponent(initialMsg));
+      currentParams.set('chatAutoRun', 'false'); // Generic build uses auto_run: false
+      const newUrl = currentParams.toString() ? `?${currentParams.toString()}` : '';
+      router.replace(`/tasks${newUrl}`, { scroll: false });
+    } catch (error) {
+      console.error('Failed to open Build with AI:', error);
+      toast({
+        title: 'Error',
+        description: 'Failed to open AI chat. Please try again.',
+        variant: 'destructive',
+      });
     }
-    const newUrl = currentParams.toString() ? `?${currentParams.toString()}` : '';
-    router.replace(`/tasks${newUrl}`, { scroll: false });
   };
 
   // Handle Build with AI from content type editor
@@ -762,21 +875,80 @@ export function TaskDetails({ isCollapsed, selectedTask, onClose, onCollapse, is
   };
 
   // --- Task Delete Logic ---
+  const { selectedGroupBy } = useTaskGrouping()
+
+  const computeOptimisticGroupKey = useCallback(
+    (t: any): string | undefined => {
+      const groupBy = (selectedGroupBy as any) === 'none' ? null : (selectedGroupBy as any);
+      if (!groupBy) return undefined;
+
+      switch (groupBy) {
+        case 'assigned_to': {
+          const id = t?.assigned_to_id ?? t?.assigned_user?.id;
+          return id != null ? String(id) : '__unassigned__';
+        }
+        case 'status': {
+          const name = t?.project_status_name ?? t?.project_statuses?.name;
+          return name ? String(name) : '__unassigned__';
+        }
+        case 'project': {
+          const id = t?.project_id_int ?? t?.projects?.id;
+          return id != null ? String(id) : '__no_project__';
+        }
+        case 'content_type': {
+          const id = t?.content_type_id;
+          return id != null ? String(id) : '__unassigned__';
+        }
+        case 'production_type': {
+          const id = t?.production_type_id;
+          return id != null ? String(id) : '__unassigned__';
+        }
+        case 'language': {
+          const id = t?.language_id;
+          return id != null ? String(id) : '__unassigned__';
+        }
+        case 'delivery_date': {
+          if (!t?.delivery_date) return '__no_date__';
+          const d = new Date(t.delivery_date);
+          if (Number.isNaN(d.getTime())) return '__no_date__';
+          return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`;
+        }
+        case 'publication_date': {
+          if (!t?.publication_date) return '__no_date__';
+          const d = new Date(t.publication_date);
+          if (Number.isNaN(d.getTime())) return '__no_date__';
+          return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`;
+        }
+        default:
+          return undefined;
+      }
+    },
+    [selectedGroupBy],
+  )
+
   const handleDeleteTask = async () => {
     if (!task) return;
-    setIsDeleteDialogOpen(false); // Close dialog immediately for better UX
+    // Close dialog synchronously before potentially unmounting this component.
+    // If we unmount while Radix Dialog is still "open", it can leave the document
+    // in a state where pointer events are disabled (app feels frozen).
+    flushSync(() => {
+      setIsDeleteDialogOpen(false);
+      setIsDeleting(true);
+    });
     const t = task; // non-null assertion for linter
+    const taskIdNum = Number((t as any).id)
+    const taskIdStr = String((t as any).id)
     
     // Optimistically remove from all caches immediately
-    if (typeof t.id === 'number') {
-      removeTaskFromAllStores(t.id);
+    if (Number.isFinite(taskIdNum)) {
+      removeTaskFromAllStores(taskIdNum, { groupKey: computeOptimisticGroupKey(t) });
     }
     
     // Optimistically remove from all React Query caches
     queryClient.setQueryData(['tasks'], (old: any) => {
       if (!old) return old;
       if (Array.isArray(old)) {
-        return old.filter((x: any) => x.id !== t.id);
+        return old.filter((x: any) => String(x.id) !== taskIdStr);
       }
       return old;
     });
@@ -789,7 +961,7 @@ export function TaskDetails({ isCollapsed, selectedTask, onClose, onCollapse, is
       
       const oldData = q.state.data;
       if (Array.isArray(oldData)) {
-        const newData = oldData.filter((x: any) => x.id !== t.id);
+        const newData = oldData.filter((x: any) => String(x.id) !== taskIdStr);
         if (newData.length !== oldData.length) {
           q.setData([...newData]);
         }
@@ -805,7 +977,7 @@ export function TaskDetails({ isCollapsed, selectedTask, onClose, onCollapse, is
       const newTasks = { ...oldData.tasks };
       for (const [groupKey, tasks] of Object.entries(newTasks)) {
         if (Array.isArray(tasks)) {
-          const filteredTasks = tasks.filter((task: any) => task.id !== t.id);
+          const filteredTasks = tasks.filter((task: any) => String(task.id) !== taskIdStr);
           if (filteredTasks.length !== tasks.length) {
             newTasks[groupKey] = filteredTasks;
           }
@@ -819,28 +991,31 @@ export function TaskDetails({ isCollapsed, selectedTask, onClose, onCollapse, is
     }
     
     // Remove from task details cache
-    queryClient.removeQueries({ queryKey: ['task', String(t.id)] });
+    queryClient.removeQueries({ queryKey: ['task', taskIdStr] });
     
     // Remove from Typesense store
-    removeTaskFromTypesenseStore(t.id);
+    if (Number.isFinite(taskIdNum)) {
+      removeTaskFromTypesenseStore(taskIdNum);
+    }
     
     // If main task, promote all subtasks to regular tasks optimistically
     if (String(t.content_type_id) === '39') {
       queryClient.setQueryData(['tasks'], (old: any) => {
         if (!old) return old;
         if (Array.isArray(old)) {
-          return old.map((x: any) => x.parent_task_id_int === t.id ? { ...x, parent_task_id_int: null } : x);
+          return old.map((x: any) => String(x.parent_task_id_int) === taskIdStr ? { ...x, parent_task_id_int: null } : x);
         }
         return old;
       });
       // Also update subtasks query cache for this main task
-      queryClient.setQueryData(['subtasks', t.id], []);
+      queryClient.setQueryData(['subtasks', taskIdNum], []);
     }
     
-    setIsDeleting(true);
-    
-    // Always close details pane after delete (desktop and mobile)
-    if (typeof onClose === 'function') onClose();
+    // Always close details pane after delete (desktop and mobile).
+    // Defer to a microtask so the Dialog close state above has a chance to commit.
+    queueMicrotask(() => {
+      if (typeof onClose === 'function') onClose();
+    });
     
     try {
       // Backend: promote subtasks, then delete main task
@@ -883,14 +1058,16 @@ export function TaskDetails({ isCollapsed, selectedTask, onClose, onCollapse, is
       queryClient.invalidateQueries({ queryKey: ['task'] });
     } finally {
       setIsDeleting(false);
+
+      // Safety net: if a dialog unmount left the page with pointer events disabled,
+      // restore them so the app remains usable.
+      if (typeof document !== 'undefined' && document.body?.style?.pointerEvents === 'none') {
+        document.body.style.pointerEvents = '';
+      }
     }
   }
 
-  useEffect(() => {
-    if (!isDeleteDialogOpen) {
-      setIsDeleting(false);
-    }
-  }, [isDeleteDialogOpen, selectedTask]);
+  // NOTE: do not couple isDeleting to dialog open state; deletion continues after dialog closes.
 
 
 
@@ -943,6 +1120,7 @@ export function TaskDetails({ isCollapsed, selectedTask, onClose, onCollapse, is
   }, [projectWatchers, currentAuthUserId]);
 
   const [isActivityOpen, setIsActivityOpen] = useState(false);
+  const [replyTo, setReplyTo] = useState<{ id: number; author?: string; preview: string } | null>(null)
 
   // Add state for key visual attachment
   const [keyVisualId, setKeyVisualId] = useState<string | null>(task?.key_visual_attachment_id ?? null);
@@ -954,6 +1132,7 @@ export function TaskDetails({ isCollapsed, selectedTask, onClose, onCollapse, is
 
   // Handler to set key visual
   const handleSetKeyVisual = async (attachmentId: string) => {
+    if (isSuggestionMode) return
     setKeyVisualId(attachmentId);
     // Persist to DB
     await supabase.from('tasks').update({ key_visual_attachment_id: attachmentId }).eq('id', task.id);
@@ -983,6 +1162,32 @@ export function TaskDetails({ isCollapsed, selectedTask, onClose, onCollapse, is
    */
   const handleFieldChange = async (field: keyof Task, value: any, extraFields: Partial<Task> = {}) => {
     if (!task) return;
+    if (isSuggestionMode) {
+      // Implicit approval: first meaningful edit converts suggestion -> task, then we persist the edit on the created task.
+      const taskId = await ensureSuggestionApproved(String(field))
+      if (!taskId) return
+      try {
+        const updatePayload: any = { [field]: value, ...extraFields }
+        const { data, error } = await supabase
+          .from('tasks')
+          .update(updatePayload)
+          .eq('id', taskId)
+          .select()
+          .single()
+        if (error) throw error
+        if (data) {
+          updateTaskInCaches(queryClient, data)
+          getTypesenseUpdater()?.(data)
+        }
+      } catch (err) {
+        toast({
+          title: 'Failed to save changes',
+          description: (err as Error)?.message || 'An error occurred while saving.',
+          variant: 'destructive',
+        })
+      }
+      return
+    }
     
     // Calculate overdue status if this field affects it
     let overdueFields = {};
@@ -1361,6 +1566,227 @@ export function TaskDetails({ isCollapsed, selectedTask, onClose, onCollapse, is
     fetchCurrentUserId();
   }, []);
 
+  const ENABLE_EMBED_REFRESH_ON_DECISION = true
+  const [isApprovingSuggestion, setIsApprovingSuggestion] = useState(false)
+  const [isDismissingSuggestion, setIsDismissingSuggestion] = useState(false)
+  const implicitApprovedTaskIdRef = useRef<number | null>(null)
+
+  const suggestionIdNum = useMemo(() => {
+    if (!isSuggestionMode) return null
+    const n = Number((selectedTask as any)?.id)
+    return Number.isFinite(n) ? n : null
+  }, [isSuggestionMode, (selectedTask as any)?.id])
+
+  const suggestionStatus = (selectedTask as any)?.status ?? 'pending'
+  const suggestionSourceKey = (selectedTask as any)?.source_key ?? null
+  // Suggestion mode reuses TaskDetails UI; we do not render additional fields beyond the existing ones.
+
+  const removeSuggestionFromPlannerCaches = useCallback(
+    (suggestionId: number) => {
+      // Remove from suggestion lists (planner surface)
+      queryClient.setQueriesData(
+        {
+          predicate: (q) => Array.isArray(q.queryKey) && q.queryKey[0] === 'task-suggestions',
+        },
+        (old: any) => {
+          if (!Array.isArray(old)) return old
+          return old.filter((s: any) => String(s?.id) !== String(suggestionId))
+        },
+      )
+      // Remove from suggestion details cache
+      queryClient.setQueryData(['task-suggestion', String(suggestionId)], null)
+      queryClient.setQueryData(['task-suggestion', suggestionId], null)
+    },
+    [queryClient],
+  )
+
+  const refreshEmbeddingsBestEffort = useCallback(
+    async (projectId: number | null) => {
+      if (!ENABLE_EMBED_REFRESH_ON_DECISION) return
+      if (projectId == null) return
+      try {
+        await supabase.functions.invoke("ai-embed-planner-memory", {
+          body: {
+            project_id: projectId,
+            lookback_days: 7,
+            max_items: 200,
+            include_pending: false,
+          },
+        })
+      } catch {
+        // ignore
+      }
+    },
+    [supabase],
+  )
+
+  const approveSuggestionCore = useCallback(async (opts?: { reason?: string }) => {
+    if (!isSuggestionMode) return
+    if (!suggestionIdNum) return
+    if (!currentUserId) {
+      toast({
+        title: "Missing user",
+        description: "Could not determine current user id.",
+        variant: "destructive",
+      })
+      return
+    }
+    if (isApprovingSuggestion || isDismissingSuggestion) return
+
+    setIsApprovingSuggestion(true)
+    try {
+      await flushPendingEdits(suggestionSourceKey)
+
+      const { data, error } = await supabase.rpc("approve_task_suggestion", {
+        p_suggestion_id: suggestionIdNum,
+        p_approved_by: currentUserId,
+      })
+      if (error) throw error
+      const payload = data as any
+      if (payload && typeof payload === 'object' && payload.ok === false) {
+        throw new Error(typeof payload.message === 'string' ? payload.message : 'Approval failed')
+      }
+
+      const taskId =
+        (typeof payload?.task_id === 'number' && Number.isFinite(payload.task_id) ? payload.task_id : null) ??
+        (typeof payload?.created_task_id === 'number' && Number.isFinite(payload.created_task_id) ? payload.created_task_id : null) ??
+        (typeof payload?.taskId === 'number' && Number.isFinite(payload.taskId) ? payload.taskId : null)
+
+      if (!taskId) throw new Error("Approve succeeded but no task_id was returned")
+
+      const planned = (selectedTask as any)?.publication_date ?? (selectedTask as any)?.delivery_date ?? null
+      const nextTask: any = {
+        kind: 'task',
+        id: taskId,
+        title: (selectedTask as any)?.title ?? 'Planned task',
+        assigned_to_id: null,
+        assigned_to_name: null,
+        assigned_to_photo: null,
+        project_id_int: (selectedTask as any)?.project_id_int ?? 0,
+        project_name: (selectedTask as any)?.project_name ?? null,
+        project_color: (selectedTask as any)?.project_color ?? null,
+        project_logo: (selectedTask as any)?.project_logo ?? null,
+        project_status_id: null,
+        project_status_name: null,
+        project_status_color: null,
+        delivery_date: planned,
+        publication_date: planned,
+        is_overdue: null,
+        is_publication_overdue: null,
+        updated_at: new Date().toISOString(),
+        content_type_id: (selectedTask as any)?.content_type_id != null ? Number((selectedTask as any).content_type_id) : null,
+        content_type_title: (selectedTask as any)?.content_type_title ?? null,
+        production_type_id: null,
+        production_type_title: null,
+        language_id: null,
+        language_code: null,
+        briefing: (selectedTask as any)?.briefing ?? null,
+        source_key: suggestionSourceKey,
+      }
+
+      removeSuggestionFromPlannerCaches(suggestionIdNum)
+      upsertOptimisticPlannerTask(nextTask)
+      toast({ title: opts?.reason ? "Suggestion approved — now a task" : "Task created" })
+
+      // Switch the right pane to the newly created task.
+      try {
+        const p = new URLSearchParams(searchParams.toString())
+        p.set('id', String(taskId))
+        p.delete('itemKind')
+        router.push(`${pathname}?${p.toString()}`, { scroll: false })
+      } catch {
+        // ignore
+      }
+
+      void refreshEmbeddingsBestEffort((selectedTask as any)?.project_id_int ?? null)
+      return taskId as number
+    } catch (err: any) {
+      toast({
+        title: "Failed to approve",
+        description: err?.message || "Approval failed",
+        variant: "destructive",
+      })
+      return undefined
+    } finally {
+      setIsApprovingSuggestion(false)
+    }
+  }, [
+    isSuggestionMode,
+    suggestionIdNum,
+    currentUserId,
+    isApprovingSuggestion,
+    isDismissingSuggestion,
+    supabase,
+    suggestionSourceKey,
+    selectedTask,
+    removeSuggestionFromPlannerCaches,
+    upsertOptimisticPlannerTask,
+    router,
+    pathname,
+    searchParams,
+    refreshEmbeddingsBestEffort,
+  ])
+
+  const ensureSuggestionApproved = useCallback(
+    async (reason: string) => {
+      const already = implicitApprovedTaskIdRef.current
+      if (already) return already
+      const taskId = await approveSuggestionCore({ reason })
+      if (typeof taskId === 'number' && Number.isFinite(taskId)) {
+        implicitApprovedTaskIdRef.current = taskId
+        return taskId
+      }
+      return null
+    },
+    [approveSuggestionCore],
+  )
+
+  const handleApproveSuggestion = useCallback(async () => {
+    await approveSuggestionCore()
+  }, [approveSuggestionCore])
+  const handleDismissSuggestion = useCallback(async () => {
+    if (!isSuggestionMode) return
+    if (!suggestionIdNum) return
+    if (isApprovingSuggestion || isDismissingSuggestion) return
+
+    setIsDismissingSuggestion(true)
+    try {
+      const { data, error } = await supabase.rpc("set_task_suggestion_status", {
+        p_suggestion_id: suggestionIdNum,
+        p_status: "dismissed",
+      })
+      if (error) throw error
+      const payload = data as any
+      if (payload && typeof payload === 'object' && payload.ok === false) {
+        throw new Error(typeof payload.message === 'string' ? payload.message : 'Dismiss failed')
+      }
+
+      removeSuggestionFromPlannerCaches(suggestionIdNum)
+      toast({ title: "Suggestion dismissed" })
+      onClose()
+
+      void refreshEmbeddingsBestEffort((selectedTask as any)?.project_id_int ?? null)
+    } catch (err: any) {
+      toast({
+        title: "Failed to dismiss",
+        description: err?.message || "Dismiss failed",
+        variant: "destructive",
+      })
+    } finally {
+      setIsDismissingSuggestion(false)
+    }
+  }, [
+    isSuggestionMode,
+    suggestionIdNum,
+    isApprovingSuggestion,
+    isDismissingSuggestion,
+    supabase,
+    removeSuggestionFromPlannerCaches,
+    onClose,
+    refreshEmbeddingsBestEffort,
+    selectedTask,
+  ])
+
   // Add local state for each field
   const [title, setTitle] = useState(task?.title ?? '');
   const [copyPost, setCopyPost] = useState(task?.copy_post ?? '');
@@ -1578,10 +2004,12 @@ export function TaskDetails({ isCollapsed, selectedTask, onClose, onCollapse, is
                     Add Subtask
                   </DropdownMenuItem>
                 )}
-                <DropdownMenuItem onClick={handleDuplicateTask}>
+                {!isSuggestionMode && (
+                  <DropdownMenuItem onClick={handleDuplicateTask}>
                   <Copy className="w-4 h-4 mr-2" />
                   Duplicate Task
-                </DropdownMenuItem>
+                  </DropdownMenuItem>
+                )}
                 <DropdownMenuItem onClick={() => {
                   if (typeof window !== 'undefined') {
                     navigator.clipboard.writeText(window.location.href);
@@ -1594,16 +2022,22 @@ export function TaskDetails({ isCollapsed, selectedTask, onClose, onCollapse, is
                   <Copy className="w-4 h-4 mr-2" />
                   Copy Link
                 </DropdownMenuItem>
-                <DropdownMenuItem onClick={handleAiBuildToggle}>
+                {!isSuggestionMode && (
+                  <DropdownMenuItem onClick={handleAiBuildToggle}>
                   <Wand2 className="w-4 h-4 mr-2" />
                   Build with AI
-                </DropdownMenuItem>
-                <DropdownMenuItem onClick={() => setIsDeleteDialogOpen(true)} className="text-red-600">
+                  </DropdownMenuItem>
+                )}
+                {!isSuggestionMode && (
+                  <DropdownMenuItem onClick={() => setIsDeleteDialogOpen(true)} className="text-red-600">
                   <Trash2 className="w-4 h-4 mr-2" />
                   Delete Task
-                </DropdownMenuItem>
+                  </DropdownMenuItem>
+                )}
               </DropdownMenuContent>
             </DropdownMenu>
+
+            {/* Suggestion actions are shown in a pinned bottom bar (see below) */}
             
             {/* Close button - hidden on mobile */}
             {onCollapse && !isMobile && (
@@ -1631,17 +2065,27 @@ export function TaskDetails({ isCollapsed, selectedTask, onClose, onCollapse, is
             )}
           </div>
         </div>
+
+        {isSuggestionMode && (
+          <div className="rounded-md border border-amber-200 bg-amber-50 px-3 py-2 text-amber-950">
+            <div className="text-sm font-semibold">🤖 AI-generated suggestion — review before approval</div>
+          </div>
+        )}
       </div>
       {/* Main content with tabs */}
       <div className="flex-1 flex flex-col overflow-hidden relative">
         <Tabs 
           value={activeTab} 
           onValueChange={(value) => {
+            if (disableUrlSync) {
+              setLocalActiveTab(value);
+              return;
+            }
             const newParams = new URLSearchParams(searchParams.toString());
             newParams.set('detailsTab', value);
             router.replace(`${pathname}?${newParams.toString()}`, { scroll: false });
           }}
-          className="h-full flex flex-col"
+          className="flex-1 min-h-0 flex flex-col"
         >
           <TabsList className="grid w-full grid-cols-3 bg-transparent border-b border-gray-200 p-0 h-auto">
             <TabsTrigger 
@@ -1664,12 +2108,13 @@ export function TaskDetails({ isCollapsed, selectedTask, onClose, onCollapse, is
             </TabsTrigger>
           </TabsList>
           
-          <TabsContent value="details" className="flex-1 overflow-auto">
+          <TabsContent value="details" className="flex-1 min-h-0 overflow-auto">
             <div className="p-4 pb-0">
+              {/* Banner is rendered in the header for suggestion mode */}
           <div className="grid grid-cols-[max-content_1fr] gap-x-4 gap-y-2 items-start">
             {/* Task Title */}
             <label className="text-sm font-medium text-gray-400 self-center justify-self-start text-left" htmlFor="task-title">Title</label>
-            {isEditingTitle ? (
+            {isEditingTitle && canEdit ? (
               <textarea
                 ref={titleInputRef}
                 id="task-title"
@@ -1697,8 +2142,8 @@ export function TaskDetails({ isCollapsed, selectedTask, onClose, onCollapse, is
               <div
                 className="w-full px-3 py-2 rounded-md cursor-pointer hover:bg-gray-50 min-h-[40px] flex items-center"
                 tabIndex={0}
-                onClick={isLoading ? undefined : () => setIsEditingTitle(true)}
-                onKeyDown={isLoading ? undefined : (e => { if (e.key === 'Enter') setIsEditingTitle(true) })}
+                onClick={!canEdit ? undefined : () => setIsEditingTitle(true)}
+                onKeyDown={!canEdit ? undefined : (e => { if (e.key === 'Enter') setIsEditingTitle(true) })}
                 aria-label="Edit title"
                 title={title || ''}
                 style={isLoading ? { pointerEvents: 'none', opacity: 0.5 } : {}}
@@ -1708,7 +2153,7 @@ export function TaskDetails({ isCollapsed, selectedTask, onClose, onCollapse, is
             )}
             {/* Project */}
             <label className="text-sm font-medium text-gray-400 self-center justify-self-start text-left" htmlFor="task-project">Project</label>
-            {isEditingProject ? (
+            {isEditingProject && canEdit ? (
               <select
                 id="task-project"
                 value={isLoading ? '' : String(currentProjectId || '')}
@@ -1733,18 +2178,27 @@ export function TaskDetails({ isCollapsed, selectedTask, onClose, onCollapse, is
               <div
                 className="w-full px-3 py-2 rounded-md cursor-pointer hover:bg-gray-50 truncate"
                 tabIndex={0}
-                onClick={isLoading ? undefined : () => setIsEditingProject(true)}
-                onKeyDown={isLoading ? undefined : (e => { if (e.key === 'Enter') setIsEditingProject(true) })}
+                onClick={!canEdit ? undefined : () => setIsEditingProject(true)}
+                onKeyDown={!canEdit ? undefined : (e => { if (e.key === 'Enter') setIsEditingProject(true) })}
                 aria-label="Edit project"
                 title={currentProjectName || ''}
                 style={isLoading ? { pointerEvents: 'none', opacity: 0.5 } : {}}
               >
-                {currentProjectName || <span className="text-gray-400">Click to set project</span>}
+                {task?.project || currentProjectName ? (
+                  <ProjectBadge
+                    name={task?.project?.name ?? currentProjectName}
+                    logoUrl={projectLogoUrl}
+                    color={task?.project?.color ?? task?.project_color ?? undefined}
+                    size="md"
+                  />
+                ) : (
+                  <span className="text-gray-400">Click to set project</span>
+                )}
               </div>
             )}
             {/* Assigned to (with avatar) */}
             <label className="text-sm font-medium text-gray-400 self-center justify-self-start text-left" htmlFor="task-assignee">Assigned to</label>
-            {isEditingAssignee ? (
+            {isEditingAssignee && canEdit ? (
               <select
                 id="task-assignee"
                 value={isLoading ? '' : filteredUserId || ''}
@@ -1762,25 +2216,195 @@ export function TaskDetails({ isCollapsed, selectedTask, onClose, onCollapse, is
               <div
                 className="w-full px-3 py-2 rounded-md cursor-pointer hover:bg-gray-50 truncate flex items-center gap-2"
                 tabIndex={0}
-                onClick={isLoading ? undefined : handleEditAssignee}
-                onKeyDown={isLoading ? undefined : (e => { if (e.key === 'Enter') handleEditAssignee() })}
+                onClick={!canEdit ? undefined : handleEditAssignee}
+                onKeyDown={!canEdit ? undefined : (e => { if (e.key === 'Enter') handleEditAssignee() })}
                 aria-label="Edit assignee"
                 title={currentAssignedUserName || ''}
                 style={isLoading ? { pointerEvents: 'none', opacity: 0.5 } : {}}
               >
                 {currentAssignedUserName ? (
                   <>
-                    <span className="inline-flex items-center justify-center w-7 h-7 rounded-full bg-muted text-xs font-bold uppercase text-gray-900 border border-gray-300 mr-2">
-                      {getInitials(currentAssignedUserName)}
-                    </span>
+                    <UserAvatar
+                      name={currentAssignedUserName}
+                      photoUrl={assignedUserPhotoUrl}
+                      size="md"
+                    />
                     <span>{currentAssignedUserName}</span>
                   </>
-                ) : <span className="text-gray-400">Click to set assignee</span>}
+                ) : (
+                  <span className="text-gray-400">Click to set assignee</span>
+                )}
               </div>
             )}
+            {/* Task Watchers */}
+            <label className="text-sm font-medium text-gray-400 self-start justify-self-start text-left pt-2">Watchers</label>
+            <div className="w-full px-3 py-2 rounded-md border border-transparent">
+              {isSuggestionMode ? (
+                <div className="text-sm text-gray-400">—</div>
+              ) : (
+                <>
+              {/* Active watchers for this task (is_deleted=false). Only project watchers can be task watchers (enforced by RPC). */}
+              {isLoading || isTaskWatchersLoading ? (
+                <div className="text-sm text-gray-500 flex items-center gap-2">
+                  <Loader2 className="h-4 w-4 animate-spin" />
+                  Loading watchers…
+                </div>
+              ) : taskWatchers.length === 0 ? (
+                <div className="text-sm text-gray-400">No watchers yet</div>
+              ) : (
+                <div className="flex flex-col gap-2">
+                  {taskWatchers.map((w) => (
+                    <div key={w.watcher_user_id} className="flex items-center justify-between gap-2">
+                      <div className="flex items-center gap-2 min-w-0">
+                        <UserAvatar
+                          name={w.full_name ?? `User #${w.watcher_user_id}`}
+                          photoUrl={getImageUrl(w.photo)}
+                          size="sm"
+                        />
+                        <span className="truncate text-sm text-gray-900">
+                          {w.full_name ?? `User #${w.watcher_user_id}`}
+                        </span>
+                      </div>
+                      <Button
+                        type="button"
+                        variant="ghost"
+                        size="sm"
+                        className="h-7 w-7 p-0"
+                        aria-label={`Remove watcher ${w.full_name ?? w.watcher_user_id}`}
+                        title="Remove watcher"
+                        onClick={() => removeWatcher(w.watcher_user_id)}
+                        disabled={isTaskWatchersMutating}
+                      >
+                        <X className="h-4 w-4" />
+                      </Button>
+                    </div>
+                  ))}
+                </div>
+              )}
+
+              {(taskWatchersError || taskWatchersMutationError) && (
+                <div className="mt-2 text-xs text-red-600">
+                  {taskWatchersError || taskWatchersMutationError}
+                </div>
+              )}
+
+              <div className="mt-2 flex items-center gap-2">
+                <Popover
+                  open={isAddWatcherOpen}
+                  onOpenChange={(open) => {
+                    setIsAddWatcherOpen(open);
+                    if (open) {
+                      setSelectedWatcherUserIdsToAdd([]);
+                      loadEligibleTaskWatchers();
+                    }
+                  }}
+                >
+                  <PopoverTrigger asChild>
+                    <Button
+                      type="button"
+                      variant="outline"
+                      size="sm"
+                      disabled={isLoading || !taskIdNum || isTaskWatchersMutating}
+                      aria-label="Add watcher"
+                      title="Add watcher"
+                    >
+                      Add watchers
+                    </Button>
+                  </PopoverTrigger>
+                  <PopoverContent className="w-80 p-0" align="start">
+                    <Command>
+                      <CommandInput
+                        placeholder={
+                          isEligibleTaskWatchersLoading
+                            ? "Loading eligible users…"
+                            : "Search eligible users…"
+                        }
+                        disabled={isEligibleTaskWatchersLoading || isTaskWatchersMutating}
+                      />
+                      <CommandList className="max-h-[260px]">
+                        <CommandEmpty>
+                          {eligibleTaskWatchersError
+                            ? "Failed to load eligible users."
+                            : isEligibleTaskWatchersLoading
+                            ? "Loading…"
+                            : "No eligible users"}
+                        </CommandEmpty>
+                        <CommandGroup>
+                          {eligibleTaskWatchers.map((u) => (
+                            <CommandItem
+                              key={u.watcher_user_id}
+                              value={`${u.full_name ?? ""} ${u.watcher_user_id}`}
+                              className={isTaskWatchersMutating ? "pointer-events-none opacity-50" : ""}
+                              onSelect={(_value) => {
+                                if (isTaskWatchersMutating) return;
+                                setSelectedWatcherUserIdsToAdd((prev) => {
+                                  const id = u.watcher_user_id;
+                                  return prev.includes(id) ? prev.filter((x) => x !== id) : [...prev, id];
+                                });
+                              }}
+                            >
+                              <div className="flex items-center gap-2 min-w-0 w-full">
+                                <div className="flex h-4 w-4 items-center justify-center">
+                                  <Check
+                                    className={cn(
+                                      "h-4 w-4",
+                                      selectedWatcherUserIdsToAdd.includes(u.watcher_user_id)
+                                        ? "opacity-100"
+                                        : "opacity-0"
+                                    )}
+                                  />
+                                </div>
+                                <UserAvatar
+                                  name={u.full_name ?? `User #${u.watcher_user_id}`}
+                                  photoUrl={getImageUrl(u.photo)}
+                                  size="sm"
+                                />
+                                <span className="truncate">{u.full_name ?? `User #${u.watcher_user_id}`}</span>
+                              </div>
+                            </CommandItem>
+                          ))}
+                        </CommandGroup>
+                      </CommandList>
+                      <div className="border-t p-2 flex items-center justify-between gap-2">
+                        <div className="text-xs text-gray-500">
+                          {selectedWatcherUserIdsToAdd.length > 0
+                            ? `${selectedWatcherUserIdsToAdd.length} selected`
+                            : "Select users to add"}
+                        </div>
+                        <Button
+                          type="button"
+                          size="sm"
+                          disabled={
+                            isTaskWatchersMutating ||
+                            selectedWatcherUserIdsToAdd.length === 0 ||
+                            !taskIdNum
+                          }
+                          onClick={async () => {
+                            if (!taskIdNum || selectedWatcherUserIdsToAdd.length === 0) return;
+                            await addWatchers(selectedWatcherUserIdsToAdd);
+                            setSelectedWatcherUserIdsToAdd([]);
+                            setIsAddWatcherOpen(false);
+                          }}
+                        >
+                          {isTaskWatchersMutating ? "Adding…" : "Add"}
+                        </Button>
+                      </div>
+                    </Command>
+                  </PopoverContent>
+                </Popover>
+                {(isEligibleTaskWatchersLoading || isTaskWatchersMutating) && (
+                  <Loader2 className="h-4 w-4 animate-spin text-gray-500" />
+                )}
+              </div>
+              {eligibleTaskWatchersError && (
+                <div className="mt-2 text-xs text-red-600">{eligibleTaskWatchersError}</div>
+              )}
+                </>
+              )}
+            </div>
             {/* Due Date */}
             <label className="text-sm font-medium text-gray-400 self-center justify-self-start text-left" htmlFor="task-due-date">Due Date</label>
-            {isEditingDueDate ? (
+            {isEditingDueDate && canEdit ? (
               <input
                 id="task-due-date"
                 type="date"
@@ -1796,8 +2420,8 @@ export function TaskDetails({ isCollapsed, selectedTask, onClose, onCollapse, is
               <div
                 className="w-full px-3 py-2 rounded-md cursor-pointer hover:bg-gray-50 truncate"
                 tabIndex={0}
-                onClick={isLoading ? undefined : (() => setIsEditingDueDate(true))}
-                onKeyDown={isLoading ? undefined : (e => { if (e.key === 'Enter') setIsEditingDueDate(true) })}
+                onClick={!canEdit ? undefined : (() => setIsEditingDueDate(true))}
+                onKeyDown={!canEdit ? undefined : (e => { if (e.key === 'Enter') setIsEditingDueDate(true) })}
                 aria-label="Edit due date"
                 title={formatDateWithYear(currentDueDate)}
                 style={isLoading ? { pointerEvents: 'none', opacity: 0.5 } : {}}
@@ -1814,7 +2438,7 @@ export function TaskDetails({ isCollapsed, selectedTask, onClose, onCollapse, is
             )}
             {/* Publication Date (as editable date) */}
             <label className="text-sm font-medium text-gray-400 self-center justify-self-start text-left" htmlFor="task-publication-date">Publication Date</label>
-            {isEditingPublicationDate ? (
+            {isEditingPublicationDate && canEdit ? (
               <input
                 id="task-publication-date"
                 type="date"
@@ -1830,8 +2454,8 @@ export function TaskDetails({ isCollapsed, selectedTask, onClose, onCollapse, is
               <div
                 className="w-full px-3 py-2 rounded-md cursor-pointer hover:bg-gray-50 truncate"
                 tabIndex={0}
-                onClick={isLoading ? undefined : (() => setIsEditingPublicationDate(true))}
-                onKeyDown={isLoading ? undefined : (e => { if (e.key === 'Enter') setIsEditingPublicationDate(true) })}
+                onClick={!canEdit ? undefined : (() => setIsEditingPublicationDate(true))}
+                onKeyDown={!canEdit ? undefined : (e => { if (e.key === 'Enter') setIsEditingPublicationDate(true) })}
                 aria-label="Edit publication date"
                 title={formatDateWithYear(currentPublicationDate)}
                 style={isLoading ? { pointerEvents: 'none', opacity: 0.5 } : {}}
@@ -1848,7 +2472,7 @@ export function TaskDetails({ isCollapsed, selectedTask, onClose, onCollapse, is
             )}
             {/* Status (as pill) */}
             <label className="text-sm font-medium text-gray-400 self-center justify-self-start text-left" htmlFor="task-status">Status</label>
-            {isEditingStatus ? (
+            {isEditingStatus && canEdit ? (
               <select
                 id="task-status"
                 value={isLoading ? '' : currentStatusId || ''}
@@ -1868,8 +2492,8 @@ export function TaskDetails({ isCollapsed, selectedTask, onClose, onCollapse, is
               <div
                 className="w-full px-3 py-2 rounded-md cursor-pointer hover:bg-gray-50 truncate"
                 tabIndex={0}
-                onClick={isLoading ? undefined : (() => setIsEditingStatus(true))}
-                onKeyDown={isLoading ? undefined : (e => { if (e.key === 'Enter') setIsEditingStatus(true) })}
+                onClick={!canEdit ? undefined : (() => setIsEditingStatus(true))}
+                onKeyDown={!canEdit ? undefined : (e => { if (e.key === 'Enter') setIsEditingStatus(true) })}
                 aria-label="Edit status"
                 title={currentStatusName || ''}
                 style={isLoading ? { pointerEvents: 'none', opacity: 0.5 } : {}}
@@ -1884,12 +2508,12 @@ export function TaskDetails({ isCollapsed, selectedTask, onClose, onCollapse, is
                   >
                     {currentStatusName}
                   </span>
-                ) : <span className="text-gray-400">Click to set status</span>}
+                ) : <span className="text-gray-400">{isSuggestionMode ? '—' : 'Click to set status'}</span>}
               </div>
             )}
             {/* Content Type */}
             <label className="text-sm font-medium text-gray-400 self-center justify-self-start text-left" htmlFor="task-content-type">Content Type</label>
-            {isEditingContentType ? (
+            {isEditingContentType && canEdit ? (
               <select
                 id="task-content-type"
                 value={isLoading ? '' : currentContentTypeId || ''}
@@ -1907,18 +2531,21 @@ export function TaskDetails({ isCollapsed, selectedTask, onClose, onCollapse, is
               <div
                 className="w-full px-3 py-2 rounded-md cursor-pointer hover:bg-gray-50 truncate"
                 tabIndex={0}
-                onClick={isLoading ? undefined : (() => setIsEditingContentType(true))}
-                onKeyDown={isLoading ? undefined : (e => { if (e.key === 'Enter') setIsEditingContentType(true) })}
+                onClick={!canEdit ? undefined : (() => setIsEditingContentType(true))}
+                onKeyDown={!canEdit ? undefined : (e => { if (e.key === 'Enter') setIsEditingContentType(true) })}
                 aria-label="Edit content type"
                 title={currentContentTypeTitle || ''}
                 style={isLoading ? { pointerEvents: 'none', opacity: 0.5 } : {}}
               >
-                {currentContentTypeTitle || <span className="text-gray-400">Click to set content type</span>}
+                {currentContentTypeTitle || (
+                  <span className="text-gray-400">{isSuggestionMode ? '—' : 'Click to set content type'}</span>
+                )}
               </div>
             )}
+
             {/* Production Type */}
             <label className="text-sm font-medium text-gray-400 self-center justify-self-start text-left" htmlFor="task-production-type">Production Type</label>
-            {isEditingProductionType ? (
+            {isEditingProductionType && canEdit ? (
               <select
                 id="task-production-type"
                 value={currentProductionTypeId || ''}
@@ -1935,17 +2562,19 @@ export function TaskDetails({ isCollapsed, selectedTask, onClose, onCollapse, is
               <div
                 className="w-full px-3 py-2 rounded-md cursor-pointer hover:bg-gray-50 truncate"
                 tabIndex={0}
-                onClick={() => setIsEditingProductionType(true)}
-                onKeyDown={e => { if (e.key === 'Enter') setIsEditingProductionType(true) }}
+                onClick={!canEdit ? undefined : () => setIsEditingProductionType(true)}
+                onKeyDown={!canEdit ? undefined : (e => { if (e.key === 'Enter') setIsEditingProductionType(true) })}
                 aria-label="Edit production type"
                 title={currentProductionTypeTitle || ''}
               >
-                {currentProductionTypeTitle || <span className="text-gray-400">Click to set production type</span>}
+                {currentProductionTypeTitle || (
+                  <span className="text-gray-400">{isSuggestionMode ? '—' : 'Click to set production type'}</span>
+                )}
               </div>
             )}
             {/* Language */}
             <label className="text-sm font-medium text-gray-400 self-center justify-self-start text-left" htmlFor="task-language">Language</label>
-            {isEditingLanguage ? (
+            {isEditingLanguage && canEdit ? (
               <select
                 id="task-language"
                 value={currentLanguageId || ''}
@@ -1962,14 +2591,17 @@ export function TaskDetails({ isCollapsed, selectedTask, onClose, onCollapse, is
               <div
                 className="w-full px-3 py-2 rounded-md cursor-pointer hover:bg-gray-50 truncate"
                 tabIndex={0}
-                onClick={() => setIsEditingLanguage(true)}
-                onKeyDown={e => { if (e.key === 'Enter') setIsEditingLanguage(true) }}
+                onClick={!canEdit ? undefined : () => setIsEditingLanguage(true)}
+                onKeyDown={!canEdit ? undefined : (e => { if (e.key === 'Enter') setIsEditingLanguage(true) })}
                 aria-label="Edit language"
                 title={currentLanguageCode || ''}
               >
-                {currentLanguageCode || <span className="text-gray-400">Click to set language</span>}
+                {currentLanguageCode || (
+                  <span className="text-gray-400">{isSuggestionMode ? '—' : 'Click to set language'}</span>
+                )}
               </div>
             )}
+
             {/* Channels (editable pill UI) */}
             <label className="text-sm font-medium text-gray-400 self-center justify-self-start text-left">Channels</label>
             <div className="w-full px-3 py-2 flex flex-wrap gap-2 min-h-[40px] items-center overflow-x-auto">
@@ -1986,6 +2618,7 @@ export function TaskDetails({ isCollapsed, selectedTask, onClose, onCollapse, is
                           className="ml-1 text-blue-800 hover:text-red-600 focus:outline-none"
                           onClick={() => handleRemoveChannel(channel)}
                           aria-label="Remove channel"
+                          disabled={isSuggestionMode}
                         >×</button>
                       )}
                   </span>
@@ -1994,6 +2627,7 @@ export function TaskDetails({ isCollapsed, selectedTask, onClose, onCollapse, is
               ) : (
                 <span className="text-gray-400 ml-0">No channels</span>
               )}
+              {!isSuggestionMode && (
               <Popover>
                 <PopoverTrigger asChild>
                   <Button size="icon" variant="outline" className="w-7 h-7 rounded-full flex items-center justify-center text-xl border border-gray-300 text-gray-900 bg-white shadow" aria-label="Add channel" title="Add channel">+</Button>
@@ -2027,6 +2661,7 @@ export function TaskDetails({ isCollapsed, selectedTask, onClose, onCollapse, is
                   </div>
                 </PopoverContent>
               </Popover>
+              )}
             </div>
             {showParentField && (
               <>
@@ -2135,7 +2770,7 @@ export function TaskDetails({ isCollapsed, selectedTask, onClose, onCollapse, is
                 />
               </div>
             )}
-            {task && (
+            {task && !isSuggestionMode && (
               <Dropzone
                 tableName="tasks"
                 recordId={task.id}
@@ -2206,7 +2841,7 @@ export function TaskDetails({ isCollapsed, selectedTask, onClose, onCollapse, is
           <div className="mt-6">
             <button
               className="flex items-center w-full text-left text-sm font-medium text-gray-400 mb-1 focus:outline-none"
-              onClick={() => setIsActivityOpen((open) => !open)}
+              onClick={isSuggestionMode ? undefined : () => setIsActivityOpen((open) => !open)}
               aria-expanded={isActivityOpen}
               aria-controls="activity-panel"
               type="button"
@@ -2221,35 +2856,46 @@ export function TaskDetails({ isCollapsed, selectedTask, onClose, onCollapse, is
             )}
           </div>
           {/* Chat history (now flows with the rest of the content) */}
-          <div className="mt-6">
-            <label className="text-sm font-medium text-gray-400 text-left mb-1 block">Comments</label>
-            {/* Thread history dropdown, always visible, initially with only the first thread */}
-            
-            {selectedThreadId && currentUserId !== null && (
-              <ThreadedRealtimeChat
-                key={String(selectedThreadId)}
-                threadId={selectedThreadId}
-                currentUserId={currentUserId}
-                currentUserName={currentUserName || undefined}
-                currentUserAvatar={currentUserAvatar || undefined}
-                currentUserEmail={currentUserEmail}
-                currentPublicUserId={currentPublicUserId}
-                hideInput={true}
-                initialMessages={
-                  Array.isArray(allMentions) && selectedThreadId
-                    ? allMentions.filter(m => m.thread_id === selectedThreadId)
-                    : []
-                }
-              />
-            )}
-          </div>
+          {!isSuggestionMode && (
+            <div className="mt-6">
+              <label className="text-sm font-medium text-gray-400 text-left mb-1 block">Comments</label>
+              {/* Thread history dropdown, always visible, initially with only the first thread */}
+              
+              {selectedThreadId && currentUserId !== null && (
+                <ThreadedRealtimeChat
+                  key={String(selectedThreadId)}
+                  threadId={selectedThreadId}
+                  currentUserId={currentUserId}
+                  currentUserName={currentUserName || undefined}
+                  currentUserAvatar={currentUserAvatar || undefined}
+                  currentUserEmail={currentUserEmail}
+                  currentPublicUserId={currentPublicUserId}
+                  hideInput={true}
+                  onReplySelected={(payload) => {
+                    // Show reply banner in the sticky composer (not in the message list)
+                    setReplyTo(payload)
+                    // Best-effort: keep the user's focus near the composer
+                    requestAnimationFrame(() => {
+                      const el = document.querySelector('.ql-editor')
+                      if (el instanceof HTMLElement) el.focus()
+                    })
+                  }}
+                  initialMessages={
+                    Array.isArray(allMentions) && selectedThreadId
+                      ? allMentions.filter(m => m.thread_id === selectedThreadId)
+                      : []
+                  }
+                />
+              )}
+            </div>
+          )}
             </div>
           </TabsContent>
           
-          <TabsContent value="content" className="flex-1 overflow-auto">
+          <TabsContent value="content" className="flex-1 min-h-0 overflow-auto">
             <div className="p-4 pb-0">
               {/* Content Tab - Channels, Briefing, Components, SEO */}
-              {taskIdNum && (
+              {!isSuggestionMode && taskIdNum && (
                 <TaskContentTab
                   taskId={taskIdNum}
                   projectId={task?.project_id_int || undefined}
@@ -2258,10 +2904,15 @@ export function TaskDetails({ isCollapsed, selectedTask, onClose, onCollapse, is
                   onChannelChange={setActiveChannelId}
                 />
               )}
+              {isSuggestionMode ? (
+                <div className="text-sm text-gray-500">
+                  No content details for suggestions yet.
+                </div>
+              ) : null}
             </div>
           </TabsContent>
           
-          <TabsContent value="reviews" className="flex-1 overflow-auto">
+          <TabsContent value="reviews" className="flex-1 min-h-0 overflow-auto">
             <div className="p-4 pb-0">
               {/* Reviews section */}
               <TaskReviewSummary 
@@ -2276,9 +2927,9 @@ export function TaskDetails({ isCollapsed, selectedTask, onClose, onCollapse, is
           </TabsContent>
         </Tabs>
         
-        {/* Chat input sticky at the bottom */}
-        {task && (
-          <div className="sticky bottom-0 left-0 right-0 bg-white border-t z-30 flex flex-col" style={{ boxShadow: '0 -2px 8px rgba(0,0,0,0.03)' }}>
+        {/* Chat input docked at the bottom (no overlap with tab scroll areas) */}
+        {task && !isSuggestionMode && (
+          <div className="shrink-0 bg-white border-t z-30 flex flex-col" style={{ boxShadow: '0 -2px 8px rgba(0,0,0,0.03)' }}>
             {/* Pending participant row if no threads */}
             
             {/* Chat input only (sticky) */}
@@ -2293,6 +2944,8 @@ export function TaskDetails({ isCollapsed, selectedTask, onClose, onCollapse, is
               threads={threadsList}
               latestMentions={latestMentions}
               handleDeleteThread={handleDeleteThread}
+              replyTo={replyTo}
+              onClearReply={() => setReplyTo(null)}
             />
             {/* Thread selector, participants, new thread (compact row) */}
             <div className="border-t bg-white px-2 py-1 flex items-center gap-2">
@@ -2379,6 +3032,29 @@ export function TaskDetails({ isCollapsed, selectedTask, onClose, onCollapse, is
                 onClick={handleAddThread}
               >
                 +
+              </Button>
+            </div>
+          </div>
+        )}
+
+        {/* Suggestion actions pinned at the bottom */}
+        {isSuggestionMode && suggestionStatus === 'pending' && (
+          <div className="sticky bottom-0 left-0 right-0 z-30 border-t bg-white p-3">
+            <div className="flex items-center justify-end gap-2">
+              <Button
+                type="button"
+                variant="outline"
+                disabled={isApprovingSuggestion || isDismissingSuggestion}
+                onClick={() => void handleDismissSuggestion()}
+              >
+                {isDismissingSuggestion ? 'Dismissing…' : 'Dismiss'}
+              </Button>
+              <Button
+                type="button"
+                disabled={isApprovingSuggestion || isDismissingSuggestion}
+                onClick={() => void handleApproveSuggestion()}
+              >
+                {isApprovingSuggestion ? 'Approving…' : 'Approve'}
               </Button>
             </div>
           </div>

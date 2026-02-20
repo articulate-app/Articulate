@@ -1,9 +1,8 @@
 import React, { useState, useMemo, useCallback, useRef, useEffect, ReactNode } from 'react';
-import { useQuery, useQueryClient } from '@tanstack/react-query';
+import { useQueryClient } from '@tanstack/react-query';
 import { DndContext, closestCenter, PointerSensor, useSensor, useSensors, useDroppable, rectIntersection, pointerWithin } from '@dnd-kit/core';
 import { SortableContext, useSortable, horizontalListSortingStrategy } from '@dnd-kit/sortable';
 import { arrayMove } from '@dnd-kit/sortable';
-import { InfiniteList } from '../ui/infinite-list';
 import { cn } from '@/lib/utils';
 import { createClientComponentClient } from '@supabase/auth-helpers-nextjs';
 // import { useSession } from '@supabase/auth-helpers-react';
@@ -13,11 +12,27 @@ import { useTaskRealtime } from '../../../hooks/use-task-realtime';
 import { useFilterOptions } from '../../hooks/use-filter-options';
 import { useSearchParams, useRouter } from 'next/navigation';
 import { DropdownMenu, DropdownMenuTrigger, DropdownMenuContent, DropdownMenuItem } from '@/components/ui/dropdown-menu';
-import { ChevronDown } from 'lucide-react';
+import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover';
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
+import { ResizableBottomSheet } from '@/components/ui/resizable-bottom-sheet';
+import { ChevronDown, Zap, Search, Plus } from 'lucide-react';
+import { Tooltip, TooltipContent, TooltipTrigger, TooltipProvider } from '@/components/ui/tooltip';
+import { DropdownMenuSeparator } from '@/components/ui/dropdown-menu';
+import { getTaskInlineStyle, getTaskColorKey, getTaskColorLabel, getStablePaletteClass, getStablePaletteBarClass, type TaskCardColorMode } from '@/lib/task-card-colors';
+import { getImageUrl } from '@/lib/public-media';
 import { flushSync } from 'react-dom';
 import { useTypesenseInfiniteQuery } from '../../hooks/use-typesense-infinite-query';
 import { getTypesenseUpdater } from '../../store/typesense-tasks';
 import { readKanbanOptions, writeParam } from '../../lib/utils';
+import { useDebounce } from '../../hooks/use-debounce';
+import { useTaskGroupMetaAllQuery } from '@/hooks/use-task-group-meta-all-query';
+import type { TaskListRow } from '@/lib/types/task-list-view';
+import { useTasksUI } from '../../store/tasks-ui'
+import { useTaskSuggestionsQuery } from '../../hooks/use-task-suggestions-query'
+import { usePlannerOptimisticTasks } from '../../store/planner-optimistic-tasks'
+import { computeGroupKeyForTask } from '@/hooks/use-task-group-tasks-query'
+import { useTaskComposerStore } from '@/store/task-composer-store'
+import { useMobileDetection } from '../../hooks/use-mobile-detection'
 
 // Group-by options for Kanban (URL-based values)
 const GROUP_BY_OPTIONS = [
@@ -39,6 +54,20 @@ const GROUP_BY_TO_FIELD: Record<string, string> = {
   content_type_title: 'content_type_id',
   production_type_title: 'production_type_id',
   language_code: 'language_id',
+};
+
+// Map Kanban's underlying DB/group fields to canonical RPC p_group_by values
+// (must stay in sync with list view / GroupByField)
+const kanbanGroupByToRpcGroupBy: Record<string, string> = {
+  assigned_to_id: 'assigned_to',
+  project_status_id: 'status',
+  project_id_int: 'project',
+  content_type_id: 'content_type',
+  production_type_id: 'production_type',
+  language_id: 'language',
+  delivery_date: 'delivery_date',
+  publication_date: 'publication_date',
+  // channel / channels: backend TBD
 };
 
 
@@ -98,38 +127,87 @@ function extractGroups(tasks: any[], groupBy: string) {
   return groupArr;
 }
 
-// Compact Kanban card
-function KanbanTaskCard({ task, isSelected, onClick }: { task: any, isSelected: boolean, onClick: () => void }) {
+// Clip truncation (no ellipsis)
+const clipTruncate = 'overflow-hidden whitespace-nowrap text-clip';
+
+// Compact Kanban card: white bg, left color bar, project logo, user photo
+function KanbanTaskCard({ task, isSelected, onClick, colorMode, barColorClass, barInlineStyle }: {
+  task: any;
+  isSelected: boolean;
+  onClick: () => void;
+  colorMode: TaskCardColorMode;
+  barColorClass?: string;
+  barInlineStyle?: React.CSSProperties;
+}) {
+  const isSuggestion = task?.kind === 'suggestion' || task?.entity_type === 'suggestion';
+  const projectLogoUrl = getImageUrl(task.project_logo ?? task.projects?.logo);
+  const userPhotoUrl = getImageUrl(task.assigned_to_photo ?? task.assigned_user?.photo);
+  const initials = task.assigned_to_name?.split(' ').map((n: string) => n[0]).join('').toUpperCase() ?? '?';
   return (
     <div
       className={cn(
-        'rounded-md bg-white shadow-sm border border-gray-200 p-3 mb-2 cursor-pointer hover:bg-blue-50 transition',
-        isSelected && 'ring-2 ring-blue-500 border-blue-500',
+        'w-full rounded-lg border border-gray-100 bg-white shadow-sm cursor-pointer transition-all relative flex overflow-hidden',
+        'hover:shadow-md hover:-translate-y-[1px]',
+        isSelected && 'ring-2 ring-blue-400 border-blue-200',
       )}
       onClick={onClick}
       tabIndex={0}
       aria-selected={isSelected}
       role="button"
     >
-      <div className="font-medium text-sm truncate mb-1">{task.title}</div>
-      <div className="flex items-center gap-2 text-xs text-gray-500">
-        {task.project_name && <span className="truncate max-w-[80px]">{task.project_name}</span>}
-        {task.project_status_name && (
-          <span
-            className="inline-block px-2 py-0.5 rounded-full text-xs font-medium"
-            style={{ backgroundColor: task.project_status_color || '#e5e7eb', color: task.project_status_color ? '#fff' : '#374151' }}
-          >
-            {task.project_status_name}
-          </span>
+      {/* Left color bar (3-4px) */}
+      <div
+        className={cn('w-1 shrink-0 rounded-l-lg self-stretch', barColorClass)}
+        style={barInlineStyle}
+      />
+      <div className="flex-1 min-w-0 px-3 py-2">
+        {isSuggestion && (
+          <Tooltip>
+            <TooltipTrigger asChild>
+              <span className="absolute top-2 right-2 text-gray-400 shrink-0">
+                <Zap className="h-3 w-3" aria-label="AI suggestion" />
+              </span>
+            </TooltipTrigger>
+            <TooltipContent side="top">AI suggestion</TooltipContent>
+          </Tooltip>
         )}
-        {task.assigned_to_name && (
-          <span className="inline-flex items-center gap-1">
-            <span className="inline-flex items-center justify-center w-5 h-5 rounded-full bg-gray-200 text-xs font-bold uppercase text-gray-700 border border-gray-300">
-              {task.assigned_to_name.split(' ').map((n: string) => n[0]).join('').toUpperCase()}
+        <div className={cn('flex items-start gap-2 mb-1 min-w-0 pr-5', clipTruncate)}>
+          <div className={cn('min-w-0 flex-1 font-medium text-sm', clipTruncate)}>{task.title}</div>
+        </div>
+        <div className={cn('flex items-center gap-2 text-xs text-gray-500 flex-wrap', clipTruncate)}>
+          {task.project_name && (
+            <span className={cn('inline-flex items-center gap-1.5 min-w-0', clipTruncate)}>
+              {projectLogoUrl ? (
+                <img src={projectLogoUrl} alt="" className="w-4 h-4 rounded object-cover shrink-0" />
+              ) : null}
+              <span className={cn('max-w-[80px]', clipTruncate)}>{task.project_name}</span>
             </span>
-            <span className="truncate max-w-[60px]">{task.assigned_to_name}</span>
-          </span>
-        )}
+          )}
+          {task.project_status_name && (
+            <span
+              className="inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium whitespace-nowrap max-w-[120px] overflow-hidden text-clip"
+              style={{
+                backgroundColor: task.project_status_color || '#e5e7eb',
+                color: task.project_status_color ? '#fff' : '#374151',
+              }}
+              title={task.project_status_name}
+            >
+              {task.project_status_name}
+            </span>
+          )}
+          {task.assigned_to_name && (
+            <span className={cn('inline-flex items-center gap-1 min-w-0', clipTruncate)}>
+              {userPhotoUrl ? (
+                <img src={userPhotoUrl} alt="" className="w-5 h-5 rounded-full object-cover shrink-0 border border-gray-300" />
+              ) : (
+                <span className="inline-flex items-center justify-center w-5 h-5 rounded-full bg-gray-200 text-xs font-bold uppercase text-gray-700 border border-gray-300 shrink-0">
+                  {initials}
+                </span>
+              )}
+              <span className={cn('max-w-[60px]', clipTruncate)}>{task.assigned_to_name}</span>
+            </span>
+          )}
+        </div>
       </div>
     </div>
   );
@@ -144,9 +222,10 @@ function SortableKanbanCard({ id, children }: { id: string, children: React.Reac
       style={{
         transform: transform ? `translate(${transform.x}px, ${transform.y}px)` : undefined,
         transition,
-        opacity: isDragging ? 0.5 : 1,
+        opacity: isDragging ? 0.9 : 1,
         zIndex: isDragging ? 50 : undefined,
       }}
+      className={cn('mb-2', isDragging && 'ring-2 ring-blue-400 rounded-lg')}
       {...attributes}
       {...listeners}
     >
@@ -213,26 +292,20 @@ interface KanbanViewProps {
 }
 
 export function KanbanView({ searchValue, filters, selectedTaskId, onTaskSelect, onOptimisticUpdate, expandButton, enabled = true }: KanbanViewProps) {
-  const [limit, setLimit] = useState<number>(25);
+  const [perBucketPageSize, setPerBucketPageSize] = useState<number>(50);
   const queryClient = useQueryClient();
   const supabase = createClientComponentClient();
-  // Fallback: get session inline if useSession is not available
-  const [accessToken, setAccessToken] = useState<string | null>(null);
-  useEffect(() => {
-    (async () => {
-      const { data, error } = await supabase.auth.getSession();
-      if (data?.session?.access_token) setAccessToken(data.session.access_token);
-    })();
-  }, [supabase]);
   const columnsContainerRef = useRef<HTMLDivElement>(null);
   const params = useSearchParams();
   const router = useRouter();
 
   // Read kanban options from URL
   const kanbanOptions = readKanbanOptions(new URLSearchParams(params.toString()));
+  const groupOrder = (params.get('groupOrder') as 'asc' | 'desc' | null) ?? 'asc';
   
-  // Map URL groupBy to database field
-  const groupBy = kanbanOptions.groupBy === 'assignee' ? 'assigned_to_name' : 
+  // Map URL groupBy to display field used in task rows (for local updates / labels)
+  const groupByDisplayField =
+    kanbanOptions.groupBy === 'assignee' ? 'assigned_to_name' :
                   kanbanOptions.groupBy === 'project' ? 'project_name' : 
                   kanbanOptions.groupBy === 'status' ? 'project_status_name' : 
                   kanbanOptions.groupBy === 'priority' ? 'project_status_name' : 
@@ -241,190 +314,661 @@ export function KanbanView({ searchValue, filters, selectedTaskId, onTaskSelect,
                   kanbanOptions.groupBy === 'language' ? 'language_code' : 
                   kanbanOptions.groupBy === 'delivery_date' ? 'delivery_date' : 
                   kanbanOptions.groupBy === 'publication_date' ? 'publication_date' : 
-                  kanbanOptions.groupBy === 'channel' ? 'channel_names' : 'project_status_name';
+    kanbanOptions.groupBy === 'channel' ? 'channel_names' :
+    'project_status_name';
+
+  // Underlying DB/group field for updates and RPC mapping
+  const groupField = GROUP_BY_TO_FIELD[groupByDisplayField] || groupByDisplayField;
+
+  // Canonical groupBy value for RPC hooks (must match list view)
+  const rpcGroupBy = (kanbanGroupByToRpcGroupBy[groupField] ?? null) as string | null;
+
+  // Query-shape inputs
+  const q = searchValue ?? params.get('q') ?? '';
+  const project = params.get('project') || undefined;
+
+  const plannerVisibility = useTasksUI((s) => s.plannerVisibility)
+
+  const projectIdsForSuggestions = useMemo(() => {
+    const parseList = (v: string | null | undefined) =>
+      (v ?? '')
+        .split(',')
+        .map((x) => Number.parseInt(x.trim(), 10))
+        .filter((n) => Number.isFinite(n))
+
+    const fromProjectParam = parseList(project)
+    if (fromProjectParam.length > 0) return fromProjectParam
+
+    const fromProjectIdParam = parseList(params.get('projectId'))
+    if (fromProjectIdParam.length > 0) return fromProjectIdParam
+
+    return null
+  }, [project, params.toString()])
+
+  const suggestionsRange = useMemo(() => {
+    const parse = (v: string | null) => (v ? new Date(v) : null)
+    const fromCandidates = [
+      parse(params.get('deliveryDateFrom')),
+      parse(params.get('publicationDateFrom')),
+    ].filter(Boolean) as Date[]
+    const toCandidates = [
+      parse(params.get('deliveryDateTo')),
+      parse(params.get('publicationDateTo')),
+    ].filter(Boolean) as Date[]
+
+    if (fromCandidates.length || toCandidates.length) {
+      const from = fromCandidates.length ? new Date(Math.min(...fromCandidates.map(d => d.getTime()))) : new Date()
+      const to =
+        toCandidates.length
+          ? new Date(Math.max(...toCandidates.map(d => d.getTime())))
+          : new Date(Date.now() + 30 * 24 * 60 * 60 * 1000)
+      return { from, to }
+    }
+
+    const now = new Date()
+    const from = new Date(now.getFullYear(), now.getMonth(), 1)
+    const to = new Date(now.getFullYear(), now.getMonth() + 2, 0, 23, 59, 59, 999)
+    return { from, to }
+  }, [params.toString()])
+
+  const suggestionsQuery = useTaskSuggestionsQuery({
+    projectIds: projectIdsForSuggestions,
+    from: suggestionsRange.from,
+    to: suggestionsRange.to,
+    enabled: enabled && plannerVisibility.showSuggestions,
+    cacheKeyParts: ['kanban', groupField, groupOrder],
+  })
+
+  const optimisticPlannerTasksByKey = usePlannerOptimisticTasks((s) => s.byKey)
+  const optimisticPlannerTasks = useMemo(
+    () => Object.values(optimisticPlannerTasksByKey),
+    [optimisticPlannerTasksByKey],
+  )
+
+  // Stabilize filters before using them in query-shape keys
+  const effectiveFilters = useMemo<Record<string, string | string[]>>(
+    () => (filters ? filters : {}),
+    // Stringify incoming filters so new object identities don't cause spurious resets
+    [JSON.stringify(filters ?? {})],
+  );
+
+  // Row sort rule: user-selected or default by group type
+  const rowSortBy: string | undefined =
+    kanbanOptions.taskSort ??
+    (rpcGroupBy === 'delivery_date' || rpcGroupBy === 'publication_date'
+      ? rpcGroupBy
+      : 'updated_at');
+  const rowSortOrder: 'asc' | 'desc' =
+    kanbanOptions.taskSortDir ??
+    (rpcGroupBy === 'delivery_date' || rpcGroupBy === 'publication_date'
+      ? 'asc'
+      : 'desc');
+
   const showSubtasks = kanbanOptions.showSubtasks;
+
+  // Color mode (same as Calendar)
+  const [colorMode, setColorMode] = useState<TaskCardColorMode>('contentType');
+
+  // Group/Sort panel + Add task composer (must be before onAddTaskForColumn)
+  const [groupPanelOpen, setGroupPanelOpen] = useState(false);
+  const [sortPanelOpen, setSortPanelOpen] = useState(false);
+  const isMobile = useMobileDetection();
+  const openComposer = useTaskComposerStore((s) => s.openComposer);
+
+  // Per-group search (debounced for server query)
+  const [groupSearchInputByKey, setGroupSearchInputByKey] = useState<Record<string, string>>({});
+  const groupSearchDebounced = useDebounce(groupSearchInputByKey, 250);
 
   // Track the currently dragged task id
   const [draggedTaskId, setDraggedTaskId] = useState<string | null>(null);
-  // For optimistic updates, track local groupedTasks override
-  const [optimisticGroupedTasks, setOptimisticGroupedTasks] = useState<GroupedTasks | null>(null);
-  const [pendingOptimisticTaskId, setPendingOptimisticTaskId] = useState<string | null>(null);
+
+  // Track task id we just moved via DnD - skip realtime clear for our own update to prevent blink
+  const recentlyMovedTaskIdRef = useRef<string | null>(null);
+  const recentlyMovedClearTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  type Cursor = { rok: string; id: number } | null;
+
+  type BucketState = {
+    rows: TaskListRow[];
+    cursor: Cursor;
+    hasMore: boolean;
+    isFetching: boolean;
+    error: string | null;
+  };
+
+  const [bucketByKey, setBucketByKey] = useState<Record<string, BucketState>>({});
+
+  // Per-bucket in-flight / cursor dedupe state
+  const inFlightByGroupRef = useRef<Record<string, boolean>>({});
+  const lastCursorKeyByGroupRef = useRef<Record<string, string>>({});
+
+  // Query-shape tracking for resets / stale response guards
+  const filtersKey = useMemo(() => JSON.stringify(effectiveFilters), [effectiveFilters]);
+  const lastQueryShapeRef = useRef<string | null>(null);
+  const lastRequestIdByGroupRef = useRef<Record<string, number>>({});
+
+  // Stable query-shape token used for resets (exclude per-group search - that only resets its own column)
+  const queryShapeKey = useMemo(
+    () =>
+      JSON.stringify({
+        q,
+        project,
+        filtersKey,
+        groupBy: rpcGroupBy,
+        groupOrder,
+        rowSortBy,
+        rowSortOrder,
+        perBucketPageSize,
+      }),
+    [q, project, filtersKey, rpcGroupBy, groupOrder, rowSortBy, rowSortOrder, perBucketPageSize],
+  );
+
+  // When one group's search changes, only reset that group's bucket (not all)
+  const prevGroupSearchRef = useRef<Record<string, string>>({});
+  useEffect(() => {
+    for (const groupKey of Object.keys(groupSearchDebounced)) {
+      const prev = prevGroupSearchRef.current[groupKey] ?? '';
+      const next = groupSearchDebounced[groupKey]?.trim() ?? '';
+      if (prev !== next) {
+        prevGroupSearchRef.current = { ...prevGroupSearchRef.current, [groupKey]: next };
+        delete lastCursorKeyByGroupRef.current[groupKey];
+        setBucketByKey((b) => ({
+          ...b,
+          [groupKey]: {
+            rows: [],
+            cursor: null,
+            hasMore: true,
+            isFetching: false,
+            error: null,
+          },
+        }));
+      }
+    }
+  }, [groupSearchDebounced]);
   
   // Set up realtime subscriptions for tasks
   const { isSubscribed } = useTaskRealtime({
     enabled: true,
     showNotifications: false,
     onTaskUpdate: (task, event) => {
-      queryClient.invalidateQueries({ queryKey: ['kanban-bootstrap'] });
+      // Skip clear for our own DnD update - we've already done the optimistic move.
+      // Clearing here causes all cards to blink and the source column to stay empty.
+      if (task?.id && recentlyMovedTaskIdRef.current === String(task.id)) {
+        return;
+      }
+      // On task change from other sources, reset bucket state so fresh pages load.
+      setBucketByKey({});
+      inFlightByGroupRef.current = {};
+      lastCursorKeyByGroupRef.current = {};
+      lastRequestIdByGroupRef.current = {};
     }
   });
 
   // Add Typesense updater - only for optimistic updates, don't fetch data
   const typesenseQuery = useTypesenseInfiniteQuery({ q: '', pageSize: 25, enabled: false });
 
-  // --- Fetch grouped tasks and metadata from Edge Function ---
-  const {
-    data: kanbanData,
-    isLoading,
-    isError,
-    refetch,
-  } = useQuery({
-    queryKey: ['kanban-bootstrap', groupBy, limit, accessToken, searchValue, filters],
-    queryFn: async () => {
-      if (!accessToken) throw new Error('No user session');
-      const groupField = GROUP_BY_TO_FIELD[groupBy] || groupBy;
-      const params = new URLSearchParams();
-      params.set('group_by', groupField);
-      params.set('limit', String(limit));
-      if (searchValue) params.set('search', searchValue);
-      if (filters) {
-        params.set('filters', encodeURIComponent(JSON.stringify(filters)));
-      }
-      const url = `${process.env.NEXT_PUBLIC_SUPABASE_URL}/functions/v1/bootstrap-kanban?${params.toString()}`;
-      const res = await fetch(url, {
-        headers: {
-          'Content-Type': 'application/json',
-          Authorization: `Bearer ${accessToken}`,
-        },
-      });
-      if (!res.ok) throw new Error('Failed to fetch Kanban data');
-      return res.json();
-    },
-    enabled: enabled && !!accessToken, // Only run when view is enabled and we have access token
-    staleTime: 60_000,
+  // --- Group meta (B) ---
+  const groupMetaQuery = useTaskGroupMetaAllQuery({
+    q,
+    project,
+    filters: effectiveFilters,
+    groupBy: rpcGroupBy,
+    groupOrder,
+    limit: 5000,
+    enabled: enabled && !!rpcGroupBy,
+    editFields: undefined,
   });
 
-  type Task = Record<string, any>;
-  type GroupedTasks = Record<string, Task[]>;
-  type Meta = {
-    statuses?: { value: string; label: string; project_id?: string; color?: string; id?: string; name?: string }[];
-    users?: any[];
-    projects?: any[];
-    content_types?: any[];
-    production_types?: any[];
-    languages?: any[];
-    [key: string]: any;
-  };
-  const groupedTasks: GroupedTasks = kanbanData && kanbanData.tasks ? kanbanData.tasks : {};
-  const meta: Meta = {
-    users: kanbanData?.users,
-    projects: kanbanData?.projects,
-    statuses: kanbanData?.project_statuses,
-    content_types: kanbanData?.content_types,
-    production_types: kanbanData?.production_types,
-    languages: kanbanData?.languages,
-  };
+  const baseGroups = groupMetaQuery.groups || [];
 
-  // --- Kanban deduplication logic for project_status_name ---
-  let columnDefs: { key: string; label: string; statusIds?: string[] }[] = [];
-  let statusNameProjectToId: Record<string, Record<string, string>> = {};
-  const tasksSource = optimisticGroupedTasks !== null ? optimisticGroupedTasks : groupedTasks;
-  
-  // Filter out subtasks if showSubtasks is false
-  const filteredTasksSource = showSubtasks ? tasksSource : Object.fromEntries(
-    Object.entries(tasksSource).map(([key, tasks]) => [
-      key, 
-      (tasks as any[]).filter(task => !task.parent_task_id_int)
-    ])
+  const groups = useMemo(() => {
+    // Only augment date-grouped Kanban with suggestion-only dates (so suggestions can appear on their planned date).
+    if (!(groupField === 'delivery_date' || groupField === 'publication_date')) return baseGroups
+
+    const extraDates = new Set<string>()
+    for (const s of suggestionsQuery.data ?? []) {
+      const d = groupField === 'delivery_date' ? (s as any).delivery_date : (s as any).publication_date
+      if (typeof d === 'string' && d.trim().length > 0) extraDates.add(d)
+    }
+
+    if (extraDates.size === 0) return baseGroups
+
+    const seen = new Set(baseGroups.map(g => String(g.group_key)))
+    const merged = [...baseGroups]
+    for (const d of Array.from(extraDates)) {
+      if (seen.has(d)) continue
+      merged.push({ group_key: d, label: d } as any)
+    }
+
+    merged.sort((a: any, b: any) => {
+      const at = new Date(String(a.group_key)).getTime()
+      const bt = new Date(String(b.group_key)).getTime()
+      const aOk = Number.isFinite(at)
+      const bOk = Number.isFinite(bt)
+      if (!aOk && !bOk) return 0
+      if (!aOk) return 1
+      if (!bOk) return -1
+      return groupOrder === 'desc' ? bt - at : at - bt
+    })
+
+    return merged
+  }, [baseGroups, groupField, suggestionsQuery.data, groupOrder])
+
+  // Initialize bucket state when groups change
+  useEffect(() => {
+    if (!enabled || !rpcGroupBy) return;
+    if (!groups.length) {
+      setBucketByKey({});
+      return;
+    }
+    setBucketByKey(prev => {
+      const next: Record<string, BucketState> = { ...prev };
+      // Ensure each group has a bucket
+      for (const g of groups) {
+        if (!next[g.group_key]) {
+          next[g.group_key] = {
+            rows: [],
+            cursor: null,
+            hasMore: true,
+            isFetching: false,
+            error: null,
+          };
+        }
+      }
+      // Prune buckets for groups that no longer exist
+      for (const key of Object.keys(next)) {
+        if (!groups.some(g => g.group_key === key)) {
+          delete next[key];
+        }
+      }
+      return next;
+    });
+  }, [enabled, rpcGroupBy, groups]);
+
+  // Reset buckets on query-shape change (F)
+  useEffect(() => {
+    if (lastQueryShapeRef.current === queryShapeKey) {
+      return;
+    }
+
+    lastQueryShapeRef.current = queryShapeKey;
+    setBucketByKey({});
+    inFlightByGroupRef.current = {};
+    lastCursorKeyByGroupRef.current = {};
+    lastRequestIdByGroupRef.current = {};
+  }, [queryShapeKey]);
+
+  // Helper to build RPC params for tasks (D/G, aligned with list view)
+  const buildTasksRpcParams = useCallback(
+    (groupKey: string, cursor: Cursor) => {
+      // Map UI sort keys to view columns (same as list view)
+      const uiToViewSortMap: Record<string, string> = {
+        assigned_user: 'assigned_to_name',
+        users: 'assigned_to_name',
+        projects: 'project_name',
+        project_statuses: 'project_status_name',
+        title: 'title',
+        delivery_date: 'delivery_date',
+        publication_date: 'publication_date',
+        publication_timestamp: 'publication_date',
+        updated_at: 'updated_at',
+        content_type_title: 'content_type_title',
+        production_type_title: 'production_type_title',
+        language_code: 'language_code',
+      };
+
+      const mappedRowSortBy = rowSortBy ? uiToViewSortMap[rowSortBy] || rowSortBy : undefined;
+
+      // Convert project filter - can be single ID or comma-separated list.
+      let projectIds: number[] | null = null;
+      if (project) {
+        const parsed = project
+          .split(',')
+          .map(p => parseInt(p.trim(), 10))
+          .filter(id => !isNaN(id));
+        if (parsed.length > 0) {
+          projectIds = parsed;
+        }
+      }
+
+      // Status filter by name
+      const statusParam = effectiveFilters['project_status_name'] || effectiveFilters['status'];
+      let statusNames: string[] | null = null;
+      if (statusParam) {
+        const statuses = Array.isArray(statusParam) ? statusParam : [statusParam];
+        const names = statuses.filter(s => typeof s === 'string' && s.trim().length > 0) as string[];
+        if (names.length > 0) {
+          statusNames = names;
+        }
+      }
+
+      // Assignee filter
+      const assigneeParam = effectiveFilters['assigned_to_name'];
+      let assigneeIds: number[] | null = null;
+      if (assigneeParam) {
+        const assignees = Array.isArray(assigneeParam) ? assigneeParam : [assigneeParam];
+        const ids: number[] = [];
+        for (const a of assignees) {
+          const id = parseInt(String(a), 10);
+          if (!isNaN(id)) {
+            ids.push(id);
+          }
+        }
+        if (ids.length > 0) {
+          assigneeIds = ids;
+        }
+      }
+
+      // Content type filter
+      const contentTypeParam = effectiveFilters['content_type_title'];
+      let contentTypeIds: number[] | null = null;
+      if (contentTypeParam) {
+        const contentTypes = Array.isArray(contentTypeParam) ? contentTypeParam : [contentTypeParam];
+        const ids: number[] = [];
+        for (const ct of contentTypes) {
+          const parsed = parseInt(String(ct), 10);
+          if (!isNaN(parsed)) ids.push(parsed);
+        }
+        if (ids.length > 0) {
+          contentTypeIds = ids;
+        }
+      }
+
+      // Production type filter
+      const productionTypeParam = effectiveFilters['production_type_title'];
+      let productionTypeIds: number[] | null = null;
+      if (productionTypeParam) {
+        const productionTypes = Array.isArray(productionTypeParam)
+          ? productionTypeParam
+          : [productionTypeParam];
+        const ids: number[] = [];
+        for (const pt of productionTypes) {
+          const parsed = parseInt(String(pt), 10);
+          if (!isNaN(parsed)) ids.push(parsed);
+        }
+        if (ids.length > 0) {
+          productionTypeIds = ids;
+        }
+      }
+
+      // Language filter
+      const languageParam = effectiveFilters['language_code'];
+      let languageIds: number[] | null = null;
+      if (languageParam) {
+        const languages = Array.isArray(languageParam) ? languageParam : [languageParam];
+        const ids: number[] = [];
+        for (const lang of languages) {
+          const parsed = parseInt(String(lang), 10);
+          if (!isNaN(parsed)) ids.push(parsed);
+        }
+        if (ids.length > 0) {
+          languageIds = ids;
+        }
+      }
+
+      // Overdue filters
+      const overdueStatusParam = effectiveFilters['overdueStatus'];
+      let isOverdue: boolean | null = null;
+      let isPublicationOverdue: boolean | null = null;
+      if (overdueStatusParam) {
+        const overdueStatuses = Array.isArray(overdueStatusParam)
+          ? overdueStatusParam
+          : [overdueStatusParam];
+        if (overdueStatuses.includes('delivery_overdue')) {
+          isOverdue = true;
+        }
+        if (overdueStatuses.includes('publication_overdue')) {
+          isPublicationOverdue = true;
+        }
+      }
+
+      // Per-group search overrides global q when set
+      const groupSearch = groupSearchDebounced[groupKey]?.trim();
+      const effectiveQ = (groupSearch && groupSearch.length > 0) ? groupSearch : (q && q.trim().length > 0 ? q : null);
+
+      return {
+        p_q: effectiveQ,
+        p_project_ids: projectIds,
+        p_status_names: statusNames,
+        p_assignee_ids: assigneeIds,
+        p_content_type_ids: contentTypeIds,
+        p_production_type_ids: productionTypeIds,
+        p_language_ids: languageIds,
+        p_is_overdue: isOverdue,
+        p_is_publication_overdue: isPublicationOverdue,
+        p_group_by: rpcGroupBy,
+        p_group_key: groupKey,
+        p_row_sort_by: mappedRowSortBy ?? null,
+        p_row_sort_order: rowSortOrder ?? null,
+        p_limit: perBucketPageSize,
+        p_cursor: cursor,
+      };
+    },
+    [q, project, effectiveFilters, rpcGroupBy, rowSortBy, rowSortOrder, perBucketPageSize, groupSearchDebounced],
   );
 
-  // Find the dragged task and its project id (must be after filteredTasksSource is defined)
-  let draggedTask: any = null;
-  let draggedTaskProjectId: string | null = null;
-  if (draggedTaskId) {
-    const allTasks = Object.values(optimisticGroupedTasks || filteredTasksSource).flat();
-    draggedTask = allTasks.find((t: any) => String(t.id) === String(draggedTaskId));
-    draggedTaskProjectId = draggedTask?.project_id_int ? String(draggedTask.project_id_int) : null;
-  }
-  if (groupBy === 'project_status_name' && meta.statuses) {
-    // Build map: statusName -> [statusIds]
-    const statusNameToIds: Record<string, string[]> = {};
-    statusNameProjectToId = {};
-    meta.statuses.forEach(s => {
-      if (!s.name || !s.id) return;
-      if (!statusNameToIds[s.name]) statusNameToIds[s.name] = [];
-      statusNameToIds[s.name].push(String(s.id));
-      if (!statusNameProjectToId[s.name]) statusNameProjectToId[s.name] = {};
-      if (s.project_id) statusNameProjectToId[s.name][String(s.project_id)] = String(s.id);
-    });
-    columnDefs = Object.keys(statusNameToIds).map(name => ({
-      key: name + '__' + statusNameToIds[name].join('_'), // unique per status name + all IDs
-      label: name,
-      statusIds: statusNameToIds[name],
-      statusName: name,
-    }));
-  } else if (groupBy === 'delivery_date' || groupBy === 'publication_date') {
-    // Group by month (YYYY-MM)
-    const groupMap: Record<string, { label: string; tasks: any[] }> = {};
-    for (const task of Object.values(filteredTasksSource).flat()) {
-      const dateValue = task[groupBy];
-      if (!dateValue) {
-        if (!groupMap['__unassigned__']) groupMap['__unassigned__'] = { label: getUnassignedLabel(groupBy), tasks: [] };
-        groupMap['__unassigned__'].tasks.push(task);
-        continue;
-      }
-      const date = new Date(dateValue);
-      if (isNaN(date.getTime())) {
-        if (!groupMap['__unassigned__']) groupMap['__unassigned__'] = { label: getUnassignedLabel(groupBy), tasks: [] };
-        groupMap['__unassigned__'].tasks.push(task);
-        continue;
-      }
-      const groupKey = `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}`;
-      const label = date.toLocaleString('default', { month: 'long', year: 'numeric' });
-      if (!groupMap[groupKey]) groupMap[groupKey] = { label, tasks: [] };
-      groupMap[groupKey].tasks.push(task);
-    }
-    // Sort by groupKey descending (most recent month first)
-    columnDefs = Object.entries(groupMap)
-      .sort(([a], [b]) => b.localeCompare(a))
-      .map(([key, { label }]) => ({ key, label }));
-  } else {
-    // Default: one column per group key
-    columnDefs = Object.keys(filteredTasksSource).map(key => ({
-      key,
-      label: getGroupLabel({ groupBy, groupKey: key, meta }),
-    }));
-  }
+  // Shared fetch implementation for a single bucket (D)
+  const performFetchForGroup = useCallback(
+    async (groupKey: string, cursor: Cursor) => {
+      if (!enabled || !rpcGroupBy) return;
 
-  // --- Build groupedTasks for KanbanColumn ---
-  let groupedTasksForColumns: Record<string, any[]> = {};
-  if (groupBy === 'project_status_name' && meta.statuses) {
-    // Always create an array for every deduped status column
-    groupedTasksForColumns = {};
-    for (const col of columnDefs) {
-      groupedTasksForColumns[col.key] = [];
-    }
-    // Assign tasks to the correct columns
-    for (const task of Object.values(filteredTasksSource).flat()) {
-      const statusId = String(task.project_status_id);
-      const col = columnDefs.find(col => col.statusIds?.includes(statusId));
-      if (col) {
-        groupedTasksForColumns[col.key].push(task);
+      // Guard 1: in-flight per-bucket lock
+      if (inFlightByGroupRef.current[groupKey]) {
+        return;
       }
-    }
-  } else if (groupBy === 'delivery_date' || groupBy === 'publication_date') {
-    // Use the same grouping as above
-    for (const col of columnDefs) {
-      groupedTasksForColumns[col.key] = [];
-    }
-    for (const task of Object.values(filteredTasksSource).flat()) {
-      const dateValue = task[groupBy];
-      if (!dateValue) {
-        groupedTasksForColumns['__unassigned__'].push(task);
-        continue;
+      inFlightByGroupRef.current[groupKey] = true;
+
+      // Guard 2: cursor dedupe
+      const cursorKey =
+        cursor && typeof cursor === 'object' && 'rok' in cursor && 'id' in cursor
+          ? `${(cursor as any).rok}|${(cursor as any).id}`
+          : cursor
+          ? JSON.stringify(cursor)
+          : 'FIRST';
+      if (lastCursorKeyByGroupRef.current[groupKey] === cursorKey) {
+        inFlightByGroupRef.current[groupKey] = false;
+        return;
       }
-      const date = new Date(dateValue);
-      if (isNaN(date.getTime())) {
-        groupedTasksForColumns['__unassigned__'].push(task);
-        continue;
+      lastCursorKeyByGroupRef.current[groupKey] = cursorKey;
+
+      // Mark fetching
+      setBucketByKey(prev => ({
+        ...prev,
+        [groupKey]: {
+          rows: prev[groupKey]?.rows ?? [],
+          cursor: prev[groupKey]?.cursor ?? null,
+          hasMore: prev[groupKey]?.hasMore ?? true,
+          isFetching: true,
+          error: null,
+        },
+      }));
+
+      const requestId =
+        (lastRequestIdByGroupRef.current[groupKey] ?? 0) + 1;
+      lastRequestIdByGroupRef.current[groupKey] = requestId;
+      const queryKeyAtStart = lastQueryShapeRef.current;
+
+      try {
+        const rpcParams = buildTasksRpcParams(groupKey, cursor);
+        const { data, error } = await supabase.rpc('task_group_tasks_filtered', rpcParams);
+
+        if (lastRequestIdByGroupRef.current[groupKey] !== requestId) {
+          // Stale response
+          return;
+        }
+        if (queryKeyAtStart !== lastQueryShapeRef.current) {
+          // Query shape changed mid-flight
+          return;
+        }
+
+        if (error) {
+          console.error('[KanbanView] task_group_tasks_filtered error', error);
+          setBucketByKey(prev => ({
+            ...prev,
+            [groupKey]: {
+              rows: prev[groupKey]?.rows ?? [],
+              cursor: null,
+              hasMore: false,
+              isFetching: false,
+              error: error.message || 'Failed to fetch tasks',
+            },
+          }));
+          return;
+        }
+
+        const payload = (data as { rows?: TaskListRow[]; next_cursor?: any }) || {};
+        const fetchedRows = payload.rows ?? [];
+        const newCursor: Cursor = (payload.next_cursor as any) ?? null;
+
+        setBucketByKey(prev => {
+          const prevBucket = prev[groupKey] ?? {
+            rows: [],
+            cursor: null,
+            hasMore: true,
+            isFetching: false,
+            error: null,
+          };
+          const existingIds = new Set(prevBucket.rows.map(r => String(r.id)));
+          const dedupedNew = fetchedRows.filter(r => !existingIds.has(String(r.id)));
+          const combinedRows = cursor == null ? fetchedRows : [...prevBucket.rows, ...dedupedNew];
+
+          return {
+            ...prev,
+            [groupKey]: {
+              rows: combinedRows,
+              cursor: newCursor,
+              hasMore: newCursor != null,
+              isFetching: false,
+              error: null,
+            },
+          };
+        });
+      } catch (err: any) {
+        console.error('[KanbanView] Unexpected error fetching tasks for group', groupKey, err);
+        setBucketByKey(prev => ({
+          ...prev,
+          [groupKey]: {
+            rows: prev[groupKey]?.rows ?? [],
+            cursor: null,
+            hasMore: false,
+            isFetching: false,
+            error: err?.message || 'Failed to fetch tasks',
+          },
+        }));
+      } finally {
+        inFlightByGroupRef.current[groupKey] = false;
       }
-      const groupKey = `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}`;
-      if (!groupedTasksForColumns[groupKey]) groupedTasksForColumns[groupKey] = [];
-      groupedTasksForColumns[groupKey].push(task);
-    }
+    },
+    [enabled, rpcGroupBy, buildTasksRpcParams, supabase],
+  );
+
+  // Public bucket fetch helpers (D)
+  const ensureFirstPage = useCallback(
+    (groupKey: string) => {
+      const bucket = bucketByKey[groupKey];
+      if (!bucket) {
+        // Bucket will be initialized by groups effect; treat as empty
   } else {
-    groupedTasksForColumns = filteredTasksSource;
-  }
+        if (bucket.rows.length > 0) return;
+        if (bucket.isFetching) return;
+        if (!bucket.hasMore) return;
+      }
+
+      performFetchForGroup(groupKey, null);
+    },
+    [bucketByKey, performFetchForGroup],
+  );
+
+  const fetchMore = useCallback(
+    (groupKey: string) => {
+      const bucket = bucketByKey[groupKey];
+      if (!bucket) return;
+      if (bucket.isFetching) return;
+      if (!bucket.hasMore) return;
+
+      const cursor = bucket.cursor ?? null;
+      if (cursor == null) return;
+
+      performFetchForGroup(groupKey, cursor);
+    },
+    [bucketByKey, performFetchForGroup],
+  );
+
+  // --- Kanban columns & tasks derived from bucket state ---
+  const columnDefs = useMemo(
+    () =>
+      groups.map(g => ({
+        key: g.group_key,
+        label: g.label,
+      })),
+    [groups],
+  );
+
+  const suggestionsByColumnKey: Record<string, TaskListRow[]> = useMemo(() => {
+    if (!plannerVisibility.showSuggestions) return {}
+    const out: Record<string, TaskListRow[]> = {}
+    for (const s of suggestionsQuery.data ?? []) {
+      const key = rpcGroupBy ? (computeGroupKeyForTask(s as any, rpcGroupBy) ?? '__unassigned__') : '__unassigned__'
+      if (!out[key]) out[key] = []
+      out[key].push(s as any)
+    }
+    return out
+  }, [plannerVisibility.showSuggestions, suggestionsQuery.data, rpcGroupBy])
+
+  const optimisticByColumnKey: Record<string, TaskListRow[]> = useMemo(() => {
+    if (!plannerVisibility.showTasks) return {}
+    if (!rpcGroupBy) return {}
+    const out: Record<string, TaskListRow[]> = {}
+    for (const t of optimisticPlannerTasks) {
+      const key = computeGroupKeyForTask(t as any, rpcGroupBy) ?? '__unassigned__'
+      if (!out[key]) out[key] = []
+      out[key].push(t as any)
+    }
+    return out
+  }, [plannerVisibility.showTasks, optimisticPlannerTasks, rpcGroupBy])
+
+  const groupedTasksForColumns: Record<string, TaskListRow[]> = useMemo(() => {
+    const result: Record<string, TaskListRow[]> = {};
+    for (const col of columnDefs) {
+      const bucket = bucketByKey[col.key];
+      const rows = bucket?.rows ?? [];
+      // TaskListRow does not carry parent/child metadata; parent filtering is handled elsewhere.
+      const taskRows = plannerVisibility.showTasks ? rows : []
+      const suggestionRows = suggestionsByColumnKey[col.key] ?? []
+      const optimisticRows = plannerVisibility.showTasks ? (optimisticByColumnKey[col.key] ?? []) : []
+
+      const seen = new Set<string>()
+      const merged: any[] = []
+      for (const row of [...optimisticRows, ...suggestionRows, ...taskRows]) {
+        const kind = (row as any).kind ?? 'task'
+        const k = `${kind}:${String((row as any).id)}`
+        if (seen.has(k)) continue
+        seen.add(k)
+        merged.push(row)
+      }
+
+      result[col.key] = merged as any;
+    }
+    return result;
+  }, [columnDefs, bucketByKey, showSubtasks, plannerVisibility.showTasks, plannerVisibility.showSuggestions, suggestionsByColumnKey, optimisticByColumnKey]);
+
+  const colorLegendEntries = useMemo(() => {
+    const allTasks = Object.values(groupedTasksForColumns).flat();
+    const seen = new Set<string>();
+    const list: { key: string; label: string; colorClass: string }[] = [];
+    for (const task of allTasks) {
+      const key = getTaskColorKey(task as any, colorMode);
+      if (!key || key === 'none' || seen.has(key)) continue;
+      seen.add(key);
+      list.push({
+        key,
+        label: getTaskColorLabel(task as any, colorMode),
+        colorClass: getStablePaletteClass(key),
+      });
+    }
+    list.sort((a, b) => String(a.label ?? '').localeCompare(String(b.label ?? ''), undefined, { sensitivity: 'base' }));
+    return list.slice(0, 20);
+  }, [groupedTasksForColumns, colorMode]);
 
   // --- Render columns and cards as before, using deduplicated columns if needed ---
   const sensors = useSensors(
@@ -434,176 +978,247 @@ export function KanbanView({ searchValue, filters, selectedTaskId, onTaskSelect,
   // List of valid column ids for drop validation
   const validColumnIds = columnDefs.map(col => col.key ?? '__unassigned__');
 
+  const onAddTaskForColumn = useCallback(
+    (colKey: string) => {
+      const skip = colKey === '__unassigned__' || colKey === '__no_project__' || colKey === '__no_date__' || !colKey;
+      const firstTask = groupedTasksForColumns[colKey]?.[0] as any;
+      const initial: Record<string, string | number> = {};
+      if (!skip) {
+        if (groupField === 'project_status_id') {
+          // colKey is status name; form needs status ID - get from first task
+          const id = firstTask?.project_status_id ?? firstTask?.project_statuses?.id;
+          if (id != null) initial.project_status_id = String(id);
+        } else if (groupField === 'assigned_to_id') {
+          initial.assigned_to_id = String(colKey);
+        } else if (groupField === 'project_id_int') {
+          // colKey may be project id; prefer ID from first task when available
+          const id = firstTask?.project_id_int ?? firstTask?.projects?.id ?? colKey;
+          initial.project_id_int = String(id);
+        } else if (groupField === 'content_type_id') {
+          initial.content_type_id = String(colKey);
+        } else if (groupField === 'production_type_id') {
+          initial.production_type_id = String(colKey);
+        }
+      }
+      openComposer(initial);
+    },
+    [groupField, openComposer, groupedTasksForColumns],
+  );
+
+  const groupLabelByKey = useMemo(
+    () =>
+      columnDefs.reduce<Record<string, string>>((acc, col) => {
+        acc[col.key] = col.label;
+        return acc;
+      }, {}),
+    [columnDefs],
+  );
+
+  // Track which columns are horizontally visible within the scroll container
+  const [visibleCols, setVisibleCols] = useState<Set<string>>(() => new Set());
+
+  const colKeysSig = useMemo(
+    () => columnDefs.map(c => c.key).join('|'),
+    [columnDefs],
+  );
+
+  useEffect(() => {
+    const root = columnsContainerRef.current;
+    if (!root) return;
+
+    // Clear stale visibility when column set/order changes
+    setVisibleCols(new Set());
+
+    const observer = new IntersectionObserver(
+      entries => {
+        setVisibleCols(prev => {
+          const next = new Set(prev);
+          for (const entry of entries) {
+            const el = entry.target as HTMLElement;
+            const key = el.dataset.colKey;
+            if (!key) continue;
+            if (entry.isIntersecting) {
+              next.add(key);
+            } else {
+              next.delete(key);
+            }
+          }
+          return next;
+        });
+      },
+      {
+        root,
+        // Require most of the column to be in view; no horizontal buffer
+        threshold: 0.25,
+        rootMargin: '120px',
+      },
+    );
+
+    const nodes = root.querySelectorAll('[data-kanban-col]');
+    nodes.forEach(node => observer.observe(node));
+
+    return () => observer.disconnect();
+  }, [colKeysSig]);
+
+  // Resolve drop target: over.id can be column key or task id (when dropping on a card)
+  const resolveDropColumn = useCallback(
+    (overId: string): string | null => {
+      if (validColumnIds.includes(overId)) return overId;
+      // Dropped on a card - find which column contains that task
+      for (const [colKey, tasks] of Object.entries(groupedTasksForColumns)) {
+        if (tasks.some((t: any) => String(t?.id) === String(overId))) return colKey;
+      }
+      return null;
+    },
+    [validColumnIds, groupedTasksForColumns],
+  );
+
   // Drag end handler
   const handleDragEnd = useCallback((event: any) => {
     const { active, over } = event;
     setDraggedTaskId(null); // Always reset after drop
     if (!active || !over) return;
     const taskId = active.id;
-    const newGroupKey = over.id;
-    if (!validColumnIds.includes(newGroupKey)) return;
-    // Find the task being moved
-    const allTasks = Object.values(filteredTasksSource).flat();
-    const task = allTasks.find((t: any) => t && typeof t === 'object' && String(t.id) === String(taskId));
-    if (!task) return;
-    let currentValue = task[groupBy];
-    if (currentValue === null || currentValue === undefined || currentValue === '') currentValue = '__unassigned__';
-    // For status group, newGroupKey is composite: statusName__id1_id2_id3
-    let newStatusName = newGroupKey;
-    if (groupBy === 'project_status_name') {
-      newStatusName = newGroupKey.split('__')[0];
-    }
-    if (String(currentValue) === String(newStatusName)) return;
-    const field = GROUP_BY_TO_FIELD[groupBy] || groupBy;
-    // For project_status_name, deduplicated: find correct status id for this project and status name
-    let targetValue = newStatusName;
-    if (groupBy === 'project_status_name' && meta.statuses && task.project_id_int) {
-      const projectId = String(task.project_id_int);
-      // newStatusName is the status name (column label)
-      const status = meta.statuses.find((s: any) => s.name === newStatusName && String(s.project_id) === projectId);
-      if (!status) {
-        toast({ title: 'No matching status for this project', description: `No status "${newStatusName}" for project ${projectId}`, variant: 'destructive' });
-        return;
+    const newGroupKey = resolveDropColumn(String(over.id));
+    if (!newGroupKey) return;
+    // Find the task and its current bucket
+    let sourceGroupKey: string | null = null;
+    let task: TaskListRow | null = null;
+    for (const [key, bucket] of Object.entries(bucketByKey)) {
+      const found = bucket.rows.find(t => t && String(t.id) === String(taskId));
+      if (found) {
+        sourceGroupKey = key;
+        task = found;
+        break;
       }
-      targetValue = String(status.id);
     }
-    // Patch: For date groupings, convert YYYY-MM to YYYY-MM-01 for DB update
+    if (!task || !sourceGroupKey) return;
+    if (sourceGroupKey === newGroupKey) return;
+
+    const field = groupField;
+    let targetValue: any = newGroupKey;
+
+    // For date groupings, convert YYYY-MM bucket key to first-of-month date (E/G)
     if (
-      (groupBy === 'delivery_date' || groupBy === 'publication_date') &&
+      (groupField === 'delivery_date' || groupField === 'publication_date') &&
       /^\d{4}-\d{2}$/.test(newGroupKey)
     ) {
       targetValue = `${newGroupKey}-01`;
     }
-    // Optimistically update the UI synchronously for DnD
+
+    // Build denormalized patch for common groupings using group label
+    const groupLabel = groupLabelByKey[newGroupKey];
+    const patch: Record<string, any> = { [field]: targetValue };
+    if (field === 'project_status_id') {
+      patch.project_status_id = targetValue;
+      if (groupLabel) patch.project_status_name = groupLabel;
+    } else if (field === 'assigned_to_id') {
+      patch.assigned_to_id = targetValue;
+      if (groupLabel) patch.assigned_to_name = groupLabel;
+    } else if (field === 'project_id_int') {
+      patch.project_id_int = targetValue;
+      if (groupLabel) patch.project_name = groupLabel;
+    } else if (field === 'content_type_id') {
+      patch.content_type_id = targetValue;
+      if (groupLabel) patch.content_type_title = groupLabel;
+    } else if (field === 'production_type_id') {
+      patch.production_type_id = targetValue;
+      if (groupLabel) patch.production_type_title = groupLabel;
+    } else if (field === 'language_id') {
+      patch.language_id = targetValue;
+      if (groupLabel) patch.language_code = groupLabel;
+    }
+
+    const updatedTask: TaskListRow = { ...(task as any), ...patch };
+
+    // Optimistically move task between buckets
     flushSync(() => {
-      setOptimisticGroupedTasks(prev => {
-        // Remove from old group, add to new group
-        const prevTasks = prev || groupedTasks;
-        // Patch denormalized fields for all groupings
-        let patch: Record<string, any> = { [field]: targetValue };
-        if (groupBy === 'project_status_name' && meta.statuses) {
-          const status = meta.statuses.find((s: any) => String(s.id) === String(targetValue));
-          if (status) {
-            patch.project_status_name = status.name;
-            patch.project_status_color = status.color;
+      setBucketByKey(prev => {
+        const next: Record<string, BucketState> = {};
+        for (const [key, bucket] of Object.entries(prev)) {
+          if (key === sourceGroupKey) {
+            next[key] = {
+              ...bucket,
+              rows: bucket.rows.filter(t => String(t.id) !== String(taskId)),
+            };
+          } else if (key === newGroupKey) {
+            next[key] = {
+              ...bucket,
+              rows: [updatedTask, ...bucket.rows.filter(t => String(t.id) !== String(taskId))],
+            };
+          } else {
+            next[key] = bucket;
           }
-        } else if (groupBy === 'assigned_to_name' && meta.users) {
-          const user = meta.users.find((u: any) => String(u.id) === String(targetValue));
-          if (user) patch.assigned_to_name = user.full_name;
-        } else if (groupBy === 'project_name' && meta.projects) {
-          const project = meta.projects.find((p: any) => String(p.id) === String(targetValue));
-          if (project) {
-            patch.project_name = project.name;
-            patch.project_color = project.color;
-          }
-        } else if (groupBy === 'content_type_title' && meta.content_types) {
-          const ct = meta.content_types.find((c: any) => String(c.id) === String(targetValue));
-          if (ct) patch.content_type_title = ct.title;
-        } else if (groupBy === 'production_type_title' && meta.production_types) {
-          const pt = meta.production_types.find((c: any) => String(c.id) === String(targetValue));
-          if (pt) patch.production_type_title = pt.title;
-        } else if (groupBy === 'language_code' && meta.languages) {
-          const lang = meta.languages.find((l: any) => String(l.id) === String(targetValue));
-          if (lang) patch.language_code = lang.code;
         }
-        const updatedTask = { ...task, ...patch };
-        // Remove from all groups
-        const newGroups: GroupedTasks = {};
-        for (const [k, v] of Object.entries(prevTasks)) {
-          newGroups[k] = v.filter((t: any) => String(t.id) !== String(taskId));
+        // Ensure destination bucket exists
+        if (!next[newGroupKey]) {
+          next[newGroupKey] = {
+            rows: [updatedTask],
+            cursor: null,
+            hasMore: true,
+            isFetching: false,
+            error: null,
+          };
         }
-        // Find the new group key for the target status name
-        let targetGroupKey = newGroupKey;
-        if (groupBy === 'project_status_name') {
-          // Find the column key for the target status name
-          const statusIds = Object.values(statusNameProjectToId[newStatusName] || {}).map(String);
-          targetGroupKey = newStatusName + '__' + statusIds.join('_');
-        }
-        if (!newGroups[targetGroupKey]) newGroups[targetGroupKey] = [];
-        newGroups[targetGroupKey] = [updatedTask, ...newGroups[targetGroupKey]];
-        return newGroups;
+        return next;
       });
     });
-    updateTaskInCaches(queryClient, { ...task, [field]: targetValue });
-    // Optimistically update the task details cache so TaskDetails pane updates instantly
-    queryClient.setQueryData(['task', String(taskId)], (old: any) => {
-      if (!old) return old;
-      // Patch denormalized fields for all groupings
-      let patch: Record<string, any> = { [field]: targetValue };
-      if (groupBy === 'project_status_name' && meta.statuses) {
-        const status = meta.statuses.find((s: any) => String(s.id) === String(targetValue));
-        if (status) {
-          patch.project_status_name = status.name;
-          patch.project_status_color = status.color;
-        }
-      } else if (groupBy === 'assigned_to_name' && meta.users) {
-        const user = meta.users.find((u: any) => String(u.id) === String(targetValue));
-        if (user) patch.assigned_to_name = user.full_name;
-      } else if (groupBy === 'project_name' && meta.projects) {
-        const project = meta.projects.find((p: any) => String(p.id) === String(targetValue));
-        if (project) {
-          patch.project_name = project.name;
-          patch.project_color = project.color;
-        }
-      } else if (groupBy === 'content_type_title' && meta.content_types) {
-        const ct = meta.content_types.find((c: any) => String(c.id) === String(targetValue));
-        if (ct) patch.content_type_title = ct.title;
-      } else if (groupBy === 'production_type_title' && meta.production_types) {
-        const pt = meta.production_types.find((c: any) => String(c.id) === String(targetValue));
-        if (pt) patch.production_type_title = pt.title;
-      } else if (groupBy === 'language_code' && meta.languages) {
-        const lang = meta.languages.find((l: any) => String(l.id) === String(targetValue));
-        if (lang) patch.language_code = lang.code;
-      }
-      return { ...old, ...patch };
-    });
-    setPendingOptimisticTaskId(String(taskId));
-    // Persist only the foreign key field to the DB
-    supabase.from('tasks').update({ [field]: targetValue }).eq('id', taskId).then(({ error }) => {
-      if (error) {
-        toast({ title: 'Failed to update task', description: error.message, variant: 'destructive' });
-        // If error, clear optimistic state immediately
-        setOptimisticGroupedTasks(null);
-        setPendingOptimisticTaskId(null);
-      } else {
-        // Wait for server data to match before clearing optimistic state
-        queryClient.invalidateQueries({ queryKey: ['kanban-bootstrap', groupBy, limit] });
-        queryClient.invalidateQueries({ queryKey: ['task', String(taskId)] });
-      }
-    });
-    typesenseQuery.updateTaskInList({ ...task, [field]: targetValue });
-    if (onOptimisticUpdate) onOptimisticUpdate({ ...task, [field]: targetValue });
-    getTypesenseUpdater()?.({ ...task, [field]: targetValue });
-  }, [tasksSource, groupedTasks, groupBy, limit, queryClient, supabase, meta, statusNameProjectToId, typesenseQuery, onOptimisticUpdate]);
 
-  // Clear optimistic state only when the server data reflects the move
-  useEffect(() => {
-    if (pendingOptimisticTaskId && kanbanData && kanbanData.tasks && optimisticGroupedTasks) {
-      // Find the group key for the moved task in the optimistic state
-      let optimisticGroupKey: string | null = null;
-      for (const [groupKey, tasks] of Object.entries(optimisticGroupedTasks)) {
-        if (tasks.some((t: any) => String(t.id) === pendingOptimisticTaskId)) {
-          optimisticGroupKey = groupKey;
-          break;
-        }
-      }
-      if (optimisticGroupKey) {
-        // Check if the server data now has the task in the same group
-        const serverTasksInGroup = kanbanData.tasks[optimisticGroupKey] || [];
-        if (serverTasksInGroup.some((t: any) => String(t.id) === pendingOptimisticTaskId)) {
-          setOptimisticGroupedTasks(null);
-          setPendingOptimisticTaskId(null);
-        }
-      }
+    // Update global caches
+    updateTaskInCaches(queryClient, updatedTask);
+    typesenseQuery.updateTaskInList(updatedTask);
+    if (onOptimisticUpdate) onOptimisticUpdate(updatedTask);
+    getTypesenseUpdater()?.(updatedTask);
+
+    // Mark as our own update so realtime handler skips the bucket clear (prevents blink)
+    if (recentlyMovedClearTimeoutRef.current) {
+      clearTimeout(recentlyMovedClearTimeoutRef.current);
     }
-  }, [kanbanData, pendingOptimisticTaskId, optimisticGroupedTasks]);
+    recentlyMovedTaskIdRef.current = String(taskId);
+    recentlyMovedClearTimeoutRef.current = setTimeout(() => {
+      recentlyMovedTaskIdRef.current = null;
+      recentlyMovedClearTimeoutRef.current = null;
+    }, 3000);
+
+    // Persist to DB
+    supabase
+      .from('tasks')
+      .update({ [field]: targetValue })
+      .eq('id', taskId)
+      .then(({ error }) => {
+        if (error) {
+          toast({
+            title: 'Failed to update task',
+            description: error.message,
+            variant: 'destructive',
+          });
+          // Revert on error
+          setBucketByKey(prev => {
+            const next: Record<string, BucketState> = {};
+            for (const [key, bucket] of Object.entries(prev)) {
+              if (key === newGroupKey) {
+                next[key] = {
+                  ...bucket,
+                  rows: bucket.rows.filter(t => String(t.id) !== String(taskId)),
+                };
+              } else if (key === sourceGroupKey) {
+                next[key] = {
+                  ...bucket,
+                  rows: [task as TaskListRow, ...bucket.rows.filter(t => String(t.id) !== String(taskId))],
+                };
+              } else {
+                next[key] = bucket;
+              }
+            }
+            return next;
+          });
+        }
+      });
+  }, [bucketByKey, resolveDropColumn, groupField, groupLabelByKey, queryClient, supabase, typesenseQuery, onOptimisticUpdate]);
 
   // --- Calendar/Kanban pill button style ---
   const pillButton =
-    'inline-flex items-center gap-1 px-3 py-1 rounded-full border border-gray-200 text-gray-700 text-sm font-medium hover:bg-gray-50 transition shadow-none focus:ring-2 focus:ring-blue-200 focus:outline-none';
-
-  // View switcher dropdown state
-  const [viewSwitcherOpen, setViewSwitcherOpen] = useState(false);
+    'inline-flex items-center gap-1 px-3 py-1 rounded-full border border-gray-200 text-gray-700 text-sm font-medium hover:bg-gray-50 transition shadow-none focus:ring-2 focus:ring-blue-200 focus:outline-none shrink-0';
 
   // No scroll sync needed - we'll use CSS to hide the inner scrollbar
 
@@ -611,50 +1226,92 @@ export function KanbanView({ searchValue, filters, selectedTaskId, onTaskSelect,
   // Let the browser calculate the natural width
 
   return (
+    <TooltipProvider>
     <div className="flex flex-col h-full">
-      {/* Header Bar with Group By and Calendar/Kanban Toggle */}
-      <div className="flex items-center gap-2 px-4 py-2 min-h-[56px] border-b bg-white z-10 flex-shrink-0">
-        {/* View switcher dropdown */}
-        <DropdownMenu open={viewSwitcherOpen} onOpenChange={setViewSwitcherOpen}>
+      {/* Header Bar: single row, horizontal scroll on mobile (like list/calendar) */}
+      <div
+        className="flex items-center gap-2 px-4 py-2 min-h-[56px] border-b bg-white z-10 flex-shrink-0 overflow-x-auto overflow-y-hidden"
+        style={{ WebkitOverflowScrolling: 'touch' }}
+      >
+        <div className="flex items-center gap-2 flex-nowrap w-max flex-shrink-0">
+        {/* Group by pill → modal */}
+        <GroupSortPanel
+          type="group"
+          groupBy={kanbanOptions.groupBy}
+          groupOrder={groupOrder}
+          rowSortBy={rowSortBy}
+          rowSortOrder={rowSortOrder}
+          onGroupByChange={(v) => { const p = writeParam(new URLSearchParams(params.toString()), 'kanban_group_by', v); router.replace(`?${p}`); }}
+          onGroupOrderChange={(v) => { const p = new URLSearchParams(params.toString()); p.set('groupOrder', v); router.replace(`?${p}`); }}
+          onSortByChange={() => {}}
+          onSortOrderChange={() => {}}
+          open={groupPanelOpen}
+          onOpenChange={setGroupPanelOpen}
+          trigger={<button type="button" className={pillButton + ' gap-1 min-w-[140px]'}>Group by: {GROUP_BY_OPTIONS.find(o => o.value === kanbanOptions.groupBy)?.label ?? 'Status'}
+            <ChevronDown size={16} />
+          </button>}
+          isMobile={isMobile}
+        />
+        {/* Sort by pill → modal */}
+        <GroupSortPanel
+          type="sort"
+          groupBy={kanbanOptions.groupBy}
+          groupOrder={groupOrder}
+          rowSortBy={rowSortBy}
+          rowSortOrder={rowSortOrder}
+          onGroupByChange={() => {}}
+          onGroupOrderChange={() => {}}
+          onSortByChange={(v) => { const p = writeParam(new URLSearchParams(params.toString()), 'kanban_task_sort', v); router.replace(`?${p}`); }}
+          onSortOrderChange={(v) => { const p = writeParam(new URLSearchParams(params.toString()), 'kanban_task_sort_dir', v); router.replace(`?${p}`); }}
+          open={sortPanelOpen}
+          onOpenChange={setSortPanelOpen}
+          trigger={<button type="button" className={pillButton + ' gap-1 min-w-[160px]'}>Sort by: {rowSortBy === 'delivery_date' ? 'Delivery date' : rowSortBy === 'publication_date' ? 'Publication date' : rowSortBy === 'title' ? 'Title' : rowSortBy === 'assigned_to_name' ? 'Assignee' : rowSortBy === 'project_status_name' ? 'Status' : 'Updated'}
+            <ChevronDown size={16} />
+          </button>}
+          isMobile={isMobile}
+        />
+        {/* Color mode pill (same as Calendar) */}
+        <DropdownMenu>
           <DropdownMenuTrigger asChild>
-            <h2 className="flex items-center gap-1 text-xl font-semibold text-gray-900 cursor-pointer hover:text-gray-700 transition-colors">
-              {params.get('middleView') === 'calendar' ? 'Calendar' : 'Kanban'}
-              <ChevronDown 
-                size={16} 
-                className={`transition-transform duration-200 ${viewSwitcherOpen ? 'rotate-180' : ''}`}
-              />
-            </h2>
+            <button type="button" className={pillButton + ' gap-1 min-w-[120px]'}>
+              Color: {colorMode === 'contentType' ? 'Content Type' : colorMode === 'assignedTo' ? 'Assigned To' : colorMode === 'project' ? 'Project' : 'Status'}
+              <ChevronDown size={16} />
+            </button>
           </DropdownMenuTrigger>
           <DropdownMenuContent align="start">
-            <DropdownMenuItem onClick={() => {
-              const newParams = new URLSearchParams(params.toString());
-              newParams.set('middleView', 'calendar');
-              router.replace(`?${newParams.toString()}`);
-            }}>Calendar</DropdownMenuItem>
-            <DropdownMenuItem onClick={() => {
-              const newParams = new URLSearchParams(params.toString());
-              newParams.set('middleView', 'kanban');
-              router.replace(`?${newParams.toString()}`);
-            }}>Kanban</DropdownMenuItem>
+            <DropdownMenuItem onSelect={() => setColorMode('contentType')} className={colorMode === 'contentType' ? 'font-semibold bg-muted' : ''}>Content Type</DropdownMenuItem>
+            <DropdownMenuItem onSelect={() => setColorMode('assignedTo')} className={colorMode === 'assignedTo' ? 'font-semibold bg-muted' : ''}>Assigned To</DropdownMenuItem>
+            <DropdownMenuItem onSelect={() => setColorMode('project')} className={colorMode === 'project' ? 'font-semibold bg-muted' : ''}>Project</DropdownMenuItem>
+            <DropdownMenuItem onSelect={() => setColorMode('status')} className={colorMode === 'status' ? 'font-semibold bg-muted' : ''}>Status</DropdownMenuItem>
           </DropdownMenuContent>
         </DropdownMenu>
-        <span className="text-sm font-medium text-gray-500">Group by:</span>
-        <div className="relative">
-          <select
-            className="rounded-full border px-3 py-1 text-sm bg-white focus:outline-none focus:ring-2 focus:ring-blue-200"
-            value={kanbanOptions.groupBy}
-            onChange={e => {
-              const newParams = writeParam(new URLSearchParams(params.toString()), 'kanban_group_by', e.target.value);
-              router.replace(`?${newParams.toString()}`);
-            }}
-          >
-            {GROUP_BY_OPTIONS.map(opt => (
-              <option key={opt.value} value={opt.value}>{opt.label}</option>
-            ))}
-          </select>
-        </div>
+        {/* Legend pill (label + swatch, from loaded tasks) */}
+        <DropdownMenu>
+          <DropdownMenuTrigger asChild>
+            <button type="button" className={pillButton + ' gap-1 min-w-[5rem]'}>
+              Legend <ChevronDown size={16} />
+            </button>
+          </DropdownMenuTrigger>
+          <DropdownMenuContent align="start" className="min-w-[220px] max-h-[min(60vh,400px)] overflow-y-auto">
+            <div className="px-2 py-1.5 text-[11px] text-gray-500 border-b border-gray-100">
+              Colors = {colorMode === 'contentType' ? 'Content Type' : colorMode === 'assignedTo' ? 'Assigned To' : colorMode === 'project' ? 'Project' : 'Status'}
+            </div>
+            {colorLegendEntries.length === 0 ? (
+              <div className="px-2 py-3 text-gray-400 text-sm">No items yet</div>
+            ) : (
+              <div className="py-1">
+                {colorLegendEntries.map(({ key, label, colorClass }) => (
+                  <div key={key} className="flex items-center gap-2 px-2 py-1.5 hover:bg-gray-50">
+                    <span className={`inline-block w-3 h-3 rounded-sm shrink-0 ${colorClass}`} aria-hidden />
+                    <span className="truncate text-sm">{label}</span>
+                  </div>
+                ))}
+              </div>
+            )}
+          </DropdownMenuContent>
+        </DropdownMenu>
         {/* Subtasks toggle */}
-        <span className="mx-2 text-gray-200 select-none">|</span>
+        <span className="mx-2 text-gray-200 select-none shrink-0">|</span>
         <button
           className={pillButton + (showSubtasks ? ' bg-blue-600 text-white border-blue-600' : '')}
           onClick={() => {
@@ -667,6 +1324,7 @@ export function KanbanView({ searchValue, filters, selectedTaskId, onTaskSelect,
           </button>
         {/* Expand/restore button slot (right-aligned) */}
         {expandButton}
+        </div>
       </div>
       {/* Kanban Columns - horizontal scroll area below header */}
       <div className="flex-1 min-h-0">
@@ -677,104 +1335,399 @@ export function KanbanView({ searchValue, filters, selectedTaskId, onTaskSelect,
           onDragStart={event => setDraggedTaskId(event.active?.id ? String(event.active.id) : null)}
           onDragCancel={() => setDraggedTaskId(null)}
         >
-        <div
-          className="overflow-x-auto flex gap-4 px-4 py-4 h-full"
-          style={{
-            width: 'max-content',
-            minWidth: '100%',
-          }}
-          ref={columnsContainerRef}
-        >
+          {/* Viewport: fixed width, horizontal clipping */}
+          <div
+            className="overflow-x-auto h-full"
+            ref={columnsContainerRef}
+          >
+            {/* Inner row: can grow to max-content width, no outer gap between columns */}
+            <div className="flex gap-4 px-3 py-2 h-full w-max min-w-full">
           <SortableContext items={columnDefs.map(col => col.key)} strategy={horizontalListSortingStrategy}>
             {columnDefs.map(col => (
-              <KanbanColumn
+                  <div
                 key={col.key}
+                    data-kanban-col
+                    data-col-key={col.key}
+                    className="h-full"
+                  >
+                    <KanbanColumn
                 col={col.key}
                 label={col.label}
-                groupedTasks={groupedTasksForColumns}
+                tasksForColumn={groupedTasksForColumns[col.key] ?? []}
                 selectedTaskId={selectedTaskId}
                 onTaskSelect={onTaskSelect}
-                meta={meta}
-                groupBy={groupBy}
-                statusIds={col.statusIds}
-                draggedTaskProjectId={draggedTaskProjectId}
-              />
+                      bucket={bucketByKey[col.key]}
+                      ensureFirstPage={ensureFirstPage}
+                      fetchMore={fetchMore}
+                      isVisible={visibleCols.has(col.key)}
+                      resetToken={queryShapeKey}
+                      searchToken={groupSearchDebounced[col.key] ?? ''}
+                      groupSearchValue={groupSearchInputByKey[col.key] ?? ''}
+                      onGroupSearchChange={(v) => setGroupSearchInputByKey(prev => ({ ...prev, [col.key]: v }))}
+                      colorMode={colorMode}
+                      onAddTask={onAddTaskForColumn}
+                    />
+                  </div>
             ))}
           </SortableContext>
+            </div>
         </div>
         </DndContext>
       </div>
     </div>
+    </TooltipProvider>
   );
 }
 
-// Add KanbanColumn child component for droppable columns
-function KanbanColumn({ col, label, groupedTasks, selectedTaskId, onTaskSelect, meta, groupBy, statusIds, draggedTaskProjectId }: {
-  col: string,
-  label: string,
-  groupedTasks: Record<string, any[]>,
-  selectedTaskId: string | number | null | undefined,
-  onTaskSelect?: (task: any) => void,
-  meta: any,
-  groupBy: string,
-  statusIds?: string[],
-  draggedTaskProjectId?: string | null,
+// Group/Sort panel: single row with two labeled dropdowns (desktop: Popover, mobile: BottomSheet)
+function GroupSortPanel({
+  type,
+  groupBy,
+  groupOrder,
+  rowSortBy,
+  rowSortOrder,
+  onGroupByChange,
+  onGroupOrderChange,
+  onSortByChange,
+  onSortOrderChange,
+  open,
+  onOpenChange,
+  trigger,
+  isMobile,
+}: {
+  type: 'group' | 'sort';
+  groupBy: string;
+  groupOrder: string;
+  rowSortBy: string;
+  rowSortOrder: string;
+  onGroupByChange: (v: string) => void;
+  onGroupOrderChange: (v: string) => void;
+  onSortByChange: (v: string) => void;
+  onSortOrderChange: (v: string) => void;
+  open: boolean;
+  onOpenChange: (v: boolean) => void;
+  trigger: React.ReactNode;
+  isMobile: boolean;
 }) {
-  const { setNodeRef: setColumnNodeRef, isOver } = useDroppable({ id: col });
-  // For deduped status columns, aggregate all tasks with any of the status ids
-  let tasksForColumn: any[] = [];
-  if (groupBy === 'project_status_name' && statusIds) {
-    // Flatten all groupedTasks and filter by status ID (statusIds contains IDs)
-    tasksForColumn = Object.values(groupedTasks).flat().filter((t: any) => statusIds.includes(String(t.project_status_id)));
-  } else {
-    tasksForColumn = groupedTasks[col] || [];
-  }
-  let groupColor: string | undefined = undefined;
-  if (groupBy === 'project_status_name' && meta.statuses) {
-    // Use the color of the first status with this name
-    const status = meta.statuses.find((s: any) => s && s.name === label);
-    groupColor = status?.color;
-  }
-  // Grey out columns that are not valid for the dragged task's project
-  let isValidForDraggedTask = true;
-  if (groupBy === 'project_status_name' && draggedTaskProjectId && meta.statuses) {
-    isValidForDraggedTask = meta.statuses.some(
-      (s: any) => s.name === label && String(s.project_id) === draggedTaskProjectId
+  const rowClass = 'flex items-center gap-4 p-3';
+  const labelClass = 'text-xs font-medium text-gray-500 shrink-0';
+  const selectClass = 'h-9 min-w-[140px]';
+
+  const content = (
+    <div className={type === 'group' ? 'p-2' : 'p-2'}>
+      {type === 'group' ? (
+        <div className={rowClass}>
+          <label className={labelClass}>Group by</label>
+          <Select value={groupBy} onValueChange={onGroupByChange}>
+            <SelectTrigger className={selectClass}>
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent>
+              {GROUP_BY_OPTIONS.map(opt => (
+                <SelectItem key={opt.value} value={opt.value}>{opt.label}</SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+          <label className={labelClass}>Group order</label>
+          <Select value={groupOrder} onValueChange={onGroupOrderChange}>
+            <SelectTrigger className={selectClass}>
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value="asc">A–Z</SelectItem>
+              <SelectItem value="desc">Z–A</SelectItem>
+            </SelectContent>
+          </Select>
+        </div>
+      ) : (
+        <div className={rowClass}>
+          <label className={labelClass}>Sort by</label>
+          <Select value={rowSortBy} onValueChange={onSortByChange}>
+            <SelectTrigger className={selectClass}>
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value="delivery_date">Delivery date</SelectItem>
+              <SelectItem value="publication_date">Publication date</SelectItem>
+              <SelectItem value="title">Title</SelectItem>
+              <SelectItem value="assigned_to_name">Assignee</SelectItem>
+              <SelectItem value="project_status_name">Status</SelectItem>
+              <SelectItem value="updated_at">Updated</SelectItem>
+            </SelectContent>
+          </Select>
+          <label className={labelClass}>Sort order</label>
+          <Select value={rowSortOrder} onValueChange={onSortOrderChange}>
+            <SelectTrigger className={selectClass}>
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value="asc">Ascending</SelectItem>
+              <SelectItem value="desc">Descending</SelectItem>
+            </SelectContent>
+          </Select>
+        </div>
+      )}
+    </div>
+  );
+
+  if (isMobile) {
+    return (
+      <>
+        <div onClick={() => onOpenChange(true)} className="inline-flex">
+          {trigger}
+        </div>
+        <ResizableBottomSheet isOpen={open} onClose={() => onOpenChange(false)} initialHeight={0.35} title={type === 'group' ? 'Group by' : 'Sort by'}>
+          {content}
+        </ResizableBottomSheet>
+      </>
     );
   }
+  return (
+    <Popover open={open} onOpenChange={onOpenChange}>
+      <PopoverTrigger asChild>{trigger}</PopoverTrigger>
+      <PopoverContent align="start" className="w-auto p-0">
+        {content}
+      </PopoverContent>
+    </Popover>
+  );
+}
+
+// Stable key for task cards (entity_type + id, never index)
+function getTaskCardKey(task: any): string {
+  const kind = (task?.kind ?? task?.entity_type ?? 'task');
+  const id = String(task?.id ?? task?.entity_id ?? '');
+  return `${kind}:${id}`;
+}
+
+// Custom comparison: skip re-render when this column's tasks/bucket/search haven't meaningfully changed
+function kanbanColumnPropsEqual(prev: any, next: any): boolean {
+  if (prev.col !== next.col || prev.label !== next.label) return false;
+  if (prev.resetToken !== next.resetToken || prev.searchToken !== next.searchToken) return false;
+  if (prev.groupSearchValue !== next.groupSearchValue) return false;
+  if (prev.selectedTaskId !== next.selectedTaskId) return false;
+  if (prev.isVisible !== next.isVisible) return false;
+  if (prev.colorMode !== next.colorMode) return false;
+  const prevTasks = prev.tasksForColumn ?? [];
+  const nextTasks = next.tasksForColumn ?? [];
+  if (prevTasks.length !== nextTasks.length) return false;
+  const prevIds = prevTasks.map((t: any) => getTaskCardKey(t)).join(',');
+  const nextIds = nextTasks.map((t: any) => getTaskCardKey(t)).join(',');
+  if (prevIds !== nextIds) return false;
+  const prevBucket = prev.bucket;
+  const nextBucket = next.bucket;
+  if (!!prevBucket !== !!nextBucket) return false;
+  if (prevBucket && nextBucket) {
+    if (prevBucket.rows?.length !== nextBucket.rows?.length) return false;
+    if (prevBucket.isFetching !== nextBucket.isFetching) return false;
+  }
+  if (prev.onAddTask !== next.onAddTask) return false;
+  return true;
+}
+
+// Memoized column - only re-renders when its own data changes
+const KanbanColumn = React.memo(function KanbanColumn({
+  col,
+  label,
+  tasksForColumn,
+  selectedTaskId,
+  onTaskSelect,
+  bucket,
+  ensureFirstPage,
+  fetchMore,
+  isVisible,
+  resetToken,
+  searchToken,
+  groupSearchValue,
+  onGroupSearchChange,
+  colorMode,
+  onAddTask,
+}: {
+  col: string;
+  label: string;
+  tasksForColumn: any[];
+  selectedTaskId: string | number | null | undefined;
+  onTaskSelect?: (task: any) => void;
+  bucket?: {
+    rows: TaskListRow[];
+    cursor: { rok: string; id: number } | null;
+    hasMore: boolean;
+    isFetching: boolean;
+    error: string | null;
+  };
+  ensureFirstPage: (groupKey: string) => void;
+  fetchMore: (groupKey: string) => void;
+  isVisible: boolean;
+  resetToken: string;
+  searchToken: string;
+  groupSearchValue?: string;
+  onGroupSearchChange?: (value: string) => void;
+  colorMode: TaskCardColorMode;
+  onAddTask?: (colKey: string) => void;
+}) {
+  const { setNodeRef: setColumnNodeRef, isOver } = useDroppable({ id: col });
+
+  const scrollContainerRef = useRef<HTMLDivElement | null>(null);
+  const sentinelRef = useRef<HTMLDivElement | null>(null);
+  const didKickRef = useRef(false);
+
+  // Reset kick flag when global query-shape or this group's search changes
+  useEffect(() => {
+    didKickRef.current = false;
+    scrollContainerRef.current?.scrollTo?.({ top: 0 });
+  }, [resetToken, searchToken]);
+
+  // Bucket-level infinite scroll (E)
+  useEffect(() => {
+    if (!isVisible) {
+      // Reset kick flag when column goes out of view
+      didKickRef.current = false;
+      return;
+    }
+
+    const rootEl = scrollContainerRef.current;
+    const sentinelEl = sentinelRef.current;
+    if (!rootEl || !sentinelEl) return;
+
+    // Kick the first page once when the column becomes visible
+    if (!didKickRef.current) {
+      const rowCount = bucket?.rows?.length ?? tasksForColumn.length;
+      const hasMore = bucket?.hasMore ?? true;
+      const isFetching = bucket?.isFetching ?? false;
+      if (rowCount === 0 && hasMore && !isFetching) {
+        didKickRef.current = true;
+        ensureFirstPage(col);
+      }
+    }
+
+    const nearBottom = () => {
+      const el = rootEl;
+      const remaining = el.scrollHeight - el.scrollTop - el.clientHeight;
+      return remaining < 250;
+    };
+
+    const observer = new IntersectionObserver(
+      entries => {
+        const entry = entries[0];
+        if (!entry || !entry.isIntersecting) return;
+
+        if (!nearBottom()) return;
+
+        const count = bucket?.rows?.length ?? tasksForColumn.length;
+        const more = bucket?.hasMore ?? true;
+        const fetching = bucket?.isFetching ?? false;
+
+        if (count === 0 && more && !fetching) {
+          ensureFirstPage(col);
+        } else if (count > 0 && more && !fetching) {
+          fetchMore(col);
+        }
+      },
+      {
+        threshold: 0.1,
+        rootMargin: '50px',
+        root: rootEl,
+      },
+    );
+
+    observer.observe(sentinelEl);
+    return () => observer.disconnect();
+  }, [
+    isVisible,
+    col,
+    bucket?.rows?.length,
+    bucket?.hasMore,
+    bucket?.isFetching,
+    ensureFirstPage,
+    fetchMore,
+    tasksForColumn.length,
+  ]);
+
   return (
     <div
       key={col}
       id={col}
-      ref={setColumnNodeRef}
-      className={
-        cn(
-          'flex-shrink-0 min-w-[280px] w-[280px] flex flex-col bg-gray-50 rounded-lg shadow-sm border border-gray-200 h-full',
-          isOver && 'ring-2 ring-blue-400 border-blue-400 bg-blue-50',
-          !isValidForDraggedTask && 'opacity-50 pointer-events-none'
-        )
-      }
+      className="flex-shrink-0 min-w-[280px] w-[280px] flex flex-col bg-gray-50/70 h-full rounded-xl border border-gray-200"
     >
       <div
-        className="px-4 py-2 border-b bg-white rounded-t-lg font-semibold text-gray-700 text-sm flex-shrink-0"
-        style={{}}
+        className="border-b bg-white/80 flex-shrink-0 rounded-t-xl flex flex-col gap-1.5 py-2 px-2"
       >
-        {label}
+        <div className="flex items-center justify-between gap-1 px-1">
+          <span className="font-semibold text-gray-700 text-sm truncate min-w-0 flex-1">{label}</span>
+          {onAddTask && (
+            <button
+              type="button"
+              onClick={() => onAddTask(col)}
+              className="shrink-0 flex items-center gap-1 text-xs text-blue-600 hover:text-blue-700 hover:bg-blue-50 rounded px-1.5 py-0.5 transition-colors"
+            >
+              <Plus size={12} />
+              Add task
+            </button>
+          )}
+        </div>
+        {onGroupSearchChange && (
+          <div className="relative">
+            <Search className="absolute left-2 top-1/2 -translate-y-1/2 h-3.5 w-3.5 text-gray-400 pointer-events-none" />
+            <input
+              type="text"
+              value={groupSearchValue ?? ''}
+              onChange={(e) => onGroupSearchChange(e.target.value)}
+              placeholder="Search in group..."
+              className="h-8 w-full rounded-md border border-gray-200 pl-7 pr-2 text-xs focus:outline-none focus:ring-2 focus:ring-blue-200 focus:border-blue-300"
+            />
+          </div>
+        )}
       </div>
-      {/* Scrollable content area */}
-      <div className="flex-1 overflow-y-auto overflow-x-hidden p-2 min-h-0">
-        <SortableContext items={tasksForColumn.map((task: any) => String(task.id))} strategy={horizontalListSortingStrategy}>
-          {tasksForColumn.map((task: any) => (
-            <SortableKanbanCard key={task.id} id={String(task.id)}>
+      {/* Scrollable content area - full column dropzone with min-height */}
+      <div
+        ref={(el) => {
+          setColumnNodeRef(el);
+          scrollContainerRef.current = el;
+        }}
+        className={cn(
+          'relative flex-1 min-h-[120px] overflow-y-auto overflow-x-hidden p-2',
+          isOver && 'ring-2 ring-blue-300 ring-inset bg-blue-50/30',
+        )}
+      >
+        {isOver && (
+          <div className="absolute inset-0 rounded-md pointer-events-none z-0" aria-hidden />
+        )}
+        <div className="relative z-10">
+        <SortableContext
+          items={tasksForColumn.filter((t: any) => t?.kind !== 'suggestion').map((task: any) => String(task.id))}
+          strategy={horizontalListSortingStrategy}
+        >
+          {tasksForColumn.map((task: any) => {
+            const isSuggestion = task?.kind === 'suggestion' || task?.entity_type === 'suggestion';
+            const key = getTaskColorKey(task, colorMode);
+            const inlineStyle = getTaskInlineStyle(task, colorMode);
+            const barColorClass = inlineStyle ? '' : getStablePaletteBarClass(key);
+            const barInlineStyle = inlineStyle ? { backgroundColor: inlineStyle.background } : undefined;
+            const card = (
               <KanbanTaskCard
                 task={task}
                 isSelected={!!selectedTaskId && String(task.id) === String(selectedTaskId)}
                 onClick={() => onTaskSelect && onTaskSelect(task)}
+                colorMode={colorMode}
+                barColorClass={barColorClass}
+                barInlineStyle={barInlineStyle}
               />
-            </SortableKanbanCard>
-          ))}
+            );
+            const cardKey = getTaskCardKey(task);
+            return isSuggestion ? (
+              <div key={cardKey}>{card}</div>
+            ) : (
+              <SortableKanbanCard key={cardKey} id={String(task.id)}>
+                {card}
+              </SortableKanbanCard>
+            );
+          })}
         </SortableContext>
+        {/* Bucket sentinel */}
+        <div ref={sentinelRef} style={{ height: 8 }} />
+        </div>
+        {/* Ensures full-column drop area even when empty */}
+        <div className="h-8" />
       </div>
     </div>
   );
-} 
+}, kanbanColumnPropsEqual); 

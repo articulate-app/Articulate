@@ -12,11 +12,21 @@ import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger, Dialog
 import { MultiSelect } from '../ui/multi-select'
 import { toast } from '../ui/use-toast'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '../ui/select'
-import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from '../ui/dropdown-menu'
-import { Plus, Star, Trash2, GripVertical, ChevronDown, ChevronRight, ChevronLeft, RotateCcw, Upload, FileText, Link as LinkIcon, Search } from 'lucide-react'
+import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuSeparator, DropdownMenuTrigger } from '../ui/dropdown-menu'
+import { Plus, Star, Trash2, GripVertical, ChevronDown, ChevronRight, ChevronLeft, RotateCcw, Upload, FileText, Link as LinkIcon, Search, Loader2, X, MoreHorizontal } from 'lucide-react'
 import { ImportReviewModal, type ImportedBriefingData, type OutlineItemResolution } from './ImportReviewModal'
 import { DialogDescription } from '../ui/dialog'
-import { Loader2 } from 'lucide-react'
+import { ComponentDetailsPane } from './component-details-pane'
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from '../ui/alert-dialog'
 import {
   DndContext,
   closestCenter,
@@ -54,11 +64,79 @@ import {
   updateProjectBriefingMeta,
   createCustomBriefing,
   createProjectComponent,
-  deleteProjectComponent,
   setBriefingConstraints,
   bulkAddProjectComponentsFromOutline,
 } from '../../lib/services/project-briefings'
 import { createClientComponentClient } from '@supabase/auth-helpers-nextjs'
+
+function BriefingDescriptionEditor({
+  briefingTypeId,
+  initialDescription,
+  titleForMeta,
+  onSave,
+}: {
+  briefingTypeId: number
+  initialDescription: string
+  titleForMeta: string
+  onSave: (nextDescription: string) => void
+}) {
+  const [isEditing, setIsEditing] = useState(false)
+  const [draft, setDraft] = useState(initialDescription)
+
+  React.useEffect(() => {
+    setDraft(initialDescription)
+    setIsEditing(false)
+  }, [briefingTypeId, initialDescription])
+
+  if (isEditing) {
+    return (
+      <div className="rounded-lg border border-gray-200 bg-white p-3">
+        <div className="text-xs font-medium text-gray-700">Description</div>
+        <Textarea
+          value={draft}
+          onChange={(e) => setDraft(e.target.value)}
+          onBlur={() => {
+            setIsEditing(false)
+            if ((draft || '') !== (initialDescription || '')) onSave(draft)
+          }}
+          onKeyDown={(e) => {
+            if (e.key === 'Escape') {
+              setDraft(initialDescription)
+              setIsEditing(false)
+            }
+          }}
+          className="mt-2 text-sm text-gray-700 min-h-[72px] resize-y"
+          placeholder={`Add a description for "${titleForMeta}"...`}
+          autoFocus
+          rows={3}
+        />
+      </div>
+    )
+  }
+
+  return (
+    <div className="rounded-lg border border-gray-200 bg-white p-3">
+      <div className="text-xs font-medium text-gray-700">Description</div>
+      {initialDescription ? (
+        <p
+          className="mt-2 text-sm text-gray-600 cursor-text hover:text-gray-800 whitespace-pre-wrap"
+          onClick={() => setIsEditing(true)}
+          title="Click to edit description"
+        >
+          {initialDescription}
+        </p>
+      ) : (
+        <p
+          className="mt-2 text-sm text-gray-400 italic cursor-text hover:text-gray-600"
+          onClick={() => setIsEditing(true)}
+          title="Click to add description"
+        >
+          Click to add description
+        </p>
+      )}
+    </div>
+  )
+}
 
 interface ExpandableBriefingsListProps {
   projectId: number
@@ -70,6 +148,9 @@ interface SortableBriefingItemProps {
   briefing: ProjectBriefingType
   isExpanded: boolean
   isSingleView?: boolean
+  /** Keep the list item visually highlighted (e.g. when opened in the right pane). */
+  isSelected?: boolean
+  allBriefings?: ProjectBriefingType[]
   onToggle: () => void
   onSetDefault: () => void
   onRemove: () => void
@@ -81,31 +162,71 @@ interface SortableBriefingItemProps {
   onAddComponent: () => void
   onImportBriefing: () => void
   onResetTemplate: () => void
+  onRequestDeleteGlobalComponentFromProject?: (args: { componentId: number; componentTitle: string }) => void
   contentTypes?: Array<{ id: number; title: string }>
   channels?: Array<{ id: number; name: string }>
   selectedContentTypeId?: number | null
   selectedChannelId?: number | null
   onContentTypeChange?: (id: number | null) => void
   onChannelChange?: (id: number | null) => void
-  availableComponents?: Array<{ component_id: number; is_project_component: boolean; component_title: string; component_description: string | null }>
+  availableComponents?: PcctbcAvailableComponentRow[]
   projectId?: number
+  appliesToContentTypes?: Array<{ id: number; title: string }>
+  appliesToChannelsByCt?: Map<number, Array<{ id: number; name: string }>>
+  isAppliesToLoading?: boolean
+  onRemoveAppliesTo?: (contentTypeId: number, channelId: number, contentTypeTitle: string, channelName: string) => void
+  assignmentContentTypeOptions?: Array<{ id: number; title: string }>
+  assignmentChannelOptions?: Array<{ id: number; name: string }>
+  onAddAppliesTo?: (contentTypeId: number, channelId: number) => Promise<void>
+  onRemoveAppliesToContentType?: (contentTypeId: number, contentTypeTitle: string) => void
+  onRequestDeleteProjectComponent?: (args: { componentId: number; componentTitle: string }) => void
+}
+
+interface PcctbcAvailableComponentRow {
+  key: string
+  component_id: number
+  is_project_component: boolean
+  title: string
+  description: string | null
+  custom_title: string | null
+  custom_description: string | null
+  tag: 'Recommended' | 'Removed' | 'System' | 'System (other briefings)' | 'Custom' | string | null
+  template_layer: 'global' | 'project' | 'channel' | string | null
+  position: number | null
+  origin: 'global' | 'project' | string | null
+  global_overridden: boolean | null
 }
 
 interface SortableComponentItemProps {
   component: ProjectBriefingComponent
   onTitleChange: (value: string) => void
   onDescriptionChange: (value: string) => void
-  onRemove: () => void
+  onRemoveFromBriefing: () => void
+  onRemoveFromAllProjectBriefings?: () => void
+  onDeleteFromProject?: () => void
+  onAddToAllChannels?: () => void
+  onAddToAllContentTypesAndChannels?: () => void
+  onAddToOtherBriefings?: () => void
+}
+
+function getComponentDndId(component: Pick<ProjectBriefingComponent, 'component_id' | 'source'>) {
+  // component_id can collide between global/project sequences; include source to keep DnD IDs unique
+  return `${component.source}:${component.component_id}`
 }
 
 function SortableComponentItem({
   component,
   onTitleChange,
   onDescriptionChange,
-  onRemove,
+  onRemoveFromBriefing,
+  onRemoveFromAllProjectBriefings,
+  onDeleteFromProject,
+  onAddToAllChannels,
+  onAddToAllContentTypesAndChannels,
+  onAddToOtherBriefings,
 }: SortableComponentItemProps) {
   const { attributes, listeners, setNodeRef, transform, transition, isDragging } = useSortable({
-    id: component.component_id,
+    id: getComponentDndId(component),
   })
 
   const [localTitle, setLocalTitle] = useState(component.effective_title)
@@ -211,22 +332,115 @@ function SortableComponentItem({
             )
           )}
         </div>
-        <button
-          onClick={onRemove}
-          className="p-1 rounded hover:bg-red-50 text-red-500"
-          title="Remove component"
-        >
-          <Trash2 className="w-3 h-3" />
-        </button>
+        <div className="flex items-center gap-1">
+          <button
+            type="button"
+            onClick={(e) => {
+              e.preventDefault()
+              e.stopPropagation()
+              onRemoveFromBriefing()
+            }}
+            className="p-1 rounded hover:bg-red-50 text-gray-400 hover:text-red-600 transition-colors"
+            title="Remove from briefing"
+          >
+            <Trash2 className="w-4 h-4" />
+          </button>
+
+          {onRemoveFromAllProjectBriefings || onDeleteFromProject || onAddToAllChannels || onAddToAllContentTypesAndChannels || onAddToOtherBriefings ? (
+            <DropdownMenu modal={false}>
+              <DropdownMenuTrigger asChild>
+                <button
+                  type="button"
+                  className="p-1 rounded hover:bg-gray-100 text-gray-500"
+                  title="More actions"
+                  onClick={(e) => {
+                    e.stopPropagation()
+                  }}
+                >
+                  <MoreHorizontal className="w-4 h-4" />
+                </button>
+              </DropdownMenuTrigger>
+              <DropdownMenuContent align="end">
+                {onAddToAllChannels ? (
+                  <DropdownMenuItem
+                    onSelect={(e) => {
+                      e.preventDefault()
+                      onAddToAllChannels()
+                    }}
+                  >
+                    Add to all channels
+                  </DropdownMenuItem>
+                ) : null}
+                {onAddToAllContentTypesAndChannels ? (
+                  <DropdownMenuItem
+                    onSelect={(e) => {
+                      e.preventDefault()
+                      onAddToAllContentTypesAndChannels()
+                    }}
+                  >
+                    Add to all content types and channels
+                  </DropdownMenuItem>
+                ) : null}
+                {onAddToOtherBriefings ? (
+                  <DropdownMenuItem
+                    onSelect={(e) => {
+                      e.preventDefault()
+                      onAddToOtherBriefings()
+                    }}
+                  >
+                    Add to other briefings…
+                  </DropdownMenuItem>
+                ) : null}
+                {onAddToAllChannels || onAddToAllContentTypesAndChannels || onAddToOtherBriefings ? (
+                  <DropdownMenuSeparator />
+                ) : null}
+                {onDeleteFromProject ? (
+                  <DropdownMenuItem
+                    className="text-red-600 focus:text-red-600"
+                    onSelect={(e) => {
+                      e.preventDefault()
+                      onDeleteFromProject()
+                    }}
+                  >
+                    Delete from project
+                  </DropdownMenuItem>
+                ) : null}
+                {onRemoveFromAllProjectBriefings ? (
+                  <DropdownMenuItem
+                    className="text-red-600 focus:text-red-600"
+                    onSelect={(e) => {
+                      e.preventDefault()
+                      onRemoveFromAllProjectBriefings()
+                    }}
+                  >
+                    Remove from all project briefings
+                  </DropdownMenuItem>
+                ) : null}
+              </DropdownMenuContent>
+            </DropdownMenu>
+          ) : null}
+        </div>
       </div>
     </div>
   )
 }
 
-function ExpandableBriefingItem({
+type BriefingItemContentProps = SortableBriefingItemProps & {
+  containerRef?: (node: HTMLDivElement | null) => void
+  containerStyle?: React.CSSProperties
+  dragHandleProps?: {
+    attributes: any
+    listeners: any
+  }
+  showDragHandle?: boolean
+}
+
+function BriefingItemContent({
   briefing,
   isExpanded,
   isSingleView = false,
+  isSelected = false,
+  allBriefings = [],
   onToggle,
   onSetDefault,
   onRemove,
@@ -238,6 +452,7 @@ function ExpandableBriefingItem({
   onAddComponent,
   onImportBriefing,
   onResetTemplate,
+  onRequestDeleteGlobalComponentFromProject,
   contentTypes = [],
   channels = [],
   selectedContentTypeId,
@@ -246,14 +461,57 @@ function ExpandableBriefingItem({
   onChannelChange,
   availableComponents = [],
   projectId,
-}: SortableBriefingItemProps) {
+  appliesToContentTypes = [],
+  appliesToChannelsByCt,
+  isAppliesToLoading,
+  onRemoveAppliesTo,
+  assignmentContentTypeOptions = [],
+  assignmentChannelOptions = [],
+  onAddAppliesTo,
+  onRemoveAppliesToContentType,
+  onRequestDeleteProjectComponent,
+  containerRef,
+  containerStyle,
+  dragHandleProps,
+  showDragHandle = !isSingleView,
+}: BriefingItemContentProps) {
   const [isEditingTitle, setIsEditingTitle] = useState(false)
   const [isEditingDescription, setIsEditingDescription] = useState(false)
   const [localTitle, setLocalTitle] = useState(briefing.display_title)
   const [localDescription, setLocalDescription] = useState(briefing.display_description || '')
   const [addingComponentId, setAddingComponentId] = useState<string | null>(null)
+  const [availableSearchQuery, setAvailableSearchQuery] = useState('')
+  const [availableTagFilter, setAvailableTagFilter] = useState<'__all__' | 'Recommended' | 'Removed'>('__all__')
+  const [isAddContentTypeOpen, setIsAddContentTypeOpen] = useState(false)
+  const [contentTypesToAdd, setContentTypesToAdd] = useState<number[]>([])
+  const [channelsToAddForNewContentTypes, setChannelsToAddForNewContentTypes] = useState<number[]>([])
+  const [isAddChannelOpen, setIsAddChannelOpen] = useState(false)
+  const [contentTypeForAddChannel, setContentTypeForAddChannel] = useState<number | null>(null)
+  const [channelToAddId, setChannelToAddId] = useState<number | null>(null)
+  const [isAddingAppliesTo, setIsAddingAppliesTo] = useState(false)
+  const [customComponentTitle, setCustomComponentTitle] = useState('')
+  const [customComponentDescription, setCustomComponentDescription] = useState('')
+  const [isCreatingCustomComponent, setIsCreatingCustomComponent] = useState(false)
+  const [isEditingNewComponentDescription, setIsEditingNewComponentDescription] = useState(false)
+  const [isAddToOtherBriefingsOpen, setIsAddToOtherBriefingsOpen] = useState(false)
+  const [otherBriefingsSelection, setOtherBriefingsSelection] = useState<number[]>([])
+  const [bulkTargetComponent, setBulkTargetComponent] = useState<null | { id: number; source: 'project' | 'global'; title: string; description: string | null }>(null)
+  const [isBulkAdding, setIsBulkAdding] = useState(false)
   const supabase = createClientComponentClient()
   const queryClient = useQueryClient()
+  const searchParams = useSearchParams()
+  const router = useRouter()
+  const pathname = usePathname()
+
+  const briefingTitle = briefing.custom_title || briefing.display_title
+
+  // Sensors for drag and drop (components list reordering)
+  const sensors = useSensors(
+    useSensor(PointerSensor),
+    useSensor(KeyboardSensor, {
+      coordinateGetter: sortableKeyboardCoordinates,
+    })
+  )
   
   // Fetch allowed global components for the selected channel
   const { data: allowedGlobalComponents } = useQuery({
@@ -272,6 +530,380 @@ function ExpandableBriefingItem({
     },
     enabled: !!selectedChannelId,
   })
+
+  const handleAddAppliesTo = useCallback(async () => {
+    if (!contentTypeForAddChannel || !channelToAddId || !onAddAppliesTo) return
+    setIsAddingAppliesTo(true)
+    try {
+      await onAddAppliesTo(contentTypeForAddChannel, channelToAddId)
+      setIsAddChannelOpen(false)
+      setContentTypeForAddChannel(null)
+      setChannelToAddId(null)
+    } finally {
+      setIsAddingAppliesTo(false)
+    }
+  }, [contentTypeForAddChannel, channelToAddId, onAddAppliesTo])
+
+  const handleCreateAndAddCustomComponent = useCallback(async () => {
+    const title = customComponentTitle.trim()
+    if (!title) {
+      toast({
+        title: 'Error',
+        description: 'Component title is required',
+        variant: 'destructive',
+      })
+      return
+    }
+
+    if (!projectId || !selectedContentTypeId || !selectedChannelId) {
+      toast({
+        title: 'Select a channel first',
+        description: 'Pick an Applies-to content type and channel to create + add a component.',
+        variant: 'destructive',
+      })
+      return
+    }
+
+    setIsCreatingCustomComponent(true)
+    try {
+      const { data: created, error } = await createProjectComponent(
+        projectId,
+        title,
+        customComponentDescription.trim() || null,
+        null
+      )
+      if (error) throw error
+      if (!created?.id) throw new Error('Failed to create component')
+
+      // Add it immediately to the selected briefing scope (same approach as "Add" from available list).
+      const lastPosition =
+        components.length > 0 ? Math.max(...components.map((c) => c.position ?? 0)) + 1 : 1
+
+      const { error: addErr } = await supabase.rpc('pcctbc_add_project', {
+        p_project_id: projectId,
+        p_content_type_id: selectedContentTypeId,
+        p_channel_id: selectedChannelId,
+        p_briefing_type_id: briefing.briefing_type_id,
+        p_project_component_id: created.id,
+        p_position: lastPosition,
+        p_custom_title: title || null,
+        p_custom_description: (customComponentDescription.trim() || null) as string | null,
+        p_purpose: null,
+        p_guidance: null,
+        p_suggested_word_count: null,
+        p_subheads: null,
+      })
+      if (addErr) throw addErr
+
+      toast({ title: 'Success', description: 'Custom component created and added' })
+      setCustomComponentTitle('')
+      setCustomComponentDescription('')
+
+      // Refresh the selected + available lists for the active channel/content type.
+      queryClient.invalidateQueries({
+        queryKey: ['projBriefings:components', projectId, briefing.briefing_type_id, selectedContentTypeId, selectedChannelId],
+      })
+      queryClient.invalidateQueries({
+        queryKey: ['availableComponents', projectId, briefing.briefing_type_id, selectedContentTypeId, selectedChannelId],
+      })
+    } catch (err: any) {
+      console.error('Failed to create custom component:', err)
+      toast({
+        title: 'Error',
+        description: err?.message || 'Failed to create custom component',
+        variant: 'destructive',
+      })
+    } finally {
+      setIsCreatingCustomComponent(false)
+    }
+  }, [
+    projectId,
+    briefing.briefing_type_id,
+    selectedContentTypeId,
+    selectedChannelId,
+    customComponentTitle,
+    customComponentDescription,
+    queryClient,
+    supabase,
+    components,
+  ])
+
+  const addComponentToCtChannel = useCallback(
+    async (args: { componentId: number; source: 'project' | 'global'; ctId: number; chId: number; title: string; description: string | null }) => {
+      if (!projectId) throw new Error('Missing project')
+      const rpcName = args.source === 'project' ? 'pcctbc_add_project' : 'pcctbc_add_global'
+      const paramName = args.source === 'project' ? 'p_project_component_id' : 'p_briefing_component_id'
+
+      const lastPosition = components.length > 0
+        ? Math.max(...components.map((c) => c.position ?? 0)) + 1
+        : 1
+
+      const rpcParams: any = {
+        p_project_id: projectId,
+        p_content_type_id: args.ctId,
+        p_channel_id: args.chId,
+        p_briefing_type_id: briefing.briefing_type_id,
+        [paramName]: args.componentId,
+        p_position: lastPosition,
+        p_custom_title: args.title || null,
+        p_custom_description: args.description || null,
+        p_purpose: null,
+        p_guidance: null,
+        p_suggested_word_count: null,
+        p_subheads: null,
+      }
+
+      const { error } = await supabase.rpc(rpcName, rpcParams)
+      if (error) throw error
+    },
+    [briefing.briefing_type_id, components, projectId, supabase]
+  )
+
+  const handleAddToAllChannels = useCallback(
+    async (target: { id: number; source: 'project' | 'global'; title: string; description: string | null }) => {
+      if (!projectId || !selectedContentTypeId) return
+      const channelsForCt = appliesToChannelsByCt?.get(selectedContentTypeId) || []
+      if (!channelsForCt.length) return
+
+      setIsBulkAdding(true)
+      try {
+        // Add only missing (avoid duplicates)
+        const col = target.source === 'project' ? 'project_component_id' : 'briefing_component_id'
+        const { data: existingRows, error: existingErr } = await supabase
+          .from('project_ct_channel_briefing_components')
+          .select('content_type_id, channel_id')
+          .eq('project_id', projectId)
+          .eq('briefing_type_id', briefing.briefing_type_id)
+          .eq(col, target.id)
+        if (existingErr) throw existingErr
+
+        const existing = new Set(
+          (existingRows || []).map((r: any) => `${r.content_type_id}:${r.channel_id}`)
+        )
+
+        const targets = channelsForCt
+          .filter((ch) => ch.id !== selectedChannelId)
+          .filter((ch) => !existing.has(`${selectedContentTypeId}:${ch.id}`))
+
+        await Promise.all(
+          targets.map((ch) =>
+            addComponentToCtChannel({
+              componentId: target.id,
+              source: target.source,
+              ctId: selectedContentTypeId,
+              chId: ch.id,
+              title: target.title,
+              description: target.description,
+            })
+          )
+        )
+
+        toast({
+          title: 'Success',
+          description: targets.length ? `Added to ${targets.length} channel(s)` : 'Nothing to add',
+        })
+        queryClient.invalidateQueries({ queryKey: ['projBriefings:components', projectId, briefing.briefing_type_id] })
+        queryClient.invalidateQueries({ queryKey: ['availableComponents', projectId, briefing.briefing_type_id] })
+      } catch (err: any) {
+        toast({ title: 'Error', description: err?.message || 'Failed to add to channels', variant: 'destructive' })
+      } finally {
+        setIsBulkAdding(false)
+      }
+    },
+    [addComponentToCtChannel, appliesToChannelsByCt, briefing.briefing_type_id, projectId, queryClient, selectedChannelId, selectedContentTypeId, supabase]
+  )
+
+  const handleAddToAllContentTypesAndChannels = useCallback(
+    async (target: { id: number; source: 'project' | 'global'; title: string; description: string | null }) => {
+      if (!projectId) return
+      setIsBulkAdding(true)
+      try {
+        // Add only missing CT×Channel pairs for THIS briefing type (avoid duplicates).
+        const col = target.source === 'project' ? 'project_component_id' : 'briefing_component_id'
+        const { data: existingRows, error: existingErr } = await supabase
+          .from('project_ct_channel_briefing_components')
+          .select('content_type_id, channel_id')
+          .eq('project_id', projectId)
+          .eq('briefing_type_id', briefing.briefing_type_id)
+          .eq(col, target.id)
+        if (existingErr) throw existingErr
+
+        const existing = new Set(
+          (existingRows || []).map((r: any) => `${r.content_type_id}:${r.channel_id}`)
+        )
+
+        const pairs: Array<{ ctId: number; chId: number }> = []
+        for (const ct of appliesToContentTypes || []) {
+          const chans = appliesToChannelsByCt?.get(ct.id) || []
+          for (const ch of chans) {
+            const key = `${ct.id}:${ch.id}`
+            if (existing.has(key)) continue
+            pairs.push({ ctId: ct.id, chId: ch.id })
+          }
+        }
+
+        await Promise.all(
+          pairs.map((p) =>
+            addComponentToCtChannel({
+              componentId: target.id,
+              source: target.source,
+              ctId: p.ctId,
+              chId: p.chId,
+              title: target.title,
+              description: target.description,
+            })
+          )
+        )
+
+        toast({
+          title: 'Success',
+          description: pairs.length ? `Added to ${pairs.length} content-type/channel pair(s)` : 'Nothing to add',
+        })
+        queryClient.invalidateQueries({ queryKey: ['projBriefings:components', projectId, briefing.briefing_type_id] })
+        queryClient.invalidateQueries({ queryKey: ['availableComponents', projectId, briefing.briefing_type_id] })
+      } catch (err: any) {
+        toast({ title: 'Error', description: err?.message || 'Failed to add everywhere', variant: 'destructive' })
+      } finally {
+        setIsBulkAdding(false)
+      }
+    },
+    [addComponentToCtChannel, appliesToChannelsByCt, appliesToContentTypes, briefing.briefing_type_id, projectId, queryClient, supabase]
+  )
+
+  const openAddToOtherBriefings = useCallback((target: { id: number; source: 'project' | 'global'; title: string; description: string | null }) => {
+    setBulkTargetComponent(target)
+    setOtherBriefingsSelection([])
+    setIsAddToOtherBriefingsOpen(true)
+  }, [])
+
+  const handleConfirmAddToOtherBriefings = useCallback(async () => {
+    if (!projectId || !bulkTargetComponent) return
+    if (otherBriefingsSelection.length === 0) return
+    setIsBulkAdding(true)
+    try {
+      let totalAdded = 0
+
+      for (const btId of otherBriefingsSelection) {
+        // 1) What CT×Channel pairs does this briefing apply to?
+        const { data: appliesRows, error: appliesErr } = await supabase
+          .from('project_ct_channel_briefings')
+          .select('content_type_id, channel_id')
+          .eq('project_id', projectId)
+          .eq('briefing_type_id', btId)
+        if (appliesErr) throw appliesErr
+
+        const appliesPairs = (appliesRows || []) as Array<{ content_type_id: number; channel_id: number }>
+        if (appliesPairs.length === 0) continue
+
+        // 2) What already exists for this briefing type? (for both dedupe + per-pair positioning)
+        const { data: existingAll, error: existingAllErr } = await supabase
+          .from('project_ct_channel_briefing_components')
+          .select('content_type_id, channel_id, position, briefing_component_id, project_component_id')
+          .eq('project_id', projectId)
+          .eq('briefing_type_id', btId)
+        if (existingAllErr) throw existingAllErr
+
+        const col = bulkTargetComponent.source === 'project' ? 'project_component_id' : 'briefing_component_id'
+        const existingPairsForComponent = new Set<string>()
+        const maxPosByPair = new Map<string, number>()
+
+        ;(existingAll || []).forEach((r: any) => {
+          const key = `${r.content_type_id}:${r.channel_id}`
+          const pos = Number(r.position ?? 0)
+          if (Number.isFinite(pos)) {
+            maxPosByPair.set(key, Math.max(maxPosByPair.get(key) ?? 0, pos))
+          }
+          if (r[col] === bulkTargetComponent.id) {
+            existingPairsForComponent.add(key)
+          }
+        })
+
+        // 3) Add only missing CT×Channel pairs for this briefing type
+        const missing = appliesPairs.filter((p) => !existingPairsForComponent.has(`${p.content_type_id}:${p.channel_id}`))
+
+        await Promise.all(
+          missing.map(async (p) => {
+            const key = `${p.content_type_id}:${p.channel_id}`
+            const nextPos = (maxPosByPair.get(key) ?? 0) + 1
+
+            const rpcName = bulkTargetComponent.source === 'project' ? 'pcctbc_add_project' : 'pcctbc_add_global'
+            const paramName = bulkTargetComponent.source === 'project' ? 'p_project_component_id' : 'p_briefing_component_id'
+
+            const { error } = await supabase.rpc(rpcName, {
+              p_project_id: projectId,
+              p_content_type_id: p.content_type_id,
+              p_channel_id: p.channel_id,
+              p_briefing_type_id: btId,
+              [paramName]: bulkTargetComponent.id,
+              p_position: nextPos,
+              p_custom_title: bulkTargetComponent.title || null,
+              p_custom_description: bulkTargetComponent.description || null,
+              p_purpose: null,
+              p_guidance: null,
+              p_suggested_word_count: null,
+              p_subheads: null,
+            } as any)
+            if (error) throw error
+          })
+        )
+
+        totalAdded += missing.length
+      }
+
+      toast({
+        title: 'Success',
+        description: totalAdded ? `Added to ${totalAdded} content-type/channel pair(s)` : 'Nothing to add',
+      })
+      setIsAddToOtherBriefingsOpen(false)
+      setBulkTargetComponent(null)
+      setOtherBriefingsSelection([])
+      queryClient.invalidateQueries({ queryKey: ['projBriefings:components', projectId] })
+      queryClient.invalidateQueries({ queryKey: ['availableComponents', projectId] })
+    } catch (err: any) {
+      toast({ title: 'Error', description: err?.message || 'Failed to add to other briefings', variant: 'destructive' })
+    } finally {
+      setIsBulkAdding(false)
+    }
+  }, [bulkTargetComponent, otherBriefingsSelection, projectId, queryClient, supabase])
+
+  const addableContentTypes = useMemo(() => {
+    const already = new Set((appliesToContentTypes || []).map((ct) => ct.id))
+    return assignmentContentTypeOptions.filter((ct) => !already.has(ct.id))
+  }, [assignmentContentTypeOptions, appliesToContentTypes])
+
+  const openAddChannelForCt = useCallback((ctId: number) => {
+    setContentTypeForAddChannel(ctId)
+    setChannelToAddId(null)
+    setIsAddChannelOpen(true)
+  }, [])
+
+  const availableChannelsForCt = useMemo(() => {
+    const ctId = contentTypeForAddChannel
+    if (!ctId) return assignmentChannelOptions
+    const existing = new Set((appliesToChannelsByCt?.get(ctId) || []).map((c) => c.id))
+    return assignmentChannelOptions.filter((c) => !existing.has(c.id))
+  }, [assignmentChannelOptions, appliesToChannelsByCt, contentTypeForAddChannel])
+
+  const handleConfirmAddNewContentTypes = useCallback(async () => {
+    if (!onAddAppliesTo) return
+    if (contentTypesToAdd.length === 0 || channelsToAddForNewContentTypes.length === 0) return
+
+    setIsAddingAppliesTo(true)
+    try {
+      // Cross product CT × Channel
+      for (const ctId of contentTypesToAdd) {
+        for (const chId of channelsToAddForNewContentTypes) {
+          // eslint-disable-next-line no-await-in-loop
+          await onAddAppliesTo(ctId, chId)
+        }
+      }
+      setIsAddContentTypeOpen(false)
+      setContentTypesToAdd([])
+      setChannelsToAddForNewContentTypes([])
+    } finally {
+      setIsAddingAppliesTo(false)
+    }
+  }, [contentTypesToAdd, channelsToAddForNewContentTypes, onAddAppliesTo])
 
   React.useEffect(() => {
     setLocalTitle(briefing.display_title)
@@ -300,22 +932,6 @@ function ExpandableBriefingItem({
       debouncedUpdateMeta(briefing.custom_title ?? null, localDescription || null)
     }
   }
-  const { attributes, listeners, setNodeRef, transform, transition, isDragging } = useSortable({
-    id: briefing.briefing_type_id,
-  })
-
-  const sensors = useSensors(
-    useSensor(PointerSensor),
-    useSensor(KeyboardSensor, {
-      coordinateGetter: sortableKeyboardCoordinates,
-    })
-  )
-
-  const style = {
-    transform: CSS.Transform.toString(transform),
-    transition,
-    opacity: isDragging ? 0.5 : 1,
-  }
 
   const handleDragEnd = useCallback(
     async (event: DragEndEvent) => {
@@ -323,12 +939,21 @@ function ExpandableBriefingItem({
 
       if (!over || active.id === over.id) return
 
-      const oldIndex = components.findIndex(c => c.component_id === active.id)
-      const newIndex = components.findIndex(c => c.component_id === over.id)
+      const oldIndex = components.findIndex(c => getComponentDndId(c) === active.id)
+      const newIndex = components.findIndex(c => getComponentDndId(c) === over.id)
 
       if (oldIndex === -1 || newIndex === -1) return
 
       const reordered = arrayMove(components, oldIndex, newIndex)
+
+      // Optimistically update UI order to avoid flicker while the server mutation/refetch completes
+      if (projectId) {
+        const optimistic = reordered.map((c, idx) => ({ ...c, position: idx + 1 }))
+        queryClient.setQueryData(
+          ['projBriefings:components', projectId, briefing.briefing_type_id, selectedContentTypeId, selectedChannelId],
+          optimistic
+        )
+      }
 
       // If filters are active, use channel-specific reorder
       if (selectedContentTypeId && selectedChannelId && projectId) {
@@ -383,7 +1008,7 @@ function ExpandableBriefingItem({
   )
 
   const handleAddComponent = useCallback(
-    async (comp: { component_id: number; is_project_component: boolean }) => {
+    async (comp: PcctbcAvailableComponentRow) => {
       if (!projectId || !selectedContentTypeId || !selectedChannelId) {
         toast({
           title: 'Error',
@@ -393,20 +1018,41 @@ function ExpandableBriefingItem({
         return
       }
 
-      const compKey = `${comp.component_id}-${comp.is_project_component}`
-      setAddingComponentId(compKey)
+      setAddingComponentId(comp.key)
 
       try {
-        const rpcName = comp.is_project_component ? 'pcctbc_add_project' : 'pcctbc_add_global'
-        const paramName = comp.is_project_component ? 'p_project_component_id' : 'p_briefing_component_id'
+        const isProject =
+          comp.origin === 'project'
+            ? true
+            : comp.origin === 'global'
+              ? false
+              : !!comp.is_project_component
 
-        const { error } = await supabase.rpc(rpcName, {
+        const rpcName = isProject ? 'pcctbc_add_project' : 'pcctbc_add_global'
+        const paramName = isProject ? 'p_project_component_id' : 'p_briefing_component_id'
+
+        // Calculate last position (max position + 1, or 1 if no components)
+        const lastPosition = components.length > 0
+          ? Math.max(...components.map(c => c.position ?? 0)) + 1
+          : 1
+
+        const rpcParams: any = {
           p_project_id: projectId,
           p_content_type_id: selectedContentTypeId,
           p_channel_id: selectedChannelId,
+          // Ensure inserted rows match the current briefing type filter
           p_briefing_type_id: briefing.briefing_type_id,
           [paramName]: comp.component_id,
-        })
+          p_position: lastPosition,
+          p_custom_title: (comp.custom_title || comp.title) || null,
+          p_custom_description: (comp.custom_description || comp.description) || null,
+          p_purpose: null,
+          p_guidance: null,
+          p_suggested_word_count: null,
+          p_subheads: null,
+        }
+
+        const { error } = await supabase.rpc(rpcName, rpcParams)
 
         if (error) throw error
 
@@ -433,22 +1079,20 @@ function ExpandableBriefingItem({
         setAddingComponentId(null)
       }
     },
-    [projectId, selectedContentTypeId, selectedChannelId, briefing.briefing_type_id, supabase, queryClient]
+    [projectId, selectedContentTypeId, selectedChannelId, briefing.briefing_type_id, supabase, queryClient, components]
   )
 
   // Filter available components to show only those not already added
   const componentsToShow = useMemo(() => {
-    return (availableComponents || []).filter((availComp, index, self) => {
-      // Deduplicate based on component_id + is_project_component
-      const firstIndex = self.findIndex(c => 
-        c.component_id === availComp.component_id && 
-        c.is_project_component === availComp.is_project_component
-      )
-      if (firstIndex !== index) return false
-      
+    const query = availableSearchQuery.trim().toLowerCase()
+    return (availableComponents || []).filter((availComp) => {
+      const origin = availComp.origin === 'project' || availComp.origin === 'global'
+        ? availComp.origin
+        : (availComp.is_project_component ? 'project' : 'global')
+
       // Show only components not already in the selected list
       const isSelected = components.some(c => {
-        if (availComp.is_project_component) {
+        if (origin === 'project') {
           return c.source === 'project' && c.component_id === availComp.component_id
         } else {
           return c.source === 'global' && c.component_id === availComp.component_id
@@ -458,38 +1102,71 @@ function ExpandableBriefingItem({
       if (isSelected) return false
       
       // When channel is selected, filter global components by channel restrictions
-      if (selectedChannelId && !availComp.is_project_component) {
+      if (selectedChannelId && origin === 'global') {
         // For global components, only show if allowed for this channel
         if (!allowedGlobalComponents || !allowedGlobalComponents.has(availComp.component_id)) {
           return false
         }
       }
+
+      if (availableTagFilter !== '__all__') {
+        if ((availComp.tag || '').toLowerCase() !== availableTagFilter.toLowerCase()) return false
+      }
+
+      if (query) {
+        const effectiveTitle = (availComp.custom_title || availComp.title || '').toString()
+        const effectiveDescription = (availComp.custom_description || availComp.description || '').toString()
+        const haystack = `${effectiveTitle}\n${effectiveDescription}`.toLowerCase()
+        if (!haystack.includes(query)) return false
+      }
       
       return true
     })
-  }, [availableComponents, components, selectedChannelId, allowedGlobalComponents])
+  }, [availableComponents, components, selectedChannelId, allowedGlobalComponents, availableSearchQuery, availableTagFilter])
+
+  const sortedComponentsToShow = useMemo(() => {
+    return componentsToShow.slice().sort((a, b) => {
+      const pa = a.position ?? 999
+      const pb = b.position ?? 999
+      if (pa !== pb) return pa - pb
+      const at = (a.custom_title || a.title || '').toString()
+      const bt = (b.custom_title || b.title || '').toString()
+      return at.localeCompare(bt)
+    })
+  }, [componentsToShow])
 
   // Override remove handler when filters are active to call channel-specific removal
   const handleRemoveComponent = useCallback(
     async (componentId: number, source: 'global' | 'project') => {
+      const componentsQueryKey: any[] = [
+        'projBriefings:components',
+        projectId,
+        briefing.briefing_type_id,
+        selectedContentTypeId ?? null,
+        selectedChannelId ?? null,
+      ]
+      const previousComponents = queryClient.getQueryData<any[]>(componentsQueryKey)
+      // Optimistic: remove immediately from the selected pile
+      queryClient.setQueryData<any[]>(componentsQueryKey, (current) => {
+        if (!Array.isArray(current)) return current as any
+        return current.filter((c: any) => {
+          const sameId = c?.component_id === componentId
+          const sameSource = c?.source === source
+          return !(sameId && sameSource)
+        })
+      })
+
       // If filters are active, remove from channel-specific list
       if (selectedContentTypeId && selectedChannelId && projectId) {
         try {
-          // Use the correct parameter based on component source
-          const params: any = {
+          const { error } = await supabase.rpc('pcctbc_remove', {
             p_project_id: projectId,
             p_content_type_id: selectedContentTypeId,
             p_channel_id: selectedChannelId,
             p_briefing_type_id: briefing.briefing_type_id,
-          }
-          
-          if (source === 'project') {
-            params.p_project_component_id = componentId
-          } else {
-            params.p_briefing_component_id = componentId
-          }
-
-          const { error } = await supabase.rpc('pcctbc_remove', params)
+            p_component_id: componentId,
+            p_is_project_component: source === 'project',
+          })
 
           if (error) throw error
 
@@ -503,9 +1180,14 @@ function ExpandableBriefingItem({
             queryKey: ['projBriefings:components', projectId, briefing.briefing_type_id, selectedContentTypeId, selectedChannelId],
           })
           queryClient.invalidateQueries({
+            queryKey: ['allowedGlobalComponents', selectedChannelId],
+          })
+          queryClient.invalidateQueries({
             queryKey: ['availableComponents', projectId, briefing.briefing_type_id],
           })
         } catch (error: any) {
+          // Rollback optimistic update
+          queryClient.setQueryData<any[]>(componentsQueryKey, previousComponents)
           console.error('Error removing component:', error)
           toast({
             title: 'Error',
@@ -514,11 +1196,34 @@ function ExpandableBriefingItem({
           })
         }
       } else {
-        // Otherwise, use the template removal function
-        onComponentRemove(componentId, source)
+        // Otherwise, remove from the project-level briefing template (IMPORTANT: pbtc_remove only)
+        try {
+          const { error } = await supabase.rpc('pbtc_remove', {
+            p_project_id: projectId,
+            p_briefing_type_id: briefing.briefing_type_id,
+            p_component_id: componentId,
+            p_is_project_component: source === 'project',
+          })
+          if (error) throw error
+
+          toast({ title: 'Success', description: 'Component removed from briefing template' })
+
+          // Refresh only the resolved view for this briefing template
+          queryClient.invalidateQueries({ queryKey: ['availableComponents', projectId, briefing.briefing_type_id] })
+          queryClient.invalidateQueries({ queryKey: ['projBriefings:components', projectId, briefing.briefing_type_id] })
+        } catch (error: any) {
+          // Rollback optimistic update
+          queryClient.setQueryData<any[]>(componentsQueryKey, previousComponents)
+          console.error('Error removing template component:', error)
+          toast({
+            title: 'Error',
+            description: error.message || 'Failed to remove component',
+            variant: 'destructive',
+          })
+        }
       }
     },
-    [selectedContentTypeId, selectedChannelId, projectId, briefing.briefing_type_id, supabase, queryClient, onComponentRemove]
+    [selectedContentTypeId, selectedChannelId, projectId, briefing.briefing_type_id, supabase, queryClient]
   )
 
   // Override update handler when filters are active to call channel-specific update
@@ -561,120 +1266,117 @@ function ExpandableBriefingItem({
   )
 
   return (
-    <div ref={setNodeRef} style={style} className={`rounded-lg bg-white overflow-hidden ${!isExpanded ? 'border border-gray-200' : ''}`}>
+    <div
+      ref={containerRef}
+      style={containerStyle}
+      className={`rounded-lg bg-white overflow-hidden ${!isExpanded ? 'border border-gray-200' : ''}`}
+    >
       {/* Briefing Header */}
-      <div
-        className={`flex items-center gap-3 p-4 ${!isSingleView ? 'cursor-pointer hover:bg-gray-50' : ''} transition-colors`}
-        onClick={!isSingleView ? onToggle : undefined}
-      >
-        {/* Drag handle - hide in single view */}
-        {!isSingleView && (
-          <div {...attributes} {...listeners} className="cursor-move p-1 hover:bg-gray-100 rounded">
-            <GripVertical className="w-4 h-4 text-gray-400" />
-          </div>
-        )}
-
-        {/* Content */}
-        <div className="flex-1 min-w-0">
-          <div className="flex items-center gap-2">
-            {isEditingTitle ? (
-              <Input
-                value={localTitle}
-                onChange={(e) => setLocalTitle(e.target.value)}
-                onBlur={handleTitleBlur}
-                onKeyDown={(e) => {
-                  if (e.key === 'Enter') {
-                    handleTitleBlur()
-                  } else if (e.key === 'Escape') {
-                    setLocalTitle(briefing.display_title)
-                    setIsEditingTitle(false)
-                  }
-                }}
-                className="text-sm font-semibold border border-blue-500 focus:ring-2 focus:ring-blue-500"
-                autoFocus
-              />
-            ) : (
-              <h3 
-                className="text-sm font-semibold text-gray-900 cursor-text hover:text-blue-600"
-                onClick={(e) => {
-                  e.stopPropagation()
-                  setIsEditingTitle(true)
-                }}
-                title="Click to edit title"
-              >
-                {briefing.display_title}
-              </h3>
-            )}
-            {briefing.is_default && (
-              <span className="text-xs text-blue-600 font-medium">Default</span>
-            )}
-          </div>
-          {isEditingDescription ? (
-            <Textarea
-              value={localDescription}
-              onChange={(e) => setLocalDescription(e.target.value)}
-              onBlur={handleDescriptionBlur}
-              onKeyDown={(e) => {
-                if (e.key === 'Escape') {
-                  setLocalDescription(briefing.display_description || '')
-                  setIsEditingDescription(false)
-                }
-              }}
-              className="text-xs text-gray-600 mt-1 min-h-[60px] resize-y"
-              placeholder="Description (optional)"
-              autoFocus
-              rows={3}
-            />
-          ) : (
-            (briefing.display_description || localDescription) && (
-              <p 
-                className="text-xs text-gray-500 mt-1 cursor-text hover:text-gray-700 whitespace-pre-wrap"
-                onClick={(e) => {
-                  e.stopPropagation()
-                  setIsEditingDescription(true)
-                }}
-                title="Click to edit description"
-              >
-                {briefing.display_description || localDescription}
-              </p>
-            )
-          )}
-          {!isEditingDescription && !briefing.display_description && (
-            <p 
-              className="text-xs text-gray-400 mt-1 cursor-text hover:text-gray-600 italic"
-              onClick={(e) => {
-                e.stopPropagation()
-                setIsEditingDescription(true)
-              }}
-              title="Click to add description"
+      {!isSingleView ? (
+        <div
+          className={[
+            'flex items-center gap-3 p-4 transition-colors',
+            'cursor-pointer hover:bg-gray-50',
+            isSelected ? 'bg-gray-50' : '',
+          ].join(' ')}
+          onClick={onToggle}
+        >
+          {/* Drag handle */}
+          {showDragHandle && dragHandleProps && (
+            <div
+              {...dragHandleProps.attributes}
+              {...dragHandleProps.listeners}
+              className="cursor-move p-1 hover:bg-gray-100 rounded"
             >
-              Click to add description
-            </p>
+              <GripVertical className="w-4 h-4 text-gray-400" />
+            </div>
           )}
-        </div>
 
-        {/* Actions */}
-        <div className="flex items-center gap-2" onClick={(e) => e.stopPropagation()}>
-          <button
-            onClick={onSetDefault}
-            className={`p-1 rounded hover:bg-gray-100 ${
-              briefing.is_default ? 'text-yellow-500' : 'text-gray-400'
-            }`}
-            title={briefing.is_default ? 'Default briefing' : 'Set as default'}
-          >
-            <Star className={`w-4 h-4 ${briefing.is_default ? 'fill-current' : ''}`} />
-          </button>
-          <button
-            onClick={onRemove}
-            className="p-1 rounded hover:bg-red-50 text-red-500"
-            title="Remove briefing type"
-          >
-            <Trash2 className="w-4 h-4" />
-          </button>
-        </div>
-        
-        {/* Expand/Collapse Icon - hide in single view */}
-        {!isSingleView && (
+          {/* Content */}
+          <div className="flex-1 min-w-0">
+            <div className="flex items-center gap-2">
+              {isEditingTitle ? (
+                <Input
+                  value={localTitle}
+                  onChange={(e) => setLocalTitle(e.target.value)}
+                  onBlur={handleTitleBlur}
+                  onKeyDown={(e) => {
+                    if (e.key === 'Enter') {
+                      handleTitleBlur()
+                    } else if (e.key === 'Escape') {
+                      setLocalTitle(briefing.display_title)
+                      setIsEditingTitle(false)
+                    }
+                  }}
+                  className="text-sm font-semibold border border-blue-500 focus:ring-2 focus:ring-blue-500"
+                  autoFocus
+                />
+              ) : (
+                <h3
+                  className="text-sm font-semibold text-gray-900 cursor-text hover:text-blue-600"
+                  onClick={(e) => {
+                    e.stopPropagation()
+                    setIsEditingTitle(true)
+                  }}
+                  title="Click to edit title"
+                >
+                  {briefing.display_title}
+                </h3>
+              )}
+              {briefing.is_default && (
+                <span className="text-xs text-blue-600 font-medium">Default</span>
+              )}
+            </div>
+          </div>
+
+          {/* Actions */}
+          <div className="flex items-center gap-2" onClick={(e) => e.stopPropagation()}>
+            <DropdownMenu modal={false}>
+              <DropdownMenuTrigger asChild>
+                <button
+                  type="button"
+                  className="p-1 rounded hover:bg-gray-100 text-gray-500"
+                  title="More actions"
+                >
+                  <MoreHorizontal className="w-4 h-4" />
+                </button>
+              </DropdownMenuTrigger>
+              <DropdownMenuContent align="end">
+                <DropdownMenuItem
+                  onSelect={() => {
+                    requestAnimationFrame(() => onSetDefault())
+                  }}
+                >
+                  {briefing.is_default ? 'Default briefing' : 'Make default'}
+                </DropdownMenuItem>
+                <DropdownMenuSeparator />
+                <DropdownMenuItem
+                  onSelect={() => {
+                    requestAnimationFrame(() => onImportBriefing())
+                  }}
+                >
+                  Import from File/Link
+                </DropdownMenuItem>
+                <DropdownMenuItem
+                  onSelect={() => {
+                    requestAnimationFrame(() => onResetTemplate())
+                  }}
+                >
+                  Reset Template
+                </DropdownMenuItem>
+                <DropdownMenuSeparator />
+                <DropdownMenuItem
+                  className="text-red-600 focus:text-red-600"
+                  onSelect={() => {
+                    requestAnimationFrame(() => onRemove())
+                  }}
+                >
+                  Delete briefing
+                </DropdownMenuItem>
+              </DropdownMenuContent>
+            </DropdownMenu>
+          </div>
+
           <div className="flex-shrink-0">
             {isExpanded ? (
               <ChevronDown className="w-4 h-4 text-gray-400" />
@@ -682,233 +1384,712 @@ function ExpandableBriefingItem({
               <ChevronRight className="w-4 h-4 text-gray-400" />
             )}
           </div>
-        )}
-      </div>
+        </div>
+      ) : null}
 
       {/* Expanded Content */}
       {isExpanded && (
         <div className="bg-white">
           <div className="p-4 space-y-3">
             {/* Filter Pills */}
-            {contentTypes.length > 0 && (
-              <div className="flex flex-wrap items-center gap-3 pb-4">
-                {/* Content Type Filter */}
-                <div className="flex items-center gap-2">
-                  <span className="text-sm font-medium text-gray-700">Content Type:</span>
-                  <div className="flex flex-wrap gap-1.5">
-                    <button
-                      onClick={() => onContentTypeChange?.(null)}
-                      className={`px-3 py-1 text-sm rounded-md transition-colors ${
-                        !selectedContentTypeId
-                          ? 'bg-black text-white'
-                          : 'bg-white text-gray-700 hover:bg-gray-100 border border-gray-200'
-                      }`}
-                    >
-                      All
-                    </button>
-                    {contentTypes.map((ct) => (
-                      <button
-                        key={ct.id}
-                        onClick={() => onContentTypeChange?.(ct.id)}
-                        className={`px-3 py-1 text-sm rounded-md transition-colors ${
-                          selectedContentTypeId === ct.id
-                            ? 'bg-black text-white'
-                            : 'bg-white text-gray-700 hover:bg-gray-100 border border-gray-200'
-                        }`}
-                      >
-                        {ct.title}
-                      </button>
-                    ))}
-                    <Button
-                      variant="outline"
-                      size="sm"
-                      className="h-8 px-2"
-                      onClick={() => {
-                        // TODO: Open content type dialog
-                        toast({
-                          title: 'Add Content Type',
-                          description: 'This will open the content type creation dialog',
-                        })
-                      }}
-                      title="Add Content Type"
-                    >
-                      <Plus className="w-3 h-3" />
-                    </Button>
+            <div className="space-y-4 pb-4">
+              {/* Applies to */}
+              <div
+                className={`rounded-lg border p-3 ${
+                  (appliesToContentTypes?.length || 0) === 0
+                    ? 'border-dashed border-gray-300 bg-gray-50'
+                    : 'border-gray-200'
+                }`}
+              >
+                <div className="text-sm font-medium text-gray-900">Applies to</div>
+
+                {isAppliesToLoading ? (
+                  <div className="mt-3 text-sm text-gray-500">Loading…</div>
+                ) : (appliesToContentTypes?.length || 0) === 0 ? (
+                  <div className="mt-3 text-sm text-gray-600">
+                    No assignments yet. Add at least one channel + content type to use this briefing.
                   </div>
-                </div>
-                
-                {/* Channel Filter */}
-                {selectedContentTypeId && (
-                  <div className="flex items-center gap-2">
-                    <span className="text-sm font-medium text-gray-700">Channel:</span>
-                    <div className="flex flex-wrap gap-1.5">
-                      {channels.length === 0 ? (
-                        <span className="text-sm text-gray-400 italic py-1">No channels available</span>
-                      ) : (
-                        <>
-                          {channels.map((ch) => (
+                ) : (
+                  <div className="mt-3 space-y-3">
+                    {(appliesToContentTypes || []).map((ct) => {
+                      const chans = appliesToChannelsByCt?.get(ct.id) || []
+                      const isCtSelected = selectedContentTypeId === ct.id
+                      return (
+                        <div key={ct.id}>
+                          <div className="flex items-center justify-between gap-2">
                             <button
-                              key={ch.id}
-                              onClick={() => onChannelChange?.(ch.id)}
-                              className={`px-3 py-1 text-sm rounded-md transition-colors ${
-                                selectedChannelId === ch.id
-                                  ? 'bg-black text-white'
-                                  : 'bg-white text-gray-700 hover:bg-gray-100 border border-gray-200'
-                              }`}
+                              type="button"
+                              className={[
+                                'text-left text-xs font-medium transition-colors',
+                                isCtSelected ? 'text-gray-900' : 'text-gray-700 hover:text-gray-900',
+                              ].join(' ')}
+                              onClick={() => onContentTypeChange?.(ct.id)}
+                              title="Select content type"
                             >
-                              {ch.name}
+                              {ct.title}
                             </button>
-                          ))}
-                          <Button
-                            variant="outline"
-                            size="sm"
-                            className="h-8 px-2"
-                            onClick={() => {
-                              // TODO: Open channel dialog
-                              toast({
-                                title: 'Add Channel',
-                                description: 'This will open the channel creation dialog',
-                              })
-                            }}
-                            title="Add Channel"
-                          >
-                            <Plus className="w-3 h-3" />
-                          </Button>
-                        </>
-                      )}
-                    </div>
+                            <div className="flex items-center gap-2">
+                              <Button
+                                size="sm"
+                                variant="ghost"
+                                className="h-7 w-7 p-0 text-gray-400 hover:text-red-600"
+                                title="Remove content type from this briefing"
+                                onClick={() => onRemoveAppliesToContentType?.(ct.id, ct.title)}
+                              >
+                                <X className="h-4 w-4" />
+                              </Button>
+                            </div>
+                          </div>
+                          <div className="mt-2 flex flex-wrap gap-2">
+                            {chans.map((ch) => (
+                              <button
+                                key={`${ct.id}-${ch.id}`}
+                                type="button"
+                                className={[
+                                  'inline-flex items-center gap-2 rounded-full border px-3.5 py-1.5 text-sm transition-colors',
+                                  selectedContentTypeId === ct.id && selectedChannelId === ch.id
+                                    ? 'border-gray-900 bg-gray-900 text-white'
+                                    : 'border-gray-200 bg-white text-gray-800 hover:bg-gray-50',
+                                ].join(' ')}
+                                onClick={() => {
+                                  // Reuse existing selector logic (UI-only change).
+                                  onContentTypeChange?.(ct.id)
+                                  onChannelChange?.(ch.id)
+                                }}
+                                title="Select content type + channel"
+                              >
+                                {ch.name}
+                                <button
+                                  type="button"
+                                  className="text-gray-300 hover:text-red-200"
+                                  title="Remove"
+                                  onClick={(e) => {
+                                    e.stopPropagation()
+                                    onRemoveAppliesTo?.(ct.id, ch.id, ct.title, ch.name)
+                                  }}
+                                >
+                                  <X className="h-4 w-4" />
+                                </button>
+                              </button>
+                            ))}
+                            <button
+                              type="button"
+                              className="text-sm text-blue-600 hover:underline whitespace-nowrap"
+                              onClick={() => openAddChannelForCt(ct.id)}
+                            >
+                              + Add channel
+                            </button>
+                          </div>
+                        </div>
+                      )
+                    })}
                   </div>
                 )}
+
+                {/* Add content type (bottom, full width) */}
+                <div className="mt-4">
+                  <Dialog
+                    open={isAddContentTypeOpen}
+                    onOpenChange={(open) => {
+                      setIsAddContentTypeOpen(open)
+                      if (!open) {
+                        setContentTypesToAdd([])
+                        setChannelsToAddForNewContentTypes([])
+                      }
+                    }}
+                  >
+                    <DialogTrigger asChild>
+                      <Button size="sm" variant="outline" className="h-9 w-full">
+                        <Plus className="h-4 w-4 mr-1" />
+                        Add content type
+                      </Button>
+                    </DialogTrigger>
+                    <DialogContent className="max-w-xl">
+                      <DialogHeader>
+                        <DialogTitle>Add Content Type</DialogTitle>
+                      </DialogHeader>
+
+                      <div className="space-y-4">
+                        <div>
+                          <Label className="mb-2 block">Content Types</Label>
+                          <MultiSelect
+                            options={addableContentTypes.map((ct) => ({ id: String(ct.id), label: ct.title }))}
+                            value={contentTypesToAdd.map(String)}
+                            onChange={(values) => setContentTypesToAdd(values.map(Number))}
+                            placeholder={
+                              addableContentTypes.length === 0
+                                ? 'No content types available to add'
+                                : 'Select content types...'
+                            }
+                          />
+                        </div>
+
+                        <div>
+                          <Label className="mb-2 block">Channels</Label>
+                          <MultiSelect
+                            options={assignmentChannelOptions.map((ch) => ({ id: String(ch.id), label: ch.name }))}
+                            value={channelsToAddForNewContentTypes.map(String)}
+                            onChange={(values) => setChannelsToAddForNewContentTypes(values.map(Number))}
+                            placeholder={
+                              assignmentChannelOptions.length === 0 ? 'No channels available' : 'Select channels...'
+                            }
+                          />
+                          <p className="text-xs text-gray-500 mt-1">
+                            We’ll create the cross-product of selected content types × channels.
+                          </p>
+                        </div>
+                      </div>
+
+                      <DialogFooter>
+                        <Button
+                          variant="outline"
+                          onClick={() => setIsAddContentTypeOpen(false)}
+                          disabled={isAddingAppliesTo}
+                        >
+                          Cancel
+                        </Button>
+                        <Button
+                          onClick={handleConfirmAddNewContentTypes}
+                          disabled={
+                            contentTypesToAdd.length === 0 ||
+                            channelsToAddForNewContentTypes.length === 0 ||
+                            isAddingAppliesTo
+                          }
+                        >
+                          {isAddingAppliesTo ? 'Adding…' : 'Add'}
+                        </Button>
+                      </DialogFooter>
+                    </DialogContent>
+                  </Dialog>
+                </div>
               </div>
-            )}
+
+              {/* Add channel for a specific content type */}
+              <Dialog
+                open={isAddChannelOpen}
+                onOpenChange={(open) => {
+                  setIsAddChannelOpen(open)
+                  if (!open) {
+                    setContentTypeForAddChannel(null)
+                    setChannelToAddId(null)
+                  }
+                }}
+              >
+                <DialogContent>
+                  <DialogHeader>
+                    <DialogTitle>Add Channel</DialogTitle>
+                  </DialogHeader>
+                  <div className="space-y-3">
+                    <Label>Select a channel</Label>
+                    <Select
+                      value={channelToAddId?.toString() || ''}
+                      onValueChange={(v) => setChannelToAddId(Number(v))}
+                      disabled={availableChannelsForCt.length === 0}
+                    >
+                      <SelectTrigger className="w-full">
+                        <SelectValue
+                          placeholder={
+                            availableChannelsForCt.length === 0
+                              ? 'No channels available to add'
+                              : 'Choose a channel...'
+                          }
+                        />
+                      </SelectTrigger>
+                      <SelectContent>
+                        {availableChannelsForCt.map((ch) => (
+                          <SelectItem key={ch.id} value={ch.id.toString()}>
+                            {ch.name}
+                          </SelectItem>
+                        ))}
+                      </SelectContent>
+                    </Select>
+                  </div>
+
+                  <DialogFooter>
+                    <Button variant="outline" onClick={() => setIsAddChannelOpen(false)} disabled={isAddingAppliesTo}>
+                      Cancel
+                    </Button>
+                    <Button
+                      onClick={handleAddAppliesTo}
+                      disabled={!contentTypeForAddChannel || !channelToAddId || isAddingAppliesTo}
+                    >
+                      {isAddingAppliesTo ? 'Adding…' : 'Add'}
+                    </Button>
+                  </DialogFooter>
+                </DialogContent>
+              </Dialog>
+
+            </div>
             
             {/* Components List */}
-            {components.length === 0 ? (
-              <div className="text-center py-6 text-sm text-gray-500">
-                No components assigned yet
-              </div>
-            ) : (
-              <div>
-                <div className="mb-3">
-                  <span className="text-xs text-gray-500">Selected Components ({components.length})</span>
-                </div>
-                <DndContext
-                  sensors={sensors}
-                  collisionDetection={closestCenter}
-                  onDragEnd={handleDragEnd}
-                >
-                  <SortableContext
-                    items={components.map(c => c.component_id)}
-                    strategy={verticalListSortingStrategy}
-                  >
-                    <div className="space-y-2">
-                      {components.map(component => (
-                        <SortableComponentItem
-                          key={component.component_id}
-                          component={component}
-                          onTitleChange={(value) =>
-                            handleUpdateComponent(component, { custom_title: value })
-                          }
-                          onDescriptionChange={(value) =>
-                            handleUpdateComponent(component, { custom_description: value })
-                          }
-                          onRemove={() => handleRemoveComponent(component.component_id, component.source)}
-                        />
-                      ))}
-                    </div>
-                  </SortableContext>
-                </DndContext>
-              </div>
-            )}
-
-            {/* Available to Add Section */}
-            {componentsToShow.length > 0 && (
-              <div className="mt-12">
-                <div className="mb-3">
-                  <span className="text-xs text-gray-500">Unassigned Components</span>
-                </div>
-                <div className="space-y-2">
-                  {componentsToShow.map((availComp) => {
-                    const compKey = `${availComp.component_id}-${availComp.is_project_component}`
-                    const isAdding = addingComponentId === compKey
-                    
-                    return (
-                      <div
-                        key={compKey}
-                        className="border rounded-lg p-3 bg-white border-gray-200"
+            <div>
+              <div className="mb-3">
+                <div className="flex flex-wrap items-center gap-2">
+                  <span className="text-xs text-gray-500">Selected components for</span>
+                  <DropdownMenu modal={false}>
+                    <DropdownMenuTrigger asChild>
+                      <button
+                        type="button"
+                        className="inline-flex items-center rounded-full border border-gray-200 bg-white px-3 py-1 text-xs text-gray-800 hover:bg-gray-50"
+                        title="Select content type"
                       >
-                        <div className="flex items-start gap-3">
-                          <div className="flex-1 min-w-0">
-                            <h4 className="text-sm font-semibold text-gray-900">
-                              {availComp.component_title}
-                            </h4>
-                            {availComp.component_description && (
-                              <p className="text-xs text-gray-500 mt-1 whitespace-pre-wrap">
-                                {availComp.component_description}
-                              </p>
-                            )}
+                        {(contentTypes.find((ct) => ct.id === selectedContentTypeId)?.title as string | undefined) ??
+                          'Select content type'}
+                      </button>
+                    </DropdownMenuTrigger>
+                    <DropdownMenuContent align="start">
+                      {(contentTypes || []).map((ct) => (
+                        <DropdownMenuItem
+                          key={ct.id}
+                          onSelect={() => {
+                            requestAnimationFrame(() => onContentTypeChange?.(ct.id))
+                          }}
+                        >
+                          {ct.title}
+                        </DropdownMenuItem>
+                      ))}
+                    </DropdownMenuContent>
+                  </DropdownMenu>
+                  <span className="text-xs text-gray-500">to be published on</span>
+                  <DropdownMenu modal={false}>
+                    <DropdownMenuTrigger asChild>
+                      <button
+                        type="button"
+                        className="inline-flex items-center rounded-full border border-gray-200 bg-white px-3 py-1 text-xs text-gray-800 hover:bg-gray-50"
+                        title="Select channel"
+                      >
+                        {(channels.find((ch) => ch.id === selectedChannelId)?.name as string | undefined) ??
+                          'Select channel'}
+                      </button>
+                    </DropdownMenuTrigger>
+                    <DropdownMenuContent align="start">
+                      {(channels || []).map((ch) => (
+                        <DropdownMenuItem
+                          key={ch.id}
+                          onSelect={() => {
+                            requestAnimationFrame(() => onChannelChange?.(ch.id))
+                          }}
+                        >
+                          {ch.name}
+                        </DropdownMenuItem>
+                      ))}
+                    </DropdownMenuContent>
+                  </DropdownMenu>
+                  <span className="text-xs text-gray-500">({components.length})</span>
+                </div>
+              </div>
+
+              <DndContext
+                sensors={sensors}
+                collisionDetection={closestCenter}
+                onDragEnd={handleDragEnd}
+              >
+                <SortableContext
+                  items={components.map(getComponentDndId)}
+                  strategy={verticalListSortingStrategy}
+                >
+                  <div className="space-y-2">
+                    {components.length === 0 ? (
+                      <div className="text-center py-6 text-sm text-gray-500">
+                        No components assigned yet
+                      </div>
+                    ) : null}
+
+                    {components.map(component => (
+                      <SortableComponentItem
+                        key={getComponentDndId(component)}
+                        component={component}
+                        onTitleChange={(value) =>
+                          handleUpdateComponent(component, { custom_title: value })
+                        }
+                        onDescriptionChange={(value) =>
+                          handleUpdateComponent(component, { custom_description: value })
+                        }
+                        onRemoveFromBriefing={() => handleRemoveComponent(component.component_id, component.source)}
+                        onAddToAllChannels={() =>
+                          handleAddToAllChannels({
+                            id: component.component_id,
+                            source: component.source,
+                            title: component.effective_title,
+                            description: component.effective_description || null,
+                          })
+                        }
+                        onAddToAllContentTypesAndChannels={() =>
+                          handleAddToAllContentTypesAndChannels({
+                            id: component.component_id,
+                            source: component.source,
+                            title: component.effective_title,
+                            description: component.effective_description || null,
+                          })
+                        }
+                        onAddToOtherBriefings={() =>
+                          openAddToOtherBriefings({
+                            id: component.component_id,
+                            source: component.source,
+                            title: component.effective_title,
+                            description: component.effective_description || null,
+                          })
+                        }
+                        onRemoveFromAllProjectBriefings={
+                          component.source === 'project'
+                            ? () =>
+                                onRequestDeleteProjectComponent?.({
+                                  componentId: component.component_id,
+                                  componentTitle: component.effective_title,
+                                })
+                            : undefined
+                        }
+                        onDeleteFromProject={
+                          component.source === 'global'
+                            ? onRequestDeleteGlobalComponentFromProject
+                              ? () =>
+                                  onRequestDeleteGlobalComponentFromProject({
+                                    componentId: component.component_id,
+                                    componentTitle: component.effective_title,
+                                  })
+                              : undefined
+                            : undefined
+                        }
+                      />
+                    ))}
+
+                    {/* Create custom component (minimal, styled like selected items) */}
+                    <div className="border rounded-lg p-3 bg-white border-gray-200">
+                      <div className="flex items-start gap-3">
+                        <div className="p-1 rounded mt-1 text-gray-300">
+                          <Plus className="w-3 h-3" />
+                        </div>
+                        <div className="flex-1 min-w-0 space-y-2">
+                          <div className="flex items-center gap-2">
+                            <Input
+                              value={customComponentTitle}
+                              onChange={(e) => setCustomComponentTitle(e.target.value)}
+                              className="text-sm font-semibold border-none p-0 h-auto focus:ring-0 focus:border-none bg-transparent"
+                              placeholder="Create a custom component…"
+                              disabled={isCreatingCustomComponent}
+                            />
                           </div>
+
+                          {isEditingNewComponentDescription ? (
+                            <Textarea
+                              value={customComponentDescription}
+                              onChange={(e) => setCustomComponentDescription(e.target.value)}
+                              onBlur={() => setIsEditingNewComponentDescription(false)}
+                              onKeyDown={(e) => {
+                                if (e.key === 'Escape') {
+                                  setCustomComponentDescription('')
+                                  setIsEditingNewComponentDescription(false)
+                                }
+                              }}
+                              className="text-xs text-gray-600 mt-1 min-h-[60px] resize-y"
+                              placeholder="Component description (optional)"
+                              autoFocus
+                              rows={3}
+                              disabled={isCreatingCustomComponent}
+                            />
+                          ) : customComponentDescription ? (
+                            <p
+                              className="text-xs text-gray-500 mt-1 cursor-text hover:text-gray-700 whitespace-pre-wrap"
+                              onClick={(e) => {
+                                e.stopPropagation()
+                                setIsEditingNewComponentDescription(true)
+                              }}
+                              title="Click to edit description"
+                            >
+                              {customComponentDescription}
+                            </p>
+                          ) : (
+                            <p
+                              className="text-xs text-gray-400 mt-1 cursor-text hover:text-gray-600 italic"
+                              onClick={(e) => {
+                                e.stopPropagation()
+                                setIsEditingNewComponentDescription(true)
+                              }}
+                              title="Click to add description"
+                            >
+                              Click to add description
+                            </p>
+                          )}
+                        </div>
+
+                        <div className="flex items-center gap-1">
                           <Button
                             size="sm"
                             variant="outline"
-                            onClick={() => handleAddComponent(availComp)}
-                            disabled={isAdding || (!selectedContentTypeId || !selectedChannelId)}
-                            title={!selectedContentTypeId || !selectedChannelId ? 'Select a content type and channel to add' : ''}
+                            className="gap-2"
+                            onClick={(e) => {
+                              e.preventDefault()
+                              e.stopPropagation()
+                              handleCreateAndAddCustomComponent()
+                            }}
+                            disabled={
+                              isCreatingCustomComponent ||
+                              !customComponentTitle.trim() ||
+                              !selectedContentTypeId ||
+                              !selectedChannelId
+                            }
+                            title={
+                              selectedContentTypeId && selectedChannelId
+                                ? 'Create and add to the selected Applies-to scope'
+                                : 'Select an Applies-to content type + channel first'
+                            }
                           >
-                            {isAdding ? (
+                            {isCreatingCustomComponent ? (
                               <>
-                                <Loader2 className="w-3 h-3 mr-1 animate-spin" />
-                                Adding...
+                                <Loader2 className="h-4 w-4 animate-spin" />
+                                Creating…
                               </>
                             ) : (
                               <>
-                                <Plus className="w-3 h-3 mr-1" />
-                                Add
+                                <Plus className="h-4 w-4" />
+                                Create
                               </>
                             )}
                           </Button>
                         </div>
                       </div>
-                    )
-                  })}
+                    </div>
+                  </div>
+                </SortableContext>
+              </DndContext>
+
+              <Dialog open={isAddToOtherBriefingsOpen} onOpenChange={setIsAddToOtherBriefingsOpen}>
+                <DialogContent className="max-w-md">
+                  <DialogHeader>
+                    <DialogTitle>Add to other briefings</DialogTitle>
+                  </DialogHeader>
+                  <div className="py-4 space-y-3">
+                    <div className="text-xs text-gray-500">
+                      Adds this component to the selected briefing templates (across all applies-to scopes).
+                    </div>
+                    <MultiSelect
+                      options={(allBriefings || [])
+                        .filter((b) => b.briefing_type_id !== briefing.briefing_type_id)
+                        .map((b) => ({
+                          id: String(b.briefing_type_id),
+                          label: b.display_title,
+                        }))}
+                      value={otherBriefingsSelection.map(String)}
+                      onChange={(values) => setOtherBriefingsSelection(values.map(Number))}
+                      placeholder="Select briefing types..."
+                    />
+                  </div>
+                  <DialogFooter>
+                    <Button variant="outline" onClick={() => setIsAddToOtherBriefingsOpen(false)} disabled={isBulkAdding}>
+                      Cancel
+                    </Button>
+                    <Button
+                      onClick={handleConfirmAddToOtherBriefings}
+                      disabled={isBulkAdding || otherBriefingsSelection.length === 0}
+                    >
+                      {isBulkAdding ? 'Adding…' : 'Add'}
+                    </Button>
+                  </DialogFooter>
+                </DialogContent>
+              </Dialog>
+            </div>
+
+            {/* Available to Add Section */}
+            {selectedContentTypeId && selectedChannelId && (
+              <div className="mt-16 border-t border-gray-100 pt-8">
+                <div className="mb-3">
+                  <span className="text-xs text-gray-500">Available to add</span>
                 </div>
+                <div className="flex flex-col sm:flex-row gap-2 mb-3">
+                  <div className="relative flex-1">
+                    <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-400" />
+                    <Input
+                      type="search"
+                      placeholder="Search available components..."
+                      value={availableSearchQuery}
+                      onChange={(e) => setAvailableSearchQuery(e.target.value)}
+                      className="pl-10"
+                    />
+                  </div>
+                  <Select
+                    value={availableTagFilter}
+                    onValueChange={(v) => setAvailableTagFilter(v as any)}
+                  >
+                    <SelectTrigger className="w-full sm:w-[200px]">
+                      <SelectValue placeholder="All types" />
+                    </SelectTrigger>
+                    <SelectContent>
+                    <SelectItem value="__all__">All</SelectItem>
+                      <SelectItem value="Recommended">Recommended</SelectItem>
+                    <SelectItem value="Removed">Removed</SelectItem>
+                    </SelectContent>
+                  </Select>
+                </div>
+                {componentsToShow.length === 0 ? (
+                  <div className="text-xs text-gray-500 border border-dashed rounded p-3 bg-gray-50">
+                    No results. Try clearing your search or changing the type filter.
+                  </div>
+                ) : (
+                  <div className="space-y-2">
+                    {sortedComponentsToShow.map((availComp) => {
+                          const isAdding = addingComponentId === availComp.key
+                          const origin =
+                            availComp.origin === 'project' || availComp.origin === 'global'
+                              ? availComp.origin
+                              : (availComp.is_project_component ? 'project' : 'global')
+                          const isOverridden = origin === 'global' && availComp.global_overridden === true
+                          const effectiveTitle = availComp.custom_title || availComp.title
+                          const effectiveDescription = availComp.custom_description || availComp.description
+                          const isRecommended = availComp.tag === 'Recommended'
+                          const isRemoved = availComp.tag === 'Removed'
+                          
+                          return (
+                            <div
+                              key={availComp.key}
+                              role="button"
+                              tabIndex={0}
+                              onClick={() => {
+                                const params = new URLSearchParams(searchParams.toString())
+                                params.set('component', `${origin}:${availComp.component_id}`)
+                                router.replace(`${pathname}?${params.toString()}`, { scroll: false })
+                              }}
+                              onKeyDown={(e) => {
+                                if (e.key !== 'Enter' && e.key !== ' ') return
+                                e.preventDefault()
+                                const params = new URLSearchParams(searchParams.toString())
+                                params.set('component', `${origin}:${availComp.component_id}`)
+                                router.replace(`${pathname}?${params.toString()}`, { scroll: false })
+                              }}
+                              className="border rounded-lg p-3 bg-white border-gray-200 cursor-pointer hover:bg-gray-50 focus:outline-none focus:ring-2 focus:ring-gray-300 min-h-[96px]"
+                              title={availComp.template_layer ? `Layer: ${availComp.template_layer}` : undefined}
+                            >
+                              <div className="flex items-stretch gap-3">
+                                <div className="flex-1 min-w-0">
+                                  <div className="flex items-center gap-2">
+                                    <h4 className="text-sm font-semibold text-gray-900">
+                                      {effectiveTitle}
+                                    </h4>
+                                    <Badge
+                                      variant="outline"
+                                      className={[
+                                        'text-[10px] px-2 py-0.5',
+                                        origin === 'project'
+                                          ? 'border-blue-200 bg-blue-50 text-blue-700'
+                                          : 'border-gray-200 bg-gray-50 text-gray-700',
+                                      ].join(' ')}
+                                    >
+                                      {origin === 'project' ? 'Project' : 'Global'}
+                                    </Badge>
+                                    {isRecommended ? (
+                                      <Badge variant="outline" className="text-[10px] px-2 py-0.5 border-emerald-200 bg-emerald-50 text-emerald-700">
+                                        Recommended
+                                      </Badge>
+                                    ) : null}
+                                    {isRemoved ? (
+                                      <Badge variant="outline" className="text-[10px] px-2 py-0.5 border-gray-200 bg-gray-50 text-gray-600">
+                                        Removed
+                                      </Badge>
+                                    ) : null}
+                                    {isOverridden ? (
+                                      <Badge variant="secondary" className="text-[10px] px-2 py-0.5">
+                                        Overridden
+                                      </Badge>
+                                    ) : null}
+                                  </div>
+                                  {effectiveDescription ? (
+                                    <p className="text-xs text-gray-500 mt-1 whitespace-pre-wrap line-clamp-2">
+                                      {effectiveDescription}
+                                    </p>
+                                  ) : null}
+                                </div>
+
+                                {origin === 'project' && onRequestDeleteProjectComponent ? (
+                                  <button
+                                    type="button"
+                                    className="p-2 rounded hover:bg-red-50 text-gray-400 hover:text-red-600 transition-colors"
+                                    title="Remove from all project briefings"
+                                    onClick={(e) => {
+                                      e.preventDefault()
+                                      e.stopPropagation()
+                                      onRequestDeleteProjectComponent({
+                                        componentId: availComp.component_id,
+                                        componentTitle: effectiveTitle,
+                                      })
+                                    }}
+                                  >
+                                    <Trash2 className="w-4 h-4" />
+                                  </button>
+                                ) : null}
+
+                                <Button
+                                  size="sm"
+                                  variant="outline"
+                                  onClick={(e) => {
+                                    e.preventDefault()
+                                    e.stopPropagation()
+                                    handleAddComponent(availComp)
+                                  }}
+                                  disabled={isAdding}
+                                >
+                                  {isAdding ? (
+                                    <>
+                                      <Loader2 className="w-3 h-3 mr-1 animate-spin" />
+                                      Adding...
+                                    </>
+                                  ) : (
+                                    <>
+                                      <Plus className="w-3 h-3 mr-1" />
+                                      Add
+                                    </>
+                                  )}
+                                </Button>
+                              </div>
+                            </div>
+                          )
+                    })}
+                  </div>
+                )}
               </div>
             )}
 
-            {/* Actions Footer */}
-            <div className="flex items-center gap-2 pt-6 flex-wrap">
-              <Button
-                size="sm"
-                variant="outline"
-                className="gap-2"
-                onClick={onAddComponent}
-              >
-                <Plus className="w-4 h-4" />
-                Add Component
-              </Button>
-              <Button
-                size="sm"
-                variant="outline"
-                className="gap-2"
-                onClick={onImportBriefing}
-              >
-                <Upload className="w-4 h-4" />
-                Import from File/Link
-              </Button>
-              <Button
-                size="sm"
-                variant="outline"
-                className="gap-2"
-                onClick={onResetTemplate}
-              >
-                <RotateCcw className="w-4 h-4" />
-                Reset Template
-              </Button>
+            {/* Danger zone */}
+            <div className="mt-10 border-t border-gray-200 pt-6">
+              <div className="flex items-center justify-between gap-3">
+                <div>
+                  <div className="text-sm font-medium text-gray-900">Delete briefing</div>
+                  <div className="text-xs text-gray-500 mt-1">Removes this briefing type from the project.</div>
+                </div>
+                <Button
+                  size="sm"
+                  variant="outline"
+                  className="text-red-600 border-red-200 hover:bg-red-50"
+                  onClick={onRemove}
+                >
+                  Delete
+                </Button>
+              </div>
             </div>
           </div>
         </div>
       )}
     </div>
+  )
+}
+
+function SortableBriefingItem(props: SortableBriefingItemProps) {
+  const { attributes, listeners, setNodeRef, transform, transition, isDragging } = useSortable({
+    id: props.briefing.briefing_type_id,
+  })
+
+  const style = {
+    transform: CSS.Transform.toString(transform),
+    transition,
+    opacity: isDragging ? 0.5 : 1,
+  }
+
+  return (
+    <BriefingItemContent
+      {...props}
+      containerRef={setNodeRef}
+      containerStyle={style}
+      dragHandleProps={{ attributes, listeners }}
+      showDragHandle={!props.isSingleView}
+    />
   )
 }
 
@@ -929,17 +2110,8 @@ export function ExpandableBriefingsList({
   const [isNewBriefingDialogOpen, setIsNewBriefingDialogOpen] = useState(false)
   const [newBriefingTitle, setNewBriefingTitle] = useState('')
   const [newBriefingDescription, setNewBriefingDescription] = useState('')
-  const [isAddComponentDialogOpen, setAddComponentDialogOpen] = useState(false)
   const [activeBriefingTypeId, setActiveBriefingTypeId] = useState<number | null>(null)
   const [selectedTypes, setSelectedTypes] = useState<number[]>([])
-  const [selectedGlobalComponents, setSelectedGlobalComponents] = useState<number[]>([])
-  const [selectedProjectComponents, setSelectedProjectComponents] = useState<number[]>([])
-  const [isCreatingNewComponent, setIsCreatingNewComponent] = useState(false)
-  const [newComponentTitle, setNewComponentTitle] = useState('')
-  const [newComponentDescription, setNewComponentDescription] = useState('')
-  const [componentSearchQuery, setComponentSearchQuery] = useState('')
-  const [componentToDelete, setComponentToDelete] = useState<{ id: number; title: string; isProject: boolean } | null>(null)
-  const [isDeleteConfirmOpen, setIsDeleteConfirmOpen] = useState(false)
   const [isImportDialogOpen, setIsImportDialogOpen] = useState(false)
   const [importUrl, setImportUrl] = useState('')
   const [importFile, setImportFile] = useState<File | null>(null)
@@ -953,6 +2125,44 @@ export function ExpandableBriefingsList({
   const fileInputRef = React.useRef<HTMLInputElement>(null)
   const [isResetConfirmationOpen, setIsResetConfirmationOpen] = useState(false)
   const [resetBriefingTypeId, setResetBriefingTypeId] = useState<number | null>(null)
+  const [isScopeDialogOpen, setIsScopeDialogOpen] = useState(false)
+  const [scopeBriefingTypeId, setScopeBriefingTypeId] = useState<number | null>(null)
+  const [scopeRequiredBriefingTypeId, setScopeRequiredBriefingTypeId] = useState<number | null>(null)
+  const [scopeContentTypeIds, setScopeContentTypeIds] = useState<number[]>([])
+  const [scopeChannelIds, setScopeChannelIds] = useState<number[]>([])
+  const [isSavingScope, setIsSavingScope] = useState(false)
+
+  // Keep "briefingTypeId" in the URL as the source of truth for the right pane state.
+  React.useEffect(() => {
+    const urlBriefingTypeId = searchParams.get('briefingTypeId')
+    setSingleBriefingView(urlBriefingTypeId ? Number(urlBriefingTypeId) : null)
+  }, [searchParams])
+
+  const componentKey = searchParams.get('component')
+
+  const closeComponentPane = useCallback(() => {
+    const params = new URLSearchParams(searchParams.toString())
+    params.delete('component')
+    router.replace(`${pathname}?${params.toString()}`, { scroll: false })
+  }, [pathname, router, searchParams])
+
+  const closeRightPane = useCallback(() => {
+    const params = new URLSearchParams(searchParams.toString())
+    params.delete('briefingTypeId')
+    params.delete('contentTypeId')
+    params.delete('channelId')
+    router.replace(`${pathname}?${params.toString()}`)
+  }, [searchParams, router, pathname])
+
+  // ESC to close (matches details-pane behavior)
+  React.useEffect(() => {
+    if (!singleBriefingView) return
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') closeRightPane()
+    }
+    window.addEventListener('keydown', onKeyDown)
+    return () => window.removeEventListener('keydown', onKeyDown)
+  }, [singleBriefingView, closeRightPane])
 
   // Fetch available briefing types
   const { data: availableTypes, isLoading: isLoadingAvailable } = useQuery({
@@ -964,42 +2174,145 @@ export function ExpandableBriefingsList({
     },
   })
 
-  // Fetch global components for selected briefing - need briefing type for this
-  // For custom briefings, we'll need to fetch from a different source or handle differently
-  const { data: globalComponents } = useQuery({
-    queryKey: ['globalBriefingComponents', activeBriefingTypeId],
+  // Scope picker options (project-scoped only)
+  const { data: scopeContentTypeOptions = [] } = useQuery({
+    queryKey: ['projBriefings:scopeContentTypes', projectId],
     queryFn: async () => {
-      if (!activeBriefingTypeId) return []
-      
-      // For custom briefings, there might not be global components
-      // We need to check if this is a custom briefing or standard one
-      // For now, try to fetch - if it fails, return empty
-      try {
-        const { data, error } = await supabase
-          .from('briefing_types_components')
-          .select('briefing_component_id, briefing_components!inner(id, title, description)')
-          .eq('briefing_type_id', activeBriefingTypeId)
-          .order('position', { ascending: true, nullsFirst: false })
+      // Avoid fragile `!inner` joins; fetch ids first then fetch titles (matches working pattern in LibraryTab).
+      const { data: rows, error } = await supabase
+        .from('project_content_type_settings')
+        .select('content_type_id')
+        .eq('project_id', projectId)
 
-        if (error) return []
-        return data || []
-      } catch {
-        return []
+      if (error) throw error
+
+      const ids = Array.from(new Set((rows || []).map((r: any) => r.content_type_id).filter(Boolean)))
+      if (!ids.length) return []
+
+      const { data: types, error: typesError } = await supabase
+        .from('content_types')
+        .select('id, title')
+        .in('id', ids)
+      if (typesError) throw typesError
+
+      return (types || [])
+        .map((ct: any) => ({ id: String(ct.id), label: ct.title as string }))
+        .sort((a, b) => a.label.localeCompare(b.label))
+    },
+  })
+
+  const { data: scopeChannelOptions = [] } = useQuery({
+    queryKey: ['projBriefings:scopeChannels', projectId],
+    queryFn: async () => {
+      const { data: rows, error } = await supabase
+        .from('project_channels')
+        .select('channel_id')
+        .eq('project_id', projectId)
+
+      if (error) throw error
+
+      const ids = Array.from(new Set((rows || []).map((r: any) => r.channel_id).filter(Boolean)))
+      if (!ids.length) return []
+
+      const { data: chans, error: chansError } = await supabase
+        .from('channels')
+        .select('id, name')
+        .in('id', ids)
+      if (chansError) throw chansError
+
+      return (chans || [])
+        .map((ch: any) => ({ id: String(ch.id), label: ch.name as string }))
+        .sort((a, b) => a.label.localeCompare(b.label))
+    },
+  })
+
+  const handleSaveScope = useCallback(async () => {
+    if (!scopeBriefingTypeId) return
+    if (scopeContentTypeIds.length === 0 || scopeChannelIds.length === 0) {
+      toast({
+        title: 'Scope required',
+        description: 'Select at least one content type and one channel.',
+        variant: 'destructive',
+      })
+      return
+    }
+
+    setIsSavingScope(true)
+    try {
+      const pairs: Array<{ ct: number; ch: number }> = []
+      for (const ct of scopeContentTypeIds) {
+        for (const ch of scopeChannelIds) {
+          pairs.push({ ct, ch })
+        }
+      }
+
+      await Promise.all(
+        pairs.map(({ ct, ch }) =>
+          supabase.rpc('pcctb_set', {
+            p_project_id: projectId,
+            p_content_type_id: ct,
+            p_channel_id: ch,
+            p_briefing_type_id: scopeBriefingTypeId,
+          })
+        )
+      )
+
+      toast({ title: 'Success', description: 'Briefing scope saved' })
+
+      queryClient.invalidateQueries({
+        queryKey: ['projBriefings:appliesTo', projectId, scopeBriefingTypeId],
+      })
+
+      // Mark as completed so closing the dialog won't trigger rollback.
+      setScopeRequiredBriefingTypeId(null)
+      setIsScopeDialogOpen(false)
+      setScopeContentTypeIds([])
+      setScopeChannelIds([])
+      const createdId = scopeBriefingTypeId
+      setScopeBriefingTypeId(null)
+
+      // Open right pane on this briefing and preselect first pair in URL
+      const params = new URLSearchParams(searchParams.toString())
+      params.set('briefingTypeId', createdId.toString())
+      params.set('contentTypeId', String(scopeContentTypeIds[0]))
+      params.set('channelId', String(scopeChannelIds[0]))
+      router.replace(`${pathname}?${params.toString()}`)
+    } catch (err: any) {
+      console.error('Failed to save scope:', err)
+      toast({ title: 'Error', description: err.message || 'Failed to save scope', variant: 'destructive' })
+    } finally {
+      setIsSavingScope(false)
+    }
+  }, [scopeBriefingTypeId, scopeContentTypeIds, scopeChannelIds, supabase, projectId, queryClient, searchParams, router, pathname])
+
+  const rollbackScopeIfRequired = useCallback(
+    async (briefingTypeId: number) => {
+      try {
+        // If the pane is currently open for this briefing, close it.
+        const urlBriefingTypeId = searchParams.get('briefingTypeId')
+        if (urlBriefingTypeId && Number(urlBriefingTypeId) === briefingTypeId) {
+          closeRightPane()
+        }
+
+        const { error } = await removeProjectBriefingType(projectId, briefingTypeId)
+        if (error) throw error
+
+        queryClient.invalidateQueries({ queryKey: ['projBriefings:list', projectId] })
+        onRefresh()
+        toast({ title: 'Cancelled', description: 'Briefing removed (scope was not set).' })
+      } catch (err: any) {
+        console.error('Failed to rollback briefing without scope:', err)
+        toast({
+          title: 'Error',
+          description: err?.message || 'Failed to rollback briefing without scope',
+          variant: 'destructive',
+        })
       }
     },
-    enabled: !!activeBriefingTypeId && isAddComponentDialogOpen,
-  })
+    [closeRightPane, onRefresh, projectId, queryClient, searchParams]
+  )
 
-  // Fetch project components
-  const { data: projectComponents } = useQuery({
-    queryKey: ['projBriefings:library', projectId],
-    queryFn: async () => {
-      const { data, error } = await fetchProjectComponents(projectId)
-      if (error) throw error
-      return data || []
-    },
-    enabled: isAddComponentDialogOpen,
-  })
+  // (Legacy Add Components modal removed) - available components are now surfaced inline via the RPC-backed list in the right pane.
 
   const sensors = useSensors(
     useSensor(PointerSensor),
@@ -1040,6 +2353,17 @@ export function ExpandableBriefingsList({
       setSelectedTypes([])
       queryClient.invalidateQueries({ queryKey: ['projBriefings:list', projectId] })
       onRefresh()
+
+      // Prompt scope for single add (per briefing type)
+      if (selectedTypes.length === 1) {
+        const newId = selectedTypes[0]
+        setScopeBriefingTypeId(newId)
+        setScopeRequiredBriefingTypeId(newId)
+        setIsScopeDialogOpen(true)
+        const params = new URLSearchParams(searchParams.toString())
+        params.set('briefingTypeId', newId.toString())
+        router.replace(`${pathname}?${params.toString()}`)
+      }
     } catch (error: any) {
       toast({
         title: 'Error',
@@ -1047,7 +2371,7 @@ export function ExpandableBriefingsList({
         variant: 'destructive',
       })
     }
-  }, [projectId, selectedTypes, queryClient, onRefresh])
+  }, [projectId, selectedTypes, queryClient, onRefresh, searchParams, router, pathname])
 
   const handleCreateNewBriefing = useCallback(async () => {
     if (!newBriefingTitle.trim()) {
@@ -1082,6 +2406,12 @@ export function ExpandableBriefingsList({
       // Auto-select and expand the new briefing
       if (newBriefing) {
         setExpandedBriefings(prev => new Set([...Array.from(prev), newBriefing.briefing_type_id]))
+        setScopeBriefingTypeId(newBriefing.briefing_type_id)
+        setScopeRequiredBriefingTypeId(newBriefing.briefing_type_id)
+        setIsScopeDialogOpen(true)
+        const params = new URLSearchParams(searchParams.toString())
+        params.set('briefingTypeId', newBriefing.briefing_type_id.toString())
+        router.replace(`${pathname}?${params.toString()}`)
       }
     } catch (error: any) {
       toast({
@@ -1090,7 +2420,7 @@ export function ExpandableBriefingsList({
         variant: 'destructive',
       })
     }
-  }, [projectId, newBriefingTitle, newBriefingDescription, queryClient, onRefresh])
+  }, [projectId, newBriefingTitle, newBriefingDescription, queryClient, onRefresh, searchParams, router, pathname])
 
   const [isRemoveConfirmationOpen, setIsRemoveConfirmationOpen] = useState(false)
   const [removeBriefingTypeId, setRemoveBriefingTypeId] = useState<number | null>(null)
@@ -1367,171 +2697,6 @@ export function ExpandableBriefingsList({
     [projectId, resetBriefingTypeId, queryClient, onRefresh]
   )
 
-  const handleOpenAddComponent = useCallback((briefingTypeId: number) => {
-    setActiveBriefingTypeId(briefingTypeId)
-    setSelectedGlobalComponents([])
-    setSelectedProjectComponents([])
-    setNewComponentTitle('')
-    setNewComponentDescription('')
-    setAddComponentDialogOpen(true)
-  }, [])
-
-  const handleAddComponents = useCallback(async () => {
-    if (!activeBriefingTypeId || (selectedGlobalComponents.length === 0 && selectedProjectComponents.length === 0)) return
-
-    try {
-      const promises: Promise<any>[] = []
-
-      // Add global components
-      selectedGlobalComponents.forEach(componentId => {
-        promises.push(
-          addGlobalComponentToBriefing(
-            projectId,
-            activeBriefingTypeId,
-            componentId,
-            null,
-            null,
-            null
-          )
-        )
-      })
-
-      // Add project components
-      selectedProjectComponents.forEach(componentId => {
-        promises.push(
-          addProjectComponentToBriefing(
-            projectId,
-            activeBriefingTypeId,
-            componentId,
-            null,
-            null,
-            null
-          )
-        )
-      })
-
-      await Promise.all(promises)
-
-      toast({
-        title: 'Success',
-        description: `Added ${selectedGlobalComponents.length + selectedProjectComponents.length} component(s)`,
-      })
-
-      setAddComponentDialogOpen(false)
-      setSelectedGlobalComponents([])
-      setSelectedProjectComponents([])
-      setComponentSearchQuery('')
-      setIsCreatingNewComponent(false)
-      setNewComponentTitle('')
-      setNewComponentDescription('')
-      queryClient.invalidateQueries({ 
-        queryKey: ['projBriefings:components', projectId, activeBriefingTypeId] 
-      })
-      onRefresh()
-    } catch (error: any) {
-      toast({
-        title: 'Error',
-        description: error.message || 'Failed to add components',
-        variant: 'destructive',
-      })
-    }
-  }, [projectId, activeBriefingTypeId, selectedGlobalComponents, selectedProjectComponents, queryClient, onRefresh])
-
-  const handleCreateAndAddComponent = useCallback(async () => {
-    if (!activeBriefingTypeId || !newComponentTitle.trim()) {
-      toast({
-        title: 'Error',
-        description: 'Component title is required',
-        variant: 'destructive',
-      })
-      return
-    }
-
-    try {
-      setIsCreatingNewComponent(true)
-
-      // Create the component
-      const { data: newComponent, error: createError } = await createProjectComponent(
-        projectId,
-        newComponentTitle.trim(),
-        newComponentDescription.trim() || null,
-        null
-      )
-
-      if (createError) throw createError
-      if (!newComponent) throw new Error('Failed to create component')
-
-      // Add to briefing
-      const { error: addError } = await addProjectComponentToBriefing(
-        projectId,
-        activeBriefingTypeId,
-        newComponent.id,
-        null,
-        null,
-        null
-      )
-
-      if (addError) throw addError
-
-      toast({
-        title: 'Success',
-        description: 'Component created and added',
-      })
-
-      setNewComponentTitle('')
-      setNewComponentDescription('')
-      setIsCreatingNewComponent(false)
-      queryClient.invalidateQueries({ 
-        queryKey: ['projBriefings:components', projectId, activeBriefingTypeId] 
-      })
-      queryClient.invalidateQueries({ 
-        queryKey: ['projBriefings:library', projectId] 
-      })
-      onRefresh()
-    } catch (error: any) {
-      setIsCreatingNewComponent(false)
-      toast({
-        title: 'Error',
-        description: error.message || 'Failed to create component',
-        variant: 'destructive',
-      })
-    }
-  }, [projectId, activeBriefingTypeId, newComponentTitle, newComponentDescription, queryClient, onRefresh])
-
-  const handleDeleteComponent = useCallback(async () => {
-    if (!componentToDelete) return
-
-    try {
-      const { error } = await deleteProjectComponent(componentToDelete.id)
-      if (error) throw error
-
-      toast({
-        title: 'Success',
-        description: 'Component deleted successfully',
-      })
-
-      setIsDeleteConfirmOpen(false)
-      setComponentToDelete(null)
-      
-      // Remove from selections if it was selected
-      setSelectedProjectComponents(prev => prev.filter(id => id !== componentToDelete.id))
-      
-      // Refresh the component lists
-      queryClient.invalidateQueries({ 
-        queryKey: ['projBriefings:library', projectId] 
-      })
-      queryClient.invalidateQueries({ 
-        queryKey: ['globalBriefingComponents', activeBriefingTypeId] 
-      })
-    } catch (error: any) {
-      toast({
-        title: 'Error',
-        description: error.message || 'Failed to delete component',
-        variant: 'destructive',
-      })
-    }
-  }, [componentToDelete, projectId, activeBriefingTypeId, queryClient])
-
   const handleImportBriefing = useCallback(async () => {
     if (importMethod === 'file' && !importFile) {
       toast({
@@ -1669,19 +2834,6 @@ export function ExpandableBriefingsList({
     }
   }, [])
 
-  // Fetch current components for active briefing (to filter out already added)
-  const { data: currentComponents } = useQuery({
-    queryKey: ['projBriefings:components', projectId, activeBriefingTypeId],
-    queryFn: async () => {
-      if (!activeBriefingTypeId) return []
-      const { data, error } = await fetchProjectBriefingComponents(projectId, activeBriefingTypeId)
-      if (error) throw error
-      return data || []
-    },
-    enabled: !!activeBriefingTypeId && isAddComponentDialogOpen,
-  })
-
-
   const options =
     availableTypes?.map(t => ({
       id: String(t.id),
@@ -1693,402 +2845,183 @@ export function ExpandableBriefingsList({
       <div>
         <div className="flex items-center justify-between mb-4">
           <h2 className="text-lg font-semibold text-gray-900">Briefing Types</h2>
-        <div className="flex gap-2">
-          {singleBriefingView ? (
-            // Show "Add Component" when viewing a single briefing
-            <Dialog 
-              open={isAddComponentDialogOpen} 
-              onOpenChange={(open) => {
-                setAddComponentDialogOpen(open)
-                if (!open) {
-                  setComponentSearchQuery('')
-                  setSelectedGlobalComponents([])
-                  setSelectedProjectComponents([])
-                  setIsCreatingNewComponent(false)
-                  setNewComponentTitle('')
-                  setNewComponentDescription('')
-                }
-              }}
-            >
-              <DialogTrigger asChild>
-                <Button 
-                  size="sm" 
-                  variant="outline" 
+          <div className="flex gap-2">
+            {/* Use non-modal dropdown here to avoid pointer-events/focus-lock conflicts when opening a Dialog from a menu item */}
+            <DropdownMenu modal={false}>
+              <DropdownMenuTrigger asChild>
+                <Button
+                  size="sm"
+                  variant="outline"
                   className="gap-2 bg-white text-black hover:bg-gray-50 border-gray-300"
-                  onClick={() => {
-                    setActiveBriefingTypeId(singleBriefingView)
-                    setComponentSearchQuery('')
-                    setSelectedGlobalComponents([])
-                    setSelectedProjectComponents([])
-                    setIsCreatingNewComponent(false)
-                    setNewComponentTitle('')
-                    setNewComponentDescription('')
-                  }}
                 >
                   <Plus className="w-4 h-4" />
-                  Add Component
+                  Add briefing
                 </Button>
-              </DialogTrigger>
-              <DialogContent className="max-w-2xl max-h-[80vh] overflow-hidden flex flex-col">
+              </DropdownMenuTrigger>
+              <DropdownMenuContent align="end">
+                <DropdownMenuItem
+                  onSelect={() => {
+                    // Let the menu fully close before opening the Dialog
+                    requestAnimationFrame(() => setIsNewBriefingDialogOpen(true))
+                  }}
+                >
+                  New briefing
+                </DropdownMenuItem>
+                <DropdownMenuItem
+                  onSelect={() => {
+                    requestAnimationFrame(() => setAddDialogOpen(true))
+                  }}
+                >
+                  Add from library
+                </DropdownMenuItem>
+              </DropdownMenuContent>
+            </DropdownMenu>
+
+            {/* Keep existing dialogs/calls intact; open them programmatically from the dropdown. */}
+            <Dialog open={isNewBriefingDialogOpen} onOpenChange={setIsNewBriefingDialogOpen}>
+              <DialogContent>
                 <DialogHeader>
-                  <div className="flex items-center gap-2">
-                    {isCreatingNewComponent && (
-                      <Button
-                        variant="ghost"
-                        size="sm"
-                        className="p-1 h-auto -ml-2"
-                        onClick={() => {
-                          setIsCreatingNewComponent(false)
-                          setNewComponentTitle('')
-                          setNewComponentDescription('')
-                        }}
-                      >
-                        <ChevronLeft className="w-5 h-5" />
-                      </Button>
-                    )}
-                    <DialogTitle>{isCreatingNewComponent ? 'Create New Component' : 'Add Components'}</DialogTitle>
-                  </div>
+                  <DialogTitle>Create New Briefing</DialogTitle>
                 </DialogHeader>
-                
-                {!isCreatingNewComponent ? (
-                  <>
-                    {/* Search Bar */}
-                    <div className="relative">
-                      <Search className="absolute left-3 top-1/2 transform -translate-y-1/2 w-4 h-4 text-gray-400" />
-                      <Input
-                        type="search"
-                        placeholder="Search components..."
-                        value={componentSearchQuery}
-                        onChange={(e) => setComponentSearchQuery(e.target.value)}
-                        className="pl-10"
-                      />
-                    </div>
-                    
-                    {/* Components List */}
-                    <div className="flex-1 overflow-y-auto py-4 pr-0 -mr-6">
-                      <div className="pr-6 space-y-3">
-                  {/* Global Components */}
-                  {globalComponents && globalComponents.length > 0 && globalComponents
-                    .map(item => {
-                      const component = item.briefing_components?.[0]
-                      return component ? { ...item, component } : null
-                    })
-                    .filter(item => {
-                      if (!item) return false
-                      if (!componentSearchQuery.trim()) return true
-                      const query = componentSearchQuery.toLowerCase()
-                      return (
-                        item.component.title?.toLowerCase().includes(query) ||
-                        item.component.description?.toLowerCase().includes(query)
-                      )
-                    })
-                    .map(item => {
-                      if (!item) return null
-                      const component = item.component
-                      const isSelected = selectedGlobalComponents.includes(component.id)
-                      return (
-                      <div
-                        key={`global-${component.id}`}
-                        className={`border rounded-lg p-4 cursor-pointer transition-colors ${
-                          isSelected ? 'bg-blue-50 border-blue-300' : 'bg-white border-gray-200 hover:border-gray-300'
-                        }`}
-                        onClick={() => {
-                          setSelectedGlobalComponents(prev =>
-                            prev.includes(component.id)
-                              ? prev.filter(id => id !== component.id)
-                              : [...prev, component.id]
-                          )
-                        }}
-                      >
-                        <div className="flex items-start gap-3">
-                          <input
-                            type="checkbox"
-                            checked={isSelected}
-                            onChange={() => {}}
-                            className="mt-1 w-4 h-4 text-blue-600 rounded focus:ring-blue-500"
-                            onClick={(e) => e.stopPropagation()}
-                          />
-                          <div className="flex-1 min-w-0">
-                            <div className="flex items-center gap-2">
-                              <h3 className="text-sm font-semibold text-gray-900">{component.title}</h3>
-                              <span className="inline-flex items-center px-2 py-0.5 rounded text-xs font-medium bg-purple-100 text-purple-800">
-                                Global
-                              </span>
-                            </div>
-                            {component.description && (
-                              <p className="text-sm text-gray-600 mt-1">{component.description}</p>
-                            )}
-                          </div>
-                        </div>
-                      </div>
-                    )
-                  })}
-
-                  {/* Project Components */}
-                  {projectComponents && projectComponents.length > 0 && projectComponents
-                    .filter(component => {
-                      if (!componentSearchQuery.trim()) return true
-                      const query = componentSearchQuery.toLowerCase()
-                      return (
-                        component.title?.toLowerCase().includes(query) ||
-                        component.description?.toLowerCase().includes(query)
-                      )
-                    })
-                    .map(component => {
-                      const isSelected = selectedProjectComponents.includes(component.id)
-                      return (
-                      <div
-                        key={`project-${component.id}`}
-                        className={`border rounded-lg p-4 cursor-pointer transition-colors ${
-                          isSelected ? 'bg-blue-50 border-blue-300' : 'bg-white border-gray-200 hover:border-gray-300'
-                        }`}
-                        onClick={() => {
-                          setSelectedProjectComponents(prev =>
-                            prev.includes(component.id)
-                              ? prev.filter(id => id !== component.id)
-                              : [...prev, component.id]
-                          )
-                        }}
-                      >
-                        <div className="flex items-start gap-3">
-                          <input
-                            type="checkbox"
-                            checked={isSelected}
-                            onChange={() => {}}
-                            className="mt-1 w-4 h-4 text-blue-600 rounded focus:ring-blue-500"
-                            onClick={(e) => e.stopPropagation()}
-                          />
-                          <div className="flex-1 min-w-0">
-                            <div className="flex items-center gap-2">
-                              <h3 className="text-sm font-semibold text-gray-900">{component.title}</h3>
-                              <span className="inline-flex items-center px-2 py-0.5 rounded text-xs font-medium bg-blue-100 text-blue-800">
-                                Project
-                              </span>
-                            </div>
-                            {component.description && (
-                              <p className="text-sm text-gray-600 mt-1">{component.description}</p>
-                            )}
-                          </div>
-                          <button
-                            onClick={(e) => {
-                              e.stopPropagation()
-                              setComponentToDelete({
-                                id: component.id,
-                                title: component.title,
-                                isProject: true
-                              })
-                              setIsDeleteConfirmOpen(true)
-                            }}
-                            className="p-1 rounded hover:bg-red-50 text-gray-400 hover:text-red-500 transition-colors"
-                            title="Delete component"
-                          >
-                            <Trash2 className="w-4 h-4" />
-                          </button>
-                        </div>
-                      </div>
-                    )
-                  })}
-
-                        {(!globalComponents || globalComponents.length === 0) && (!projectComponents || projectComponents.length === 0) && (
-                          <div className="text-center py-8 text-gray-500">
-                            <p>No components available. Create a new one using the button below.</p>
-                          </div>
-                        )}
-                      </div>
-                    </div>
-
-                    <DialogFooter className="flex items-center justify-between">
-                      <Button 
-                        variant="outline"
-                        size="sm"
-                        className="gap-2"
-                        onClick={() => {
-                          setIsCreatingNewComponent(true)
-                          setNewComponentTitle('')
-                          setNewComponentDescription('')
-                        }}
-                      >
-                        <Plus className="w-3 h-3" />
-                        Create New
-                      </Button>
-                      <div className="flex gap-2">
-                        <Button variant="outline" onClick={() => {
-                          setAddComponentDialogOpen(false)
-                          setIsCreatingNewComponent(false)
-                          setNewComponentTitle('')
-                          setNewComponentDescription('')
-                          setComponentSearchQuery('')
-                        }}>
-                          Cancel
-                        </Button>
-                        <Button 
-                          onClick={handleAddComponents}
-                          disabled={selectedGlobalComponents.length === 0 && selectedProjectComponents.length === 0}
-                        >
-                          Add Selected ({selectedGlobalComponents.length + selectedProjectComponents.length})
-                        </Button>
-                      </div>
-                    </DialogFooter>
-                  </>
-                ) : (
-                  <>
-                    {/* Full-Window Create Component Form */}
-                    <div className="flex-1 flex flex-col space-y-4 py-4">
-                      <div>
-                        <Label htmlFor="create-comp-title">Component Title *</Label>
-                        <Input
-                          id="create-comp-title"
-                          value={newComponentTitle}
-                          onChange={(e) => setNewComponentTitle(e.target.value)}
-                          placeholder="Enter component title"
-                          autoFocus
-                        />
-                      </div>
-                      <div className="flex-1">
-                        <Label htmlFor="create-comp-desc">Component Description</Label>
-                        <Textarea
-                          id="create-comp-desc"
-                          value={newComponentDescription}
-                          onChange={(e) => setNewComponentDescription(e.target.value)}
-                          placeholder="Enter description (optional)"
-                          rows={10}
-                          className="h-full min-h-[200px]"
-                        />
-                      </div>
-                    </div>
-
-                    <DialogFooter>
-                      <Button variant="outline" onClick={() => {
-                        setIsCreatingNewComponent(false)
-                        setNewComponentTitle('')
-                        setNewComponentDescription('')
-                      }}>
-                        Cancel
-                      </Button>
-                      <Button
-                        onClick={async () => {
-                          await handleCreateAndAddComponent()
-                          setIsCreatingNewComponent(false)
-                          setNewComponentTitle('')
-                          setNewComponentDescription('')
-                        }}
-                        disabled={!newComponentTitle.trim()}
-                      >
-                        Create & Add
-                      </Button>
-                    </DialogFooter>
-                  </>
-                )}
+                <div className="space-y-4 py-4">
+                  <div>
+                    <Label htmlFor="new-briefing-title">Title *</Label>
+                    <Input
+                      id="new-briefing-title"
+                      value={newBriefingTitle}
+                      onChange={(e) => setNewBriefingTitle(e.target.value)}
+                      placeholder="Briefing title"
+                    />
+                  </div>
+                  <div>
+                    <Label htmlFor="new-briefing-description">Description</Label>
+                    <Textarea
+                      id="new-briefing-description"
+                      value={newBriefingDescription}
+                      onChange={(e) => setNewBriefingDescription(e.target.value)}
+                      placeholder="Briefing description (optional)"
+                      rows={3}
+                    />
+                  </div>
+                </div>
+                <DialogFooter>
+                  <Button variant="outline" onClick={() => setIsNewBriefingDialogOpen(false)}>
+                    Cancel
+                  </Button>
+                  <Button onClick={handleCreateNewBriefing} disabled={!newBriefingTitle.trim()}>
+                    Create
+                  </Button>
+                </DialogFooter>
               </DialogContent>
             </Dialog>
-          ) : (
-            // Show "New Briefing" when viewing list
-            <Dialog open={isNewBriefingDialogOpen} onOpenChange={setIsNewBriefingDialogOpen}>
-              <DialogTrigger asChild>
-                <Button size="sm" variant="outline" className="gap-2 bg-white text-black hover:bg-gray-50 border-gray-300">
-                  <Plus className="w-4 h-4" />
-                  New Briefing
-                </Button>
-              </DialogTrigger>
-            <DialogContent>
-              <DialogHeader>
-                <DialogTitle>Create New Briefing</DialogTitle>
-              </DialogHeader>
-              <div className="space-y-4 py-4">
-                <div>
-                  <Label htmlFor="new-briefing-title">Title *</Label>
-                  <Input
-                    id="new-briefing-title"
-                    value={newBriefingTitle}
-                    onChange={(e) => setNewBriefingTitle(e.target.value)}
-                    placeholder="Briefing title"
-                  />
-                </div>
-                <div>
-                  <Label htmlFor="new-briefing-description">Description</Label>
-                  <Textarea
-                    id="new-briefing-description"
-                    value={newBriefingDescription}
-                    onChange={(e) => setNewBriefingDescription(e.target.value)}
-                    placeholder="Briefing description (optional)"
-                    rows={3}
-                  />
-                </div>
-              </div>
-              <DialogFooter>
-                <Button variant="outline" onClick={() => setIsNewBriefingDialogOpen(false)}>
-                  Cancel
-                </Button>
-                <Button onClick={handleCreateNewBriefing} disabled={!newBriefingTitle.trim()}>
-                  Create
-                </Button>
-              </DialogFooter>
-            </DialogContent>
-          </Dialog>
-          )}
 
-          <Dialog open={isAddDialogOpen} onOpenChange={setAddDialogOpen}>
-            <DialogTrigger asChild>
-              <Button size="sm" variant="outline" className="gap-2 bg-white text-black hover:bg-gray-50 border-gray-300">
-                <Plus className="w-4 h-4" />
-                Add from Library
-              </Button>
-            </DialogTrigger>
-          <DialogContent>
-            <DialogHeader>
-              <DialogTitle>Add Briefing Types</DialogTitle>
-            </DialogHeader>
-            <div className="py-4">
-              {isLoadingAvailable ? (
-                <div className="text-sm text-gray-500">Loading...</div>
-              ) : options.length === 0 ? (
-                <div className="text-sm text-gray-500">All briefing types have been added</div>
-              ) : (
-                <MultiSelect
-                  options={options}
-                  value={selectedTypes.map(String)}
-                  onChange={(values) => setSelectedTypes(values.map(Number))}
-                  placeholder="Select briefing types..."
-                />
-              )}
-            </div>
-            <DialogFooter>
-              <Button variant="outline" onClick={() => setAddDialogOpen(false)}>
-                Cancel
-              </Button>
-              <Button
-                onClick={handleAddBriefingTypes}
-                disabled={selectedTypes.length === 0}
-              >
-                Add Selected
-              </Button>
-            </DialogFooter>
-          </DialogContent>
-        </Dialog>
-        </div>
+            <Dialog open={isAddDialogOpen} onOpenChange={setAddDialogOpen}>
+              <DialogContent>
+                <DialogHeader>
+                  <DialogTitle>Add Briefing Types</DialogTitle>
+                </DialogHeader>
+                <div className="py-4">
+                  {isLoadingAvailable ? (
+                    <div className="text-sm text-gray-500">Loading...</div>
+                  ) : options.length === 0 ? (
+                    <div className="text-sm text-gray-500">All briefing types have been added</div>
+                  ) : (
+                    <MultiSelect
+                      options={options}
+                      value={selectedTypes.map(String)}
+                      onChange={(values) => setSelectedTypes(values.map(Number))}
+                      placeholder="Select briefing types..."
+                    />
+                  )}
+                </div>
+                <DialogFooter>
+                  <Button variant="outline" onClick={() => setAddDialogOpen(false)}>
+                    Cancel
+                  </Button>
+                  <Button onClick={handleAddBriefingTypes} disabled={selectedTypes.length === 0}>
+                    Add Selected
+                  </Button>
+                </DialogFooter>
+              </DialogContent>
+            </Dialog>
+          </div>
       </div>
 
-      {/* Delete Confirmation Dialog */}
-      <Dialog open={isDeleteConfirmOpen} onOpenChange={setIsDeleteConfirmOpen}>
-        <DialogContent>
+      {/* Briefing Scope Dialog (CT × Channel assignments) */}
+      <Dialog
+        open={isScopeDialogOpen}
+        onOpenChange={(open) => {
+          setIsScopeDialogOpen(open)
+          if (!open) {
+            const requiredId = scopeRequiredBriefingTypeId
+            if (requiredId) {
+              setScopeRequiredBriefingTypeId(null)
+              setScopeBriefingTypeId(null)
+              setScopeContentTypeIds([])
+              setScopeChannelIds([])
+              // Rollback (async) so we don't block UI thread.
+              void rollbackScopeIfRequired(requiredId)
+              return
+            }
+            setScopeBriefingTypeId(null)
+            setScopeContentTypeIds([])
+            setScopeChannelIds([])
+            setIsSavingScope(false)
+          }
+        }}
+      >
+        <DialogContent className="max-w-xl">
           <DialogHeader>
-            <DialogTitle>Delete Component</DialogTitle>
+            <DialogTitle>Choose where this briefing applies</DialogTitle>
           </DialogHeader>
-          <div className="py-4">
-            <p className="text-sm text-gray-600">
-              Are you sure you want to delete "<strong>{componentToDelete?.title}</strong>"? 
-              This action cannot be undone and will remove this component from all briefings.
+
+          <div className="py-4 space-y-4">
+            <div>
+              <Label className="mb-2 block">Content Types</Label>
+              <MultiSelect
+                options={scopeContentTypeOptions}
+                value={scopeContentTypeIds.map(String)}
+                onChange={(values) => setScopeContentTypeIds(values.map(Number))}
+                placeholder="Select content types..."
+              />
+            </div>
+            <div>
+              <Label className="mb-2 block">Channels</Label>
+              <MultiSelect
+                options={scopeChannelOptions}
+                value={scopeChannelIds.map(String)}
+                onChange={(values) => setScopeChannelIds(values.map(Number))}
+                placeholder="Select channels..."
+              />
+            </div>
+            <p className="text-xs text-gray-500">
+              We’ll assign this briefing to every selected Content Type × Channel combination.
             </p>
           </div>
+
           <DialogFooter>
-            <Button variant="outline" onClick={() => {
-              setIsDeleteConfirmOpen(false)
-              setComponentToDelete(null)
-            }}>
+            <Button
+              variant="outline"
+              onClick={() => {
+                const requiredId = scopeRequiredBriefingTypeId
+                setIsScopeDialogOpen(false)
+                if (requiredId) {
+                  setScopeRequiredBriefingTypeId(null)
+                  setScopeBriefingTypeId(null)
+                  setScopeContentTypeIds([])
+                  setScopeChannelIds([])
+                  void rollbackScopeIfRequired(requiredId)
+                }
+              }}
+              disabled={isSavingScope}
+            >
               Cancel
             </Button>
-            <Button variant="destructive" onClick={handleDeleteComponent}>
-              Delete
+            <Button
+              onClick={handleSaveScope}
+              disabled={isSavingScope || scopeContentTypeIds.length === 0 || scopeChannelIds.length === 0}
+            >
+              {isSavingScope ? 'Saving…' : 'Save scope'}
             </Button>
           </DialogFooter>
         </DialogContent>
@@ -2104,59 +3037,6 @@ export function ExpandableBriefingsList({
         </div>
       ) : (
         <div>
-          {/* Breadcrumb Navigation */}
-          {singleBriefingView && (
-            <div className="mb-4 flex items-center gap-3">
-              <div className="flex items-center gap-2 text-sm text-gray-600">
-                <button
-                  onClick={() => {
-                    setSingleBriefingView(null)
-                    // Clear URL params when going back to list view
-                    const params = new URLSearchParams(searchParams.toString())
-                    params.delete('briefingTypeId')
-                    params.delete('contentTypeId')
-                    params.delete('channelId')
-                    router.replace(`${pathname}?${params.toString()}`)
-                  }}
-                  className="flex items-center gap-1 hover:text-gray-900 transition-colors"
-                >
-                  <ChevronLeft className="w-4 h-4" />
-                  <span>Briefings</span>
-                </button>
-                <span>/</span>
-                <span className="text-gray-900 font-medium">
-                  {briefingTypes.find(b => b.briefing_type_id === singleBriefingView)?.display_title}
-                </span>
-              </div>
-              
-              {/* Briefing Switcher Dropdown */}
-              <DropdownMenu>
-                <DropdownMenuTrigger asChild>
-                  <Button variant="ghost" size="sm" className="h-6 px-2">
-                    <ChevronDown className="w-3 h-3" />
-                  </Button>
-                </DropdownMenuTrigger>
-                <DropdownMenuContent align="start">
-                  {briefingTypes.map(briefing => (
-                    <DropdownMenuItem
-                      key={briefing.briefing_type_id}
-                      onClick={() => {
-                        setSingleBriefingView(briefing.briefing_type_id)
-                        const params = new URLSearchParams(searchParams.toString())
-                        params.set('briefingTypeId', briefing.briefing_type_id.toString())
-                        params.delete('contentTypeId')
-                        params.delete('channelId')
-                        router.replace(`${pathname}?${params.toString()}`)
-                      }}
-                      className={briefing.briefing_type_id === singleBriefingView ? 'bg-gray-100' : ''}
-                    >
-                      {briefing.display_title}
-                    </DropdownMenuItem>
-                  ))}
-                </DropdownMenuContent>
-              </DropdownMenu>
-            </div>
-          )}
 
           <DndContext
             sensors={sensors}
@@ -2168,25 +3048,21 @@ export function ExpandableBriefingsList({
               strategy={verticalListSortingStrategy}
             >
               <div className="space-y-3">
-                {briefingTypes
-                  .filter(briefing => !singleBriefingView || briefing.briefing_type_id === singleBriefingView)
-                  .map(briefing => (
-                    <BriefingComponents
-                      key={briefing.briefing_type_id}
-                      briefing={briefing}
-                      projectId={projectId}
-                      isExpanded={singleBriefingView ? true : expandedBriefings.has(briefing.briefing_type_id)}
-                      isSingleView={!!singleBriefingView}
-                      onToggle={() => {
-                        if (singleBriefingView) {
-                          return // Don't collapse in single view mode
-                        }
-                        setSingleBriefingView(briefing.briefing_type_id)
-                        // Update URL with briefing type ID
-                        const params = new URLSearchParams(searchParams.toString())
-                        params.set('briefingTypeId', briefing.briefing_type_id.toString())
-                        router.replace(`${pathname}?${params.toString()}`)
-                      }}
+                {briefingTypes.map(briefing => (
+                  <BriefingComponents
+                    key={briefing.briefing_type_id}
+                    briefing={briefing}
+                    projectId={projectId}
+                    isExpanded={false}
+                    isSingleView={false}
+                    isSelected={briefing.briefing_type_id === singleBriefingView}
+                    allBriefings={briefingTypes}
+                    onToggle={() => {
+                      const params = new URLSearchParams(searchParams.toString())
+                      params.set('briefingTypeId', briefing.briefing_type_id.toString())
+                      // Keep any existing filter params if present; don't clear contentTypeId/channelId.
+                      router.replace(`${pathname}?${params.toString()}`)
+                    }}
                       onSetDefault={() => handleSetDefault(briefing.briefing_type_id)}
                       onRemove={() => handleOpenRemoveConfirmation(briefing.briefing_type_id)}
                       onUpdateMeta={(customTitle, customDescription) =>
@@ -2201,19 +3077,194 @@ export function ExpandableBriefingsList({
                       onComponentReorder={(order) =>
                         handleComponentReorder(briefing.briefing_type_id, order)
                       }
-                      onAddComponent={() => handleOpenAddComponent(briefing.briefing_type_id)}
+                      onAddComponent={() => {}}
                       onImportBriefing={() => {
                         setActiveBriefingTypeId(briefing.briefing_type_id)
                         setIsImportDialogOpen(true)
                       }}
                       onResetTemplate={() => handleOpenResetConfirmation(briefing.briefing_type_id)}
-                    />
-                  ))}
+                  />
+                ))}
               </div>
             </SortableContext>
           </DndContext>
         </div>
       )}
+
+      {/* Right Pane: Briefing details (no overlay; left side remains interactive) */}
+      {singleBriefingView ? (
+        <div
+          className={[
+            'fixed inset-y-0 right-0 z-40 flex w-full border-l border-gray-200 bg-white shadow-xl',
+            componentKey ? 'max-w-[1080px]' : 'max-w-[560px]',
+          ].join(' ')}
+          style={{ pointerEvents: 'auto' }}
+        >
+          {/* Pane 2: Briefing details */}
+          <div className="flex h-full w-full max-w-[560px] flex-col border-r border-gray-200">
+            {(() => {
+              const selectedBriefing =
+                briefingTypes.find((b) => b.briefing_type_id === singleBriefingView) ?? null
+
+              return (
+                <>
+                  <div className="flex h-16 flex-shrink-0 items-center justify-between border-b bg-white px-4 shadow-sm">
+                    <div className="min-w-0">
+                      <div className="text-sm text-gray-500">Briefing</div>
+                      <div className="truncate text-base font-semibold text-gray-900">
+                        {selectedBriefing?.display_title || 'Briefing'}
+                      </div>
+                    </div>
+                    <div className="flex items-center gap-1">
+                      <DropdownMenu modal={false}>
+                        <DropdownMenuTrigger asChild>
+                          <button
+                            type="button"
+                            className="h-8 w-8 inline-flex items-center justify-center rounded hover:bg-gray-100 text-gray-600"
+                            title="More"
+                            aria-label="More"
+                          >
+                            <MoreHorizontal className="h-4 w-4" />
+                          </button>
+                        </DropdownMenuTrigger>
+                        <DropdownMenuContent align="end">
+                          <DropdownMenuItem
+                            onSelect={() => {
+                              if (!selectedBriefing) return
+                              requestAnimationFrame(() => handleSetDefault(selectedBriefing.briefing_type_id))
+                            }}
+                          >
+                            {selectedBriefing?.is_default ? 'Default briefing' : 'Make default'}
+                          </DropdownMenuItem>
+                          <DropdownMenuSeparator />
+                          <DropdownMenuItem
+                            onSelect={() => {
+                              if (!selectedBriefing) return
+                              requestAnimationFrame(() => {
+                                setActiveBriefingTypeId(selectedBriefing.briefing_type_id)
+                                setIsImportDialogOpen(true)
+                              })
+                            }}
+                          >
+                            Import from File/Link
+                          </DropdownMenuItem>
+                          <DropdownMenuItem
+                            onSelect={() => {
+                              if (!selectedBriefing) return
+                              requestAnimationFrame(() => handleOpenResetConfirmation(selectedBriefing.briefing_type_id))
+                            }}
+                          >
+                            Reset Template
+                          </DropdownMenuItem>
+                          <DropdownMenuSeparator />
+                          <DropdownMenuItem
+                            className="text-red-600 focus:text-red-600"
+                            onSelect={() => {
+                              if (!selectedBriefing) return
+                              requestAnimationFrame(() => handleOpenRemoveConfirmation(selectedBriefing.briefing_type_id))
+                            }}
+                          >
+                            Delete briefing
+                          </DropdownMenuItem>
+                        </DropdownMenuContent>
+                      </DropdownMenu>
+
+                      <Button
+                        variant="ghost"
+                        size="sm"
+                        className="h-8 w-8 p-0"
+                        onClick={closeRightPane}
+                        aria-label="Close"
+                        title="Close"
+                      >
+                        <X className="h-4 w-4" />
+                      </Button>
+                    </div>
+                  </div>
+
+                  <div className="flex-1 overflow-auto">
+                    {selectedBriefing ? (
+                      <>
+                        <div className="px-4 pt-4">
+                          <BriefingDescriptionEditor
+                            briefingTypeId={selectedBriefing.briefing_type_id}
+                            initialDescription={selectedBriefing.display_description || ''}
+                            titleForMeta={selectedBriefing.display_title || 'Briefing'}
+                            onSave={(next) =>
+                              handleUpdateMeta(
+                                selectedBriefing.briefing_type_id,
+                                selectedBriefing.display_title,
+                                next || null
+                              )
+                            }
+                          />
+                        </div>
+                        <BriefingComponents
+                          key={`pane-${selectedBriefing.briefing_type_id}`}
+                          briefing={selectedBriefing}
+                          projectId={projectId}
+                          isExpanded={true}
+                          isSingleView={true}
+                          disableBriefingSort={true}
+                          allBriefings={briefingTypes}
+                          onToggle={() => {}}
+                          onSetDefault={() => handleSetDefault(selectedBriefing.briefing_type_id)}
+                          onRemove={() => handleOpenRemoveConfirmation(selectedBriefing.briefing_type_id)}
+                          onUpdateMeta={(customTitle, customDescription) =>
+                            handleUpdateMeta(selectedBriefing.briefing_type_id, customTitle, customDescription)
+                          }
+                          onComponentUpdate={(componentId, source, updates) =>
+                            handleComponentUpdate(selectedBriefing.briefing_type_id, componentId, source, updates)
+                          }
+                          onComponentRemove={(componentId, source) =>
+                            handleComponentRemove(selectedBriefing.briefing_type_id, componentId, source)
+                          }
+                          onComponentReorder={(order) =>
+                            handleComponentReorder(selectedBriefing.briefing_type_id, order)
+                          }
+                          onAddComponent={() => {}}
+                          onImportBriefing={() => {
+                            setActiveBriefingTypeId(selectedBriefing.briefing_type_id)
+                            setIsImportDialogOpen(true)
+                          }}
+                          onResetTemplate={() => handleOpenResetConfirmation(selectedBriefing.briefing_type_id)}
+                        />
+                      </>
+                    ) : (
+                      <div className="p-4 text-sm text-gray-500">This briefing type could not be loaded.</div>
+                    )}
+                  </div>
+                </>
+              )
+            })()}
+          </div>
+
+          {/* Pane 3: Component details */}
+          {componentKey ? (
+            <div className="hidden h-full w-[520px] max-w-[92vw] flex-col bg-white md:flex">
+              <div className="flex h-16 flex-shrink-0 items-center justify-between border-b bg-white px-4 shadow-sm">
+                <div className="min-w-0">
+                  <div className="text-sm text-gray-500">Component</div>
+                  <div className="truncate text-base font-semibold text-gray-900">{componentKey}</div>
+                </div>
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  className="h-8 w-8 p-0"
+                  onClick={closeComponentPane}
+                  aria-label="Close component"
+                  title="Close"
+                >
+                  <X className="h-4 w-4" />
+                </Button>
+              </div>
+              <div className="flex-1 overflow-auto p-4">
+                <ComponentDetailsPane projectId={projectId} componentKey={componentKey} onClose={closeComponentPane} />
+              </div>
+            </div>
+          ) : null}
+        </div>
+      ) : null}
 
       {/* Remove Briefing Confirmation Dialog */}
       <Dialog open={isRemoveConfirmationOpen} onOpenChange={setIsRemoveConfirmationOpen}>
@@ -2574,6 +3625,9 @@ function BriefingComponents({
   projectId,
   isExpanded,
   isSingleView = false,
+  isSelected = false,
+  allBriefings = [],
+  disableBriefingSort = false,
   onToggle,
   onSetDefault,
   onRemove,
@@ -2586,6 +3640,9 @@ function BriefingComponents({
   onResetTemplate,
 }: {
   isSingleView?: boolean
+  isSelected?: boolean
+  allBriefings?: ProjectBriefingType[]
+  disableBriefingSort?: boolean
   briefing: ProjectBriefingType
   projectId: number
   isExpanded: boolean
@@ -2605,22 +3662,249 @@ function BriefingComponents({
   const searchParams = useSearchParams()
   const router = useRouter()
   const pathname = usePathname()
+
+  const [confirmDialog, setConfirmDialog] = useState<null | {
+    title: string
+    description: string
+    actionLabel: string
+    actionClassName?: string
+    onConfirm: () => Promise<void>
+  }>(null)
+  const [isConfirming, setIsConfirming] = useState(false)
+
+  const briefingTitleForDialogs = useMemo(
+    () => briefing.custom_title || briefing.display_title,
+    [briefing.custom_title, briefing.display_title]
+  )
   
   // State for filtering
-  const [selectedContentTypeId, setSelectedContentTypeId] = useState<number | null>(null)
-  const [selectedChannelId, setSelectedChannelId] = useState<number | null>(null)
+  const [selectedContentTypeId, setSelectedContentTypeId] = useState<number | null>(() => {
+    const v = searchParams.get('contentTypeId')
+    if (!v) return null
+    const n = Number(v)
+    return Number.isFinite(n) ? n : null
+  })
+  const [selectedChannelId, setSelectedChannelId] = useState<number | null>(() => {
+    const v = searchParams.get('channelId')
+    if (!v) return null
+    const n = Number(v)
+    return Number.isFinite(n) ? n : null
+  })
+
+  // Applies-to: rows in project_ct_channel_briefings scoped by briefing type
+  const { data: appliesToRows, isLoading: isLoadingAppliesTo } = useQuery({
+    queryKey: ['projBriefings:appliesTo', projectId, briefing.briefing_type_id],
+    queryFn: async () => {
+      const { data, error } = await supabase
+        .from('project_ct_channel_briefings')
+        .select(`
+          content_type_id,
+          channel_id,
+          content_types!inner(id, title),
+          channels!inner(id, name)
+        `)
+        .eq('project_id', projectId)
+        .eq('briefing_type_id', briefing.briefing_type_id)
+
+      if (error) throw error
+      return (data || []) as any[]
+    },
+    enabled: isExpanded,
+    staleTime: 10_000,
+  })
+
+  const appliesToContentTypes = useMemo(() => {
+    const map = new Map<number, { id: number; title: string }>()
+    ;(appliesToRows || []).forEach((row: any) => {
+      const id = row.content_type_id as number
+      const title = row.content_types?.title as string | undefined
+      if (!map.has(id) && title) map.set(id, { id, title })
+    })
+    return Array.from(map.values()).sort((a, b) => a.title.localeCompare(b.title))
+  }, [appliesToRows])
+
+  const appliesToChannelsByCt = useMemo(() => {
+    const map = new Map<number, Array<{ id: number; name: string }>>()
+    ;(appliesToRows || []).forEach((row: any) => {
+      const ctId = row.content_type_id as number
+      const chId = row.channel_id as number
+      const chName = row.channels?.name as string | undefined
+      if (!chName) return
+      const list = map.get(ctId) || []
+      if (!list.some((c) => c.id === chId)) list.push({ id: chId, name: chName })
+      map.set(ctId, list)
+    })
+    // Sort channel pills by name for readability (not affecting task ordering)
+    Array.from(map.entries()).forEach(([ctId, list]) => {
+      map.set(ctId, list.sort((a: { name: string }, b: { name: string }) => a.name.localeCompare(b.name)))
+    })
+    return map
+  }, [appliesToRows])
+
+  const removeAppliesTo = useCallback(
+    (contentTypeId: number, channelId: number, contentTypeTitle: string, channelName: string) => {
+      setConfirmDialog({
+        title: 'Remove assignment',
+        description: `Remove this briefing from "${contentTypeTitle}" / "${channelName}"? This won’t delete any components.`,
+        actionLabel: 'Remove',
+        actionClassName: 'bg-red-600 hover:bg-red-700',
+        onConfirm: async () => {
+          const { error } = await supabase
+            .from('project_ct_channel_briefings')
+            .delete()
+            .eq('project_id', projectId)
+            .eq('content_type_id', contentTypeId)
+            .eq('channel_id', channelId)
+            .eq('briefing_type_id', briefing.briefing_type_id)
+
+          if (error) throw error
+
+          toast({ title: 'Removed', description: 'Briefing detached from channel/content type' })
+          queryClient.invalidateQueries({
+            queryKey: ['projBriefings:appliesTo', projectId, briefing.briefing_type_id],
+          })
+
+          // If we removed the currently selected pair, reset selection and URL
+          if (selectedContentTypeId === contentTypeId && selectedChannelId === channelId) {
+            setSelectedChannelId(null)
+            setSelectedContentTypeId(null)
+            const params = new URLSearchParams(searchParams.toString())
+            params.delete('contentTypeId')
+            params.delete('channelId')
+            router.replace(`${pathname}?${params.toString()}`)
+          }
+        },
+      })
+    },
+    [
+      supabase,
+      queryClient,
+      projectId,
+      briefing.briefing_type_id,
+      selectedContentTypeId,
+      selectedChannelId,
+      searchParams,
+      router,
+      pathname,
+    ]
+  )
+
+  const removeAppliesToContentType = useCallback(
+    (contentTypeId: number, contentTypeTitle: string) => {
+      setConfirmDialog({
+        title: 'Remove content type',
+        description: `Remove this briefing from all channels for "${contentTypeTitle}"? This won’t delete any components.`,
+        actionLabel: 'Remove',
+        actionClassName: 'bg-red-600 hover:bg-red-700',
+        onConfirm: async () => {
+          const { error } = await supabase
+            .from('project_ct_channel_briefings')
+            .delete()
+            .eq('project_id', projectId)
+            .eq('briefing_type_id', briefing.briefing_type_id)
+            .eq('content_type_id', contentTypeId)
+
+          if (error) throw error
+
+          toast({ title: 'Removed', description: 'Content type detached from this briefing' })
+          queryClient.invalidateQueries({
+            queryKey: ['projBriefings:appliesTo', projectId, briefing.briefing_type_id],
+          })
+
+          if (selectedContentTypeId === contentTypeId) {
+            setSelectedChannelId(null)
+            setSelectedContentTypeId(null)
+            const params = new URLSearchParams(searchParams.toString())
+            params.delete('contentTypeId')
+            params.delete('channelId')
+            router.replace(`${pathname}?${params.toString()}`)
+          }
+        },
+      })
+    },
+    [
+      supabase,
+      queryClient,
+      projectId,
+      briefing.briefing_type_id,
+      selectedContentTypeId,
+      searchParams,
+      router,
+      pathname,
+    ]
+  )
+
+  const deleteProjectComponentEverywhere = useCallback(
+    async (projectComponentId: number) => {
+      const { error } = await supabase.rpc('pbc_delete_project_component', {
+        p_project_id: projectId,
+        p_project_component_id: projectComponentId,
+      })
+      if (error) throw error
+
+      // Update project_briefing_components (modal list)
+      queryClient.invalidateQueries({ queryKey: ['projBriefings:library', projectId] })
+      // Refresh open briefing pane lists (if open)
+      queryClient.invalidateQueries({ queryKey: ['projBriefings:components', projectId] })
+      queryClient.invalidateQueries({ queryKey: ['allowedGlobalComponents'] })
+      queryClient.invalidateQueries({ queryKey: ['availableComponents', projectId] })
+    },
+    [supabase, queryClient, projectId]
+  )
+
+  const removeGlobalComponentFromProjectEverywhere = useCallback(
+    async (briefingComponentId: number) => {
+      const { error } = await supabase.rpc('pbc_remove_global_component_from_project', {
+        p_project_id: projectId,
+        p_briefing_component_id: briefingComponentId,
+      })
+      if (error) throw error
+
+      // Refresh both the briefing lists and any component libraries/indexes that depend on usage.
+      queryClient.invalidateQueries({ queryKey: ['projBriefings:library', projectId] })
+      queryClient.invalidateQueries({ queryKey: ['projBriefings:components', projectId] })
+      queryClient.invalidateQueries({ queryKey: ['allowedGlobalComponents'] })
+      queryClient.invalidateQueries({ queryKey: ['availableComponents', projectId] })
+    },
+    [supabase, queryClient, projectId]
+  )
+
+  const requestDeleteProjectComponent = useCallback(
+    ({ componentId, componentTitle }: { componentId: number; componentTitle: string }) => {
+      setConfirmDialog({
+        title: 'Delete component from project',
+        description:
+          'Delete this component from the project? It will be removed from all briefings where it is used.',
+        actionLabel: 'Delete',
+        actionClassName: 'bg-red-600 hover:bg-red-700',
+        onConfirm: async () => {
+          await deleteProjectComponentEverywhere(componentId)
+        },
+      })
+    },
+    [deleteProjectComponentEverywhere]
+  )
+
+  const requestDeleteGlobalComponentFromProject = useCallback(
+    ({ componentId, componentTitle }: { componentId: number; componentTitle: string }) => {
+      setConfirmDialog({
+        title: 'Delete system component from project',
+        description:
+          `Delete "${componentTitle}" from this project? It will be removed from all briefings where it is used.`,
+        actionLabel: 'Delete',
+        actionClassName: 'bg-red-600 hover:bg-red-700',
+        onConfirm: async () => {
+          await removeGlobalComponentFromProjectEverywhere(componentId)
+        },
+      })
+    },
+    [removeGlobalComponentFromProjectEverywhere]
+  )
   
-  // Handler to clear channel when content type is cleared
   const handleContentTypeChange = useCallback((contentTypeId: number | null) => {
     setSelectedContentTypeId(contentTypeId)
-    // Clear channel selection when content type is cleared
-    if (contentTypeId === null) {
-      setSelectedChannelId(null)
-    }
     // Clear channel selection when switching content types (will be auto-selected when channels load)
-    else {
-      setSelectedChannelId(null)
-    }
+    setSelectedChannelId(null)
     
     // Update URL
     const params = new URLSearchParams(searchParams.toString())
@@ -2633,70 +3917,29 @@ function BriefingComponents({
     router.replace(`${pathname}?${params.toString()}`)
   }, [searchParams, router, pathname])
   
-  // Fetch content types for this project (using existing logic from ChannelsPerContentType)
-  const { data: contentTypes } = useQuery({
-    queryKey: ['project:contentTypes', projectId],
-    queryFn: async () => {
-      // Fetch all content types
-      const { data: allTypes, error: allError } = await supabase
-        .from('content_types')
-        .select('id, title')
-        .order('title')
+  // Default selection: prefer URL params, else first applies-to content type
+  React.useEffect(() => {
+    if (!isExpanded) return
+    if (appliesToContentTypes.length === 0) return
+    if (selectedContentTypeId) return
 
-      if (allError) throw allError
+    const urlContentTypeId = searchParams.get('contentTypeId')
+    const parsed = urlContentTypeId ? Number(urlContentTypeId) : null
+    const valid =
+      parsed && appliesToContentTypes.some((ct) => ct.id === parsed) ? parsed : null
+    const next = valid ?? appliesToContentTypes[0].id
 
-      // Fetch enabled ones from project_content_type_settings
-      const { data: enabledData, error: enabledError } = await supabase
-        .from('project_content_type_settings')
-        .select('content_type_id')
-        .eq('project_id', projectId)
-
-      if (enabledError) throw enabledError
-      
-      const enabledIds = new Set((enabledData || []).map((e: any) => e.content_type_id))
-      
-      return (allTypes || [])
-        .filter(ct => enabledIds.has(ct.id))
-        .map(ct => ({
-          id: ct.id,
-          title: ct.title
-        }))
-    },
-    enabled: isExpanded,
-  })
+    setSelectedContentTypeId(next)
+    const params = new URLSearchParams(searchParams.toString())
+    params.set('contentTypeId', next.toString())
+    router.replace(`${pathname}?${params.toString()}`)
+  }, [isExpanded, appliesToContentTypes, selectedContentTypeId, searchParams, router, pathname])
   
   // Fetch channels filtered by selected content type
-  const { data: channels } = useQuery({
-    queryKey: ['project:channels', projectId, selectedContentTypeId],
-    queryFn: async () => {
-      if (!selectedContentTypeId) return []
-      
-      const { data, error } = await supabase
-        .from('project_content_types_channels')
-        .select(`
-          channel_id,
-          position,
-          channels!inner(id, name)
-        `)
-        .eq('project_id', projectId)
-        .eq('content_type_id', selectedContentTypeId)
-        .order('position', { ascending: true })
-      
-      if (error) throw error
-      
-      return (data || []).map((pctc: any) => ({
-        id: pctc.channel_id,
-        name: pctc.channels.name,
-        position: pctc.position
-      })).sort((a, b) => {
-        const posA = a.position ?? 999
-        const posB = b.position ?? 999
-        if (posA !== posB) return posA - posB
-        return a.name.localeCompare(b.name)
-      })
-    },
-    enabled: isExpanded && !!selectedContentTypeId,
-  })
+  const channels = useMemo(() => {
+    if (!selectedContentTypeId) return []
+    return appliesToChannelsByCt.get(selectedContentTypeId) || []
+  }, [selectedContentTypeId, appliesToChannelsByCt])
   
   // Handler for channel change with URL update
   const handleChannelChange = useCallback((channelId: number | null) => {
@@ -2712,16 +3955,21 @@ function BriefingComponents({
     router.replace(`${pathname}?${params.toString()}`)
   }, [searchParams, router, pathname])
   
-  // Auto-select first channel when content type is selected and channels are loaded
+  // Auto-select channel: prefer URL param if valid, else first available
   React.useEffect(() => {
-    if (selectedContentTypeId && channels && channels.length > 0 && !selectedChannelId) {
-      const firstChannelId = channels[0].id
-      setSelectedChannelId(firstChannelId)
-      // Also update URL
-      const params = new URLSearchParams(searchParams.toString())
-      params.set('channelId', firstChannelId.toString())
-      router.replace(`${pathname}?${params.toString()}`)
-    }
+    if (!selectedContentTypeId) return
+    if (!channels || channels.length === 0) return
+    if (selectedChannelId) return
+
+    const urlChannelId = searchParams.get('channelId')
+    const parsed = urlChannelId ? Number(urlChannelId) : null
+    const valid = parsed && channels.some((ch) => ch.id === parsed) ? parsed : null
+    const next = valid ?? channels[0].id
+
+    setSelectedChannelId(next)
+    const params = new URLSearchParams(searchParams.toString())
+    params.set('channelId', next.toString())
+    router.replace(`${pathname}?${params.toString()}`)
   }, [selectedContentTypeId, channels, selectedChannelId, searchParams, router, pathname])
 
   // Fetch components - either template components or channel-specific components
@@ -2804,55 +4052,184 @@ function BriefingComponents({
     enabled: isExpanded,
   })
 
-  // Fetch available components to add (always fetch to show for template or filtered views)
+  // Fetch "Available to add" from the backend RPC (scoped to the selected content type + channel).
   const { data: availableComponents } = useQuery({
-    queryKey: ['availableComponents', projectId, briefing.briefing_type_id],
+    queryKey: ['availableComponents', projectId, briefing.briefing_type_id, selectedContentTypeId, selectedChannelId],
     queryFn: async () => {
-      // Fetch all components from the template
-      const { data: templateData, error: templateError } = await supabase
-        .from('v_project_briefing_types_components_resolved')
-        .select('*')
+      if (!selectedContentTypeId || !selectedChannelId) return []
+      const { data, error } = await supabase.rpc('pcctbc_available_components', {
+        p_project_id: projectId,
+        p_content_type_id: selectedContentTypeId,
+        p_channel_id: selectedChannelId,
+        p_briefing_type_id: briefing.briefing_type_id,
+      })
+      if (error) throw error
+      return (data || []) as PcctbcAvailableComponentRow[]
+    },
+    enabled: isExpanded && !!selectedContentTypeId && !!selectedChannelId,
+  })
+
+  // Add applies-to options
+  const { data: assignmentContentTypeOptions = [] } = useQuery({
+    queryKey: ['projBriefings:assignmentContentTypes', projectId],
+    queryFn: async () => {
+      const { data, error } = await supabase
+        .from('project_content_type_settings')
+        .select('content_type_id, content_types!inner(id, title)')
         .eq('project_id', projectId)
-        .eq('briefing_type_id', briefing.briefing_type_id)
-        .order('position', { ascending: true, nullsFirst: false })
-      
-      if (templateError) throw templateError
-      
-      return (templateData || []).map((item: any) => ({
-        component_id: item.component_id,
-        is_project_component: item.is_project_component || false,
-        component_title: item.effective_title,
-        component_description: item.effective_description
-      }))
+
+      if (error) throw error
+      return (data || [])
+        .map((row: any) => ({ id: row.content_type_id as number, title: row.content_types.title as string }))
+        .sort((a, b) => a.title.localeCompare(b.title))
     },
     enabled: isExpanded,
   })
 
+  const { data: assignmentChannelOptions = [] } = useQuery({
+    queryKey: ['projBriefings:assignmentChannels', projectId],
+    queryFn: async () => {
+      const { data, error } = await supabase
+        .from('project_channels')
+        .select('channel_id, channels!inner(id, name)')
+        .eq('project_id', projectId)
+
+      if (error) throw error
+      return (data || [])
+        .map((row: any) => ({ id: row.channel_id as number, name: row.channels.name as string }))
+        .sort((a, b) => a.name.localeCompare(b.name))
+    },
+    enabled: isExpanded,
+  })
+
+  const handleAddAppliesTo = useCallback(
+    async (contentTypeId: number, channelId: number) => {
+      const allowedContentTypes = new Set(assignmentContentTypeOptions.map((ct) => ct.id))
+      const allowedChannels = new Set(assignmentChannelOptions.map((ch) => ch.id))
+
+      if (!allowedContentTypes.has(contentTypeId) || !allowedChannels.has(channelId)) {
+        throw new Error('Invalid content type or channel selection')
+      }
+
+      const { error } = await supabase.rpc('pcctb_set', {
+        p_project_id: projectId,
+        p_content_type_id: contentTypeId,
+        p_channel_id: channelId,
+        p_briefing_type_id: briefing.briefing_type_id,
+      })
+
+      if (error) throw error
+
+      toast({ title: 'Success', description: 'Assignment updated' })
+
+      queryClient.invalidateQueries({
+        queryKey: ['projBriefings:appliesTo', projectId, briefing.briefing_type_id],
+      })
+
+      setSelectedContentTypeId(contentTypeId)
+      setSelectedChannelId(channelId)
+      const params = new URLSearchParams(searchParams.toString())
+      params.set('contentTypeId', contentTypeId.toString())
+      params.set('channelId', channelId.toString())
+      router.replace(`${pathname}?${params.toString()}`)
+    },
+    [
+      assignmentContentTypeOptions,
+      assignmentChannelOptions,
+      supabase,
+      projectId,
+      briefing.briefing_type_id,
+      queryClient,
+      searchParams,
+      router,
+      pathname,
+    ]
+  )
+
+  const Item = disableBriefingSort ? BriefingItemContent : SortableBriefingItem
+
   return (
-    <ExpandableBriefingItem
-      briefing={briefing}
-      isExpanded={isExpanded}
-      isSingleView={isSingleView}
-      onToggle={onToggle}
-      onSetDefault={onSetDefault}
-      onRemove={onRemove}
-      onUpdateMeta={onUpdateMeta}
-      components={components || []}
-      onComponentUpdate={onComponentUpdate}
-      onComponentRemove={onComponentRemove}
-      onComponentReorder={onComponentReorder}
-      onAddComponent={onAddComponent}
-      onImportBriefing={onImportBriefing}
-      onResetTemplate={onResetTemplate}
-      contentTypes={contentTypes || []}
-      channels={channels || []}
-      selectedContentTypeId={selectedContentTypeId}
-      selectedChannelId={selectedChannelId}
-      onContentTypeChange={handleContentTypeChange}
-      onChannelChange={handleChannelChange}
-      availableComponents={availableComponents || []}
-      projectId={projectId}
-    />
+    <>
+      <Item
+        briefing={briefing}
+        isExpanded={isExpanded}
+        isSingleView={isSingleView}
+        isSelected={isSelected}
+        allBriefings={allBriefings}
+        onToggle={onToggle}
+        onSetDefault={onSetDefault}
+        onRemove={onRemove}
+        onUpdateMeta={onUpdateMeta}
+        components={components || []}
+        onComponentUpdate={onComponentUpdate}
+        onComponentRemove={onComponentRemove}
+        onComponentReorder={onComponentReorder}
+        onAddComponent={onAddComponent}
+        onImportBriefing={onImportBriefing}
+        onResetTemplate={onResetTemplate}
+        contentTypes={appliesToContentTypes}
+        channels={channels || []}
+        selectedContentTypeId={selectedContentTypeId}
+        selectedChannelId={selectedChannelId}
+        onContentTypeChange={handleContentTypeChange}
+        onChannelChange={handleChannelChange}
+        availableComponents={availableComponents || []}
+        projectId={projectId}
+        appliesToContentTypes={appliesToContentTypes}
+        appliesToChannelsByCt={appliesToChannelsByCt}
+        isAppliesToLoading={isLoadingAppliesTo}
+        onRemoveAppliesTo={removeAppliesTo}
+        onRemoveAppliesToContentType={removeAppliesToContentType}
+        assignmentContentTypeOptions={assignmentContentTypeOptions}
+        assignmentChannelOptions={assignmentChannelOptions}
+        onAddAppliesTo={handleAddAppliesTo}
+        onRequestDeleteProjectComponent={requestDeleteProjectComponent}
+        onRequestDeleteGlobalComponentFromProject={requestDeleteGlobalComponentFromProject}
+      />
+
+      <AlertDialog
+        open={!!confirmDialog}
+        onOpenChange={(open) => {
+          if (open) return
+          if (isConfirming) return
+          setConfirmDialog(null)
+        }}
+      >
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>{confirmDialog?.title}</AlertDialogTitle>
+            <AlertDialogDescription>{confirmDialog?.description}</AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel disabled={isConfirming}>Cancel</AlertDialogCancel>
+            <AlertDialogAction
+              className={confirmDialog?.actionClassName}
+              onClick={async () => {
+                if (!confirmDialog) return
+                setIsConfirming(true)
+                try {
+                  await confirmDialog.onConfirm()
+                  setConfirmDialog(null)
+                } catch (err: any) {
+                  console.error('Confirmation action failed:', err)
+                  toast({
+                    title: 'Error',
+                    description: err?.message || 'Action failed',
+                    variant: 'destructive',
+                  })
+                } finally {
+                  setIsConfirming(false)
+                }
+              }}
+              disabled={isConfirming}
+            >
+              {isConfirming ? 'Working…' : confirmDialog?.actionLabel}
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
+
+    </>
   )
 }
 

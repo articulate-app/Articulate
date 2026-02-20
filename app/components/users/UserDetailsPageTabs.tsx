@@ -1,6 +1,6 @@
 "use client"
 
-import { useState, useCallback, useEffect, useMemo } from "react"
+import { useState, useCallback, useEffect, useMemo, useRef } from "react"
 import { useQuery, useQueryClient } from "@tanstack/react-query"
 import { useRouter, useSearchParams, usePathname } from "next/navigation"
 import { 
@@ -43,12 +43,14 @@ import {
   getUserTasks,
   updateUserPreferences,
   updateUserProfile,
+  updateUserPhoto,
   softDeleteUser,
   getOrCreateUserThread,
   type UserProfile,
   type UserProject,
   type UserTask,
 } from "../../lib/services/users"
+import { PUBLIC_MEDIA_BUCKET, getImageUrl, uploadImage } from "../../lib/public-media"
 
 import {
   getUserContentSkills,
@@ -177,9 +179,10 @@ export function UserDetailsPage({ userId }: UserDetailsPageProps) {
   const [isDeleting, setIsDeleting] = useState(false)
   const [isChatLoading, setIsChatLoading] = useState(false)
   const [showEditProfileDialog, setShowEditProfileDialog] = useState(false)
+  const [isPhotoUploading, setIsPhotoUploading] = useState(false)
+  const photoInputRef = useRef<HTMLInputElement | null>(null)
   const [editProfileForm, setEditProfileForm] = useState({
     full_name: "",
-    auth_email: "",
   })
 
   // Content Skills state
@@ -753,16 +756,15 @@ export function UserDetailsPage({ userId }: UserDetailsPageProps) {
   const handleOpenEditProfile = () => {
     setEditProfileForm({
       full_name: profile?.full_name || "",
-      auth_email: profile?.auth_email || "",
     })
     setShowEditProfileDialog(true)
   }
 
   const handleUpdateProfile = async () => {
-    if (!editProfileForm.full_name.trim() || !editProfileForm.auth_email.trim()) {
+    if (!editProfileForm.full_name.trim()) {
       toast({
         title: "Error",
-        description: "Name and email are required",
+        description: "Name is required",
         variant: "destructive",
       })
       return
@@ -771,7 +773,6 @@ export function UserDetailsPage({ userId }: UserDetailsPageProps) {
     try {
       const { error } = await updateUserProfile(userId, {
         full_name: editProfileForm.full_name,
-        auth_email: editProfileForm.auth_email,
       })
       if (error) throw error
 
@@ -1245,22 +1246,27 @@ export function UserDetailsPage({ userId }: UserDetailsPageProps) {
     )
   }
 
+  const photoUrl = getImageUrl(profile.photo)
+
   return (
     <div className="flex flex-col h-full">
       {/* Header */}
       <div className="flex items-center justify-between px-6 py-4 bg-white border-t-0">
         <div className="flex items-center gap-4">
-          {profile.photo ? (
-            <img
-              src={profile.photo}
-              alt={profile.full_name || profile.auth_email}
-              className="w-12 h-12 rounded-full object-cover border-2 border-gray-200"
-            />
-          ) : (
-            <div className="w-12 h-12 rounded-full bg-gradient-to-br from-blue-500 to-indigo-600 flex items-center justify-center text-lg font-semibold text-white border-2 border-gray-200">
-              {getInitials(profile.full_name || profile.auth_email)}
-            </div>
-          )}
+          <div className="relative">
+            {photoUrl ? (
+              // eslint-disable-next-line @next/next/no-img-element
+              <img
+                src={photoUrl}
+                alt={profile.full_name || profile.auth_email}
+                className="w-12 h-12 rounded-full object-cover border-2 border-gray-200"
+              />
+            ) : (
+              <div className="w-12 h-12 rounded-full bg-gradient-to-br from-blue-500 to-indigo-600 flex items-center justify-center text-lg font-semibold text-white border-2 border-gray-200">
+                {getInitials(profile.full_name || profile.auth_email)}
+              </div>
+            )}
+          </div>
           <div>
             <div className="flex items-center gap-2">
               <h1 className="text-xl font-semibold text-gray-900">
@@ -2363,10 +2369,81 @@ export function UserDetailsPage({ userId }: UserDetailsPageProps) {
           <DialogHeader>
             <DialogTitle>Edit Profile</DialogTitle>
             <DialogDescription>
-              Update the user's name and email
+              Update the user's name and photo
             </DialogDescription>
           </DialogHeader>
           <div className="space-y-4 py-4">
+            <div className="space-y-2">
+              <Label>Photo</Label>
+              <div className="flex items-center gap-3">
+                <div className="h-12 w-12 rounded-full border bg-gray-50 overflow-hidden flex items-center justify-center">
+                  {photoUrl ? (
+                    // eslint-disable-next-line @next/next/no-img-element
+                    <img src={photoUrl} alt="User photo" className="h-full w-full object-cover" />
+                  ) : (
+                    <div className="text-xs text-gray-400">Photo</div>
+                  )}
+                </div>
+
+                <input
+                  ref={photoInputRef}
+                  type="file"
+                  accept="image/png,image/jpeg,image/webp"
+                  className="hidden"
+                  disabled={isPhotoUploading}
+                  onChange={async (e) => {
+                    const file = e.target.files?.[0]
+                    if (!file) return
+
+                    setIsPhotoUploading(true)
+                    try {
+                      const { storagePath, error: uploadError } = await uploadImage({
+                        bucket: PUBLIC_MEDIA_BUCKET,
+                        path: `users/${userId}`,
+                        file,
+                        upsert: true,
+                      })
+                      if (uploadError || !storagePath) throw uploadError ?? new Error("Upload failed")
+
+                      const { error: updateError } = await updateUserPhoto(userId, storagePath)
+                      if (updateError) throw updateError
+
+                      queryClient.setQueryData(["user-profile", userId], (prev: any) =>
+                        prev ? { ...prev, photo: storagePath } : prev
+                      )
+                      queryClient.invalidateQueries({ queryKey: ["user-profile", userId] })
+
+                      toast({
+                        title: "Photo updated",
+                        description: "User photo uploaded successfully",
+                      })
+                    } catch (err: any) {
+                      toast({
+                        title: "Upload failed",
+                        description: err?.message || "Failed to upload photo",
+                        variant: "destructive",
+                      })
+                    } finally {
+                      setIsPhotoUploading(false)
+                      if (photoInputRef.current) photoInputRef.current.value = ""
+                    }
+                  }}
+                />
+
+                <Button
+                  type="button"
+                  variant="outline"
+                  size="sm"
+                  onClick={() => photoInputRef.current?.click()}
+                  disabled={isPhotoUploading}
+                  className="gap-2"
+                >
+                  {isPhotoUploading ? <Loader2 className="w-4 h-4 animate-spin" /> : null}
+                  Change photo
+                </Button>
+              </div>
+            </div>
+
             <div className="space-y-2">
               <Label htmlFor="edit-full-name">Full Name</Label>
               <Input
@@ -2376,18 +2453,6 @@ export function UserDetailsPage({ userId }: UserDetailsPageProps) {
                   setEditProfileForm({ ...editProfileForm, full_name: e.target.value })
                 }
                 placeholder="Enter full name"
-              />
-            </div>
-            <div className="space-y-2">
-              <Label htmlFor="edit-email">Email</Label>
-              <Input
-                id="edit-email"
-                type="email"
-                value={editProfileForm.auth_email}
-                onChange={(e) =>
-                  setEditProfileForm({ ...editProfileForm, auth_email: e.target.value })
-                }
-                placeholder="Enter email"
               />
             </div>
           </div>

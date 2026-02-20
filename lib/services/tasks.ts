@@ -1,5 +1,6 @@
 import { createClientComponentClient } from '@supabase/auth-helpers-nextjs'
 import type { Task } from '../../app/lib/types/tasks'
+import type { TaskListRow } from '@/lib/types/task-list-view'
 
 // Create a client-side Supabase client
 const supabase = createClientComponentClient()
@@ -184,36 +185,385 @@ export async function getTasksForMonth(
   fields?: string,
   signal?: AbortSignal
 ): Promise<Task[]> {
-  // Calculate first and last day of the month
-  const year = date.getFullYear();
-  const month = date.getMonth();
-  const firstDay = new Date(year, month, 1);
-  const lastDay = new Date(year, month + 1, 0, 23, 59, 59, 999);
+  // Cursor-based stream fetch via RPC (single endpoint).
+  // We keep the existing behavior: month range is derived from `date` + `dateField`.
+  const year = date.getFullYear()
+  const month = date.getMonth()
+  const monthStart = new Date(year, month, 1)
+  const monthNextStart = new Date(year, month + 1, 1)
 
-  // Build date filter
-  const dateFilter = {
-    ...(dateField === 'delivery_date' && { deliveryDate: { from: firstDay, to: lastDay } }),
-    ...(dateField === 'publication_date' && { publicationDate: { from: firstDay, to: lastDay } })
-  };
+  const monthStartStr = monthStart.toISOString().slice(0, 10)
+  const monthNextStartStr = monthNextStart.toISOString().slice(0, 10)
 
-  // Merge with other filters
-  const mergedFilters = { ...filters, ...dateFilter };
+  const parseNumList = (v: any): number[] | null => {
+    if (!v) return null
+    const arr = Array.isArray(v) ? v : [v]
+    const nums = arr
+      .flatMap((x: any) => String(x ?? '').split(','))
+      .map((x: string) => Number.parseInt(x.trim(), 10))
+      .filter((n: number) => Number.isFinite(n))
+    return nums.length ? nums : null
+  }
 
-  // Fetch all tasks for the month (assume <500 tasks per month)
-  const realSignal = signal || new AbortController().signal;
-  // Use the default fields string if not provided
-  const defaultFields = `id, title, project_id_int, project_status_name, content_type_id, content_type_title, production_type_id, production_type_title, language_id, language_code, delivery_date, publication_date, assigned_user:users!fk_tasks_assigned_to_id(id,full_name), projects:projects!project_id_int(id,name,color), project_statuses:project_status_id(id,name,color)`;
-  const tasks = await getTasks({
-    signal: realSignal,
-    cursor: 0,
-    pageSize: 500,
-    filters: mergedFilters,
-    sortBy: dateField,
-    sortOrder: 'asc',
-    searchQuery,
-    fields: fields || defaultFields,
-  });
-  return tasks;
+  const parseStringList = (v: any): string[] | null => {
+    if (!v) return null
+    const arr = Array.isArray(v) ? v : [v]
+    const out = arr
+      .flatMap((x: any) => String(x ?? '').split(','))
+      .map((x: string) => x.trim())
+      .filter(Boolean)
+    return out.length ? out : null
+  }
+
+  const projectIds = parseNumList(filters?.project)
+  const assigneeIds = parseNumList(filters?.assignedTo)
+  const statusNames = parseStringList(filters?.status)
+  const contentTypeIds = parseNumList(filters?.contentType)
+  const productionTypeIds = parseNumList(filters?.productionType)
+  const languageIds = parseNumList(filters?.language)
+
+  let cursor: any | null = null
+  const out: TaskListRow[] = []
+
+  // Best-effort cancellation: if the caller provides an AbortSignal, bail between pages.
+  const isAborted = () => Boolean(signal?.aborted)
+
+  for (let page = 0; page < 20; page++) {
+    if (isAborted()) break
+
+    const rpcParams = {
+      p_q: searchQuery && searchQuery.trim().length > 0 ? searchQuery : null,
+      p_project_ids: projectIds,
+      p_status_names: statusNames,
+      p_assignee_ids: assigneeIds,
+      p_content_type_ids: contentTypeIds,
+      p_production_type_ids: productionTypeIds,
+      p_language_ids: languageIds,
+      p_is_overdue: null,
+      p_is_publication_overdue: null,
+
+      p_group_by: 'all',
+      p_group_order: null,
+
+      p_row_sort_by: dateField,
+      p_row_sort_order: 'asc',
+
+      p_limit: 500,
+      p_cursor: cursor,
+
+      p_delivery_date_gte: dateField === 'delivery_date' ? monthStartStr : null,
+      p_delivery_date_lt: dateField === 'delivery_date' ? monthNextStartStr : null,
+      p_publication_date_gte: dateField === 'publication_date' ? monthStartStr : null,
+      p_publication_date_lt: dateField === 'publication_date' ? monthNextStartStr : null,
+
+      p_channels: null,
+    }
+
+    const supabase = createClientComponentClient()
+    const { data, error } = await supabase.rpc('task_list_stream_grouped_v2', {
+      ...rpcParams,
+      p_stop_at_group_boundary: false,
+    } as any)
+    if (error) throw new Error(`Failed to fetch tasks: ${error.message}`)
+
+    const payload =
+      (data as { rows?: (TaskListRow & { _group_key?: string })[]; next_cursor?: any }) || {}
+    const rows = payload.rows ?? []
+    out.push(...(rows as TaskListRow[]))
+
+    const next = payload.next_cursor ?? null
+    if (next == null || rows.length === 0) break
+    cursor = next
+  }
+
+  const toTask = (row: TaskListRow): Task => {
+    const assignedId = row.assigned_to_id != null ? String(row.assigned_to_id) : null
+    return {
+      id: String(row.id),
+      title: row.title ?? '',
+      delivery_date: row.delivery_date ?? undefined,
+      publication_date: row.publication_date ?? undefined,
+      assigned_to_id: assignedId,
+      project_id_int: row.project_id_int ?? null,
+      project_name: row.project_name ?? undefined,
+      content_type_id: row.content_type_id != null ? String(row.content_type_id) : undefined,
+      production_type_id: row.production_type_id != null ? String(row.production_type_id) : undefined,
+      language_id: row.language_id != null ? String(row.language_id) : undefined,
+      project_status_id: row.project_status_id != null ? String(row.project_status_id) : undefined,
+      project_status_name: row.project_status_name ?? undefined,
+      project_status_color: row.project_status_color ?? undefined,
+      users:
+        row.assigned_to_name && assignedId
+          ? { id: assignedId, full_name: row.assigned_to_name }
+          : undefined,
+      projects: row.project_name
+        ? { id: row.project_id_int || 0, name: row.project_name, color: row.project_color || undefined }
+        : null,
+      project_statuses: row.project_status_name
+        ? { id: row.project_status_id || 0, name: row.project_status_name, color: row.project_status_color || undefined }
+        : null,
+      content_types: row.content_type_title ? [{ title: row.content_type_title }] : [],
+      production_types: row.production_type_title ? [{ title: row.production_type_title }] : [],
+      languages: row.language_code ? [{ code: row.language_code }] : [],
+    }
+  }
+
+  return out.map(toTask)
+}
+
+/**
+ * Fetch tasks for an arbitrary date range (inclusive start, exclusive end),
+ * filtered by the selected date field and extra filters.
+ */
+export async function getTasksForRange(
+  rangeStart: Date,
+  rangeEndExclusive: Date,
+  dateField: 'delivery_date' | 'publication_date',
+  filters: any = {},
+  searchQuery?: string,
+  fields = 'id, title, assigned_to_id, project_id_int, project_status_id, project_status_name, content_type_id, content_type_title, production_type_id, production_type_title, language_id, language_code, delivery_date, publication_date, assigned_user:users!fk_tasks_assigned_to_id(id,full_name), projects:projects!project_id_int(id,name,color), project_statuses:project_status_id(id,name,color)',
+  signal?: AbortSignal
+): Promise<Task[]> {
+  const startStr = rangeStart.toISOString().slice(0, 10)
+  const endStr = rangeEndExclusive.toISOString().slice(0, 10)
+
+  const parseNumList = (v: any): number[] | null => {
+    if (!v) return null
+    const arr = Array.isArray(v) ? v : [v]
+    const nums = arr
+      .flatMap((x: any) => String(x ?? '').split(','))
+      .map((x: string) => Number.parseInt(x.trim(), 10))
+      .filter((n: number) => Number.isFinite(n))
+    return nums.length ? nums : null
+  }
+
+  const parseStringList = (v: any): string[] | null => {
+    if (!v) return null
+    const arr = Array.isArray(v) ? v : [v]
+    const out = arr
+      .flatMap((x: any) => String(x ?? '').split(','))
+      .map((x: string) => x.trim())
+      .filter(Boolean)
+    return out.length ? out : null
+  }
+
+  const projectIds = parseNumList(filters?.project)
+  const assigneeIds = parseNumList(filters?.assignedTo)
+  const statusNames = parseStringList(filters?.status)
+  const contentTypeIds = parseNumList(filters?.contentType)
+  const productionTypeIds = parseNumList(filters?.productionType)
+  const languageIds = parseNumList(filters?.language)
+
+  const supabase = createClientComponentClient()
+  let query = supabase
+    .from('tasks')
+    .select(fields)
+  if (signal) {
+    query = query.abortSignal(signal)
+  }
+
+  if (searchQuery && searchQuery.trim().length > 0) {
+    query = query.textSearch('search_vector', searchQuery, { config: 'english', type: 'plain' })
+  }
+  if (projectIds?.length) query = query.in('project_id_int', projectIds)
+  if (assigneeIds?.length) query = query.in('assigned_to_id', assigneeIds)
+  if (statusNames?.length) query = query.in('project_status_name', statusNames)
+  if (contentTypeIds?.length) query = query.in('content_type_id', contentTypeIds)
+  if (productionTypeIds?.length) query = query.in('production_type_id', productionTypeIds)
+  if (languageIds?.length) query = query.in('language_id', languageIds)
+
+  if (dateField === 'delivery_date') {
+    query = query.gte('delivery_date', startStr).lt('delivery_date', endStr)
+  } else {
+    query = query.gte('publication_date', startStr).lt('publication_date', endStr)
+  }
+
+  const pageSize = 1000
+  let offset = 0
+  const out: any[] = []
+  while (offset < 20000) {
+    const { data, error } = await query
+      .order(dateField, { ascending: true })
+      .range(offset, offset + pageSize - 1)
+    if (error) throw new Error(`Failed to fetch tasks: ${error.message}`)
+    const rows = data || []
+    out.push(...rows)
+    if (rows.length < pageSize) break
+    offset += pageSize
+    if (signal?.aborted) break
+  }
+
+  return out.map((task: any) => ({
+    id: String(task.id),
+    title: task.title,
+    delivery_date: task.delivery_date ?? undefined,
+    publication_date: task.publication_date ?? undefined,
+    assigned_to_id: task.assigned_to_id != null ? String(task.assigned_to_id) : undefined,
+    project_id_int: task.project_id_int ?? null,
+    project_name: task.project_name ?? undefined,
+    content_type_id: task.content_type_id != null ? String(task.content_type_id) : undefined,
+    production_type_id: task.production_type_id != null ? String(task.production_type_id) : undefined,
+    language_id: task.language_id != null ? String(task.language_id) : undefined,
+    project_status_id: task.project_status_id != null ? String(task.project_status_id) : undefined,
+    project_status_name: task.project_status_name ?? undefined,
+    project_status_color: task.project_status_color ?? undefined,
+    users: task.assigned_user
+      ? { id: String(task.assigned_user.id), full_name: task.assigned_user.full_name }
+      : undefined,
+    projects: task.projects || null,
+    project_statuses: task.project_statuses || null,
+    content_types: task.content_type_title ? [{ title: task.content_type_title }] : [],
+    production_types: task.production_type_title ? [{ title: task.production_type_title }] : [],
+    languages: task.language_code ? [{ code: task.language_code }] : [],
+  } as Task))
+}
+
+/**
+ * Fetch one calendar month chunk via cursor-based RPC pagination.
+ * Uses task_group_tasks_filtered to preserve permission and filtering behavior.
+ */
+export async function getTasksForCalendarMonthChunk(
+  chunkKey: string,
+  dateField: 'delivery_date' | 'publication_date',
+  filters: any = {},
+  searchQuery?: string,
+  signal?: AbortSignal,
+): Promise<Task[]> {
+  const [yearRaw, monthRaw] = String(chunkKey).split('-')
+  const year = Number.parseInt(yearRaw ?? '', 10)
+  const month1Based = Number.parseInt(monthRaw ?? '', 10)
+  if (!Number.isFinite(year) || !Number.isFinite(month1Based) || month1Based < 1 || month1Based > 12) {
+    throw new Error(`Invalid chunkKey "${chunkKey}". Expected YYYY-MM`)
+  }
+
+  const monthStart = new Date(year, month1Based - 1, 1)
+  const monthNextStart = new Date(year, month1Based, 1)
+  const monthStartStr = monthStart.toISOString().slice(0, 10)
+  const monthNextStartStr = monthNextStart.toISOString().slice(0, 10)
+
+  const parseNumList = (v: any): number[] | null => {
+    if (!v) return null
+    const arr = Array.isArray(v) ? v : [v]
+    const nums = arr
+      .flatMap((x: any) => String(x ?? '').split(','))
+      .map((x: string) => Number.parseInt(x.trim(), 10))
+      .filter((n: number) => Number.isFinite(n))
+    return nums.length ? nums : null
+  }
+
+  const parseStringList = (v: any): string[] | null => {
+    if (!v) return null
+    const arr = Array.isArray(v) ? v : [v]
+    const out = arr
+      .flatMap((x: any) => String(x ?? '').split(','))
+      .map((x: string) => x.trim())
+      .filter(Boolean)
+    return out.length ? out : null
+  }
+
+  const projectIds = parseNumList(filters?.project)
+  const assigneeIds = parseNumList(filters?.assignedTo)
+  const statusNames = parseStringList(filters?.status)
+  const contentTypeIds = parseNumList(filters?.contentType)
+  const productionTypeIds = parseNumList(filters?.productionType)
+  const languageIds = parseNumList(filters?.language)
+  const channels = parseStringList(filters?.channels)
+
+  const toTask = (row: TaskListRow): Task => {
+    const assignedId = row.assigned_to_id != null ? String(row.assigned_to_id) : null
+    return {
+      id: String(row.id),
+      title: row.title ?? '',
+      delivery_date: row.delivery_date ?? undefined,
+      publication_date: row.publication_date ?? undefined,
+      assigned_to_id: assignedId,
+      project_id_int: row.project_id_int ?? null,
+      project_name: row.project_name ?? undefined,
+      content_type_id: row.content_type_id != null ? String(row.content_type_id) : undefined,
+      production_type_id: row.production_type_id != null ? String(row.production_type_id) : undefined,
+      language_id: row.language_id != null ? String(row.language_id) : undefined,
+      project_status_id: row.project_status_id != null ? String(row.project_status_id) : undefined,
+      project_status_name: row.project_status_name ?? undefined,
+      project_status_color: row.project_status_color ?? undefined,
+      users:
+        row.assigned_to_name && assignedId
+          ? { id: assignedId, full_name: row.assigned_to_name }
+          : undefined,
+      projects: row.project_name
+        ? { id: row.project_id_int || 0, name: row.project_name, color: row.project_color || undefined }
+        : null,
+      project_statuses: row.project_status_name
+        ? { id: row.project_status_id || 0, name: row.project_status_name, color: row.project_status_color || undefined }
+        : null,
+      content_types: row.content_type_title ? [{ title: row.content_type_title }] : [],
+      production_types: row.production_type_title ? [{ title: row.production_type_title }] : [],
+      languages: row.language_code ? [{ code: row.language_code }] : [],
+    }
+  }
+
+  let cursor: any | null = null
+  const out: Task[] = []
+  const startedAt = Date.now()
+  const supabase = createClientComponentClient()
+
+  for (let page = 0; page < 60; page++) {
+    if (signal?.aborted) break
+
+    const { data, error } = await supabase.rpc('task_group_tasks_filtered', {
+      p_q: searchQuery && searchQuery.trim().length > 0 ? searchQuery.trim() : null,
+      p_project_ids: projectIds,
+      p_status_names: statusNames,
+      p_assignee_ids: assigneeIds,
+      p_content_type_ids: contentTypeIds,
+      p_production_type_ids: productionTypeIds,
+      p_language_ids: languageIds,
+      p_is_overdue: null,
+      p_is_publication_overdue: null,
+      p_group_by: dateField,
+      p_group_key: chunkKey,
+      p_row_sort_by: dateField,
+      p_row_sort_order: 'asc',
+      p_limit: 500,
+      p_cursor: cursor,
+      p_channels: channels,
+      p_delivery_date_gte: dateField === 'delivery_date' ? monthStartStr : null,
+      p_delivery_date_lt: dateField === 'delivery_date' ? monthNextStartStr : null,
+      p_publication_date_gte: dateField === 'publication_date' ? monthStartStr : null,
+      p_publication_date_lt: dateField === 'publication_date' ? monthNextStartStr : null,
+    } as any)
+
+    if (error) {
+      throw new Error(`Failed to fetch calendar chunk ${chunkKey}: ${error.message}`)
+    }
+
+    const payload = (data as { rows?: TaskListRow[]; next_cursor?: any }) || {}
+    const rows = payload.rows ?? []
+    const mapped = rows.map(toTask)
+    out.push(...mapped)
+
+    if (process.env.NODE_ENV === 'development') {
+      console.log('[CalendarChunk] page', {
+        chunkKey,
+        page: page + 1,
+        rows: rows.length,
+        totalRows: out.length,
+      })
+    }
+
+    const next = payload.next_cursor ?? null
+    if (next == null || rows.length === 0) break
+    cursor = next
+  }
+
+  if (process.env.NODE_ENV === 'development') {
+    console.log('[CalendarChunk] done', {
+      chunkKey,
+      totalRows: out.length,
+      elapsedMs: Date.now() - startedAt,
+    })
+  }
+
+  return out
 }
 
 /**
@@ -243,7 +593,7 @@ export async function updateTaskDate(
  * @param values - Task fields and channels (array of channel IDs)
  * @returns The inserted task
  */
-export async function addTask({ channels, ...values }: any): Promise<Task> {
+export async function addTask({ channels, watchers, ...values }: any): Promise<Task> {
   const supabase = createClientComponentClient()
 
   // Insert the task (exclude channels)
@@ -268,6 +618,22 @@ export async function addTask({ channels, ...values }: any): Promise<Task> {
       .insert(channelRows)
     if (channelError) {
       throw new Error(`Task created, but failed to link channels: ${channelError.message}`)
+    }
+  }
+
+  // Add task watchers (project watchers subset) via RPC to respect server-side rules
+  if (watchers && Array.isArray(watchers) && watchers.length > 0) {
+    const watcherIds = watchers
+      .map((id: string | number) => (typeof id === 'string' ? parseInt(id, 10) : id))
+      .filter((id: number) => Number.isFinite(id))
+    if (watcherIds.length > 0) {
+      const { error: watcherError } = await supabase.rpc('add_task_watchers', {
+        p_task_id: taskData.id,
+        p_user_ids: watcherIds,
+      })
+      if (watcherError) {
+        throw new Error(`Task created, but failed to add watchers: ${watcherError.message}`)
+      }
     }
   }
 

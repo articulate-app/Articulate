@@ -222,49 +222,67 @@ export async function createDraftIssuedInvoice(
 export async function fetchIssuedInvoice(id: number): Promise<{ data: any | null; error: any }> {
   const supabase = createClientComponentClient()
   
-  // First, try to fetch the invoice data from the view that includes the new fields
-  const { data: invoice, error: basicError } = await supabase
-    .from('v_issued_invoices_list')
-    .select('*')
-    .eq('id', id)
-    .single()
-  
-  if (basicError) {
-    console.error('Error fetching invoice data from view:', basicError)
-    return { data: null, error: basicError }
+  // Single-call AR invoice pane loader.
+  // This RPC replaces:
+  // - v_issued_invoices_list row
+  // - v_issued_invoice_recipients row
+  // - issued_invoice_orders embed query
+  // - v_credit_notes_summary
+  // - client_payment_allocations (+ payment metadata)
+  // - fn_billing_period_tasks
+  const { data: pane, error } = await supabase.rpc('fn_ar_invoice_pane', {
+    p_issued_invoice_id: id,
+  })
+
+  if (error) {
+    console.error('Error fetching AR invoice pane via RPC:', error)
+    return { data: null, error }
   }
-  
-  if (!invoice) {
+
+  const header = (pane as any)?.header
+  if (!header) {
     return { data: null, error: { message: 'Invoice not found' } }
   }
-  
-  // Then fetch the linked orders separately to avoid the multiple rows issue
-  const { data: issuedInvoiceOrders, error: ordersError } = await supabase
-    .from('issued_invoice_orders')
-    .select(`
-      *,
-      invoice_orders (
-        id, billing_period_start, billing_period_end,
-        subtotal_amount, vat_amount, total_amount,
-        issued_subtotal, remaining_subtotal,
-        currency_code,
-        projects (name, color)
-      )
-    `)
-    .eq('issued_invoice_id', id)
-  
-  if (ordersError) {
-    console.error('Error fetching invoice orders:', ordersError)
-    // Return the invoice without orders rather than failing completely
-    return { data: { ...invoice, issued_invoice_orders: [] }, error: null }
-  }
-  
-  // Combine the data
+
+  const safeArray = <T,>(v: unknown): T[] => (Array.isArray(v) ? (v as T[]) : [])
+  const safeObject = (v: unknown): Record<string, any> => (v && typeof v === 'object' ? (v as any) : {})
+
+  // Normalize fn_ar_invoice_pane.orders -> legacy shape expected by UI:
+  // issued_invoice_orders[] rows with `invoice_orders` embedded and `invoice_orders.projects` containing {name,color}.
+  const normalizedIssuedInvoiceOrders = safeArray<any>((pane as any)?.orders).map((row) => {
+    const link = safeObject(row)
+
+    // fn_ar_invoice_pane may return `invoice_order` (singular) with `project` (singular).
+    const invoiceOrderRaw = (link as any).invoice_orders ?? (link as any).invoice_order ?? {}
+    const invoiceOrder = safeObject(invoiceOrderRaw)
+
+    const projectRaw = (invoiceOrder as any).projects ?? (invoiceOrder as any).project ?? {}
+    const project = safeObject(projectRaw)
+
+    return {
+      ...link,
+      // Ensure the UI can always do: link.invoice_orders.projects?.name
+      invoice_orders: {
+        ...invoiceOrder,
+        projects: project,
+        // Also preserve common flattened fields if the RPC provides them
+        project_name: (invoiceOrder as any).project_name ?? project.name ?? null,
+        project_color: (invoiceOrder as any).project_color ?? project.color ?? null,
+      },
+    }
+  })
+
   const fullInvoice = {
-    ...invoice,
-    issued_invoice_orders: issuedInvoiceOrders || []
+    ...header,
+    // Keep existing consumers working (same key name as prior implementation)
+    issued_invoice_orders: normalizedIssuedInvoiceOrders,
+    // Extra pane sections (consumed by the AR invoice pane to avoid extra REST calls)
+    recipients: (pane as any)?.recipients ?? null,
+    credit_notes: safeArray((pane as any)?.credit_notes),
+    payments: safeArray((pane as any)?.payments),
+    tasks: safeArray((pane as any)?.tasks),
   }
-  
+
   return { data: fullInvoice, error: null }
 }
 

@@ -12,7 +12,6 @@ interface TaskTableRowProps<T> {
 }
 
 export function TaskTableRow<T>({ table, columns, onTaskSelect, isFetching, hasMore, selectedTaskId }: TaskTableRowProps<T>) {
-  console.log('[TaskTableRow] columns:', columns, 'type:', typeof columns, 'isArray:', Array.isArray(columns));
   const safeColumns = columns || [];
   const data = table.getRowModel().rows.map(row => row.original)
   const rows = table.getRowModel().rows
@@ -39,7 +38,7 @@ export function TaskTableRow<T>({ table, columns, onTaskSelect, isFetching, hasM
                 minWidth: cell.column.getSize(),
                 maxWidth: cell.column.getSize(),
               }}
-              className="px-3 py-2 text-sm border-b border-gray-100 truncate align-middle"
+              className="px-3 py-2 text-sm border-b border-r border-gray-100 truncate align-middle"
             >
               {flexRender(cell.column.columnDef.cell, cell.getContext())}
             </td>

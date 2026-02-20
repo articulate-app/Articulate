@@ -572,6 +572,10 @@ export default function IssuedInvoiceDetail({ id, isPane = false, showHeader = f
     }
   }, [invoice])
 
+  // Prefer freshly fetched invoice data over initialInvoice (initialInvoice is only for "instant render" skeleton).
+  // Otherwise fields that exist only on the full invoice (e.g. pdf_path) never show up / never update.
+  const displayInvoice = localInvoice || invoice || initialInvoice
+
 
   // Handle invoice order ID from URL - find the order in the linked orders data
   useEffect(() => {
@@ -588,59 +592,12 @@ export default function IssuedInvoiceDetail({ id, isPane = false, showHeader = f
     }
   }, [invoiceOrderId, invoice?.issued_invoice_orders, onInvoiceOrderSelect])
 
-  // Fetch recipients data
-  const { data: recipientsData } = useQuery({
-    queryKey: ['invoice-recipients', id],
-    queryFn: async () => {
-      const supabase = createClientComponentClient()
-      const { data, error } = await supabase
-        .from('v_issued_invoice_recipients')
-        .select('*')
-        .eq('issued_invoice_id', id)
-        .single()
-      
-      if (error) {
-        console.error('Error fetching recipients:', error)
-        return null
-      }
-      
-      return data
-    },
-    enabled: !!id
-  })
+  // Recipients are loaded via fn_ar_invoice_pane (embedded into the invoice fetch).
+  const recipientsData = (displayInvoice as any)?.recipients ?? null
 
   // Billable tasks state
   const [billableTasks, setBillableTasks] = useState<any[]>([])
   const [isLoadingBillableTasks, setIsLoadingBillableTasks] = useState(true)
-
-  // Fetch billable tasks when the component mounts
-  useEffect(() => {
-    if (invoice?.id) {
-      const fetchBillableTasks = async () => {
-        try {
-          setIsLoadingBillableTasks(true)
-          const supabase = createClientComponentClient()
-          
-          const { data, error } = await supabase
-            .from('v_billing_period_tasks')
-            .select('task_id,title,delivery_date,publication_date,production_type_title,content_type_title,language_code,assigned_to_name,is_billable_candidate,project_name,project_status_name,project_status_color,is_overdue,is_publication_overdue')
-            .eq('ctx_type', 'invoice')
-            .eq('ctx_id', displayInvoice.id)
-            .order('delivery_date', { ascending: false })
-            .limit(50)
-
-          if (error) throw error
-          setBillableTasks(data || [])
-        } catch (err: any) {
-          console.error('Error fetching billable tasks:', err)
-        } finally {
-          setIsLoadingBillableTasks(false)
-        }
-      }
-      
-      fetchBillableTasks()
-    }
-  }, [invoice?.id])
 
   // Payments state
   const [payments, setPayments] = useState<any[]>([])
@@ -650,6 +607,24 @@ export default function IssuedInvoiceDetail({ id, isPane = false, showHeader = f
   const [creditNotes, setCreditNotes] = useState<any[]>([])
   const [isLoadingCreditNotes, setIsLoadingCreditNotes] = useState(true)
 
+  // Pane sections are loaded via fn_ar_invoice_pane (embedded into the invoice fetch).
+  // Defensive defaults: treat missing arrays as [] so the pane doesn't go blank.
+  useEffect(() => {
+    if (!invoice?.id) return
+
+    const nextTasks = Array.isArray((invoice as any)?.tasks) ? (invoice as any).tasks : []
+    const nextPayments = Array.isArray((invoice as any)?.payments) ? (invoice as any).payments : []
+    const nextCreditNotes = Array.isArray((invoice as any)?.credit_notes) ? (invoice as any).credit_notes : []
+
+    setBillableTasks(nextTasks)
+    setPayments(nextPayments)
+    setCreditNotes(nextCreditNotes)
+
+    setIsLoadingBillableTasks(false)
+    setIsLoadingPayments(false)
+    setIsLoadingCreditNotes(false)
+  }, [invoice?.id, invoice?.updated_at])
+
 
   // PDF upload state
   const [pdfAttachments, setPdfAttachments] = useState<any[]>([])
@@ -657,63 +632,16 @@ export default function IssuedInvoiceDetail({ id, isPane = false, showHeader = f
   const [isUploadingPdf, setIsUploadingPdf] = useState(false)
   const [pdfUploadError, setPdfUploadError] = useState<string | null>(null)
 
-  // Fetch payments when the component mounts
-  useEffect(() => {
-    if (invoice?.id) {
-      const fetchPayments = async () => {
-        try {
-          setIsLoadingPayments(true)
-          const { getInvoicePaymentAllocations } = await import('../../lib/payments')
-          const { data, error } = await getInvoicePaymentAllocations(displayInvoice.id)
-          
-          if (error) throw error
-          setPayments(data || [])
-        } catch (err: any) {
-          console.error('Error fetching payments:', err)
-        } finally {
-          setIsLoadingPayments(false)
-        }
-      }
-      
-      fetchPayments()
-    }
-  }, [invoice?.id])
-
-  // Fetch credit notes when the component mounts
-  useEffect(() => {
-    if (invoice?.id) {
-      const fetchCreditNotes = async () => {
-        try {
-          setIsLoadingCreditNotes(true)
-          
-          // Fetch credit notes for this invoice
-          const { data, error } = await supabase
-            .from('v_credit_notes_summary')
-            .select('*')
-            .eq('issued_invoice_id', displayInvoice.id)
-          
-          if (error) throw error
-          setCreditNotes(data || [])
-        } catch (err: any) {
-          console.error('Error fetching credit notes:', err)
-        } finally {
-          setIsLoadingCreditNotes(false)
-        }
-      }
-      
-      fetchCreditNotes()
-    }
-  }, [invoice?.id])
-
 
   // Initialize PDF attachments when invoice loads - read from pdf_path column
   useEffect(() => {
-    if (invoice?.pdf_path) {
+    const pdfPath = displayInvoice?.pdf_path
+    if (pdfPath) {
       // Create attachment from pdf_path column
       const pdfAttachment = {
         id: 'current-pdf',
-        file_name: displayInvoice.pdf_path?.split('/').pop() || 'displayInvoice.pdf',
-        file_path: displayInvoice.pdf_path,
+        file_name: pdfPath.split('/').pop() || 'invoice.pdf',
+        file_path: pdfPath,
         uploaded_at: displayInvoice.updated_at || new Date().toISOString(),
         mime_type: 'application/pdf',
         size: null
@@ -726,7 +654,7 @@ export default function IssuedInvoiceDetail({ id, isPane = false, showHeader = f
         try {
           const { data: signedUrl, error } = await supabase.storage
             .from('invoices')
-            .createSignedUrl(displayInvoice.pdf_path!, 60 * 10) // 10 minutes
+            .createSignedUrl(pdfPath, 60 * 10) // 10 minutes
           
           if (error) {
             console.error('Error getting PDF signed URL:', error)
@@ -743,7 +671,7 @@ export default function IssuedInvoiceDetail({ id, isPane = false, showHeader = f
       setPdfAttachments([])
       setPdfSignedUrls({})
     }
-  }, [invoice?.pdf_path])
+  }, [displayInvoice?.pdf_path, displayInvoice?.updated_at])
 
   // PDF upload handlers
   const handlePdfUpload = async (files: FileList | File[]) => {
@@ -982,19 +910,9 @@ export default function IssuedInvoiceDetail({ id, isPane = false, showHeader = f
     if (!invoice) return
     
     try {
-      const supabase = createClientComponentClient()
-      const { data, error } = await supabase
-        .from('v_billing_period_tasks')
-        .select('task_id,title,delivery_date,production_type_title,content_type_title,language_code,assigned_to_name,is_billable_candidate')
-        .eq('ctx_type', 'invoice')
-        .eq('ctx_id', displayInvoice.id)
-        .order('delivery_date', { ascending: false })
-
-      if (error) throw error
-      
-      // Export to XLSX
+      // No extra network call: tasks are already loaded via fn_ar_invoice_pane.
       const { exportToXLSX } = await import('../../../lib/utils/export')
-      exportToXLSX(data || [], `billable-tasks-invoice-${displayInvoice.id}`)
+      exportToXLSX(billableTasks || [], `billable-tasks-invoice-${displayInvoice.id}`)
       
       toast({
         title: 'Success',
@@ -1118,9 +1036,6 @@ export default function IssuedInvoiceDetail({ id, isPane = false, showHeader = f
     }
   }, [id, refetch, queryClient])
 
-
-  // Use initialInvoice data if available to render immediately
-  const displayInvoice = localInvoice || initialInvoice || invoice
 
   if (isLoading && !displayInvoice) {
     return (
@@ -2005,18 +1920,7 @@ export default function IssuedInvoiceDetail({ id, isPane = false, showHeader = f
           isOpen={isAddExistingPaymentModalOpen}
           onClose={() => setIsAddExistingPaymentModalOpen(false)}
           onPaymentAdded={async () => {
-            // Refresh the payment allocations immediately
-            try {
-              const { getInvoicePaymentAllocations } = await import('../../lib/payments')
-              const { data, error } = await getInvoicePaymentAllocations(displayInvoice.id)
-              
-              if (error) throw error
-              setPayments(data || [])
-            } catch (err: any) {
-              console.error('Error refreshing payments:', err)
-            }
-            
-            // Also refresh the invoice data
+            // Refresh the invoice pane data (includes payments) via fn_ar_invoice_pane.
             queryClient.invalidateQueries({ queryKey: ['issued-invoice', displayInvoice.id] })
           }}
         />
@@ -2035,18 +1939,7 @@ export default function IssuedInvoiceDetail({ id, isPane = false, showHeader = f
           isOpen={isAddPaymentModalOpen}
           onClose={() => setIsAddPaymentModalOpen(false)}
           onPaymentAdded={async (paymentId) => {
-            // Refresh the payment allocations immediately
-            try {
-              const { getInvoicePaymentAllocations } = await import('../../lib/payments')
-              const { data, error } = await getInvoicePaymentAllocations(displayInvoice.id)
-              
-              if (error) throw error
-              setPayments(data || [])
-            } catch (err: any) {
-              console.error('Error refreshing payments:', err)
-            }
-            
-            // Also refresh the invoice data
+            // Refresh the invoice pane data (includes payments) via fn_ar_invoice_pane.
             queryClient.invalidateQueries({ queryKey: ['issued-invoice', displayInvoice.id] })
           }}
         />
@@ -2060,16 +1953,8 @@ export default function IssuedInvoiceDetail({ id, isPane = false, showHeader = f
           }}
           onSuccess={async () => {
             // Refresh the payment allocations immediately
-            try {
-              const { getInvoicePaymentAllocations } = await import('../../lib/payments')
-              const { data, error } = await getInvoicePaymentAllocations(displayInvoice.id)
-              
-              if (error) throw error
-              setPayments(data || [])
-            } catch (err: any) {
-              console.error('Error refreshing payments:', err)
-              // Also refresh the main invoice data to update amount_paid, balance_due, etc.
-              queryClient.invalidateQueries({ queryKey: ["issued-invoice", displayInvoice.id] })            }
+            // Refresh the invoice pane data (includes payments) via fn_ar_invoice_pane.
+            queryClient.invalidateQueries({ queryKey: ['issued-invoice', displayInvoice.id] })
             
             // Close the modal
             setIsEditPaymentAllocationModalOpen(false)
@@ -2119,18 +2004,7 @@ export default function IssuedInvoiceDetail({ id, isPane = false, showHeader = f
                       return
                     }
                     
-                    // Refresh the payment allocations immediately
-                    try {
-                      const { getInvoicePaymentAllocations } = await import('../../lib/payments')
-                      const { data, error } = await getInvoicePaymentAllocations(invoiceId)
-                      
-                      if (error) throw error
-                      setPayments(data || [])
-                    } catch (err: any) {
-                      console.error('Error refreshing payments:', err)
-                    }
-                    
-                    // Also refresh the invoice data
+                    // Refresh the invoice pane data (includes payments) via fn_ar_invoice_pane.
                     queryClient.invalidateQueries({ queryKey: ['issued-invoice', invoiceId] })
                     
                     toast({

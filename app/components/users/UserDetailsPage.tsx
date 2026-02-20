@@ -1,6 +1,6 @@
 "use client"
 
-import { useState, useCallback } from "react"
+import { useRef, useState, useCallback, useMemo } from "react"
 import { useQuery, useQueryClient } from "@tanstack/react-query"
 import { useRouter, useSearchParams } from "next/navigation"
 import { 
@@ -37,12 +37,14 @@ import {
   getUserProjects,
   getUserTasks,
   updateUserPreferences,
+  updateUserPhoto,
   softDeleteUser,
   getOrCreateUserThread,
   type UserProfile,
   type UserProject,
   type UserTask,
 } from "../../lib/services/users"
+import { PUBLIC_MEDIA_BUCKET, getImageUrl, uploadImage } from "../../lib/public-media"
 import {
   getUserContentSkills,
   addUserContentSkill,
@@ -91,6 +93,8 @@ export function UserDetailsPage({ userId }: UserDetailsPageProps) {
   const [showDeleteDialog, setShowDeleteDialog] = useState(false)
   const [isDeleting, setIsDeleting] = useState(false)
   const [isChatLoading, setIsChatLoading] = useState(false)
+  const [isPhotoUploading, setIsPhotoUploading] = useState(false)
+  const photoInputRef = useRef<HTMLInputElement | null>(null)
 
   // Content Skills state
   const [showSkillDialog, setShowSkillDialog] = useState(false)
@@ -532,6 +536,8 @@ export function UserDetailsPage({ userId }: UserDetailsPageProps) {
     return <div className="p-6 text-gray-500">User not found</div>
   }
 
+  const photoUrl = useMemo(() => getImageUrl(profile.photo), [profile.photo])
+
   return (
     <div className="flex flex-col h-full">
       {/* Header */}
@@ -572,17 +578,81 @@ export function UserDetailsPage({ userId }: UserDetailsPageProps) {
         {/* Profile Info */}
         <div className="mb-6">
           <div className="flex items-center gap-4 mb-6">
-            {profile.photo ? (
-              <img
-                src={profile.photo}
-                alt={profile.full_name || profile.auth_email}
-                className="w-16 h-16 rounded-full object-cover border-2 border-gray-200"
+            <div className="relative">
+              {photoUrl ? (
+                // eslint-disable-next-line @next/next/no-img-element
+                <img
+                  src={photoUrl}
+                  alt={profile.full_name || profile.auth_email}
+                  className="w-16 h-16 rounded-full object-cover border-2 border-gray-200"
+                />
+              ) : (
+                <div className="w-16 h-16 rounded-full bg-gradient-to-br from-blue-500 to-indigo-600 flex items-center justify-center text-xl font-semibold text-white border-2 border-gray-200">
+                  {getInitials(profile.full_name || profile.auth_email)}
+                </div>
+              )}
+
+              <input
+                ref={photoInputRef}
+                type="file"
+                accept="image/png,image/jpeg,image/webp"
+                className="hidden"
+                disabled={isPhotoUploading}
+                onChange={async (e) => {
+                  const file = e.target.files?.[0]
+                  if (!file) return
+
+                  setIsPhotoUploading(true)
+                  try {
+                    const { storagePath, error: uploadError } = await uploadImage({
+                      bucket: PUBLIC_MEDIA_BUCKET,
+                      path: `users/${userId}`,
+                      file,
+                      upsert: true,
+                    })
+                    if (uploadError || !storagePath) throw uploadError ?? new Error("Upload failed")
+
+                    const { error: updateError } = await updateUserPhoto(userId, storagePath)
+                    if (updateError) throw updateError
+
+                    queryClient.setQueryData(["user-profile", userId], (prev: any) =>
+                      prev ? { ...prev, photo: storagePath } : prev
+                    )
+                    queryClient.invalidateQueries({ queryKey: ["user-profile", userId] })
+
+                    toast({
+                      title: "Photo updated",
+                      description: "User photo uploaded successfully",
+                    })
+                  } catch (err: any) {
+                    toast({
+                      title: "Upload failed",
+                      description: err?.message || "Failed to upload photo",
+                      variant: "destructive",
+                    })
+                  } finally {
+                    setIsPhotoUploading(false)
+                    if (photoInputRef.current) photoInputRef.current.value = ""
+                  }
+                }}
               />
-            ) : (
-              <div className="w-16 h-16 rounded-full bg-gradient-to-br from-blue-500 to-indigo-600 flex items-center justify-center text-xl font-semibold text-white border-2 border-gray-200">
-                {getInitials(profile.full_name || profile.auth_email)}
-              </div>
-            )}
+
+              <Button
+                type="button"
+                variant="outline"
+                size="icon"
+                className="absolute -bottom-1 -right-1 h-7 w-7 rounded-full"
+                onClick={() => photoInputRef.current?.click()}
+                disabled={isPhotoUploading}
+                title="Change photo"
+              >
+                {isPhotoUploading ? (
+                  <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                ) : (
+                  <Edit2 className="w-3.5 h-3.5" />
+                )}
+              </Button>
+            </div>
             <div className="flex-1">
               {profile.brand && (
                 <p className="text-sm text-gray-600">

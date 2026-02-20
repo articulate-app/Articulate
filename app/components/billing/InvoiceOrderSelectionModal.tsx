@@ -217,18 +217,36 @@ export function InvoiceOrderSelectionModal({
     setSelectedOrders(new Set())
     setSearchTerm('')
     onClose()
+    // Manually restore body pointer-events in case Radix UI didn't clean up properly
+    // This is a safety net to prevent the app from freezing
+    setTimeout(() => {
+      const computedStyle = window.getComputedStyle(document.body)
+      if (computedStyle.pointerEvents === 'none') {
+        document.body.style.pointerEvents = 'auto'
+      }
+    }, 300) // Wait for Dialog closing animation to complete
+  }
+
+  const handleOpenChange = (open: boolean) => {
+    // Only handle close, not open (open is controlled by isOpen prop)
+    if (!open) {
+      handleClose()
+    }
   }
 
   const selectedOrdersArray = orders?.filter(order => selectedOrders.has(order.id)) || []
   const totalSelectedAmount = allocations.reduce((sum, alloc) => sum + alloc.amount, 0)
 
   return (
-    <Dialog open={isOpen} onOpenChange={handleClose}>
+    <Dialog open={isOpen} onOpenChange={handleOpenChange}>
       <DialogContent className="max-w-4xl max-h-[90vh] overflow-hidden flex flex-col">
         <DialogHeader>
-          <DialogTitle>Select Invoice Orders</DialogTitle>
+          <DialogTitle>{isAR ? 'Select Invoice Orders' : 'Select Production Orders'}</DialogTitle>
           <p className="text-sm text-gray-500">
-            Choose invoice orders to allocate to this invoice. Only orders with remaining amounts are shown.
+            {isAR 
+              ? 'Choose invoice orders to allocate to this invoice. Only orders with remaining amounts are shown.'
+              : 'Choose production orders to allocate to this invoice. Only orders with remaining amounts are shown.'
+            }
             {invoiceId && ` (Invoice #${invoiceId})`}
           </p>
         </DialogHeader>

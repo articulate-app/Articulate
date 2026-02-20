@@ -375,3 +375,85 @@ html, body {
   display: block !important;
   margin-top: 2px !important;
 }
+
+/* Task list grid layout: buffer column (minmax(0,1fr)) is the ONLY elastic track */
+.task-list-grid {
+  width: max-content;
+  min-width: 100%;
+}
+.task-list-grid .task-row {
+  display: grid;
+  width: 100%;
+  align-items: stretch;
+}
+.task-list-grid .task-cell {
+  min-width: 0;
+  position: relative;
+  overflow: visible;
+}
+/* Content rows: vertically center all cell content */
+.task-list-grid tbody .task-cell {
+  display: flex;
+  align-items: center;
+  height: 100%;
+}
+.task-list-grid .resize-handle,
+.task-list-grid [data-resize-handle] {
+  z-index: 50 !important;
+  pointer-events: auto !important;
+}
+.task-list-grid .task-cell-span-full {
+  grid-column: 1 / -1;
+}
+.task-list-grid .task-spacer-cell {
+  border-bottom: 1px solid #e5e7eb;
+  border-right: none;
+  border-left: none;
+}
+.task-list-grid .task-cell--sticky {
+  position: sticky;
+  left: 0;
+  z-index: 20;
+  background: white;
+  box-shadow: 1px 0 0 #e5e7eb;
+}
+/* Hover background only on task rows, not header/group/loading rows */
+.task-list-grid .task-row[data-row-type="task"]:hover .task-cell--sticky {
+  background: rgb(249 250 251);
+}
+.task-list-grid .task-row.bg-gray-100 .task-cell--sticky {
+  background: rgb(243 244 246);
+}
+.task-list-grid thead .task-cell--sticky {
+  z-index: 30;
+}
+
+/* Group header row: label in Title column, sticky-left */
+.task-list-grid .task-group-label {
+  font-weight: 600;
+}
+.task-list-grid .task-cell-span-rest {
+  /* Fills remainder of row; background matches row for clean look */
+  min-width: 0;
+}
+
+/* Task list column drag-and-drop */
+.task-header-draggable {
+  cursor: grab;
+  user-select: none;
+}
+.task-header-draggable:active {
+  cursor: grabbing;
+}
+.task-header-dragging {
+  opacity: 0.6;
+}
+.task-header-drop-indicator {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  width: 2px;
+  background: #3b82f6;
+  pointer-events: none;
+  z-index: 40;
+}

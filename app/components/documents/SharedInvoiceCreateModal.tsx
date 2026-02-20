@@ -419,7 +419,6 @@ export function SharedInvoiceCreateModal({
   }
 
   // Always use CreateInvoiceDetailsModal which now handles AR/AP detection internally
-  console.log('🔵 DEBUG: Opening CreateInvoiceDetailsModal (handles both AR and AP)')
   return (
     <>
       <CreateInvoiceDetailsModal

@@ -25,16 +25,30 @@ interface ProductionOrderTask {
 interface ProductionOrderTasksSectionProps {
   productionOrderId: number
   onTaskClick?: (taskId: number, taskData?: ProductionOrderTask) => void
+  /**
+   * Optional preloaded tasks (e.g. when a parent pane loads everything via a single RPC).
+   * When provided, this component will not fetch from `v_production_order_tasks_min`.
+   */
+  preloadedTasks?: ProductionOrderTask[] | null
 }
 
 export function ProductionOrderTasksSection({ 
   productionOrderId, 
-  onTaskClick 
+  onTaskClick,
+  preloadedTasks
 }: ProductionOrderTasksSectionProps) {
   const [tasks, setTasks] = useState<ProductionOrderTask[]>([])
   const [isLoading, setIsLoading] = useState(true)
   const [totalCount, setTotalCount] = useState(0)
   const supabase = createClientComponentClient()
+
+  // If tasks are provided by the parent (via RPC), avoid making a separate network call.
+  useEffect(() => {
+    if (!preloadedTasks) return
+    setTasks(preloadedTasks ?? [])
+    setTotalCount(preloadedTasks?.length ?? 0)
+    setIsLoading(false)
+  }, [preloadedTasks])
 
   // Fetch tasks for the production order
   const fetchTasks = async () => {
@@ -66,9 +80,10 @@ export function ProductionOrderTasksSection({
 
   useEffect(() => {
     if (productionOrderId) {
+      if (preloadedTasks) return
       fetchTasks()
     }
-  }, [productionOrderId])
+  }, [productionOrderId, preloadedTasks])
 
   const handleTaskClick = (taskId: number) => {
     if (onTaskClick) {

@@ -11,9 +11,10 @@ interface ComposerProps {
   preFillMessage?: string
   mode?: "build_component" | "build_briefing" | null
   componentId?: string | null
+  autoRun?: boolean // Controls auto_run parameter (defaults to false)
 }
 
-export function Composer({ threadId, onOptimistic, activeChannelId, preFillMessage, mode, componentId }: ComposerProps) {
+export function Composer({ threadId, onOptimistic, activeChannelId, preFillMessage, mode, componentId, autoRun = false }: ComposerProps) {
   const supabase = getSupabaseBrowser()
   const [text, setText] = useState("")
   const [files, setFiles] = useState<File[]>([])
@@ -31,29 +32,38 @@ export function Composer({ threadId, onOptimistic, activeChannelId, preFillMessa
     setFiles(Array.from(e.target.files))
   }
 
-  const uploadAttachments = useCallback(async (): Promise<AiAttachmentMeta[]> => {
+  const uploadAttachments = useCallback(async (filesToUpload: File[]): Promise<AiAttachmentMeta[]> => {
     const attachments: AiAttachmentMeta[] = []
-    for (const file of files) {
+    for (const file of filesToUpload) {
       const path = `ai/${threadId}/${Date.now()}_${file.name}`
       const { data: up, error } = await supabase.storage.from('attachments').upload(path, file, { upsert: false })
       if (error) throw error
       attachments.push({ file_name: file.name, file_path: up.path, mime_type: file.type, size: file.size })
     }
     return attachments
-  }, [files, supabase, threadId])
+  }, [supabase, threadId])
 
   const send = useCallback(async () => {
     const trimmed = text.trim()
     if (!trimmed && files.length === 0) return
+    
+    // Store values before clearing
+    const messageText = trimmed
+    const messageFiles = [...files]
+    
+    // Clear input immediately for better UX
+    setText("")
+    setFiles([])
     setIsSending(true)
+    
     try {
-      const attachments = await uploadAttachments()
+      const attachments = await uploadAttachments(messageFiles)
       const tempId = `temp-${Date.now()}`
-      onOptimistic?.({ id: tempId, content: trimmed, attachments })
+      onOptimistic?.({ id: tempId, content: messageText, attachments })
 
       const session = (await supabase.auth.getSession()).data.session
       
-      // Use new Edge Function contract with auto_run: true per spec
+      // Use new Edge Function contract with configurable auto_run
       const res = await fetch(`${process.env.NEXT_PUBLIC_SUPABASE_URL}/functions/v1/ai-chat`, {
         method: 'POST',
         headers: {
@@ -62,12 +72,12 @@ export function Composer({ threadId, onOptimistic, activeChannelId, preFillMessa
         },
         body: JSON.stringify({ 
           thread_id: threadId, 
-          message: trimmed,  // Always send user's message text, never null
+          message: messageText,  // Always send user's message text, never null
           attachments,
           active_channel_id: activeChannelId ?? null,
           mode: mode ?? null,  // Pass mode from Build with AI flows
           component_id: componentId ?? null,  // Pass componentId from Build with AI flows
-          auto_run: true,  // Per spec: always true
+          auto_run: autoRun,  // Configurable: true for normal chat, false for generic builds
         }),
       })
       if (!res.ok) {
@@ -79,10 +89,8 @@ export function Composer({ threadId, onOptimistic, activeChannelId, preFillMessa
       // optimistic error handled by caller via message status when realtime doesn't confirm
     } finally {
       setIsSending(false)
-      setText("")
-      setFiles([])
     }
-  }, [text, files, supabase, threadId, uploadAttachments, onOptimistic, activeChannelId, mode, componentId])
+  }, [text, files, supabase, threadId, uploadAttachments, onOptimistic, activeChannelId, mode, componentId, autoRun])
 
   const onKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
     if (e.key === 'Enter' && !e.shiftKey) {

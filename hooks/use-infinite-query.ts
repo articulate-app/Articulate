@@ -4,6 +4,7 @@ import { createClientComponentClient } from '@supabase/auth-helpers-nextjs'
 import { PostgrestQueryBuilder } from '@supabase/postgrest-js'
 import { SupabaseClient } from '@supabase/supabase-js'
 import { useEffect, useRef, useSyncExternalStore, useCallback } from 'react'
+import { buildDocumentsMinListRpcBodyFromPostgrestSearchParams, supabaseRpcFetch } from '../app/lib/services/documents-postgrest-rpc'
 
 const supabase = createClientComponentClient()
 
@@ -79,9 +80,65 @@ type Listener = () => void
 const infiniteQueryControllers: Record<string, AbortController[]> = {};
 let abortedInfiniteQueryCount = 0;
 
+// Global "inflight" registry to dedupe duplicate concurrent requests per (queryKey, offset).
+// This is especially important under React StrictMode double-mount (dev) and rapid re-mounts.
+const infiniteQueryInFlightOffsets: Record<string, Set<number>> = {}
+
 function registerController(queryKey: string, controller: AbortController) {
   if (!infiniteQueryControllers[queryKey]) infiniteQueryControllers[queryKey] = [];
   infiniteQueryControllers[queryKey].push(controller);
+}
+
+function parsePostgrestEq(raw: string): string | null {
+  const match = raw.match(/^eq\.(.*)$/)
+  if (!match) return null
+  return match[1] ?? null
+}
+
+function parsePostgrestInList(raw: string): string[] {
+  // in.(a,b,c)  OR  in.("a","b")
+  const match = raw.match(/^in\.\((.*)\)$/)
+  if (!match) return []
+  const inner = match[1] ?? ''
+  return inner
+    .split(',')
+    .map((v) => v.trim())
+    .filter(Boolean)
+    .map((v) => v.replace(/^"(.*)"$/, '$1'))
+}
+
+function applyPostgrestFiltersFromSearchParams(q: any, params: URLSearchParams, skipKeys: Set<string>) {
+  for (const [key, value] of Array.from(params.entries())) {
+    if (skipKeys.has(key)) continue
+    if (key === 'select' || key === 'order' || key === 'limit' || key === 'offset') continue
+    if (key === 'and' || key === 'or') continue
+
+    if (value.startsWith('eq.')) {
+      const v = parsePostgrestEq(value)
+      if (v == null) continue
+      if (v === 'true') q = q.eq(key, true)
+      else if (v === 'false') q = q.eq(key, false)
+      else q = q.eq(key, v)
+      continue
+    }
+    if (value.startsWith('ilike.')) {
+      q = q.ilike(key, value.slice('ilike.'.length))
+      continue
+    }
+    if (value.startsWith('gte.')) {
+      q = q.gte(key, value.slice('gte.'.length))
+      continue
+    }
+    if (value.startsWith('lte.')) {
+      q = q.lte(key, value.slice('lte.'.length))
+      continue
+    }
+    if (value.startsWith('in.(')) {
+      q = q.in(key, parsePostgrestInList(value))
+      continue
+    }
+  }
+  return q
 }
 
 export function abortAllInfiniteQueries() {
@@ -138,10 +195,19 @@ function createStore<TData extends { id?: any; doc_id?: any }, T extends Supabas
       console.log('[useInfiniteQuery] Already fetching, skipping request');
       return;
     }
+
+    // Guard against duplicate concurrent requests for the same offset (across multiple mounts/stores)
+    if (!infiniteQueryInFlightOffsets[queryKey]) infiniteQueryInFlightOffsets[queryKey] = new Set<number>()
+    if (infiniteQueryInFlightOffsets[queryKey].has(skip)) {
+      console.log('[useInfiniteQuery] Request already in-flight for queryKey:', queryKey, 'skip:', skip);
+      return
+    }
+    infiniteQueryInFlightOffsets[queryKey].add(skip)
     
     // Guard against fetching when we have all data
     if (state.hasInitialFetch && state.count > 0 && state.data.length >= state.count) {
       console.log('[useInfiniteQuery] All data loaded, skipping request');
+      infiniteQueryInFlightOffsets[queryKey].delete(skip)
       return;
     }
 
@@ -162,6 +228,148 @@ function createStore<TData extends { id?: any; doc_id?: any }, T extends Supabas
       query = query.abortSignal(signal);
     }
     try {
+      // Special-case v_documents_min to use LIST RPC while keeping the exact same PostgREST URL param encoding.
+      if (tableName === 'v_documents_min') {
+        const rangedQuery = query.range(skip, skip + pageSize - 1) as any
+        const base = typeof window !== 'undefined' ? window.location.origin : 'http://localhost'
+
+        // Supabase postgrest-js exposes an internal URL-ish property, but its shape can vary.
+        // We defensively coerce it into URLSearchParams so the same FE filter encoding is preserved.
+        const body = (() => {
+          const rawUrl = (rangedQuery as any)?.url
+          if (rawUrl instanceof URL) {
+            return buildDocumentsMinListRpcBodyFromPostgrestSearchParams(rawUrl.searchParams)
+          }
+          const urlStr = typeof rawUrl === 'string' ? rawUrl : String(rawUrl || '')
+          if (!urlStr) {
+            throw new Error('Unable to derive PostgREST URL from query builder (missing url)')
+          }
+          const url = new URL(urlStr, base)
+          return buildDocumentsMinListRpcBodyFromPostgrestSearchParams(url.searchParams)
+        })()
+
+        if (process.env.NODE_ENV === 'development') {
+          console.log('[useInfiniteQuery] v_documents_min -> rpc/fn_documents_list', {
+            skip,
+            pageSize,
+            body,
+          })
+        }
+
+        const { data: rpcData, count: rpcCount } = await supabaseRpcFetch<any>('fn_documents_list', body, signal)
+
+        // Normalize possible response shapes:
+        // 1) rows[]
+        // 2) [{...}] (rows)
+        // 3) { items: rows[], total_count: number }
+        const normalized = (() => {
+          if (Array.isArray(rpcData)) {
+            const rows = rpcData as any[]
+            // Some PostgREST setups return `count` as "rows returned" for RPCs (not total).
+            // Only trust it as a total if it's clearly larger than the current page size.
+            const total = typeof rpcCount === 'number' && rpcCount > rows.length ? rpcCount : null
+            return { rows, total }
+          }
+          const asObj: any = rpcData
+          if (asObj && Array.isArray(asObj.items)) {
+            const totalFromBody = typeof asObj.total_count === 'number' ? asObj.total_count : null
+            return { rows: asObj.items as any[], total: totalFromBody }
+          }
+          return { rows: [], total: null }
+        })()
+
+        const newData = normalized.rows
+
+        // Keep infinite-loading behavior consistent:
+        // - Prefer exact totals when available (Content-Range / total_count)
+        // - Fallback: if server doesn't return totals, treat the end as "page shorter than pageSize"
+        const count = (() => {
+          if (typeof normalized.total === 'number' && Number.isFinite(normalized.total)) return normalized.total
+          if ((newData?.length ?? 0) < pageSize) return skip + (newData?.length ?? 0)
+          return 0
+        })()
+
+        const deduplicatedData = ((newData || []) as TData[]).filter(
+          (item) => !state.data.find((old) => {
+            const oldId = (old as any).doc_id || (old as any).id;
+            const newId = (item as any).doc_id || (item as any).id;
+            return oldId === newId;
+          })
+        );
+
+        setState({
+          data: [...state.data, ...deduplicatedData],
+          count,
+          isSuccess: true,
+          error: null,
+        });
+
+        return
+      }
+
+      // Special-case v_billing_period_tasks to use RPC fn_billing_period_tasks(p_ctx_type, p_ctx_id).
+      // The RPC returns the same row shape as the view.
+      if (tableName === 'v_billing_period_tasks') {
+        const rangedQuery = query.range(skip, skip + pageSize - 1) as any
+        const base = typeof window !== 'undefined' ? window.location.origin : 'http://localhost'
+        const rawUrl = (rangedQuery as any)?.url
+        const urlStr = rawUrl instanceof URL ? rawUrl.toString() : (typeof rawUrl === 'string' ? rawUrl : String(rawUrl || ''))
+        if (!urlStr) throw new Error('Unable to derive PostgREST URL from query builder (missing url)')
+        const url = new URL(urlStr, base)
+        const params = url.searchParams
+
+        const ctxTypeEq = params.get('ctx_type') ? parsePostgrestEq(params.get('ctx_type')!) : null
+        const ctxIdEq = params.get('ctx_id') ? parsePostgrestEq(params.get('ctx_id')!) : null
+        if (!ctxTypeEq || (ctxTypeEq !== 'order' && ctxTypeEq !== 'invoice')) {
+          throw new Error('Missing/invalid ctx_type for billing period tasks')
+        }
+        const p_ctx_id = Number(ctxIdEq)
+        if (!Number.isFinite(p_ctx_id)) throw new Error('Missing/invalid ctx_id for billing period tasks')
+
+        let rpcQuery: any = supabase.rpc(
+          'fn_billing_period_tasks',
+          { p_ctx_type: ctxTypeEq, p_ctx_id },
+          { count: 'exact' }
+        )
+
+        if (columns && columns !== '*') {
+          rpcQuery = rpcQuery.select(columns)
+        }
+
+        const orderRaw = params.get('order')
+        if (orderRaw) {
+          const first = orderRaw.split(',')[0] || ''
+          const [field, dir] = first.split('.')
+          if (field) rpcQuery = rpcQuery.order(field, { ascending: dir !== 'desc' })
+        }
+
+        rpcQuery = applyPostgrestFiltersFromSearchParams(rpcQuery, params, new Set(['ctx_type', 'ctx_id']))
+        rpcQuery = rpcQuery.range(skip, skip + pageSize - 1)
+        if ('abortSignal' in rpcQuery && typeof rpcQuery.abortSignal === 'function') {
+          rpcQuery = rpcQuery.abortSignal(signal)
+        }
+
+        const { data: newData, count, error } = await rpcQuery
+        if (error) throw error
+
+        const deduplicatedData = ((newData || []) as TData[]).filter(
+          (item) => !state.data.find((old) => {
+            const oldId = (old as any).doc_id || (old as any).id;
+            const newId = (item as any).doc_id || (item as any).id;
+            return oldId === newId;
+          })
+        );
+
+        setState({
+          data: [...state.data, ...deduplicatedData],
+          count: typeof count === 'number' ? count : (skip + (newData?.length ?? 0)),
+          isSuccess: true,
+          error: null,
+        })
+
+        return
+      }
+
       const { data: newData, count, error } = await query.range(skip, skip + pageSize - 1);
       if (error) {
         if (error.name === 'AbortError' || error.message?.includes('aborted')) {
@@ -198,6 +406,7 @@ function createStore<TData extends { id?: any; doc_id?: any }, T extends Supabas
       }
       setState({ error: err });
     } finally {
+      infiniteQueryInFlightOffsets[queryKey]?.delete(skip)
       setState({ isFetching: false });
     }
   };
@@ -412,7 +621,9 @@ function useInfiniteQuery<
     isLoading: state.isLoading,
     isFetching: state.isFetching,
     error: state.error,
-    hasMore: state.count === 0 || state.data.length < state.count,
+    // If the underlying fetch errored (e.g. invoker/RLS view errors), do NOT keep paginating.
+    // Otherwise, the IntersectionObserver will keep calling fetchNextPage and can cause infinite loading loops.
+    hasMore: !state.error && (state.count === 0 || state.data.length < state.count),
     fetchNextPage,
   }
 }

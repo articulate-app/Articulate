@@ -1,9 +1,8 @@
 import React from 'react';
 import type { Task } from '../../lib/types/tasks';
-import { useMobileDetection } from '../../hooks/use-mobile-detection';
 
 interface TaskCardProps {
-  task: Task;
+  task: Task & { kind?: 'task' | 'suggestion' };
   colorClass: string;
   onClick?: () => void;
   isSelected?: boolean;
@@ -11,7 +10,7 @@ interface TaskCardProps {
 }
 
 export function CalendarTaskCard({ task, colorClass, onClick, isSelected, style }: TaskCardProps) {
-  const isMobile = useMobileDetection();
+  const isSuggestion = task?.kind === 'suggestion'
 
   // Extract background color from colorClass or style
   const getBackgroundColor = () => {
@@ -43,29 +42,12 @@ export function CalendarTaskCard({ task, colorClass, onClick, isSelected, style 
     return '#3b82f6'; // Default fallback
   };
 
-  if (isMobile) {
-    // Mobile: Just a colored line
-    return (
-      <button
-        className={`w-full h-1 rounded-sm transition ${isSelected ? 'ring-1 ring-blue-400' : ''}`}
-        title={task.title}
-        style={{ 
-          maxWidth: '100%', 
-          background: getBackgroundColor(),
-          ...style 
-        }}
-        onClick={e => {
-          e.stopPropagation();
-          onClick?.();
-        }}
-      />
-    );
-  }
-
-  // Desktop: Full card with title
+  // Always render full cards to avoid line-only placeholder flicker.
   return (
     <button
-      className={`w-full flex items-center gap-2 rounded shadow-sm ${colorClass} px-2 py-1 mb-1 text-xs font-medium truncate transition ${isSelected ? 'ring-2 ring-blue-400 border border-blue-400' : 'border border-transparent'} `}
+      className={`w-full min-h-[26px] flex items-center gap-2 rounded shadow-sm ${colorClass} px-2 py-1 mb-1 text-xs font-medium truncate ${
+        isSelected ? 'ring-2 ring-blue-400 border border-blue-400' : isSuggestion ? 'border border-dashed border-gray-300' : 'border border-transparent'
+      } `}
       title={task.title}
       style={{ maxWidth: '100%', ...style }}
       onClick={e => {
@@ -74,6 +56,11 @@ export function CalendarTaskCard({ task, colorClass, onClick, isSelected, style 
       }}
     >
       <span className="truncate block" style={{ maxWidth: '100%' }}>{task.title}</span>
+      {isSuggestion ? (
+        <span className="shrink-0 inline-flex items-center rounded-full border border-dashed border-gray-300 bg-white/60 px-2 py-0.5 text-[10px] font-medium text-gray-700">
+          AI suggestion
+        </span>
+      ) : null}
     </button>
   );
 } 

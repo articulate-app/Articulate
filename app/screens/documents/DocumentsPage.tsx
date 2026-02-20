@@ -1,6 +1,6 @@
 "use client"
 
-import React, { useState, useEffect, useMemo, useRef } from 'react'
+import React, { useState, useEffect, useMemo, useRef, useCallback, startTransition } from 'react'
 import { useSearchParams, useRouter, usePathname } from 'next/navigation'
 import { DocumentsSummaryCards } from '../../components/documents/DocumentsSummaryCards'
 import { DocumentsFilters } from '../../components/documents/DocumentsFilters'
@@ -10,6 +10,7 @@ import { DocumentDetailsPane } from '../../panes/documents/DocumentDetailsPane'
 import { Button } from '../../components/ui/button'
 import { ProductionOrderDetailsPane } from '../../screens/expenses/ProductionOrderDetailsPane'
 import { PaymentDetailsPane } from '../../components/payments/PaymentDetailsPane'
+import { InboxProjectDetailsPane } from '../../components/inbox/inbox-project-details-pane'
 import { TaskDetails } from '../../components/tasks/TaskDetails'
 import { CreditNoteDetailsPane } from '../../components/credit-notes/CreditNoteDetailsPane'
 import { InvoiceOrderLinesDrawer } from '../../components/billing/InvoiceOrderLinesDrawer'
@@ -22,6 +23,7 @@ import { useTaskEditFields } from '../../hooks/use-task-edit-fields'
 import { SearchFilterBar } from '../../components/ui/search-filter-bar'
 import { FilterBadges } from '../../../components/ui/filter-badges'
 import { parseDocumentsFiltersFromUrl, parseDocumentsSortFromUrl, parseGroupingModeFromUrl, buildDocumentsTrailingQuery } from '../../lib/services/documents'
+import { supabaseRpcFetch } from '../../lib/services/documents-postgrest-rpc'
 import { useDebounce } from '../../hooks/use-debounce'
 import { useQueryClient, useQuery } from '@tanstack/react-query'
 import { useDocumentPaneNavigation } from '../../hooks/use-document-pane-navigation'
@@ -59,6 +61,8 @@ export function DocumentsPage({
   
   // State for selected document and filters
   const [selectedDocument, setSelectedDocument] = useState<DocumentRow | null>(null)
+  const detailsAbortRef = useRef<AbortController | null>(null)
+  const selectedDocumentRef = useRef<DocumentRow | null>(null)
   const [localIsFilterOpen, setLocalIsFilterOpen] = useState(false)
   const [menuAction, setMenuAction] = useState<string | null>(null)
   
@@ -287,6 +291,11 @@ export function DocumentsPage({
 
   // Track if hydration is complete (to prevent URL overwrites during hydration)
   const isHydrated = useRef(false)
+
+  // Keep an imperative ref to the selected document for async merge checks
+  useEffect(() => {
+    selectedDocumentRef.current = selectedDocument
+  }, [selectedDocument])
   
   // Hydrate from URL on mount (only once)
   useEffect(() => {
@@ -307,27 +316,129 @@ export function DocumentsPage({
     if (documentId) {
       const docIdNum = parseInt(documentId, 10)
       if (!isNaN(docIdNum)) {
-        // Fetch the document from v_documents_min to open the details pane
-        const fetchDocument = async () => {
-          try {
-            const { createClientComponentClient } = await import('@supabase/auth-helpers-nextjs')
-            const supabase = createClientComponentClient()
-            
-            const { data: docs, error } = await supabase
-              .from('v_documents_min')
-              .select('*')
-              .eq('doc_id', docIdNum)
-              .limit(1)
-            
-            if (!error && docs && docs.length > 0) {
-              setSelectedDocument(docs[0])
+        // Deep-link bootstrap:
+        // Do NOT rely on v_documents_min. Resolve via the same RPCs we use on row-click:
+        // - invoices: fn_ar_invoice_pane / fn_ap_invoice_pane
+        // - other docs: fn_document_detail (requires direction + doc_kind; we'll probe safely)
+        const bootstrapDocumentFromUrl = async () => {
+          const supabase = createClientComponentClient()
+
+          const kindFilter = (params.get('kind') || '')
+            .split(',')
+            .map((v) => v.trim())
+            .filter(Boolean)
+
+          const directionFilterRaw = (params.get('direction') || '').trim()
+          const candidateDirections: Array<'ar' | 'ap'> =
+            directionFilterRaw === 'ar' || directionFilterRaw === 'ap'
+              ? [directionFilterRaw]
+              : ['ar', 'ap']
+
+          const defaultDocKinds = [
+            'invoice',
+            'credit_note',
+            'payment',
+            'invoice_order',
+            'production_order',
+            'order',
+          ]
+          const candidateDocKinds = kindFilter.length > 0 ? Array.from(new Set(kindFilter)) : defaultDocKinds
+
+          const coerceToDocumentRow = (
+            partial: any,
+            direction: 'ar' | 'ap',
+            docKind: string
+          ): DocumentRow => {
+            const docNumber =
+              partial?.doc_number ??
+              partial?.invoice_number ??
+              partial?.credit_number ??
+              partial?.payment_number ??
+              partial?.external_ref ??
+              null
+
+            const docDate =
+              partial?.doc_date ??
+              partial?.invoice_date ??
+              partial?.credit_date ??
+              partial?.payment_date ??
+              null
+
+            return {
+              ...(partial || {}),
+              doc_id: partial?.doc_id ?? partial?.id ?? docIdNum,
+              direction: (partial?.direction as any) ?? direction,
+              doc_kind: (partial?.doc_kind as any) ?? (docKind as any),
+              doc_number: docNumber,
+              doc_date: docDate,
+            } as DocumentRow
+          }
+
+          const trySetFromInvoicePane = async (direction: 'ar' | 'ap') => {
+            try {
+              if (direction === 'ar') {
+                const { data: pane, error } = await supabase.rpc('fn_ar_invoice_pane', {
+                  p_issued_invoice_id: docIdNum,
+                })
+                if (error) return false
+                const header = (pane as any)?.header
+                if (!header) return false
+                setSelectedDocument(coerceToDocumentRow(header, 'ar', 'invoice'))
+                return true
+              }
+
+              const { data: pane, error } = await supabase.rpc('fn_ap_invoice_pane', {
+                p_received_invoice_id: docIdNum,
+              })
+              if (error) return false
+              const header = (pane as any)?.header
+              if (!header) return false
+              setSelectedDocument(coerceToDocumentRow(header, 'ap', 'invoice'))
+              return true
+            } catch {
+              return false
             }
-          } catch (err) {
-            console.error('[DocumentsPage] Error fetching document from URL:', err)
+          }
+
+          const trySetFromDocumentDetail = async (direction: 'ar' | 'ap', docKind: string) => {
+            try {
+              const { data } = await supabaseRpcFetch<any>('fn_document_detail', {
+                p_direction: direction,
+                p_doc_kind: docKind,
+                p_doc_id: docIdNum,
+              })
+              const details = Array.isArray(data) ? (data[0] ?? null) : (data ?? null)
+              if (!details) return false
+              setSelectedDocument(coerceToDocumentRow(details, direction, docKind))
+              return true
+            } catch {
+              return false
+            }
+          }
+
+          // Probe candidates until we resolve the document.
+          // Prefer invoices early (common) even if filters are absent.
+          const probeDocKinds = candidateDocKinds.includes('invoice')
+            ? candidateDocKinds
+            : ['invoice', ...candidateDocKinds]
+
+          for (const docKind of probeDocKinds) {
+            for (const direction of candidateDirections) {
+              if (docKind === 'invoice') {
+                const ok = await trySetFromInvoicePane(direction)
+                if (ok) return
+                continue
+              }
+
+              const ok = await trySetFromDocumentDetail(direction, docKind)
+              if (ok) return
+            }
           }
         }
-        
-        fetchDocument()
+
+        void bootstrapDocumentFromUrl().catch((err) => {
+          console.error('[DocumentsPage] Error bootstrapping document from URL:', err)
+        })
       }
     }
 
@@ -351,7 +462,7 @@ export function DocumentsPage({
   }, []) // Only run once on mount
 
   // Update URL when filters or sort change
-  const updateUrl = (
+  const updateUrl = useCallback((
     newFilters: DocumentsFiltersType, 
     newSort: DocumentsSortConfig,
     selectedDocId?: number | null, // null means explicitly remove, undefined means preserve current
@@ -464,9 +575,20 @@ export function DocumentsPage({
     // If relatedDocType is undefined, relatedType param is preserved from current URL
     
     const newUrl = `${pathname}?${searchParams.toString()}`
-    router.push(newUrl)
-  }
+    const currentUrl = `${pathname}?${params.toString()}`
+    
+    // Only update if URL actually changed
+    if (currentUrl !== newUrl) {
+      // Use startTransition to defer router call and prevent blocking during modal unmount
+      startTransition(() => {
+        router.replace(newUrl, { scroll: false })
+      })
+    }
+  }, [params, pathname, router])
 
+  // Track if we need to update URL after modal closes
+  const pendingUrlUpdateRef = useRef<{ filters: DocumentsFiltersType; sort: DocumentsSortConfig } | null>(null)
+  
   // Handle search input changes
   useEffect(() => {
     // Skip URL update during hydration to prevent overwriting URL params
@@ -474,12 +596,64 @@ export function DocumentsPage({
       return
     }
     
+    // If any modal is open, store the update for later instead of executing immediately
+    if (isCreateInvoiceModalOpen || isCreatePaymentModalOpen || isCreateCreditNoteModalOpen) {
+      const newFilters = { ...filters, q: debouncedSearch }
+      pendingUrlUpdateRef.current = { filters: newFilters, sort }
+      return
+    }
+    
+    // Clear any pending update since we're executing now
+    pendingUrlUpdateRef.current = null
+    
     console.log('[DocumentsPage] Debounced search changed:', debouncedSearch)
     const newFilters = { ...filters, q: debouncedSearch }
     setFilters(newFilters)
-    updateUrl(newFilters, sort) // Will preserve all URL params
+    // Use startTransition to defer router call and prevent blocking
+    startTransition(() => {
+      updateUrl(newFilters, sort) // Will preserve all URL params
+    })
     console.log('[DocumentsPage] Updated filters and URL with search:', debouncedSearch)
-  }, [debouncedSearch])
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [debouncedSearch, isCreateInvoiceModalOpen, isCreatePaymentModalOpen, isCreateCreditNoteModalOpen])
+  
+  // Execute pending URL update after modal closes
+  useEffect(() => {
+    const allModalsClosed = !isCreateInvoiceModalOpen && !isCreatePaymentModalOpen && !isCreateCreditNoteModalOpen
+    
+    // Early return if modals are still open
+    if (!allModalsClosed) {
+      return
+    }
+    
+    // Early return if no pending update
+    if (!pendingUrlUpdateRef.current) {
+      return
+    }
+    
+    // All modals closed and there's a pending update - execute it
+    const { filters: pendingFilters, sort: pendingSort } = pendingUrlUpdateRef.current
+    pendingUrlUpdateRef.current = null // Clear immediately to prevent re-execution
+    
+    // Use requestAnimationFrame + setTimeout to ensure modal is fully unmounted and DOM is stable
+    // This prevents router.replace from being called during modal unmount lifecycle
+    let timeoutId: NodeJS.Timeout | null = null
+    const rafId = requestAnimationFrame(() => {
+      timeoutId = setTimeout(() => {
+        // Double-check modals are still closed before updating URL
+        if (!isCreateInvoiceModalOpen && !isCreatePaymentModalOpen && !isCreateCreditNoteModalOpen) {
+          updateUrl(pendingFilters, pendingSort)
+        }
+      }, 200) // Increased delay to ensure modal is fully unmounted
+    })
+    
+    return () => {
+      cancelAnimationFrame(rafId)
+      if (timeoutId) {
+        clearTimeout(timeoutId)
+      }
+    }
+  }, [isCreateInvoiceModalOpen, isCreatePaymentModalOpen, isCreateCreditNoteModalOpen, updateUrl])
 
   // Handle filter changes
   const handleFiltersChange = (newFilters: DocumentsFiltersType) => {
@@ -522,12 +696,57 @@ export function DocumentsPage({
 
   // Handle document selection
   const handleDocumentSelect = (document: DocumentRow) => {
+    // Optimistic: render immediately from the list row
     setSelectedDocument(document)
     updateUrl(filters, sort, document.doc_id, undefined, undefined, undefined)
+
+    // Fetch full details via DETAILS RPC and merge into the selected document.
+    // For invoices we already have dedicated pane RPCs:
+    // - AR invoices: fn_ar_invoice_pane (invoice details pane fetches everything via fetchIssuedInvoice)
+    // - AP invoices: fn_ap_invoice_pane (supplier invoice details pane fetches everything via fn_ap_invoice_pane)
+    // so avoid the extra fn_document_detail call.
+    if (
+      (document.doc_kind === 'invoice' && (document.direction === 'ar' || document.direction === 'ap')) ||
+      (document.doc_kind === 'invoice_order' && document.direction === 'ar') ||
+      // AP production orders have a dedicated pane RPC
+      (document.doc_kind === 'production_order' && document.direction === 'ap')
+    ) {
+      return
+    }
+
+    try {
+      detailsAbortRef.current?.abort()
+      const controller = new AbortController()
+      detailsAbortRef.current = controller
+
+      void (async () => {
+        const { data } = await supabaseRpcFetch<any>('fn_document_detail', {
+          p_direction: document.direction,
+          p_doc_kind: document.doc_kind,
+          p_doc_id: document.doc_id,
+        }, controller.signal)
+
+        const details = Array.isArray(data) ? (data[0] ?? null) : data
+        if (!details) return
+        const current = selectedDocumentRef.current
+        if (!current) return
+        if (current.doc_id !== document.doc_id || current.doc_kind !== document.doc_kind) return
+        const merged = { ...current, ...details }
+        setSelectedDocument(merged)
+        // Keep caches in sync so reopening/re-rendering doesn't lose the enriched payload
+        updateDocumentInCaches(queryClient, document.doc_id, merged, document.doc_kind)
+      })().catch((err) => {
+        if (controller.signal.aborted) return
+        console.error('[DocumentsPage] Error fetching document details via RPC:', err)
+      })
+    } catch (err) {
+      console.error('[DocumentsPage] Error starting details fetch:', err)
+    }
   }
 
   // Handle document details close
   const handleDocumentDetailsClose = () => {
+    detailsAbortRef.current?.abort()
     setSelectedDocument(null)
     updateUrl(filters, sort, null, undefined, null, null) // null explicitly removes document and third pane params
   }
@@ -796,6 +1015,13 @@ export function DocumentsPage({
                 onClose={handleRelatedDocumentClose}
                 initialProductionOrder={selectedRelatedDocument}
                 showHeader={true}
+                onRelatedDocumentSelect={handleRelatedDocumentSelect}
+              />
+            )}
+            {relatedDocumentType === 'project' && (
+              <InboxProjectDetailsPane
+                projectId={selectedRelatedDocument.id}
+                onClose={handleRelatedDocumentClose}
               />
             )}
             {relatedDocumentType === 'task' && (

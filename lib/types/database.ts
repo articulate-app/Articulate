@@ -124,7 +124,27 @@ export interface Database {
       [_ in never]: never
     }
     Functions: {
-      [_ in never]: never
+      /**
+       * Add a project-scoped component to the Project × Content Type × Channel × Briefing Type component list.
+       * Note: `p_briefing_type_id` is required so inserted rows match the page filter.
+       */
+      pcctbc_add_project: {
+        Args: {
+          p_project_id: number
+          p_content_type_id: number
+          p_channel_id: number
+          p_briefing_type_id: number
+          p_project_component_id: number
+          p_position: number | null
+          p_custom_title: string | null
+          p_custom_description: string | null
+          p_purpose: string | null
+          p_guidance: string | null
+          p_suggested_word_count: number | null
+          p_subheads: Json | null
+        }
+        Returns: unknown
+      }
     }
     Enums: {
       [_ in never]: never

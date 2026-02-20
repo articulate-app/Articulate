@@ -16,6 +16,7 @@ interface ChatWindowProps {
     briefingMode?: boolean
     preFillMessage?: string
     mode?: "build_component" | "build_briefing" | null
+    autoRun?: boolean
   }
 }
 
@@ -82,8 +83,27 @@ export function ChatWindow({ thread, taskId, activeChannelId, chatContext }: Cha
     chatEndRef.current?.scrollIntoView({ behavior: "smooth" })
   }, [allMessages.length])
 
+  // Determine chat type label
+  const chatTypeLabel = useMemo(() => {
+    if (thread.scope === 'project') {
+      return 'Project AI Assistant'
+    } else if (thread.scope === 'global') {
+      return 'Global AI Assistant'
+    } else if (thread.scope === 'task') {
+      return 'Task AI Assistant'
+    }
+    return null
+  }, [thread.scope])
+
   return (
     <div className="h-full flex flex-col">
+      {chatTypeLabel && (
+        <div className="px-4 pt-3 pb-2 border-b bg-gray-50">
+          <span className="text-xs font-medium text-gray-600 uppercase tracking-wide">
+            {chatTypeLabel}
+          </span>
+        </div>
+      )}
       <div className="flex-1 overflow-auto p-4 space-y-4 min-h-0">
         {allMessages.map((m) => (
           <MessageBubble 
@@ -99,14 +119,23 @@ export function ChatWindow({ thread, taskId, activeChannelId, chatContext }: Cha
         <div ref={chatEndRef} />
       </div>
       <div className="p-4 flex-shrink-0">
-        <Composer 
-          threadId={thread.id} 
-          onOptimistic={handleOptimistic} 
-          activeChannelId={activeChannelId}
-          preFillMessage={chatContext?.preFillMessage}
-          mode={chatContext?.mode}
-          componentId={chatContext?.componentId}
-        />
+        {thread.id.startsWith('temp-') ? (
+          <div className="border-t pt-2">
+            <div className="w-full border rounded p-2 text-sm bg-gray-50 text-gray-500">
+              Creating new chat...
+            </div>
+          </div>
+        ) : (
+          <Composer 
+            threadId={thread.id} 
+            onOptimistic={handleOptimistic} 
+            activeChannelId={activeChannelId}
+            preFillMessage={chatContext?.preFillMessage}
+            mode={chatContext?.mode}
+            componentId={chatContext?.componentId}
+            autoRun={chatContext?.autoRun}
+          />
+        )}
       </div>
     </div>
   )

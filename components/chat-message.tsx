@@ -1,6 +1,6 @@
 import { cn } from '@/lib/utils'
 import type { ChatMessage as BaseChatMessage } from '../hooks/useThreadedChat'
-import { Pencil, Trash2 } from 'lucide-react'
+import { Pencil, Reply, Trash2 } from 'lucide-react'
 import { useState } from 'react'
 import { format, isToday, isYesterday, differenceInDays } from 'date-fns';
 
@@ -10,6 +10,7 @@ export type ChatMessageWithAttachment = BaseChatMessage & { attachment?: string 
 interface ChatMessageItemProps {
   message: ChatMessageWithAttachment
   showHeader: boolean
+  onReply?: () => void
   isEditing?: boolean
   editValue?: string
   isProcessing?: boolean
@@ -19,6 +20,7 @@ interface ChatMessageItemProps {
   onEditCancel?: () => void
   onDelete?: () => void
   currentPublicUserId?: number | string | null
+  replyPreview?: { author?: string; preview: string } | null
 }
 
 // Minimalistic palette
@@ -86,6 +88,7 @@ function getFileExt(url: string) {
 export const ChatMessageItem = ({
   message,
   showHeader,
+  onReply,
   isEditing = false,
   editValue = '',
   isProcessing = false,
@@ -95,6 +98,7 @@ export const ChatMessageItem = ({
   onEditCancel,
   onDelete,
   currentPublicUserId,
+  replyPreview = null,
 }: Omit<ChatMessageItemProps, 'isOwnMessage'>) => {
   const [showMobileActions, setShowMobileActions] = useState(false)
   let longPressTimer: NodeJS.Timeout | null = null
@@ -131,17 +135,31 @@ export const ChatMessageItem = ({
         </div>
         <span className="font-medium text-gray-900 text-sm">{displayName}</span>
         <span className="text-xs text-muted-foreground" title={exactDate}>{friendlyDate}</span>
-        {/* Edit/Delete buttons on hover (desktop) */}
-        {isMe && (
-          <span className="hidden md:flex gap-1 ml-auto opacity-0 group-hover:opacity-100 transition-opacity">
-            <button aria-label="Edit message" className="hover:text-primary" onClick={onEditStart} disabled={isProcessing}>
-              <Pencil size={16} />
+        {/* Actions on hover (desktop) */}
+        <span className="hidden md:flex gap-1 ml-auto opacity-0 group-hover:opacity-100 transition-opacity">
+          {!isMe && onReply && (
+            <button
+              aria-label="Reply to message"
+              className="hover:text-gray-900 text-gray-500"
+              onClick={onReply}
+              disabled={isProcessing}
+              type="button"
+              title="Reply"
+            >
+              <Reply size={16} />
             </button>
-            <button aria-label="Delete message" className="hover:text-destructive" onClick={onDelete} disabled={isProcessing}>
-              <Trash2 size={16} />
-            </button>
-          </span>
-        )}
+          )}
+          {isMe && (
+            <>
+              <button aria-label="Edit message" className="hover:text-primary" onClick={onEditStart} disabled={isProcessing} type="button">
+                <Pencil size={16} />
+              </button>
+              <button aria-label="Delete message" className="hover:text-destructive" onClick={onDelete} disabled={isProcessing} type="button">
+                <Trash2 size={16} />
+              </button>
+            </>
+          )}
+        </span>
       </div>
       {/* 2nd line: message and attachments */}
       <div className="pl-10 w-full">
@@ -160,6 +178,14 @@ export const ChatMessageItem = ({
           </div>
         ) : (
           <>
+            {replyPreview ? (
+              <div className="mb-2 border-l-2 border-gray-300 pl-3 py-1 bg-gray-50 rounded">
+                <div className="text-[11px] font-medium text-gray-700">
+                  Replying to {replyPreview.author || 'message'}
+                </div>
+                <div className="text-[11px] text-gray-600 truncate">{replyPreview.preview}</div>
+              </div>
+            ) : null}
             <div className="text-sm text-gray-900" style={{ wordBreak: 'break-word' }} dangerouslySetInnerHTML={{ __html: message.content ?? '' }} />
             {typeof message?.attachment === 'string' && message?.attachment && (
               <div className="mt-2 flex items-center gap-2 bg-gray-50 border rounded px-3 py-2 w-fit">

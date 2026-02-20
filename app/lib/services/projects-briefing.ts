@@ -6,6 +6,7 @@ const supabase = createClientComponentClient()
 export interface ProjectOverview {
   project_id: number
   name: string
+  logo: string | null
   description: string | null
   goal: string | null
   target_audience: string | null
@@ -93,10 +94,22 @@ export async function getProjectOverview(projectId: number) {
     return { data: null, error: new Error('Project not found') }
   }
 
+  const { data: projectRow, error: projectError } = await supabase
+    .from("projects")
+    .select("logo")
+    .eq("id", projectId)
+    .single()
+
+  if (projectError) {
+    console.error("Error fetching project logo:", projectError)
+    return { data: null, error: projectError }
+  }
+
   return {
     data: {
       project_id: data.project_id,
       name: data.name,
+      logo: projectRow?.logo ?? null,
       description: data.description,
       goal: data.goal,
       target_audience: data.target_audience,
@@ -119,6 +132,7 @@ export async function updateProjectOverview(
   projectId: number,
   patch: Partial<{
     name: string
+    logo: string | null
     description: string | null
     goal: string | null
     target_audience: string | null

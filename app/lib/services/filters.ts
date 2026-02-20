@@ -3,7 +3,7 @@ import { createClientComponentClient } from "@supabase/auth-helpers-nextjs"
 export interface FilterOptions {
   users: { value: string; label: string }[]
   statuses: { value: string; label: string; color?: string; order_priority?: number; project_id?: string }[]
-  projects: { value: string; label: string }[]
+  projects: { value: string; label: string; color?: string | null; logo?: string | null }[]
   contentTypes: { value: string; label: string }[]
   productionTypes: { value: string; label: string }[]
   languages: { value: string; label: string }[]
@@ -25,12 +25,12 @@ export async function getFilterOptions(): Promise<FilterOptions> {
 
     const { data: projects, error: projectsError } = await supabase
       .from('projects')
-      .select('id, name, active')
+      .select('id, name, active, color, logo')
       .order('name')
     if (projectsError) throw projectsError
     const mappedProjects = (projects || [])
       .filter(project => project.id && project.name)
-      .map(project => ({ value: project.id, label: project.name, active: project.active }))
+      .map(project => ({ value: project.id, label: project.name, active: project.active, color: project.color, logo: project.logo }))
 
     const { data: contentTypes, error: contentTypesError } = await supabase
       .from('content_types')

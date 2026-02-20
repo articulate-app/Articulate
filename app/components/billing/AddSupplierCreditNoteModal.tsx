@@ -44,6 +44,21 @@ export function AddSupplierCreditNoteModal({
     setShowCreditNoteCreate(false)
     setShowExistingCreditNote(false)
     onClose()
+    // Manually restore body pointer-events in case Radix UI didn't clean up properly
+    // This is a safety net to prevent the app from freezing
+    setTimeout(() => {
+      const computedStyle = window.getComputedStyle(document.body)
+      if (computedStyle.pointerEvents === 'none') {
+        document.body.style.pointerEvents = 'auto'
+      }
+    }, 300) // Wait for Dialog closing animation to complete
+  }
+
+  const handleOpenChange = (open: boolean) => {
+    // Only handle close, not open (open is controlled by isOpen prop)
+    if (!open) {
+      handleClose()
+    }
   }
 
   const handleCreditNoteCreated = async (creditNoteId: any, teamInfo?: any) => {
@@ -111,7 +126,7 @@ export function AddSupplierCreditNoteModal({
 
   // Main modal with two choices
   return (
-    <Dialog open={isOpen} onOpenChange={onClose}>
+    <Dialog open={isOpen} onOpenChange={handleOpenChange}>
       <DialogContent className="max-w-md">
         <DialogHeader>
           <DialogTitle>Add Credit Note</DialogTitle>

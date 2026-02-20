@@ -147,7 +147,7 @@ export async function POST(request: NextRequest) {
     // Make request to Google Ads API
     const customerId = process.env.GOOGLE_ADS_CUSTOMER_ID!;
     const developerToken = process.env.GOOGLE_ADS_DEVELOPER_TOKEN!;
-    const googleAdsUrl = `https://googleads.googleapis.com/v19/customers/${customerId}:generateKeywordIdeas`;
+    const googleAdsUrl = `https://googleads.googleapis.com/v22/customers/${customerId}:generateKeywordIdeas`;
     
     // Debug logging
     console.log('Google Ads API Request:', {

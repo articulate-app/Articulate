@@ -1,6 +1,12 @@
 import { storeRegistry, removeItemFromStore, updateItemInStore } from '../../../hooks/use-infinite-query'
 import { QueryClient } from '@tanstack/react-query'
 import { removeTaskFromTypesenseStore } from '../../store/typesense-tasks'
+import {
+  addTaskToGroupTasksCaches,
+  patchTaskInGroupTasksCaches,
+  removeTaskFromGroupTasksCaches,
+} from '../../../src/hooks/use-task-group-tasks-query'
+import { addTaskToGroupMetaCaches, removeTaskFromGroupMetaCaches } from '../../../src/hooks/use-task-group-meta-all-query'
 
 // Helper to calculate overdue status based on dates and project status
 function calculateOverdueStatus(
@@ -38,7 +44,7 @@ function calculateOverdueStatus(
  * Remove a task from all InfiniteList caches (all filters/pagination).
  * Ensures the task disappears instantly regardless of filters or pagination.
  */
-export function removeTaskFromAllStores(taskId: number) {
+export function removeTaskFromAllStores(taskId: number, opts?: { groupKey?: string }) {
   if (typeof window === 'undefined') return;
   
   // Remove from InfiniteList stores
@@ -50,6 +56,32 @@ export function removeTaskFromAllStores(taskId: number) {
   
   // Remove from Typesense store
   removeTaskFromTypesenseStore(taskId);
+
+  // Remove from grouped view caches (left pane)
+  try {
+    removeTaskFromGroupTasksCaches(taskId)
+    removeTaskFromGroupMetaCaches(taskId, opts?.groupKey)
+  } catch (err) {
+    if (process.env.NODE_ENV === 'development') {
+      console.error('[removeTaskFromAllStores] Failed to patch grouped caches', err)
+    }
+  }
+}
+
+/**
+ * Optimistically add a newly created task into the grouped left-pane caches.
+ * This creates the group if needed and inserts the row respecting the active row sort.
+ */
+export function addTaskToGroupedTaskCaches(newTask: any) {
+  if (typeof window === 'undefined') return;
+  try {
+    addTaskToGroupMetaCaches(newTask)
+    addTaskToGroupTasksCaches(newTask)
+  } catch (err) {
+    if (process.env.NODE_ENV === 'development') {
+      console.error('[addTaskToGroupedTaskCaches] Failed to patch grouped caches', err)
+    }
+  }
 }
 
 /**
@@ -337,12 +369,18 @@ export function updateTaskInCaches(queryClient: QueryClient, updatedTask: any) {
     
     if (process.env.NODE_ENV === 'development') {
       console.log('[updateTaskInCaches] Patched detail cache for task', updatedTask.id);
-    }
-    
-    // Only invalidate as a last resort if cache updates didn't work
-    // This prevents interfering with optimistic updates
-    if (process.env.NODE_ENV === 'development') {
       console.log('[updateTaskInCaches] Cache updates completed for all queries');
+    }
+  }
+
+  // --- Patch grouped task caches used by UnifiedGroupedTaskList -------------
+  // This ensures TaskDetails edits are reflected immediately in the grouped
+  // left pane without needing to refetch RPC pages.
+  try {
+    patchTaskInGroupTasksCaches(updatedTask);
+  } catch (err) {
+    if (process.env.NODE_ENV === 'development') {
+      console.error('[updateTaskInCaches] Failed to patch grouped task caches', err);
     }
   }
 }
@@ -415,19 +453,34 @@ export function normalizeTask(apiTask: any): any {
 export function addTaskToCalendarCaches(queryClient: QueryClient, newTask: any) {
   if (!queryClient || !newTask || !newTask.id) return;
 
-  // Find all calendar queries (they have the pattern ['tasks', month, dateField, filters, search])
+  // Find all calendar queries.
+  // Supported shapes:
+  // - Legacy: ['tasks', month, dateField, filters, search]
+  // - Chunked: ['tasks', 'calendar-chunk', dateField, chunkKey, filters, search]
   const allQueries = queryClient.getQueryCache().getAll();
   
   for (const q of allQueries) {
     const queryKey = q.queryKey;
-    if (!Array.isArray(queryKey) || queryKey[0] !== 'tasks' || queryKey.length < 4) continue;
-    
-    // Check if this is a calendar query (has month, dateField, filters, search)
-    const [_, monthStr, dateField, filterKey, searchValue] = queryKey;
+    if (!Array.isArray(queryKey) || queryKey[0] !== 'tasks') continue;
+
+    let monthStr: any = null;
+    let dateField: any = null;
+    let filterKey: any = null;
+    let searchValue: any = null;
+
+    if (queryKey[1] === 'calendar-chunk' && queryKey.length >= 6) {
+      [, , dateField, monthStr, filterKey, searchValue] = queryKey;
+    } else if (queryKey.length >= 4) {
+      [, monthStr, dateField, filterKey, searchValue] = queryKey;
+    }
+
     if (!monthStr || !dateField || !filterKey) continue;
     
     // Parse the month to get the date range
-    const monthDate = new Date(monthStr);
+    const monthDate =
+      typeof monthStr === 'string' && /^\d{4}-\d{2}$/.test(monthStr)
+        ? new Date(`${monthStr}-01T00:00:00`)
+        : new Date(monthStr);
     const year = monthDate.getFullYear();
     const month = monthDate.getMonth();
     const firstDay = new Date(year, month, 1);

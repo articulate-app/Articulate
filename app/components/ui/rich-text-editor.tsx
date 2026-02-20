@@ -15,13 +15,15 @@ interface RichTextEditorProps {
   renderSendButton?: () => React.ReactNode // custom send button
   onFocus?: () => void // focus event for parent
   onBlur?: () => void // blur event for parent
+  fontSize?: number | string
 }
 
-export function RichTextEditor({ value, onChange, readOnly = false, placeholder, height = 120, toolbarId = 'ql-toolbar-rich', onAttachmentClick, renderSendButton, onFocus, onBlur }: RichTextEditorProps) {
+export function RichTextEditor({ value, onChange, readOnly = false, placeholder, height = 120, toolbarId = 'ql-toolbar-rich', onAttachmentClick, renderSendButton, onFocus, onBlur, fontSize }: RichTextEditorProps) {
   const [localValue, setLocalValue] = useState(value);
   const [isFocused, setIsFocused] = useState(false);
   const lastPropValue = useRef(value);
   const quillRef = useRef<any>(null);
+  const editorFontSize = typeof fontSize === 'number' ? `${fontSize}px` : (fontSize || '14px');
 
 
 
@@ -63,7 +65,10 @@ export function RichTextEditor({ value, onChange, readOnly = false, placeholder,
   };
 
   return (
-    <div className="prose prose-sm max-w-none relative">
+    <div
+      className="prose prose-sm max-w-none relative rte-root"
+      style={{ ['--rte-font-size' as any]: editorFontSize }}
+    >
       <div className="border rounded-md bg-white relative" style={{ height, minHeight: height, display: 'flex', flexDirection: 'column', overflow: 'visible' }}>
         {/* Editor content with extra bottom padding for toolbar */}
         <div style={{ flex: 1, minHeight: 0, position: 'relative', overflow: 'visible' }}>
@@ -80,7 +85,7 @@ export function RichTextEditor({ value, onChange, readOnly = false, placeholder,
             placeholder={placeholder}
             theme="snow"
             modules={modules}
-            style={{ height: '100%', paddingBottom: 40 }}
+            style={{ height: '100%', paddingBottom: 40, fontSize }}
             onFocus={e => {
               setIsFocused(true);
               onFocus && onFocus();
@@ -266,6 +271,7 @@ export function RichTextEditor({ value, onChange, readOnly = false, placeholder,
       <style>{`
         .ql-container { height: 100% !important; min-height: 100% !important; border: none !important; }
         .ql-editor { height: 100% !important; min-height: 100% !important; }
+        .rte-root .ql-editor { font-size: var(--rte-font-size, 14px) !important; line-height: 1.5 !important; }
         .ql-toolbar { border: none !important; background: transparent; }
         .ql-toolbar .ql-picker-label, .ql-toolbar .ql-picker-item { color: #9ca3af !important; }
         .ql-toolbar .ql-stroke, .ql-toolbar .ql-fill { stroke: currentColor !important; fill: currentColor !important; }

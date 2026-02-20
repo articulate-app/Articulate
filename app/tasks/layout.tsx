@@ -1,18 +1,25 @@
 "use client"
 
-import React, { useState } from "react";
+import React, { useEffect, useState } from "react";
+import { useSearchParams, useRouter, usePathname } from "next/navigation";
 import { TaskHeaderBar } from "../components/ui/task-header-bar";
 import { TaskFilters } from "../components/tasks/TaskFilters";
 import { useTasksUI } from "../store/tasks-ui";
 import { useTaskEditFields } from "../hooks/use-task-edit-fields";
 import { createClientComponentClient } from "@supabase/auth-helpers-nextjs";
-import { useEffect } from "react";
 import { useQuery } from "@tanstack/react-query";
 import type { TaskEditFields } from "../hooks/use-task-edit-fields";
 import type { FilterOptions } from "../lib/services/filters";
 import { useMobileDetection } from "../hooks/use-mobile-detection";
 import { KeywordPlannerPane } from "../components/KeywordPlannerPane";
 import { Sidebar } from "../components/ui/Sidebar";
+import { AiPane } from "../../features/ai-chat/AiPane";
+import { TaskComposerTray } from "../components/tasks/TaskComposerTray";
+import { MobileTaskComposerSheet } from "../components/tasks/MobileTaskComposerSheet";
+import { ensureGlobalThread } from "../../features/ai-chat/ai-utils";
+import { toast } from "../components/ui/use-toast";
+import { cn } from "@/lib/utils";
+import { TasksSidebarProvider } from "../contexts/tasks-sidebar-context";
 
 // Transform editFields data to filter options format (same as in TasksLayout)
 function transformEditFieldsToFilterOptions(editFields: TaskEditFields, users: any[] = []): FilterOptions {
@@ -77,11 +84,19 @@ export default function TasksLayout({ children, modal }: LayoutProps) {
   // Global search/filter state from Zustand
   const { searchValue, setSearchValue, filters, setFilters } = useTasksUI();
 
+  // URL helpers for syncing ?q= with global search (mimic /financials behavior)
+  const searchParams = useSearchParams();
+  const router = useRouter();
+  const pathname = usePathname();
+
   // Filter pane open state
   const [isFilterOpen, setIsFilterOpen] = useState(false);
   
   // Keyword Planner state
   const [isKeywordPlannerOpen, setIsKeywordPlannerOpen] = useState(false);
+  
+  // AI Chat state
+  const [isAiChatOpen, setIsAiChatOpen] = useState(false);
 
   // Get access token for task edit fields
   const supabase = createClientComponentClient();
@@ -117,6 +132,12 @@ export default function TasksLayout({ children, modal }: LayoutProps) {
   // Debug log
   console.log('[layout] isFilterOpen:', isFilterOpen, 'editFields:', editFields, 'users:', users, 'filterOptions:', filterOptions);
 
+  // Keep global searchValue in sync with ?q= from URL (on mount and when URL changes)
+  useEffect(() => {
+    const urlQ = searchParams.get("q") || "";
+    setSearchValue(urlQ);
+  }, [searchParams, setSearchValue]);
+
   // Handler for filter button (could open a filter modal or pane)
   const handleFilterClick = () => {
     setIsFilterOpen(true);
@@ -137,6 +158,74 @@ export default function TasksLayout({ children, modal }: LayoutProps) {
 
   // Handler for keyword planner toggle
   const handleKeywordPlannerClick = () => setIsKeywordPlannerOpen((v) => !v);
+  
+  // Handler for AI chat toggle
+  const handleAiChatClick = async () => {
+    try {
+      // Ensure global thread exists
+      await ensureGlobalThread()
+      // Open AI pane
+      setIsAiChatOpen(true)
+    } catch (error: any) {
+      toast({
+        title: "Error",
+        description: error.message || "Failed to open AI chat",
+        variant: "destructive",
+      })
+    }
+  };
+
+  // Handler for global header search: update store + URL ?q= (single source of truth)
+  const handleHeaderSearchChange = (value: string) => {
+    setSearchValue(value);
+    const newParams = new URLSearchParams(searchParams.toString());
+    if (value) {
+      newParams.set("q", value);
+    } else {
+      newParams.delete("q");
+    }
+    router.replace(`${pathname}?${newParams.toString()}`);
+  };
+
+  // Derive current high-level view mode from URL (list / calendar / kanban)
+  const layoutParam = (searchParams.get("layout") || "left,middle")
+    .split(",")
+    .filter(Boolean);
+  const middleView = searchParams.get("middleView") || "calendar";
+
+  const currentViewMode: 'list' | 'calendar' | 'kanban' = !layoutParam.includes("middle")
+    ? "list"
+    : middleView === "kanban"
+    ? "kanban"
+    : "calendar";
+
+  // Global view toggle handler (Task list / Calendar / Kanban)
+  const handleHeaderViewModeChange = (view: 'list' | 'calendar' | 'kanban') => {
+    const newParams = new URLSearchParams(searchParams.toString());
+
+    if (view === 'list') {
+      // Expanded task list (full-width left pane)
+      newParams.set('layout', 'left');
+      newParams.set('leftView', 'list');
+      newParams.set('rightView', 'details');
+      newParams.set('focus', 'left');
+      // Hide details pane when not in layout
+      newParams.delete('id');
+    } else {
+      // Calendar or Kanban in middle pane + task list in left
+      newParams.set('layout', 'left,middle');
+      newParams.set('leftView', 'list');
+      newParams.set('middleView', view);
+      newParams.set('rightView', 'details');
+      // Clear focus so split layout can be restored
+      newParams.delete('focus');
+      // Close details pane when switching primary view
+      newParams.delete('id');
+    }
+
+    // Leave all filtering, grouping, and pagination params untouched
+    router.replace(`${pathname}?${newParams.toString()}`);
+  };
 
   return (
     <div className="flex flex-col h-screen w-full bg-white">
@@ -144,29 +233,52 @@ export default function TasksLayout({ children, modal }: LayoutProps) {
         {!isMobile && (
           <TaskHeaderBar
             searchValue={searchValue}
-            onSearchChange={setSearchValue}
+            onSearchChange={handleHeaderSearchChange}
             onFilterClick={handleFilterClick}
             onSidebarToggle={handleSidebarToggle}
             onKeywordPlannerClick={handleKeywordPlannerClick}
             isKeywordPlannerActive={isKeywordPlannerOpen}
+            onAiChatClick={handleAiChatClick}
+            viewMode={currentViewMode}
+            onViewModeChange={handleHeaderViewModeChange}
           />
         )}
       {/* Main content (children) */}
+      <TasksSidebarProvider
+        value={{
+          isMobileMenuOpen,
+          onSidebarToggle: handleSidebarToggle,
+        }}
+      >
       <div className="flex-1 min-h-0 w-full flex flex-row overflow-hidden">
-        {/* Sidebar */}
-        <div className={`border-r border-gray-200 transition-all duration-300 ease-in-out z-20 flex-shrink-0 ${isSidebarCollapsed ? 'w-16' : 'w-64'}`}>
-          <Sidebar 
-            isCollapsed={isSidebarCollapsed} 
-            isMobileMenuOpen={isMobileMenuOpen} 
-            onClose={handleMobileMenuClose} 
-          />
-        </div>
+        {/* Sidebar: desktop shows strip; mobile shows overlay when open */}
+        {isMobile ? (
+          /* On mobile: Sidebar overlay only (no strip); overlay shows when isMobileMenuOpen */
+          <div className="w-0 min-w-0 overflow-hidden">
+            <Sidebar
+              isCollapsed={true}
+              isMobileMenuOpen={isMobileMenuOpen}
+              onClose={handleMobileMenuClose}
+            />
+          </div>
+        ) : (
+          <div className={cn(
+            "border-r border-gray-200 transition-all duration-300 ease-in-out z-20 flex-shrink-0",
+            isSidebarCollapsed ? "w-16" : "w-64"
+          )}>
+            <Sidebar 
+              isCollapsed={isSidebarCollapsed} 
+              isMobileMenuOpen={isMobileMenuOpen} 
+              onClose={handleMobileMenuClose} 
+            />
+          </div>
+        )}
         
         {/* Page Content */}
         <div className="flex-1 overflow-hidden flex flex-row">
-          {/* Pass sidebar state as context/prop if needed */}
+          {/* Pass sidebar state as props (cloneElement) for compatibility */}
           {React.cloneElement(children as React.ReactElement, {
-            isSidebarOpen,
+            isSidebarOpen: isMobile ? isMobileMenuOpen : isSidebarOpen,
             isSidebarCollapsed,
             onSidebarToggle: handleSidebarToggle,
           })}
@@ -194,6 +306,18 @@ export default function TasksLayout({ children, modal }: LayoutProps) {
           )}
         </div>
       </div>
+      </TasksSidebarProvider>
+      
+      {/* Global AI Chat Pane */}
+      <AiPane 
+        isOpen={isAiChatOpen} 
+        onClose={() => setIsAiChatOpen(false)} 
+        initialScope="global"
+      />
+
+      {/* Task Composer: tray on desktop, bottom sheet on mobile */}
+      <TaskComposerTray />
+      <MobileTaskComposerSheet />
     </div>
   );
 } 

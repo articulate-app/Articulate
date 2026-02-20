@@ -37,6 +37,11 @@ export interface InfiniteListProps<TableName extends SupabaseTableName, TData = 
    * Optional external scroll container ref (required when isTableBody is true)
    */
   scrollContainerRef?: React.RefObject<HTMLElement>
+  /**
+   * When true, only the first page loads automatically; additional pages require the user to scroll.
+   * This prevents "auto-prefetch" loops on mount when the sentinel is visible.
+   */
+  requireUserScrollForNextPage?: boolean
 }
 
 const DefaultNoResults = () => (
@@ -74,6 +79,7 @@ export function InfiniteList<TableName extends SupabaseTableName, TData = Supaba
   isTableBody = false,
   queryKey,
   scrollContainerRef: externalScrollContainerRef,
+  requireUserScrollForNextPage = false,
 }: InfiniteListProps<TableName, TData>) {
   const { data, isFetching, hasMore, fetchNextPage, isSuccess } = useInfiniteQuery({
     tableName,
@@ -92,6 +98,42 @@ export function InfiniteList<TableName extends SupabaseTableName, TData = Supaba
   const observer = React.useRef<IntersectionObserver | null>(null)
   const isLoadingRef = React.useRef<boolean>(false)
   const prevDataLengthRef = React.useRef<number>(0)
+  const hasUserScrolledRef = React.useRef<boolean>(false)
+
+  // Reset "user scrolled" latch when the list identity changes (new search / new list)
+  React.useEffect(() => {
+    hasUserScrolledRef.current = false
+  }, [tableName, queryKey])
+
+  // Track whether the user has actually scrolled the container
+  React.useEffect(() => {
+    if (!requireUserScrollForNextPage) return
+    let rafId: number | null = null
+    let el: HTMLElement | null = null
+
+    const tryAttach = () => {
+      el = scrollContainerRef.current
+      if (!el) {
+        rafId = window.requestAnimationFrame(tryAttach)
+        return
+      }
+
+      const onScroll = () => {
+        if (el && el.scrollTop > 0) hasUserScrolledRef.current = true
+      }
+
+      el.addEventListener('scroll', onScroll, { passive: true })
+      ;(tryAttach as any)._cleanup = () => el?.removeEventListener('scroll', onScroll as any)
+    }
+
+    tryAttach()
+
+    return () => {
+      if (rafId != null) window.cancelAnimationFrame(rafId)
+      const cleanup = (tryAttach as any)._cleanup as undefined | (() => void)
+      cleanup?.()
+    }
+  }, [requireUserScrollForNextPage, scrollContainerRef])
 
   // Reset loading lock when data changes (new batch arrived)
   React.useEffect(() => {
@@ -119,7 +161,14 @@ export function InfiniteList<TableName extends SupabaseTableName, TData = Supaba
         // 2. There's more data (hasMore)
         // 3. Not currently fetching
         // 4. Not already triggered (isLoadingRef)
-        if (entry.isIntersecting && hasMore && !isFetching && !isLoadingRef.current) {
+        // 5. If requireUserScrollForNextPage, only after the user has scrolled
+        if (
+          entry.isIntersecting &&
+          hasMore &&
+          !isFetching &&
+          !isLoadingRef.current &&
+          (!requireUserScrollForNextPage || hasUserScrolledRef.current)
+        ) {
           isLoadingRef.current = true
           fetchNextPage()
         }
@@ -138,7 +187,7 @@ export function InfiniteList<TableName extends SupabaseTableName, TData = Supaba
     return () => {
       if (observer.current) observer.current.disconnect()
     }
-  }, [isFetching, hasMore, fetchNextPage])
+  }, [isFetching, hasMore, fetchNextPage, requireUserScrollForNextPage])
 
   const content = (
     <>

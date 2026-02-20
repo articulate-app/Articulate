@@ -2,8 +2,9 @@
 
 import { ReactNode, useState, cloneElement, useEffect, useCallback, useRef } from "react"
 import { TaskDetails } from "./TaskDetails"
+import type { SuggestionDetailsModel } from "./SuggestionDetails"
 import { normalizeTask } from "./task-cache-utils"
-import { Menu, X, ChevronLeft, ChevronRight, Calendar, PanelLeft, PanelRight, Maximize2, Minimize2, ChevronDown } from "lucide-react"
+import { Menu, X, ChevronLeft, ChevronRight, Calendar, PanelLeft, PanelRight, Maximize2, Minimize2, ChevronDown, Search } from "lucide-react"
 import { cn } from "@/lib/utils"
 import type { Task } from '../../lib/types/tasks'
 import React, { useMemo } from "react"
@@ -15,6 +16,7 @@ import { Sidebar } from "../ui/Sidebar"
 import { AddTaskForm } from './AddTaskForm'
 import { useRouter } from 'next/navigation'
 import { useTasksUI, ViewMode } from '../../store/tasks-ui'
+import { useTaskComposerStore } from '../../store/task-composer-store'
 import { useSearchParams, usePathname } from 'next/navigation'
 import { TaskList } from './TaskList'
 import { getTaskById } from '../../../lib/services/tasks';
@@ -24,6 +26,9 @@ import { MultiselectToggle } from '../ui/multiselect-toggle';
 import { PanelGroup, Panel, PanelResizeHandle, ImperativePanelHandle } from 'react-resizable-panels';
 import { DropdownMenu, DropdownMenuTrigger, DropdownMenuContent, DropdownMenuItem } from '../ui/dropdown-menu';
 import { FilterBadges } from "../../../components/ui/filter-badges";
+import { FrequentFilterPills } from "./FrequentFilterPills";
+import { FilterCascadingDropdown } from "./FilterCascadingDropdown";
+import { InlineSearchInput } from "./InlineSearchInput";
 import type { TaskFilters as TaskFiltersType } from '../../store/tasks-ui';
 import { useFilterOptions } from '../../hooks/use-filter-options';
 import type { TaskEditFields } from '../../hooks/use-task-edit-fields';
@@ -31,6 +36,17 @@ import type { FilterOptions } from '../../lib/services/filters';
 
 // Transform editFields data to filter options format
 function transformEditFieldsToFilterOptions(editFields: TaskEditFields, users: any[] = []): FilterOptions {
+  // Derive users from project_watchers when users param is empty (for filter assignee options)
+  const derivedUsers = users.length > 0
+    ? users
+    : Array.from(
+        new Map(
+          (editFields.project_watchers || [])
+            .filter((w: any) => w?.users?.id && w?.users?.full_name)
+            .map((w: any) => [String(w.users.id), { id: w.users.id, full_name: w.users.full_name, photo: w.users.photo }])
+        ).values()
+      );
+
   // Deduplicate project statuses by name
   const statusMap = new Map<string, any>();
   (editFields.project_statuses || []).forEach(status => {
@@ -43,9 +59,9 @@ function transformEditFieldsToFilterOptions(editFields: TaskEditFields, users: a
   const dedupedStatuses = Array.from(statusMap.values());
   
   return {
-    users: (users || [])
-      .filter(user => user.id && user.full_name)
-      .map(user => ({ value: String(user.id), label: user.full_name })),
+    users: (derivedUsers || [])
+      .filter((user: any) => user.id && user.full_name)
+      .map((user: any) => ({ value: String(user.id), label: user.full_name })),
     statuses: dedupedStatuses.map(status => ({
       value: status.name, // Use name as value for Typesense filtering
       label: status.name,
@@ -81,6 +97,7 @@ import { useTaskEditFields } from '../../hooks/use-task-edit-fields'
 import { useTaskRealtime } from '../../../hooks/use-task-realtime';
 import { useDebounce } from "../../hooks/use-debounce";
 import { useMobileDetection } from '../../hooks/use-mobile-detection';
+import { useTasksSidebar } from '../../contexts/tasks-sidebar-context';
 import { MobileNavigation, type MobileViewMode } from './mobile-navigation';
 import { MobileTaskDetail } from './mobile-task-detail';
 import { ResizableBottomSheet } from '../ui/resizable-bottom-sheet';
@@ -135,34 +152,61 @@ export function getActiveFilterBadges(
     overdueStatus: 'Overdue Status',
   };
   const getLabel = (key: string, val: string): string => {
-    if (!filterOptions) return val;
+    // Always try to get friendly label, never show raw IDs
+    if (!filterOptions) {
+      // If no filterOptions and val looks like an ID, return placeholder
+      if (/^\d+$/.test(val)) {
+        return 'Unknown';
+      }
+      return val;
+    }
     switch (key) {
       case 'project': {
         const opt = filterOptions.projects?.find((p: any) => String(p.value) === String(val));
+        // If not found in filterOptions, val might already be a name (from URL), so return it
         return opt?.label || val;
       }
       case 'assignedTo': {
         const opt = filterOptions.users?.find((u: any) => String(u.value) === String(val));
+        // If not found, val might be a name, but if it's numeric, it's likely an ID - try to avoid showing it
+        if (!opt && /^\d+$/.test(val)) {
+          // It's a numeric ID but we don't have the user info - return a placeholder
+          return 'Unknown user';
+        }
         return opt?.label || val;
       }
       case 'status': {
+        // Status filters use names, so val should already be a name
         const opt = filterOptions.statuses?.find((s: any) => String(s.label) === String(val) || String(s.value) === String(val));
-        return opt?.label || val;
+        return opt?.label || val; // val is already a name for status
       }
       case 'contentType': {
         const opt = filterOptions.contentTypes?.find((c: any) => String(c.value) === String(val));
+        // If not found and val is numeric, it's an ID without label
+        if (!opt && /^\d+$/.test(val)) {
+          return 'Unknown content type';
+        }
         return opt?.label || val;
       }
       case 'productionType': {
         const opt = filterOptions.productionTypes?.find((p: any) => String(p.value) === String(val));
+        if (!opt && /^\d+$/.test(val)) {
+          return 'Unknown production type';
+        }
         return opt?.label || val;
       }
       case 'language': {
         const opt = filterOptions.languages?.find((l: any) => String(l.value) === String(val));
+        if (!opt && /^\d+$/.test(val)) {
+          return 'Unknown language';
+        }
         return opt?.label || val;
       }
       case 'channels': {
         const opt = filterOptions.channels?.find((ch: any) => String(ch.value) === String(val) || String(ch.id) === String(val));
+        if (!opt && /^\d+$/.test(val)) {
+          return 'Unknown channel';
+        }
         return opt?.label || val;
       }
       case 'overdueStatus': {
@@ -174,6 +218,10 @@ export function getActiveFilterBadges(
         return labelMap[val] || val;
       }
       default:
+        // For unknown keys, if val looks like an ID, don't show it directly
+        if (/^\d+$/.test(val)) {
+          return 'Unknown';
+        }
         return val;
     }
   };
@@ -262,7 +310,6 @@ function normalizeBasicTask(task: any): any {
   if (!task) return undefined;
   // Log the incoming task for debugging
   if (typeof window !== 'undefined') {
-    console.log('[normalizeBasicTask] input:', task);
   }
   const normalized = {
     id: task.id,
@@ -287,7 +334,6 @@ function normalizeBasicTask(task: any): any {
     channel_names: task.channel_names,
   };
   if (typeof window !== 'undefined') {
-    console.log('[normalizeBasicTask] output:', normalized);
   }
   return normalized;
 }
@@ -320,7 +366,6 @@ function useTaskDetails(taskId: string | number | undefined, accessToken: string
       // Merge all fields from data.task and data
       const merged = { ...initialData, ...(data.task || {}), ...data };
       if (typeof window !== 'undefined') {
-        console.log('[useTaskDetails] merged result:', merged);
       }
       return merged;
     },
@@ -350,14 +395,16 @@ interface TasksLayoutProps {
   searchValue: string
   setSearchValue: (value: string) => void
   onFilterClick: () => void
-  onAddTaskClick: () => void
+  onAddTaskClick?: () => void
   onSidebarToggle?: () => void
   onTaskUpdate?: (updatedFields: Partial<Task>) => void
   onAddSubtask?: (parentTaskId: number, projectId: number) => void
   onSubtaskFormCancel?: () => void
   onSubtaskFormSuccess?: () => void
-  isAddTaskOpen: boolean
-  setIsAddTaskOpen: (open: boolean) => void
+  /** @deprecated Use TaskComposerTray / openComposer instead */
+  isAddTaskOpen?: boolean
+  /** @deprecated Use TaskComposerTray / openComposer instead */
+  setIsAddTaskOpen?: (open: boolean) => void
   isAddSubtaskPaneOpen: boolean
   setIsAddSubtaskPaneOpen: (open: boolean) => void
   addSubtaskContext: { parentTaskId: number, projectId: number } | null
@@ -388,11 +435,11 @@ export function TasksLayout({
   isSidebarCollapsed = true,
   onSidebarToggle: _onSidebarToggle,
 }: Omit<TasksLayoutProps, 'selectedTask' | 'isDetailsCollapsed'> & { isSidebarOpen?: boolean, isSidebarCollapsed?: boolean, onSidebarToggle?: () => void }) {
-  console.log('[TasksLayout] COMPONENT RENDER START');
   // --- Global UI state ---
   const params = useSearchParams();
   const router = useRouter();
   const pathname = usePathname();
+  const EMPTY_LIST = useMemo(() => [], [])
   const {
     viewMode,
     setViewMode,
@@ -403,24 +450,28 @@ export function TasksLayout({
     setSelectedTaskId,
     filters,
     setFilters,
+    setPlannerVisibility,
   } = useTasksUI();
+
+  // Async filter options (includes full user list for mapping IDs → names)
+  const { data: asyncFilterOptions } = useFilterOptions({ enabled: true });
 
   const layoutMountCount = useRef(0);
   useEffect(() => {
     layoutMountCount.current += 1;
-    console.log(`[TasksLayout] 🟢 COMPONENT MOUNTED #${layoutMountCount.current}`);
     return () => {
-      console.log(`[TasksLayout] 🔴 COMPONENT UNMOUNTING #${layoutMountCount.current}`);
     };
   }, []);
 
   // Track if the filter pane is open
   const [isFilterPaneOpen, setIsFilterPaneOpen] = useState(false);
+  
+  // Inline search state for task list
+  const [isInlineSearchOpen, setIsInlineSearchOpen] = useState(false);
+  const [inlineSearchValue, setInlineSearchValue] = useState('');
 
-  // Local state fallback for Add Task modal
-  const [localIsAddTaskOpen, localSetIsAddTaskOpen] = useState(false);
-  const isAddTaskOpen = typeof _isAddTaskOpen === 'boolean' ? _isAddTaskOpen : localIsAddTaskOpen;
-  const setIsAddTaskOpen = _setIsAddTaskOpen || localSetIsAddTaskOpen;
+  // Add Task: use non-blocking composer (openComposer) instead of modal
+  const openComposer = useTaskComposerStore((s) => s.openComposer);
 
   // Duplicate task state
   const [isDuplicateTaskOpen, setIsDuplicateTaskOpen] = useState(false);
@@ -451,18 +502,13 @@ export function TasksLayout({
     middleView,
   }), [coreLayoutConfig, middleView]);
   
-  console.log('[TasksLayout] Current layoutConfig state:', layoutConfig);
-  console.log('[TasksLayout] Current URL params:', Object.fromEntries(params.entries()));
 
   // Debug: log whenever core layout config changes (but not middleView)
   React.useEffect(() => {
-    console.log('[TasksLayout] *** coreLayoutConfig CHANGED ***:', coreLayoutConfig);
-    console.log('[TasksLayout] *** This coreLayoutConfig change was caused by render #' + renderCount.current + ' ***');
   }, [coreLayoutConfig]);
 
   // Debug: log when middle view changes (separate from core layout)
   React.useEffect(() => {
-    console.log('[TasksLayout] *** middleView CHANGED ***:', middleView);
   }, [middleView]);
 
   // Panel refs for imperative resizing
@@ -477,34 +523,44 @@ export function TasksLayout({
 
   // Mobile state management
   const isMobile = useMobileDetection();
+  const sidebarContext = useTasksSidebar();
+  // Prefer context for sidebar (layout provides it); fallback to props from cloneElement
+  const effectiveOnSidebarToggle = sidebarContext?.onSidebarToggle ?? _onSidebarToggle;
   const [mobileView, setMobileView] = useState<MobileViewMode>('list');
   const [mobileFilterOpen, setMobileFilterOpen] = useState(false);
   const [mobileTaskDetailOpen, setMobileTaskDetailOpen] = useState(false);
 
   // Only sync Zustand state from URL on initial mount (never set selectedTaskId from URL after mount)
   const hasHydratedFromURL = React.useRef(false);
-  console.log('[TasksLayout] hasHydratedFromURL.current:', hasHydratedFromURL.current);
   
   // Debug: Track renders and their causes
   const renderCount = useRef(0);
   renderCount.current += 1;
-  console.log(`[TasksLayout] 🔄 RENDER #${renderCount.current}`, {
-    layoutConfig,
-    selectedTaskId,
-    hasHydrated: hasHydratedFromURL.current,
-    urlParams: Object.fromEntries(params.entries())
-  });
   
+  // Sync filters from URL whenever params change (e.g. Project/Status pill, FilterCascadingDropdown)
+  // so FilterBadges shows active filters when URL is updated by FrequentFilterPills etc.
   React.useEffect(() => {
-    console.log('[TasksLayout] *** HYDRATION EFFECT TRIGGERED ***');
+    syncFromUrl(new URLSearchParams(params.toString()));
+  }, [params.toString(), syncFromUrl]);
+
+  React.useEffect(() => {
     if (!hasHydratedFromURL.current) {
       // LOG hydration start
       // eslint-disable-next-line no-console
-      console.log('[TasksLayout] Starting hydration from URL', Object.fromEntries(params.entries()));
       // Only sync search and filters, layout system handles layout/view independently
       const q = params.get('q') || '';
       setSearchValue(q);
-      // Note: filters are handled separately by TaskFilters component
+      syncFromUrl(new URLSearchParams(params.toString()));
+
+      // Allow deep-links to force planner visibility (useful for "View suggestions in planner" buttons)
+      const showSuggestionsParam = params.get("showSuggestions")
+      const showTasksParam = params.get("showTasks")
+      if (showSuggestionsParam === "1" || showSuggestionsParam === "true") {
+        setPlannerVisibility({ showSuggestions: true })
+      }
+      if (showTasksParam === "1" || showTasksParam === "true") {
+        setPlannerVisibility({ showTasks: true })
+      }
       
       // Sync layout config from URL
       const urlLayout = params.get('layout')?.split(',').filter(Boolean) || ['left', 'middle'];
@@ -520,25 +576,17 @@ export function TasksLayout({
         focus: urlFocus,
       };
       
-      console.log('[TasksLayout] Setting initial core layout config:', initialCoreConfig);
-      console.log('[TasksLayout] Setting initial middle view:', urlMiddleView);
       setCoreLayoutConfig(initialCoreConfig);
       setMiddleView(urlMiddleView);
       
       hasHydratedFromURL.current = true;
       // eslint-disable-next-line no-console
-      console.log('[TasksLayout] Hydration complete. hasHydratedFromURL.current is now:', hasHydratedFromURL.current);
     }
     // Never sync selectedTaskId from URL after initial hydration
   }, []);
 
   // IMMEDIATE RESIZE CHECK: If state is already correct but panel isn't expanded
   React.useEffect(() => {
-    console.log('[TasksLayout] 🔄 IMMEDIATE RESIZE EFFECT #' + renderCount.current + ' triggered with:', {
-      hasHydrated: hasHydratedFromURL.current,
-      focus: coreLayoutConfig.focus,
-      layout: coreLayoutConfig.layout
-    });
     
     const shouldExpandLeft = hasHydratedFromURL.current && (
       (coreLayoutConfig.focus === 'left' && coreLayoutConfig.layout.includes('left')) ||
@@ -555,28 +603,10 @@ export function TasksLayout({
       (coreLayoutConfig.layout.length === 1 && coreLayoutConfig.layout[0] === 'right')
     );
     
-    console.log('[TasksLayout] Should expand check:', {
-      shouldExpandLeft,
-      shouldExpandMiddle, 
-      shouldExpandRight
-    });
-    
     if (shouldExpandLeft || shouldExpandMiddle || shouldExpandRight) {
       const targetPane = shouldExpandLeft ? 'left' : shouldExpandMiddle ? 'middle' : 'right';
-      console.log('[TasksLayout] *** IMMEDIATE RESIZE CHECK ***');
-      console.log(`[TasksLayout] State is correct for ${targetPane} focus, checking if resize is needed`);
-      console.log('[TasksLayout] Debug conditions:', {
-        hasHydratedFromURL: hasHydratedFromURL.current,
-        layoutConfigFocus: coreLayoutConfig.focus,
-        layoutConfigLayout: coreLayoutConfig.layout,
-        shouldExpandLeft,
-        shouldExpandMiddle,
-        shouldExpandRight,
-        targetPane
-      });
       
       const attemptResize = (attempt = 1) => {
-        console.log(`[TasksLayout] Resize attempt ${attempt}`);
         
         if (leftPanelRef.current && centerPanelRef.current) {
           const currentSizes = {
@@ -584,7 +614,6 @@ export function TasksLayout({
             center: centerPanelRef.current.getSize(),
             right: rightPanelRef.current?.getSize() || 'not available'
           };
-          console.log('[TasksLayout] Current panel sizes:', currentSizes);
           
           // Check which pane should be expanded and verify it
           const targetSize = targetPane === 'left' ? currentSizes.left : 
@@ -592,7 +621,6 @@ export function TasksLayout({
                            (typeof currentSizes.right === 'number' ? currentSizes.right : 0);
           
           if (!targetSize || (typeof targetSize === 'number' && targetSize < 90)) { // If target panel is not nearly full width
-            console.log(`[TasksLayout] ${targetPane} panel not expanded, forcing resize`);
             
             if (targetPane === 'left') {
               leftPanelRef.current.resize(100);
@@ -600,10 +628,8 @@ export function TasksLayout({
               if (rightPanelRef.current) rightPanelRef.current.resize(0);
                                       } else if (targetPane === 'middle') {
                // Delay middle resize to avoid conflict with main effect
-               console.log('[TasksLayout] Delaying immediate middle resize to avoid conflict');
                setTimeout(() => {
                  if (leftPanelRef.current && centerPanelRef.current) {
-                   console.log('[TasksLayout] Executing delayed middle resize');
                    leftPanelRef.current.resize(0);
                    centerPanelRef.current.resize(100);
                    if (rightPanelRef.current) rightPanelRef.current.resize(0);
@@ -622,23 +648,18 @@ export function TasksLayout({
                 center: centerPanelRef.current?.getSize(),
                 right: rightPanelRef.current?.getSize() || 'not available'
               };
-              console.log('[TasksLayout] Sizes after immediate resize:', newSizes);
               
                             const newTargetSize = targetPane === 'left' ? newSizes.left : 
                                 targetPane === 'middle' ? newSizes.center :
                                 (typeof newSizes.right === 'number' ? newSizes.right : 0);
               
               if (!newTargetSize || (typeof newTargetSize === 'number' && newTargetSize < 90)) {
-                console.log('[TasksLayout] ⚠️ Immediate resize failed - will rely on main resize effect');
               } else {
-                console.log('[TasksLayout] ✅ Immediate resize worked!');
               }
             }, 50);
           } else {
-            console.log(`[TasksLayout] ${targetPane} panel already expanded correctly`);
           }
         } else {
-          console.log('[TasksLayout] Panel refs not ready yet, attempt:', attempt);
           if (attempt < 5) {
             setTimeout(() => attemptResize(attempt + 1), 200 * attempt);
           }
@@ -656,9 +677,7 @@ export function TasksLayout({
   // **FIX: Split URL sync - core layout separate from middle view**
   // Sync core layout config from URL changes (URL is the single source of truth)
   React.useEffect(() => {
-    console.log('[TasksLayout] 🔄 CORE LAYOUT URL SYNC EFFECT #' + renderCount.current + ' triggered. hasHydratedFromURL.current:', hasHydratedFromURL.current);
     if (!hasHydratedFromURL.current) {
-      console.log('[TasksLayout] Skipping core layout URL sync - not hydrated yet');
       return;
     }
     
@@ -676,44 +695,30 @@ export function TasksLayout({
     
     // Only update if changed
     const coreConfigChanged = JSON.stringify(newCoreConfig) !== JSON.stringify(coreLayoutConfig);
-    console.log('[TasksLayout] Core layout config sync check:', {
-      newCoreConfig,
-      currentCoreConfig: coreLayoutConfig,
-      coreConfigChanged,
-    });
     
     if (coreConfigChanged) {
-      console.log('[TasksLayout] 🔥 SYNCING core layout config from URL:', newCoreConfig);
       setCoreLayoutConfig(newCoreConfig);
     } else {
-      console.log('[TasksLayout] ✅ Core layout config already matches URL - no update needed');
     }
   }, [params.get('layout'), params.get('leftView'), params.get('rightView'), params.get('focus')]);
 
   // Sync middle view separately (won't trigger layout effects)
   React.useEffect(() => {
-    console.log('[TasksLayout] 🔄 MIDDLE VIEW URL SYNC EFFECT #' + renderCount.current + ' triggered. hasHydratedFromURL.current:', hasHydratedFromURL.current);
     if (!hasHydratedFromURL.current) {
-      console.log('[TasksLayout] Skipping middle view URL sync - not hydrated yet');
       return;
     }
     
     const urlMiddleView = params.get('middleView') || 'calendar';
     
     if (urlMiddleView !== middleView) {
-      console.log('[TasksLayout] 🔄 SYNCING middle view from URL:', urlMiddleView, '(was:', middleView, ')');
       setMiddleView(urlMiddleView);
     } else {
-      console.log('[TasksLayout] ✅ Middle view already matches URL - no update needed');
     }
   }, [params.get('middleView')]);
 
   // Imperatively resize panels when CORE layout config changes (NOT middleView)
   React.useEffect(() => {
-    console.log('[TasksLayout] 🔄 RESIZE EFFECT #' + renderCount.current + ' TRIGGERED');
-    console.log('[TasksLayout] Resize effect triggered. coreLayoutConfig:', coreLayoutConfig, 'hasHydratedFromURL.current:', hasHydratedFromURL.current);
     if (!hasHydratedFromURL.current) {
-      console.log('[TasksLayout] Not hydrated yet, skipping resize');
       return;
     }
     
@@ -733,34 +738,18 @@ export function TasksLayout({
     const performResize = () => {
       // Check if required panels are ready
       if (!leftPanelRef.current || !centerPanelRef.current) {
-        console.log('[TasksLayout] Essential panel refs not ready:', {
-          left: !!leftPanelRef.current,
-          center: !!centerPanelRef.current,
-          right: !!rightPanelRef.current,
-          isRightVisible
-        });
         return false;
       }
       
       // For right panel, only require it if it should be visible
       if (isRightVisible && !rightPanelRef.current) {
-        console.log('[TasksLayout] Right panel required but not ready');
         return false;
       }
 
-      console.log('[TasksLayout] Resizing panels for core layout config:', coreLayoutConfig);
       
       if (focus === 'left') {
-        console.log('[TasksLayout] FOCUS LEFT - resizing to 100%');
-        console.log('[TasksLayout] Panel sizes before resize:', {
-          left: leftPanelRef.current.getSize(),
-          center: centerPanelRef.current.getSize(),
-          right: rightPanelRef.current?.getSize() || 'not available'
-        });
-        
         try {
           // Try multiple approaches to force resize
-          console.log('[TasksLayout] Attempting resize approach 1: individual panel resize');
           leftPanelRef.current.resize(100);
           centerPanelRef.current.resize(0);
           if (rightPanelRef.current) {
@@ -768,18 +757,15 @@ export function TasksLayout({
           }
           
           // Individual panel resize approach is working, skip PanelGroup setLayout
-          console.log('[TasksLayout] Individual panel resize completed successfully');
           
           // Force multiple attempts with slight delays
           setTimeout(() => {
-            console.log('[TasksLayout] Retry resize after 50ms');
             leftPanelRef.current?.resize(100);
             centerPanelRef.current?.resize(0);
             if (rightPanelRef.current) rightPanelRef.current.resize(0);
           }, 50);
           
           setTimeout(() => {
-            console.log('[TasksLayout] Retry resize after 200ms');
             leftPanelRef.current?.resize(100);
             centerPanelRef.current?.resize(0);
             if (rightPanelRef.current) rightPanelRef.current.resize(0);
@@ -787,24 +773,10 @@ export function TasksLayout({
           
           // Check sizes after resize
           setTimeout(() => {
-            console.log('[TasksLayout] Panel sizes after resize:', {
-              left: leftPanelRef.current?.getSize(),
-              center: centerPanelRef.current?.getSize(),
-              right: rightPanelRef.current?.getSize() || 'not available'
-            });
-            console.log('[TasksLayout] PanelGroup layout:', panelGroupRef.current?.getLayout?.());
           }, 300);
         } catch (error) {
-          console.error('[TasksLayout] Error during resize:', error);
         }
               } else if (focus === 'middle') {
-        console.log('[TasksLayout] FOCUS MIDDLE - resizing middle to 100%');
-        console.log('[TasksLayout] Panel sizes before middle resize:', {
-          left: leftPanelRef.current.getSize(),
-          center: centerPanelRef.current.getSize(),
-          right: rightPanelRef.current?.getSize() || 'not available'
-        });
-        
         leftPanelRef.current.resize(0);
         centerPanelRef.current.resize(100);
         if (rightPanelRef.current) rightPanelRef.current.resize(0);
@@ -816,23 +788,16 @@ export function TasksLayout({
             center: centerPanelRef.current?.getSize(),
             right: rightPanelRef.current?.getSize() || 'not available'
           };
-          console.log('[TasksLayout] Panel sizes after middle resize:', sizesAfterMiddle);
           
           if (sizesAfterMiddle.center && sizesAfterMiddle.center < 90) {
-            console.log('[TasksLayout] ⚠️ Middle resize failed! Center panel size:', sizesAfterMiddle.center);
           } else {
-            console.log('[TasksLayout] ✅ Middle resize successful! Center panel size:', sizesAfterMiddle.center);
           }
         }, 100);
       } else if (focus === 'right') {
-        console.log('[TasksLayout] FOCUS RIGHT - resizing right to 100%');
         leftPanelRef.current.resize(0);
         centerPanelRef.current.resize(0);
         if (rightPanelRef.current) rightPanelRef.current.resize(100);
               } else {
-          console.log('[TasksLayout] NO FOCUS - split layout');
-          console.log('[TasksLayout] Visible panes:', { isLeftVisible, isCenterVisible, isRightVisible });
-          console.log('[TasksLayout] isLeftCollapsed:', isLeftCollapsed);
           // Handle collapsed state in split layout
           if (isLeftVisible && isCenterVisible && isRightVisible) {
             const leftSize = isLeftCollapsed ? 3 : 25;
@@ -859,7 +824,6 @@ export function TasksLayout({
             resizeRightPanel(30);
           } else if (isLeftVisible) {
             const leftSize = isLeftCollapsed ? 3 : 100;
-            console.log('[TasksLayout] SINGLE LEFT PANE - resizing to:', leftSize);
             leftPanelRef.current.resize(leftSize);
             centerPanelRef.current.resize(0);
             resizeRightPanel(0);
@@ -871,33 +835,21 @@ export function TasksLayout({
                 center: centerPanelRef.current?.getSize(),
                 right: rightPanelRef.current?.getSize() || 'not available'
               };
-              console.log('[TasksLayout] Actual sizes after single pane resize:', actualSizes);
               
               if (actualSizes.left && actualSizes.left < 90) {
-                console.log('[TasksLayout] ⚠️ Resize did not work! Attempting force resize...');
                 // Force multiple resize attempts
                 setTimeout(() => {
                   leftPanelRef.current?.resize(100);
                   centerPanelRef.current?.resize(0);
-                  console.log('[TasksLayout] Force resize attempt 1');
                 }, 100);
                 setTimeout(() => {
                   leftPanelRef.current?.resize(100);
                   centerPanelRef.current?.resize(0);
-                  console.log('[TasksLayout] Force resize attempt 2');
                 }, 300);
               } else {
-                console.log('[TasksLayout] ✅ Single pane resize successful!');
               }
             }, 100);
           } else if (isCenterVisible) {
-            console.log('[TasksLayout] SINGLE CENTER PANE - resizing to 100%');
-            console.log('[TasksLayout] Panel sizes before center resize:', {
-              left: leftPanelRef.current.getSize(),
-              center: centerPanelRef.current.getSize(),
-              right: rightPanelRef.current?.getSize() || 'not available'
-            });
-            
             leftPanelRef.current.resize(0);
             centerPanelRef.current.resize(100);
             resizeRightPanel(0);
@@ -909,12 +861,9 @@ export function TasksLayout({
                 center: centerPanelRef.current?.getSize(),
                 right: rightPanelRef.current?.getSize() || 'not available'
               };
-              console.log('[TasksLayout] Panel sizes after center resize:', sizesAfterCenter);
               
               if (sizesAfterCenter.center && sizesAfterCenter.center > 90) {
-                console.log('[TasksLayout] ✅ Center resize successful! Center panel size:', sizesAfterCenter.center);
               } else {
-                console.log('[TasksLayout] ⚠️ Center resize failed! Center panel size:', sizesAfterCenter.center);
               }
             }, 50);
           } else if (isRightVisible) {
@@ -930,7 +879,6 @@ export function TasksLayout({
     if (!performResize()) {
       // If refs not ready, try again after a short delay
       const timeout = setTimeout(() => {
-        console.log('[TasksLayout] Retrying resize after refs ready');
         performResize();
       }, 100);
       return () => clearTimeout(timeout);
@@ -939,14 +887,11 @@ export function TasksLayout({
 
   // Handle layout changes by directly updating URL (no state update)
   const handleLayoutChange = useCallback((changes: Partial<typeof layoutConfig>) => {
-    console.log('[TasksLayout] 🔄 handleLayoutChange #' + renderCount.current + ' called with:', changes);
-    console.log('[TasksLayout] Current layoutConfig:', layoutConfig);
     
     const newParams = new URLSearchParams(params.toString());
     
     // Apply changes to current config
     let newConfig = { ...layoutConfig, ...changes };
-    console.log('[TasksLayout] New config before focus handling:', newConfig);
     
     // Special handling for focus mode - simplify layout to only show focused pane
     if (newConfig.focus) {
@@ -959,7 +904,6 @@ export function TasksLayout({
         newConfig.layout = ['right'];
       }
     }
-    console.log('[TasksLayout] Final newConfig:', newConfig);
     
     // Update URL params
     if (newConfig.layout.length > 0) {
@@ -1001,7 +945,6 @@ export function TasksLayout({
       newParams.delete('aiThreadId');
     }
     
-    console.log('[TasksLayout] About to update URL to:', `${pathname}?${newParams.toString()}`);
     router.replace(`${pathname}?${newParams.toString()}`, { scroll: false });
     // Don't update state directly - let the URL effect handle it
   }, [coreLayoutConfig, middleView, params, pathname, router]);
@@ -1011,6 +954,8 @@ export function TasksLayout({
   const isLeftVisible = layout.includes('left');
   const isCenterVisible = layout.includes('middle');
   const isRightVisible = layout.includes('right');
+  // Center pane should not occupy space unless it is part of the active layout (or explicitly focused)
+  const isCenterPaneVisible = focus === 'middle' || (!focus && isCenterVisible);
 
   const supabase = createClientComponentClient();
   const [accessToken, setAccessToken] = useState<string | null>(null);
@@ -1035,7 +980,6 @@ export function TasksLayout({
     enabled: true,
     showNotifications: false, // Set to true for debugging
     onTaskUpdate: (task, event) => {
-      console.log(`[TasksLayout] Received ${event} event for task:`, task.id)
       // The cache updates are handled automatically by the hook
     }
   });
@@ -1051,8 +995,6 @@ export function TasksLayout({
     });
     for (const q of tasksQueries) {
       const data = q.state.data;
-      console.log('LIST QUERY KEY:', q.queryKey);
-      console.log('LIST QUERY DATA:', data);
       if (data && typeof data === 'object' && 'pages' in data && Array.isArray((data as any).pages)) {
         // InfiniteList: flatten all pages
         for (const page of (data as any).pages) {
@@ -1067,12 +1009,8 @@ export function TasksLayout({
     }
     // Normalize all tasks
     if (preloadedTasks.length > 0) {
-      console.log('Sample raw task from LIST QUERY DATA:', preloadedTasks[0]);
-      console.log('Sample normalized task:', normalizeBasicTask(preloadedTasks[0]));
     }
     preloadedTasks = preloadedTasks.map(normalizeBasicTask);
-    console.log('Flattened list preloadedTasks:', preloadedTasks);
-    console.log('Flattened list preloadedTasks ids:', preloadedTasks.map(t => t.id));
   }
   
   // Check for kanban data
@@ -1082,8 +1020,6 @@ export function TasksLayout({
     });
     for (const q of kanbanQueries) {
       const data = q.state.data;
-      console.log('KANBAN QUERY KEY:', q.queryKey);
-      console.log('KANBAN QUERY DATA:', data);
       if (Array.isArray(data)) {
         // Flat array of tasks (not your case)
         preloadedTasks = preloadedTasks.concat(data);
@@ -1110,37 +1046,32 @@ export function TasksLayout({
         );
       }
     }
-    console.log('Flattened kanban preloadedTasks:', preloadedTasks);
-    console.log('Flattened kanban preloadedTasks ids:', preloadedTasks.map(t => t.id));
   }
 
   // Debug: log all query keys in the React Query cache
-  console.log('All query keys in cache:', queryClient.getQueryCache().getAll().map(q => q.queryKey));
 
   // Add state to store the last selected task object
   const [lastSelectedTask, setLastSelectedTask] = useState<any>(undefined);
-  console.log('selectedTaskId:', selectedTaskId);
-  console.log('preloadedTasks ids:', preloadedTasks.map(t => t.id));
+  const itemKind = params.get('itemKind') || 'task'
+  const isSuggestionSelected = itemKind === 'suggestion'
   let initialTaskForDetails: any = undefined;
-  if (lastSelectedTask && String(lastSelectedTask.id) === String(selectedTaskId)) {
-    initialTaskForDetails = normalizeBasicTask(lastSelectedTask);
-  } else if (selectedTaskId !== null && selectedTaskId !== undefined) {
-    const foundTask = getInitialTaskFromViewData(selectedTaskId, preloadedTasks);
-    initialTaskForDetails = foundTask ? normalizeBasicTask(foundTask) : undefined;
+  if (!isSuggestionSelected) {
+    if (lastSelectedTask && String(lastSelectedTask.id) === String(selectedTaskId)) {
+      initialTaskForDetails = normalizeBasicTask(lastSelectedTask);
+    } else if (selectedTaskId !== null && selectedTaskId !== undefined) {
+      const foundTask = getInitialTaskFromViewData(selectedTaskId, preloadedTasks);
+      initialTaskForDetails = foundTask ? normalizeBasicTask(foundTask) : undefined;
+    }
   }
-  console.log('initialTask for useTaskDetails:', initialTaskForDetails);
   if (preloadedTasks.length === 0) {
-    console.warn('No preloadedTasks found in cache for current view.');
   }
   const foundTask = preloadedTasks && selectedTaskId
     ? preloadedTasks.find((t) => String(t.id) === String(selectedTaskId) || Number(t.id) === Number(selectedTaskId))
     : undefined;
   if (!foundTask) {
-    console.warn('Task not found in preloadedTasks for id:', selectedTaskId);
   }
   // initialTaskForDetails is now the merged object
   // const initialTaskForDetails = foundTask ? normalizeBasicTask(foundTask) : undefined;
-  // console.log('initialTask for TaskDetails:', initialTaskForDetails);
 
   // --- Fetch selected task if selectedTaskId is present ---
   function isValidTaskId(id: unknown): id is string | number {
@@ -1151,17 +1082,192 @@ export function TasksLayout({
     : ['task', 'none', accessToken];
 
   const { data: selectedTaskData, isLoading: isTaskLoading, isSuccess: isTaskDetailsSuccess } = useTaskDetails(
-    selectedTaskId === null ? undefined : selectedTaskId,
+    isSuggestionSelected ? undefined : (selectedTaskId === null ? undefined : selectedTaskId),
     accessToken,
     initialTaskForDetails // will be undefined if not found in cache
   );
 
-  // Trigger edit fields fetch after task details succeed
+  const { data: selectedSuggestion } = useQuery<SuggestionDetailsModel | null>({
+    queryKey: ['task-suggestion', selectedTaskId],
+    enabled: isSuggestionSelected && isValidTaskId(selectedTaskId),
+    queryFn: async () => {
+      const id = Number(selectedTaskId)
+      if (!Number.isFinite(id)) return null
+      const supabase = createClientComponentClient()
+      const { data, error } = await supabase
+        .from('task_suggestions')
+        .select(
+          [
+            'id',
+            'project_id',
+            'status',
+            'planned_for_date',
+            'proposed_title',
+            'ai_title',
+            'proposed_briefing',
+            'ai_briefing',
+            'content_type_id',
+            'production_type_id',
+            'language_id',
+            'channel_ids',
+            'source_key',
+          ].join(','),
+        )
+        .eq('id', id)
+        .maybeSingle()
+
+      // Gracefully handle "0 rows" (common when suggestion was approved/dismissed or deleted)
+      if (error) throw error
+      if (!data) return null
+      const title =
+        (data as any)?.proposed_title?.trim?.() ||
+        (data as any)?.ai_title?.trim?.() ||
+        'Untitled suggestion'
+
+      let projectMeta: { name: string | null; color: string | null; logo: string | null } | null = null
+      try {
+        const pid = Number((data as any)?.project_id)
+        if (Number.isFinite(pid)) {
+          const { data: proj } = await supabase
+            .from('projects')
+            .select('name,color,logo')
+            .eq('id', pid)
+            .maybeSingle()
+          projectMeta = proj ? (proj as any) : null
+        }
+      } catch {
+        // ignore
+      }
+
+      // Lookups (best-effort) so suggestion mode can display fields like a task.
+      const contentTypeIds = Array.from(
+        new Set([Number((data as any)?.content_type_id)].filter((n) => Number.isFinite(n))),
+      )
+      const productionTypeId = Number((data as any)?.production_type_id)
+      const languageId = Number((data as any)?.language_id)
+      const channelIds = Array.isArray((data as any).channel_ids) ? ((data as any).channel_ids as any[]) : []
+      const cleanedChannelIds = channelIds.map((x) => Number(x)).filter((n) => Number.isFinite(n))
+
+      let contentTypeById = new Map<number, string>()
+      let productionTypeTitle: string | null = null
+      let languageCode: string | null = null
+      let channelNameById = new Map<number, string>()
+
+      try {
+        const [
+          contentTypesRes,
+          productionTypesRes,
+          languagesRes,
+          channelsRes,
+        ] = await Promise.all([
+          contentTypeIds.length
+            ? supabase.from('content_types').select('id,title').in('id', contentTypeIds)
+            : Promise.resolve({ data: [], error: null } as any),
+          Number.isFinite(productionTypeId)
+            ? supabase.from('production_types').select('id,title').eq('id', productionTypeId).maybeSingle()
+            : Promise.resolve({ data: null, error: null } as any),
+          Number.isFinite(languageId)
+            ? supabase.from('languages').select('id,code').eq('id', languageId).maybeSingle()
+            : Promise.resolve({ data: null, error: null } as any),
+          cleanedChannelIds.length
+            ? supabase.from('channels').select('id,name').in('id', cleanedChannelIds)
+            : Promise.resolve({ data: [], error: null } as any),
+        ])
+
+        if (Array.isArray(contentTypesRes.data)) {
+          contentTypeById = new Map(
+            (contentTypesRes.data as any[]).map((r) => [Number(r.id), String(r.title ?? '')]),
+          )
+        }
+        productionTypeTitle = (productionTypesRes.data as any)?.title ?? null
+        languageCode = (languagesRes.data as any)?.code ?? null
+        if (Array.isArray(channelsRes.data)) {
+          channelNameById = new Map(
+            (channelsRes.data as any[]).map((r) => [Number(r.id), String(r.name ?? '')]),
+          )
+        }
+      } catch {
+        // ignore
+      }
+
+      const channelNames = cleanedChannelIds
+        .map((id) => channelNameById.get(id))
+        .filter((v): v is string => typeof v === 'string' && v.trim().length > 0)
+
+      return {
+        id: (data as any).id,
+        title,
+        briefing: (data as any).proposed_briefing ?? (data as any).ai_briefing ?? null,
+        planned_for_date: (data as any).planned_for_date ?? null,
+        content_type_id: (data as any).content_type_id ?? null,
+        content_type_title:
+          Number.isFinite(Number((data as any).content_type_id))
+            ? contentTypeById.get(Number((data as any).content_type_id)) ?? null
+            : null,
+        production_type_id: (data as any).production_type_id ?? null,
+        production_type_title: productionTypeTitle,
+        language_id: (data as any).language_id ?? null,
+        language_code: languageCode,
+        channel_ids: cleanedChannelIds,
+        channel_names: channelNames,
+        source_key: (data as any).source_key ?? null,
+        project_id: (data as any).project_id ?? null,
+        status: (data as any).status ?? null,
+        project_name: projectMeta?.name ?? null,
+        project_color: projectMeta?.color ?? null,
+        project_logo: projectMeta?.logo ?? null,
+      } as SuggestionDetailsModel
+    },
+    staleTime: 60_000,
+  })
+
+  const selectedSuggestionAsTask = useMemo(() => {
+    if (!selectedSuggestion) return null
+    return {
+      // TaskDetails expects a "task-like" shape; we fill what we have and keep the rest blank.
+      id: String(selectedSuggestion.id),
+      title: selectedSuggestion.title ?? '',
+      briefing: selectedSuggestion.briefing ?? null,
+      notes: null,
+      copy_post: null,
+      delivery_date: selectedSuggestion.planned_for_date ?? null,
+      publication_date: selectedSuggestion.planned_for_date ?? null,
+      assigned_to_id: '',
+      assigned_to_name: null,
+      project_id_int: (selectedSuggestion as any).project_id ?? null,
+      project_name: (selectedSuggestion as any).project_name ?? null,
+      project_color: (selectedSuggestion as any).project_color ?? null,
+      project_logo: (selectedSuggestion as any).project_logo ?? null,
+      project_status_id: '',
+      project_status_name: null,
+      project_status_color: null,
+      content_type_id: selectedSuggestion.content_type_id != null ? String(selectedSuggestion.content_type_id) : '',
+      content_type_title: (selectedSuggestion as any).content_type_title ?? null,
+      production_type_id:
+        (selectedSuggestion as any).production_type_id != null ? String((selectedSuggestion as any).production_type_id) : '',
+      production_type_title: (selectedSuggestion as any).production_type_title ?? null,
+      language_id:
+        (selectedSuggestion as any).language_id != null ? String((selectedSuggestion as any).language_id) : '',
+      language_code: (selectedSuggestion as any).language_code ?? null,
+      channel_names: Array.isArray((selectedSuggestion as any).channel_names) ? (selectedSuggestion as any).channel_names : [],
+      parent_task_id_int: null,
+      source_key: (selectedSuggestion as any).source_key ?? null,
+      status: (selectedSuggestion as any).status ?? null,
+      kind: 'suggestion',
+    } as any
+  }, [selectedSuggestion])
+
+  // Trigger edit fields fetch after task details succeed, or when on mobile (for filter pills)
   useEffect(() => {
-    if (isTaskDetailsSuccess && selectedTaskData && accessToken && !shouldFetchEditFields) {
+    if (!accessToken || shouldFetchEditFields) return;
+    if (isTaskDetailsSuccess && selectedTaskData) {
+      setShouldFetchEditFields(true);
+      return;
+    }
+    if (isMobile) {
       setShouldFetchEditFields(true);
     }
-  }, [isTaskDetailsSuccess, selectedTaskData, accessToken, shouldFetchEditFields]);
+  }, [isTaskDetailsSuccess, selectedTaskData, accessToken, shouldFetchEditFields, isMobile]);
 
   // selectedTask is now the merged object
   const selectedTask = selectedTaskData;
@@ -1206,12 +1312,10 @@ export function TasksLayout({
   
   const updatePanelSizes = useCallback((leftSize: number, middleSize: number) => {
     currentPanelSizes.current = { left: leftSize, middle: middleSize };
-    console.log('[TasksLayout] Updated panel sizes:', currentPanelSizes.current);
   }, []);
 
   // **FIX: Track user's manual resize of left pane**
   const handleLeftPaneResize = useCallback((newSize: number) => {
-    console.log('[TasksLayout] User resized left pane to:', newSize);
     setUserPreferredLeftWidth(newSize);
     setHasUserResized(true);
     // Update the current panel sizes tracking
@@ -1223,7 +1327,6 @@ export function TasksLayout({
   const [hasUserResizedMiddle, setHasUserResizedMiddle] = useState(false);
   
   const handleMiddlePaneResize = useCallback((newSize: number) => {
-    console.log('[TasksLayout] User resized middle pane to:', newSize);
     setUserPreferredMiddleWidth(newSize);
     setHasUserResizedMiddle(true);
     // Update the current panel sizes tracking
@@ -1234,19 +1337,42 @@ export function TasksLayout({
 
   // **FIX: Make handleTaskSelect callback stable to prevent unnecessary re-renders**
   const handleTaskSelect = useCallback((task: any) => {
-    console.log('[TasksLayout] Task selected:', task.id, {
-      currentLayout: coreLayoutConfig.layout,
-      currentSelectedTaskId: selectedTaskId,
-      currentFocus: focus,
-      isLeftCollapsed: isLeftCollapsed
-    });
-    
+    const entityType: 'task' | 'suggestion' =
+      (task?.entity_type as any) ?? (task?.kind === 'suggestion' ? 'suggestion' : 'task')
+    const entityId = Number(task?.entity_id ?? task?.id)
+
     setLastSelectedTask(task);
-    if (!task || !task.id) return;
+    if (!Number.isFinite(entityId) || entityId <= 0) return;
+
+    // Immediate selection update so details pane opens instantly
+    // without waiting for URL sync effect to run.
+    const selectedId = String(entityId)
+    setSelectedTaskId(selectedId)
+
+    // Seed details cache from clicked row data (fast first paint), then
+    // task-details-bootstrap query will merge richer fields.
+    const seededTask = normalizeBasicTask(task)
+    if (accessToken) {
+      queryClient.setQueryData(['task', selectedId, accessToken], (old: any) => old ?? seededTask)
+      void queryClient.prefetchQuery({
+        queryKey: ['task', selectedId, accessToken],
+        queryFn: async () => {
+          const res = await fetch(`${process.env.NEXT_PUBLIC_SUPABASE_URL}/functions/v1/task-details-bootstrap?task_id=${selectedId}`, {
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/json',
+              Authorization: `Bearer ${accessToken}`,
+            },
+          })
+          if (!res.ok) return seededTask
+          const data = await res.json()
+          return { ...seededTask, ...(data?.task || {}), ...(data || {}) }
+        },
+      })
+    }
     
     // Ensure left pane is expanded when task is selected to prevent list disappearing
     if (isLeftCollapsed) {
-      console.log('[TasksLayout] Expanding left pane for task selection');
       setIsLeftCollapsed(false);
     }
     
@@ -1257,17 +1383,14 @@ export function TasksLayout({
     // When clicking task from focused pane, clear focus to enable split layout
     const shouldClearFocus = !!focus; // Clear focus if currently focused
     
-    console.log('[TasksLayout] Updating URL with:', {
-      taskId: task.id,
-      oldLayout: currentLayout,
-      newLayout: newLayout,
-      currentFocus: focus,
-      shouldClearFocus
-    });
-    
     // Create complete URL update in one operation
     const newParams = new URLSearchParams(params.toString());
-    newParams.set('id', String(task.id));
+    newParams.set('id', String(entityId));
+    if (entityType === 'suggestion') {
+      newParams.set('itemKind', 'suggestion')
+    } else {
+      newParams.delete('itemKind')
+    }
     newParams.set('layout', newLayout.join(','));
     newParams.set('rightView', 'details');
     newParams.delete('view'); // Clean up any old view parameters
@@ -1279,45 +1402,33 @@ export function TasksLayout({
     
     // Single router call to avoid race conditions
     router.push(`${pathname}?${newParams.toString()}`, { scroll: false });
-  }, [coreLayoutConfig.layout, selectedTaskId, focus, params, pathname, router, setLastSelectedTask]);
+  }, [accessToken, coreLayoutConfig.layout, focus, params, pathname, queryClient, router, setLastSelectedTask, setSelectedTaskId]);
 
   // Use the id query param as the source of truth for selectedTaskId
   React.useEffect(() => {
     const idFromQuery = params.get('id');
-    console.log('[TasksLayout] URL ID sync:', {
-      idFromQuery,
-      currentSelectedTaskId: selectedTaskId,
-      willUpdate: idFromQuery !== selectedTaskId
-    });
-    
     if (idFromQuery && idFromQuery !== selectedTaskId) {
-      console.log('[TasksLayout] Setting selectedTaskId to:', idFromQuery);
       setSelectedTaskId(idFromQuery);
     }
     // If no id in query, clear selection
     if (!idFromQuery && selectedTaskId) {
-      console.log('[TasksLayout] Clearing selectedTaskId');
       setSelectedTaskId(null);
     }
   }, [params.get('id')]);
 
   // Handler for closing details pane
   const handleCloseDetails = () => {
-    console.log('[TasksLayout] Closing details pane, current layout:', coreLayoutConfig.layout);
     setSelectedTaskId(null);
     
     // Remove right pane from layout and clear task ID
     const newLayout = coreLayoutConfig.layout.filter(pane => pane !== 'right');
-    console.log('[TasksLayout] New layout after closing details:', newLayout);
     
     // If only middle pane remains, immediately resize to prevent flash
     if (newLayout.length === 1 && newLayout[0] === 'middle') {
-      console.log('[TasksLayout] Only middle pane remaining, immediate resize to prevent flash');
       setTimeout(() => {
         if (leftPanelRef.current && centerPanelRef.current) {
           leftPanelRef.current.resize(0);
           centerPanelRef.current.resize(100);
-          console.log('[TasksLayout] Immediate resize to middle completed');
         }
       }, 10); // Very small delay to ensure layout change is processed
     }
@@ -1327,6 +1438,7 @@ export function TasksLayout({
     // Also update URL to remove task ID
     const newParams = new URLSearchParams(params.toString());
     newParams.delete('id');
+    newParams.delete('itemKind');
     newParams.delete('view'); // Clean up any old view parameters
     newParams.set('layout', newLayout.join(','));
     router.push(`${pathname}?${newParams.toString()}`, { scroll: false });
@@ -1366,15 +1478,7 @@ export function TasksLayout({
   useEffect(() => {
     const shouldShowRightPane = isRightVisible && !!selectedTaskId;
     const wasRightPaneVisible = isRightPaneVisible;
-    
-    console.log('[TasksLayout] Right pane visibility check:', {
-      isRightVisible,
-      selectedTaskId,
-      shouldShowRightPane,
-      wasRightPaneVisible,
-      currentLayout: coreLayoutConfig.layout
-    });
-    
+
     setIsRightPaneVisible(shouldShowRightPane);
   }, [isRightVisible, selectedTaskId, coreLayoutConfig.layout, isRightPaneVisible]);
 
@@ -1391,12 +1495,17 @@ export function TasksLayout({
     }
   };
 
-  const handleMobileTaskSelect = (task: Task) => {
+  const handleMobileTaskSelect = (task: any) => {
     setSelectedTaskId(task.id);
     setMobileTaskDetailOpen(true);
     // Update URL with task ID
     const newParams = new URLSearchParams(params.toString());
     newParams.set('id', String(task.id));
+    if (task?.kind === 'suggestion') {
+      newParams.set('itemKind', 'suggestion')
+    } else {
+      newParams.delete('itemKind')
+    }
     router.push(`${pathname}?${newParams.toString()}`, { scroll: false });
   };
 
@@ -1406,6 +1515,7 @@ export function TasksLayout({
     // Also update URL to remove task ID
     const newParams = new URLSearchParams(params.toString());
     newParams.delete('id');
+    newParams.delete('itemKind');
     router.push(`${pathname}?${newParams.toString()}`, { scroll: false });
   };
 
@@ -1444,56 +1554,23 @@ export function TasksLayout({
   // Guard: If not hydrated and synced, show loading spinner (but do not return early before hooks)
   let shouldShowLoading = !isHydratedAndSynced;
 
-  // --- Debounced Search Input Logic ---
-  const [searchInput, setSearchInput] = useState(searchValue || "");
-  const debouncedSearchInput = useDebounce(searchInput, 300);
-
-  // Update global searchValue for all input (more responsive)
-  useEffect(() => {
-    if (debouncedSearchInput !== searchValue) {
-      setSearchValue(debouncedSearchInput);
-    }
-  }, [debouncedSearchInput]);
-
-  // Keep local input in sync if global searchValue changes elsewhere (e.g., URL sync)
-  useEffect(() => {
-    if (searchValue !== searchInput) {
-      setSearchInput(searchValue || "");
-    }
-  }, [searchValue]);
-
-  // When searchValue changes, update URL
-  React.useEffect(() => {
-    const urlQ = params.get('q') || '';
-    if (searchValue !== urlQ) {
-      const newParams = new URLSearchParams(params.toString());
-      if (searchValue) newParams.set('q', searchValue);
-      else newParams.delete('q');
-      router.replace(`${pathname}?${newParams.toString()}`);
-    }
-  }, [searchValue]);
+  // NOTE: Global search (?q=) URL sync is now handled in app/tasks/layout.tsx,
+  // which keeps the TaskHeaderBar input, Zustand searchValue, and URL in sync.
 
   // Layout system handles its own URL sync, no need for old view sync
 
   if (shouldShowLoading) {
     // eslint-disable-next-line no-console
-    console.log('[TasksLayout] Waiting for layout system to hydrate. hasHydrated:', hasHydratedFromURL.current);
     return (
       <div className="flex items-center justify-center h-full w-full text-gray-400">Loading…</div>
     );
   }
 
-  console.log('selectedTaskData passed to TaskDetails:', selectedTaskData);
 
-  // Mobile layout
+  // Mobile layout (Sidebar overlay is rendered by layout.tsx)
   if (isMobile) {
     return (
       <div className="flex flex-col h-full w-full bg-white">
-        {/* Sidebar (mobile) */}
-        <Sidebar isCollapsed={isSidebarCollapsed} isMobileMenuOpen={isSidebarOpen} onClose={_onSidebarToggle} />
-        
-
-
         {/* Mobile Content */}
         <div className="flex-1 overflow-hidden">
           {mobileTaskDetailOpen && selectedTaskData ? (
@@ -1508,7 +1585,7 @@ export function TasksLayout({
                                                                   {/* Mobile Task List Header */}
                          <div className="flex items-center justify-between p-4 bg-white">
                            <button
-                             onClick={_onSidebarToggle}
+                             onClick={effectiveOnSidebarToggle}
                              className="inline-flex items-center justify-center w-8 h-8 text-gray-600 hover:bg-gray-100 rounded-md transition"
                              aria-label="Toggle sidebar"
                            >
@@ -1544,7 +1621,7 @@ export function TasksLayout({
                            </div>
                            
                            <button
-                             onClick={() => setIsAddTaskOpen(true)}
+                             onClick={() => openComposer()}
                              className="inline-flex items-center justify-center w-8 h-8 text-gray-700 hover:text-gray-900 transition"
                              aria-label="Add Task"
                            >
@@ -1558,8 +1635,8 @@ export function TasksLayout({
                                <input
                                  type="text"
                                  placeholder="Search tasks..."
-                                 value={searchInput}
-                                 onChange={e => setSearchInput(e.target.value)}
+                                value={searchValue}
+                                onChange={e => setSearchValue(e.target.value)}
                                  className="w-full pl-4 pr-12 py-2 border rounded-md focus:outline-none focus:ring-2 focus:ring-gray-200 text-base"
                                />
                                <button
@@ -1576,8 +1653,63 @@ export function TasksLayout({
                              </div>
                            </div>
 
+                           {/* Filter pill row + active filter badges (list view only) — single row, scroll if needed */}
+                           {mobileView === 'list' && (
+                             <>
+                               <div
+                                 className="flex items-center flex-nowrap gap-2 overflow-x-auto overflow-y-hidden px-4 py-2 bg-white border-b border-gray-100 shrink-0"
+                                 style={{ WebkitOverflowScrolling: 'touch' }}
+                               >
+                                 <div className="flex items-center flex-nowrap gap-2 w-max flex-shrink-0">
+                                   <GroupingDropdown className={pillButton + ' min-w-[100px]'} />
+                                   <FrequentFilterPills editFields={editFields as any} className={pillButton} />
+                                   <FilterCascadingDropdown
+                                     editFields={editFields}
+                                     filterOptions={editFields ? transformEditFieldsToFilterOptions(editFields) : undefined}
+                                     filters={filters}
+                                     setFilters={setFilters}
+                                     router={router}
+                                     pathname={pathname}
+                                     params={new URLSearchParams(params.toString())}
+                                     className={pillButton}
+                                   />
+                                 </div>
+                               </div>
+                               {(() => {
+                                 let filterOptions: FilterOptions | undefined;
+                                 const transformed = editFields ? transformEditFieldsToFilterOptions(editFields) : undefined;
+                                 if (asyncFilterOptions && transformed) {
+                                   filterOptions = {
+                                     ...asyncFilterOptions,
+                                     statuses: transformed.statuses,
+                                     projects: transformed.projects,
+                                     contentTypes: transformed.contentTypes,
+                                     productionTypes: transformed.productionTypes,
+                                     languages: transformed.languages,
+                                     channels: transformed.channels,
+                                   };
+                                 } else {
+                                   filterOptions = (asyncFilterOptions as FilterOptions | undefined) ?? transformed;
+                                 }
+                                 const { badges, onClearAll } = getActiveFilterBadges(
+                                   filters,
+                                   setFilters,
+                                   router,
+                                   pathname,
+                                   new URLSearchParams(params.toString()),
+                                   filterOptions
+                                 );
+                                 return (
+                                   <FilterBadges
+                                     badges={badges}
+                                     onClearAll={onClearAll}
+                                     className="mt-1 mb-2 px-4 shrink-0"
+                                   />
+                                 );
+                               })()}
+                             </>
+                           )}
 
-              
               {/* Mobile View Content */}
               <div className={cn(
                 "flex-1",
@@ -1627,26 +1759,16 @@ export function TasksLayout({
           )}
         </div>
 
-        {/* Mobile Modals - Unified ResizableBottomSheet */}
-        {(isAddTaskOpen || mobileFilterOpen) && (
+        {/* Mobile Modals - Filter only (Add Task uses composer tray) */}
+        {mobileFilterOpen && (
           <ResizableBottomSheet
-            isOpen={isAddTaskOpen || mobileFilterOpen}
-            onClose={() => {
-              setIsAddTaskOpen(false);
-              setMobileFilterOpen(false);
-            }}
+            isOpen={mobileFilterOpen}
+            onClose={() => setMobileFilterOpen(false)}
             initialHeight={0.9}
             minHeight={0.5}
             maxHeight={0.95}
-            title={isAddTaskOpen ? "Add Task" : "Filter Tasks"}
+            title="Filter Tasks"
           >
-            {isAddTaskOpen && (
-              <AddTaskForm 
-                onSuccess={() => setIsAddTaskOpen(false)} 
-                onClose={() => setIsAddTaskOpen(false)} 
-                isModal={true}
-              />
-            )}
             {mobileFilterOpen && (
               <div className="h-full flex flex-col">
                 <TaskFilters
@@ -1716,14 +1838,6 @@ export function TasksLayout({
               const cssCondition = isLeftCollapsed && focus !== 'left';
               // Remove width constraints that conflict with imperative resizing
               const cssClass = cssCondition ? 'p-0 items-center justify-start' : '';
-              console.log('[TasksLayout] Left panel CSS debug:', {
-                isLeftCollapsed,
-                focus,
-                'focus !== "left"': focus !== 'left',
-                cssCondition,
-                cssClass,
-                getPaneClass: getPaneClass('left')
-              });
               return cssClass;
             })(),
             getPaneClass('left')
@@ -1747,7 +1861,7 @@ export function TasksLayout({
             <button
               className={collapseButton + ' mt-2 bg-blue-600 text-white border-blue-600 hover:bg-blue-700'}
               aria-label="Add Task"
-              onClick={() => setIsAddTaskOpen(true)}
+              onClick={() => openComposer()}
               type="button"
             >
               +
@@ -1761,105 +1875,160 @@ export function TasksLayout({
               (() => {
                 const shouldHide = isLeftCollapsed && focus !== 'left';
                 const visibility = !shouldHide ? 'block' : 'hidden';
-                console.log('[TasksLayout] Left pane expanded view visibility:', {
-                  isLeftCollapsed,
-                  focus,
-                  'focus !== "left"': focus !== 'left',
-                  shouldHide,
-                  visibility,
-                  selectedTaskId
-                });
                 return visibility;
               })()
             )}
           >
-            <div
-              className="flex items-center flex-nowrap overflow-x-auto overflow-y-hidden whitespace-nowrap scrollbar-thin scrollbar-thumb-gray-300 scrollbar-track-transparent min-h-[56px] w-full"
-              style={{ WebkitOverflowScrolling: 'touch', padding: 0, margin: 0 }}
-            >
-              <button
-                className={collapseButton}
-                aria-label="Collapse task list"
-                onClick={() => setIsLeftCollapsed(true)}
-                type="button"
+            <div className="flex items-center flex-nowrap min-h-[56px] w-full relative">
+              {/* Left side: horizontally scrollable pills. Keeping this separate prevents the right controls from overlapping pills. */}
+              <div
+                className="flex-1 min-w-0 overflow-x-auto overflow-y-hidden whitespace-nowrap scrollbar-thin scrollbar-thumb-gray-300 scrollbar-track-transparent"
+                style={{ WebkitOverflowScrolling: 'touch', padding: 0, margin: 0 }}
               >
-                <PanelLeft className="w-5 h-5" />
-              </button>
-              <button
-                className={pillButton + ' ml-2 relative'}
-                onClick={() => setIsAddTaskOpen(true)}
-                type="button"
-                aria-label="Add Task"
-              >
-                <span className="sm:hidden">+</span>
-                <span className="hidden sm:inline-flex items-center gap-1">
-                  + <span className="truncate">Add Task</span>
-                </span>
-                {/* Tooltip for icon-only state */}
-                <span className="absolute left-1/2 -translate-x-1/2 mt-10 px-2 py-1 rounded bg-gray-800 text-white text-xs opacity-0 group-hover:opacity-100 transition sm:hidden pointer-events-none whitespace-nowrap z-50">
-                  Add Task
-                </span>
-              </button>
-              {/* Removed vertical divider */}
-              <GroupingDropdown className={pillButton + ' min-w-[120px]'} />
-              <button
-                className={pillButton + ' ml-2'}
-                onClick={onFilterClick}
-                type="button"
-              >
-                Filters
-              </button>
-              <MultiselectToggle
-                isMultiselectMode={isMultiselectMode}
-                onToggle={handleToggleMultiselect}
-                className={pillButton + ' ml-2'}
-              />
-              {/* Expand/Restore button for left pane */}
-              {focus !== 'middle' && (() => {
-                // Check if we're in a "focused left" state - either explicit focus or left+right layout
-                const isLeftFocused = focus === 'left' || (layout.length === 2 && layout.includes('left') && layout.includes('right'));
-                
-                return (
+                <div className="flex items-center flex-nowrap w-max">
                 <button
-                  className={expandButton}
-                    aria-label={isLeftFocused ? 'Restore layout' : 'Focus on task list'}
-                    title={isLeftFocused ? 'Restore layout' : 'Focus on task list'}
-                  onClick={() => {
-                      if (isLeftFocused) {
-                        // Restore to 3-pane layout (left + middle + right if task selected)
-                      const currentMiddleView = params.get('middleView') || 'calendar';
-                        const hasSelectedTask = !!selectedTaskId;
-                      handleLayoutChange({ 
-                          layout: hasSelectedTask ? ['left', 'middle', 'right'] : ['left', 'middle'],
-                        leftView: 'list',
-                        middleView: currentMiddleView,
-                          rightView: 'details',
-                        focus: null 
-                      });
-                    } else {
-                      // Focus on left pane only
-                      handleLayoutChange({ focus: 'left' });
-                    }
-                  }}
+                  className={pillButton + ' ml-2 relative'}
+                  onClick={() => openComposer()}
                   type="button"
+                  aria-label="Add Task"
                 >
-                    {isLeftFocused ? <Minimize2 className="w-5 h-5" /> : <Maximize2 className="w-5 h-5" />}
+                  <span className="sm:hidden">+</span>
+                  <span className="hidden sm:inline-flex items-center gap-1">
+                    + <span className="truncate">Add Task</span>
+                  </span>
+                  {/* Tooltip for icon-only state */}
+                  <span className="absolute left-1/2 -translate-x-1/2 mt-10 px-2 py-1 rounded bg-gray-800 text-white text-xs opacity-0 group-hover:opacity-100 transition sm:hidden pointer-events-none whitespace-nowrap z-50">
+                    Add Task
+                  </span>
                 </button>
+                {/* Group by pill - add same left margin as other pills for consistent spacing */}
+                <GroupingDropdown className={pillButton + ' ml-2 min-w-[120px]'} />
+                <MultiselectToggle
+                  isMultiselectMode={isMultiselectMode}
+                  onToggle={handleToggleMultiselect}
+                  className={pillButton + ' ml-2'}
+                />
+                <FrequentFilterPills editFields={editFields as any} className={pillButton + ' ml-2'} />
+                <FilterCascadingDropdown 
+                  editFields={editFields}
+                  filterOptions={editFields ? transformEditFieldsToFilterOptions(editFields) : undefined}
+                  filters={filters}
+                  setFilters={setFilters}
+                  router={router}
+                  pathname={pathname}
+                  params={new URLSearchParams(params.toString())}
+                  className={pillButton + ' ml-2'}
+                />
+                {/* Inline search input - appears when search icon is clicked */}
+                <InlineSearchInput 
+                  isOpen={isInlineSearchOpen}
+                  value={inlineSearchValue}
+                  onChange={(value) => {
+                    setInlineSearchValue(value);
+                    // Update URL param for task list search
+                    const newParams = new URLSearchParams(params.toString());
+                    if (value) {
+                      newParams.set('q', value);
+                    } else {
+                      newParams.delete('q');
+                    }
+                    router.replace(`${pathname}?${newParams.toString()}`, { scroll: false });
+                  }}
+                  onClose={() => {
+                    setIsInlineSearchOpen(false);
+                    setInlineSearchValue('');
+                    // Clear search from URL
+                    const newParams = new URLSearchParams(params.toString());
+                    newParams.delete('q');
+                    router.replace(`${pathname}?${newParams.toString()}`, { scroll: false });
+                  }}
+                />
+                </div>
+              </div>
+
+              {/* Right side: fixed controls (no overlap with scroll area) */}
+              {focus !== 'middle' && (() => {
+                const isLeftFocused = focus === 'left' || (layout.length === 2 && layout.includes('left') && layout.includes('right'));
+                return (
+                  <div className="flex items-center flex-shrink-0 bg-white relative -top-1">
+                    <button
+                      className={cn(expandButton, 'flex-shrink-0 ml-2')}
+                      aria-label="Search tasks"
+                      title="Search tasks"
+                      onClick={() => {
+                        setIsInlineSearchOpen(prev => !prev);
+                        if (!isInlineSearchOpen) {
+                          setInlineSearchValue('');
+                        }
+                      }}
+                      type="button"
+                    >
+                      <Search className="w-4 h-4" />
+                    </button>
+                    <button
+                      className={cn(expandButton, 'flex-shrink-0 ml-2')}
+                      aria-label={isLeftFocused ? 'Restore layout' : 'Focus on task list'}
+                      title={isLeftFocused ? 'Restore layout' : 'Focus on task list'}
+                      onClick={() => {
+                        if (isLeftFocused) {
+                          const currentMiddleView = params.get('middleView') || 'calendar';
+                          const hasSelectedTask = !!selectedTaskId;
+                          handleLayoutChange({ 
+                            layout: hasSelectedTask ? ['left', 'middle', 'right'] : ['left', 'middle'],
+                            leftView: 'list',
+                            middleView: currentMiddleView,
+                            rightView: 'details',
+                            focus: null 
+                          });
+                        } else {
+                          handleLayoutChange({ focus: 'left' });
+                        }
+                      }}
+                      type="button"
+                    >
+                      {isLeftFocused ? <Minimize2 className="w-5 h-5" /> : <Maximize2 className="w-5 h-5" />}
+                    </button>
+                  </div>
                 );
               })()}
             </div>
             {/* Active Filter Badges Bar */}
             {(() => {
-              // We don't need to fetch users for badges since badge labels come from the actual filter values
-              // Transform editFields to filter options format when available (users can be empty for badges)
-              const filterOptions = editFields ? transformEditFieldsToFilterOptions(editFields) : undefined;
-              const { badges, onClearAll } = getActiveFilterBadges(filters, setFilters, router, pathname, new URLSearchParams(params.toString()), filterOptions);
+              // Build filterOptions for badges:
+              // - Prefer asyncFilterOptions for users (full list of visible users)
+              // - Use editFields-derived options for statuses/projects/types/languages/channels
+              let filterOptions: FilterOptions | undefined;
+              const transformed = editFields ? transformEditFieldsToFilterOptions(editFields) : undefined;
+
+              if (asyncFilterOptions && transformed) {
+                filterOptions = {
+                  ...asyncFilterOptions,
+                  statuses: transformed.statuses,
+                  projects: transformed.projects,
+                  contentTypes: transformed.contentTypes,
+                  productionTypes: transformed.productionTypes,
+                  languages: transformed.languages,
+                  channels: transformed.channels,
+                };
+              } else {
+                filterOptions = (asyncFilterOptions as FilterOptions | undefined) ?? transformed;
+              }
+
+              const { badges, onClearAll } = getActiveFilterBadges(
+                filters,
+                setFilters,
+                router,
+                pathname,
+                new URLSearchParams(params.toString()),
+                filterOptions
+              );
+
               return (
-            <FilterBadges
+                <FilterBadges
                   badges={badges}
                   onClearAll={onClearAll}
-              className="mt-2 mb-2"
-            />
+                  className="mt-1 mb-2"
+                />
               );
             })()}
             
@@ -1874,11 +2043,6 @@ export function TasksLayout({
               />
             </div>
           </div>
-          {isAddTaskOpen && (
-            <SlidePanel isOpen={isAddTaskOpen} onClose={() => setIsAddTaskOpen(false)} position="right" className="w-[400px]" title="Add Task">
-              <AddTaskForm onSuccess={() => setIsAddTaskOpen(false)} onClose={() => setIsAddTaskOpen(false)} isModal={true} />
-            </SlidePanel>
-          )}
           {isDuplicateTaskOpen && (
             <SlidePanel isOpen={isDuplicateTaskOpen} onClose={() => setIsDuplicateTaskOpen(false)} position="right" className="w-[400px]" title="Duplicate Task">
               <AddTaskForm 
@@ -1899,15 +2063,21 @@ export function TasksLayout({
             </SlidePanel>
           )}
         </Panel>
-        <PanelResizeHandle className={cn(
-          'transition cursor-col-resize',
-        )} style={{ width: '0.5px', minWidth: '0.5px', background: '#e5e7eb' }} />
+        <PanelResizeHandle
+          className={cn(
+            'transition cursor-col-resize',
+            !focus && isLeftVisible && isCenterVisible ? 'block' : 'hidden',
+          )}
+          style={{ width: '0.5px', minWidth: '0.5px', background: '#e5e7eb' }}
+        />
         {/* Center Pane: Calendar/Kanban - PRESERVE USER RESIZE */}
         <Panel
           ref={centerPanelRef}
           id="center-pane"
           order={2}
           defaultSize={(() => {
+            // If the middle pane isn't part of the layout, it must not reserve space (prevents "blank middle pane")
+            if (!isCenterPaneVisible) return 0;
             // **FIX: Preserve user's preferred width, only change for focus**
             if (focus === 'middle') {
               return 100; // Full width when focused
@@ -1922,6 +2092,7 @@ export function TasksLayout({
             return currentPanelSizes.current.middle;
           })()}
           minSize={(() => {
+            if (!isCenterPaneVisible) return 0;
             // Allow complete collapse when not focused OR when layout doesn't include this pane
             if (focus === 'middle') return 20;
             if (focus === 'left' || focus === 'right') return 0;
@@ -1935,14 +2106,28 @@ export function TasksLayout({
             'bg-white flex flex-col min-w-0 transition-all duration-200',
             getPaneClass('middle')
           )}
+          style={{
+            // Defensive: if middle is not in the active layout, force it to take no space even if panel resizing fails
+            width: isCenterPaneVisible ? undefined : '0px',
+            minWidth: isCenterPaneVisible ? undefined : '0px',
+            overflow: isCenterPaneVisible ? undefined : 'hidden',
+            pointerEvents: isCenterPaneVisible ? undefined : 'none',
+          }}
 
         >
-          <div className="flex-1 overflow-y-auto">
+          <div
+            className={cn(
+              'flex-1 min-h-0',
+              isCenterPaneVisible && middleView === 'calendar'
+                ? 'overflow-hidden'
+                : 'overflow-y-auto'
+            )}
+          >
             {/* **FIX: Always render both views to prevent mount/unmount, use enabled prop for API calls** */}
             <div 
               className={cn(
                 "h-full w-full",
-                (isCenterVisible && middleView === 'calendar') ? 'block' : 'hidden'
+                (isCenterPaneVisible && middleView === 'calendar') ? 'block' : 'hidden'
               )}
 
             >
@@ -1952,7 +2137,7 @@ export function TasksLayout({
                 searchValue={searchValue}
                 selectedTask={selectedTask}
                 onOptimisticUpdate={onTaskUpdate}
-                enabled={isCenterVisible && middleView === 'calendar'} // Only enable when calendar view is active
+                enabled={isCenterPaneVisible && middleView === 'calendar'} // Only enable when calendar view is active
                 expandButton={
                   focus !== 'left' && (
                     <button
@@ -1985,7 +2170,7 @@ export function TasksLayout({
             <div 
               className={cn(
                 "h-full w-full",
-                (isCenterVisible && middleView === 'kanban') ? 'block' : 'hidden'
+                (isCenterPaneVisible && middleView === 'kanban') ? 'block' : 'hidden'
               )}
             >
               <KanbanView
@@ -1994,7 +2179,7 @@ export function TasksLayout({
                 selectedTaskId={selectedTaskId}
                 onTaskSelect={handleTaskSelect}
                 onOptimisticUpdate={onTaskUpdate}
-                enabled={isCenterVisible && middleView === 'kanban'} // Only enable when kanban view is active
+                enabled={isCenterPaneVisible && middleView === 'kanban'} // Only enable when kanban view is active
                 expandButton={
                   focus !== 'left' && (
                     <button
@@ -2026,7 +2211,7 @@ export function TasksLayout({
             </div>
             
             {/* AI Build View - Only render when explicitly requested and center is visible */}
-            {middleView === 'ai-build' && isCenterVisible && (
+            {middleView === 'ai-build' && isCenterPaneVisible && (
               <div className="h-full w-full">
                 <AiPane 
                   isOpen={true} 
@@ -2096,113 +2281,111 @@ export function TasksLayout({
             <div className="h-full flex">
               <div className="flex-1 overflow-auto border-r">
                 <TaskDetails
-                  isCollapsed={isDetailsCollapsed}
-                  selectedTask={selectedTaskData}
-                  onClose={handleCloseDetails}
-                  onCollapse={handleCloseDetails}
-                  isExpanded={focus === 'right'}
-                  onExpand={() => handleLayoutChange({ focus: 'right' })}
-                  onRestore={() => {
-                    // Restore to previous layout based on whether a task is selected
-                    const hasSelectedTask = !!selectedTaskId;
-                    handleLayoutChange({ 
-                      layout: hasSelectedTask ? ['left', 'middle', 'right'] : ['left', 'middle'],
-                      leftView: 'list',
-                      middleView: middleView,
-                      rightView: 'details',
-                      focus: null 
-                    });
-                  }}
-                  onTaskUpdate={onTaskUpdate}
-                  onAddSubtask={onAddSubtask}
-                  onDuplicateTask={handleDuplicateTask}
-                  attachments={selectedTaskData?.attachments || []}
-                  threadId={selectedTaskData?.thread_id || null}
-                  mentions={selectedTaskData?.mentions || []}
-                  watchers={selectedTaskData?.watchers || []}
-                  currentUser={null}
-                  subtasks={selectedTaskData?.subtasks || []}
-                  project_watchers={selectedTaskData?.project_watchers || []}
-                  accessToken={accessToken}
-                  onOptimisticUpdate={onTaskUpdate}
-                />
+                    isCollapsed={isDetailsCollapsed}
+                    selectedTask={isSuggestionSelected ? (selectedSuggestionAsTask as any) : selectedTaskData}
+                    onClose={handleCloseDetails}
+                    onCollapse={handleCloseDetails}
+                    isExpanded={focus === 'right'}
+                    onExpand={() => handleLayoutChange({ focus: 'right' })}
+                    onRestore={() => {
+                      // Restore to previous layout based on whether a task is selected
+                      const hasSelectedTask = !!selectedTaskId;
+                      handleLayoutChange({ 
+                        layout: hasSelectedTask ? ['left', 'middle', 'right'] : ['left', 'middle'],
+                        leftView: 'list',
+                        middleView: middleView,
+                        rightView: 'details',
+                        focus: null 
+                      });
+                    }}
+                    onTaskUpdate={onTaskUpdate}
+                    onAddSubtask={onAddSubtask}
+                    onDuplicateTask={handleDuplicateTask}
+                    attachments={isSuggestionSelected ? [] : (selectedTaskData?.attachments || [])}
+                    threadId={isSuggestionSelected ? null : (selectedTaskData?.thread_id || null)}
+                    mentions={isSuggestionSelected ? EMPTY_LIST : (selectedTaskData?.mentions || EMPTY_LIST)}
+                    watchers={isSuggestionSelected ? EMPTY_LIST : (selectedTaskData?.watchers || EMPTY_LIST)}
+                    currentUser={null}
+                    subtasks={isSuggestionSelected ? EMPTY_LIST : (selectedTaskData?.subtasks || EMPTY_LIST)}
+                    project_watchers={isSuggestionSelected ? EMPTY_LIST : (selectedTaskData?.project_watchers || EMPTY_LIST)}
+                    accessToken={accessToken}
+                    onOptimisticUpdate={onTaskUpdate}
+                    mode={isSuggestionSelected ? 'suggestion' : 'task'}
+                  />
               </div>
               <div className="flex-1 overflow-auto">
-                <AiPane 
-                  isOpen={true} 
-                  onClose={() => {
-                    const newParams = new URLSearchParams(params.toString());
-                    newParams.delete('middleView');
-                    newParams.delete('aiThreadId');
-                    newParams.delete('chatMode');
-                    newParams.delete('chatPreFill');
-                    newParams.delete('chatComponentId');
-                    router.replace(`?${newParams.toString()}`);
-                  }} 
-                  initialScope="task" 
-                  taskId={selectedTaskId ? Number(selectedTaskId) : undefined}
-                  inline={true}
-                />
+                {!isSuggestionSelected ? (
+                  <AiPane 
+                    isOpen={true} 
+                    onClose={() => {
+                      const newParams = new URLSearchParams(params.toString());
+                      newParams.delete('middleView');
+                      newParams.delete('aiThreadId');
+                      newParams.delete('chatMode');
+                      newParams.delete('chatPreFill');
+                      newParams.delete('chatComponentId');
+                      router.replace(`?${newParams.toString()}`);
+                    }} 
+                    initialScope="task" 
+                    taskId={selectedTaskId ? Number(selectedTaskId) : undefined}
+                    inline={true}
+                  />
+                ) : null}
               </div>
             </div>
           ) : (
             <TaskDetails
-              isCollapsed={isDetailsCollapsed}
-              selectedTask={selectedTaskData}
-              onClose={handleCloseDetails}
-              onCollapse={handleCloseDetails}
-              isExpanded={focus === 'right'}
-              onExpand={() => handleLayoutChange({ focus: 'right' })}
-              onRestore={() => {
-              // Restore to previous layout based on whether a task is selected
-              const hasSelectedTask = !!selectedTaskId;
-              handleLayoutChange({ 
-                layout: hasSelectedTask ? ['left', 'middle', 'right'] : ['left', 'middle'],
-                leftView: 'list',
-                middleView: middleView,
-                rightView: 'details',
-                focus: null 
-              });
-            }}
-            onTaskUpdate={updatedFields => {
-              const sanitized = {
-                ...updatedFields,
-                project_id_int: updatedFields.project_id_int === null ? undefined : updatedFields.project_id_int,
-                parent_task_id_int: updatedFields.parent_task_id_int == null ? undefined : updatedFields.parent_task_id_int,
-              };
-              // Optimistically update the selected task cache
-              if (selectedTaskData && selectedTaskId && accessToken) {
-                queryClient.setQueryData(['task', selectedTaskId, accessToken], (old: any) => ({
-                  ...old,
-                  task: {
-                    ...old?.task,
-                    ...sanitized,
-                  },
-                }));
-              }
-              if (onTaskUpdate) onTaskUpdate(sanitized);
-            }}
-            onAddSubtask={onAddSubtask}
-            onDuplicateTask={handleDuplicateTask}
-            attachments={attachments}
-            threadId={threadId}
-            mentions={mentions}
-            watchers={watchers}
-            currentUser={null}
-            subtasks={subtasks}
-            project_watchers={project_watchers}
-            accessToken={accessToken}
-          />
+                isCollapsed={isDetailsCollapsed}
+                selectedTask={isSuggestionSelected ? (selectedSuggestionAsTask as any) : selectedTaskData}
+                onClose={handleCloseDetails}
+                onCollapse={handleCloseDetails}
+                isExpanded={focus === 'right'}
+                onExpand={() => handleLayoutChange({ focus: 'right' })}
+                onRestore={() => {
+                // Restore to previous layout based on whether a task is selected
+                const hasSelectedTask = !!selectedTaskId;
+                handleLayoutChange({ 
+                  layout: hasSelectedTask ? ['left', 'middle', 'right'] : ['left', 'middle'],
+                  leftView: 'list',
+                  middleView: middleView,
+                  rightView: 'details',
+                  focus: null 
+                });
+              }}
+              onTaskUpdate={updatedFields => {
+                const sanitized = {
+                  ...updatedFields,
+                  project_id_int: updatedFields.project_id_int === null ? undefined : updatedFields.project_id_int,
+                  parent_task_id_int: updatedFields.parent_task_id_int == null ? undefined : updatedFields.parent_task_id_int,
+                };
+                // Optimistically update the selected task cache
+                if (selectedTaskData && selectedTaskId && accessToken) {
+                  queryClient.setQueryData(['task', selectedTaskId, accessToken], (old: any) => ({
+                    ...old,
+                    task: {
+                      ...old?.task,
+                      ...sanitized,
+                    },
+                  }));
+                }
+                if (onTaskUpdate) onTaskUpdate(sanitized);
+              }}
+              onAddSubtask={onAddSubtask}
+              onDuplicateTask={handleDuplicateTask}
+              attachments={isSuggestionSelected ? [] : attachments}
+              threadId={isSuggestionSelected ? null : threadId}
+              mentions={isSuggestionSelected ? EMPTY_LIST : (mentions || EMPTY_LIST)}
+              watchers={isSuggestionSelected ? EMPTY_LIST : (watchers || EMPTY_LIST)}
+              currentUser={null}
+              subtasks={isSuggestionSelected ? EMPTY_LIST : (subtasks || EMPTY_LIST)}
+              project_watchers={isSuggestionSelected ? EMPTY_LIST : (project_watchers || EMPTY_LIST)}
+              accessToken={accessToken}
+              mode={isSuggestionSelected ? 'suggestion' : 'task'}
+            />
           )}
         </Panel>
       </PanelGroup>
       
-      {/* Desktop Add Task Modal */}
-      {isAddTaskOpen && (
-        <SlidePanel isOpen={isAddTaskOpen} onClose={() => setIsAddTaskOpen(false)} position="right" className="w-[400px]" title="Add Task">
-                          <AddTaskForm onSuccess={() => setIsAddTaskOpen(false)} onClose={() => setIsAddTaskOpen(false)} isModal={true} />
-        </SlidePanel>
-      )}
     </div>
   );
 } 

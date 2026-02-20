@@ -377,6 +377,14 @@ export function SupplierPaymentCreateModal({
     setCurrentStep(1)
     setAllocations([])
     onClose()
+    // Manually restore body pointer-events in case Radix UI didn't clean up properly
+    // This is a safety net to prevent the app from freezing
+    setTimeout(() => {
+      const computedStyle = window.getComputedStyle(document.body)
+      if (computedStyle.pointerEvents === 'none') {
+        document.body.style.pointerEvents = 'auto'
+      }
+    }, 300) // Wait for Dialog closing animation to complete
   }
 
   return (

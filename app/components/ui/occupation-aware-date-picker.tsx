@@ -132,6 +132,7 @@ export function OccupationAwareDatePicker({
     <div className={cn("relative", className)}>
       {/* Date Input */}
       <Button
+        type="button"
         variant="outline"
         onClick={() => !disabled && setIsOpen(!isOpen)}
         disabled={disabled}
@@ -147,6 +148,7 @@ export function OccupationAwareDatePicker({
           {/* Calendar Header */}
           <div className="flex items-center justify-between mb-4">
             <Button
+              type="button"
               variant="ghost"
               size="sm"
               onClick={goToPreviousMonth}
@@ -160,6 +162,7 @@ export function OccupationAwareDatePicker({
             </div>
             
             <Button
+              type="button"
               variant="ghost"
               size="sm"
               onClick={goToNextMonth}
@@ -187,6 +190,7 @@ export function OccupationAwareDatePicker({
               return (
                 <Button
                   key={index}
+                  type="button"
                   variant="ghost"
                   size="sm"
                   onClick={() => handleDateSelect(date)}

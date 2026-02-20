@@ -12,6 +12,7 @@ import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Send } from 'lucide-react'
 import { useCallback, useEffect, useMemo, useState } from 'react'
+import { differenceInCalendarDays, isToday, isYesterday } from 'date-fns'
 
 interface RealtimeChatProps {
   roomName: string
@@ -24,6 +25,10 @@ interface RealtimeChatProps {
   hideInput?: boolean
   currentPublicUserId?: number | null
   focusedMentionId?: number | null
+  onReplyMessage?: (messageId: string) => void
+  replyTo?: { id: string; author?: string; preview: string } | null
+  onClearReply?: () => void
+  groupByDate?: boolean
 }
 
 /**
@@ -45,6 +50,10 @@ export const RealtimeChat = ({
   hideInput = false,
   currentPublicUserId,
   focusedMentionId,
+  onReplyMessage,
+  replyTo,
+  onClearReply,
+  groupByDate = false,
 }: RealtimeChatProps) => {
   const { containerRef, scrollToBottom } = useChatScroll()
 
@@ -85,6 +94,28 @@ export const RealtimeChat = ({
     [newMessage, isConnected, onSend]
   )
 
+  const messagesById = useMemo(() => {
+    const map = new Map<string, ChatMessage>()
+    for (const m of allMessages) map.set(String(m.id), m)
+    return map
+  }, [allMessages])
+
+  const stripHtml = (html: string) => html.replace(/<[^>]*>/g, '').trim()
+
+  const getBucketLabel = (iso: string | undefined) => {
+    if (!iso) return null
+    const date = new Date(iso)
+    if (Number.isNaN(date.getTime())) return null
+    if (isToday(date)) return 'Today'
+    if (isYesterday(date)) return 'Yesterday'
+    const daysAgo = differenceInCalendarDays(new Date(), date)
+    if (daysAgo >= 2 && daysAgo <= 6) return 'Past week'
+    // This month bucket (roughly)
+    const now = new Date()
+    if (date.getFullYear() === now.getFullYear() && date.getMonth() === now.getMonth()) return 'This month'
+    return 'Older'
+  }
+
   return (
     <div className="flex flex-col h-full w-full bg-background text-foreground antialiased">
       {/* Messages */}
@@ -105,46 +136,87 @@ export const RealtimeChat = ({
             const isFocused = focusedMentionId !== null && focusedMentionId !== undefined && 
               (message.id === focusedMentionId.toString() || Number(message.id) === focusedMentionId)
 
+            const thisBucket = groupByDate ? getBucketLabel(message.createdAt) : null
+            const prevBucket = groupByDate ? getBucketLabel(prevMessage?.createdAt) : null
+            const showBucket = groupByDate && thisBucket && thisBucket !== prevBucket
+
             return (
-              <div
-                key={message.id}
-                data-mention-id={message.id}
-                className="animate-in fade-in slide-in-from-bottom-4 duration-300"
-              >
-                <ChatMessageItem
-                  message={message}
-                  showHeader={showHeader}
-                  isEditing={editingId === message.id}
-                  editValue={editValue}
-                  isProcessing={isProcessing}
-                  onEditStart={() => {
-                    setEditingId(message.id)
-                    setEditValue(message.content)
-                  }}
-                  onEditChange={setEditValue}
-                  onEditSave={async () => {
-                    if (!onEdit) return
-                    setIsProcessing(true)
-                    await onEdit(message.id, editValue)
-                    setIsProcessing(false)
-                    setEditingId(null)
-                  }}
-                  onEditCancel={() => setEditingId(null)}
-                  onDelete={async () => {
-                    if (!onDelete) return
-                    setIsProcessing(true)
-                    await onDelete(message.id)
-                    setIsProcessing(false)
-                  }}
-                  currentPublicUserId={currentPublicUserId}
-                />
+              <div key={message.id} className="space-y-2">
+                {showBucket ? (
+                  <div className="flex items-center justify-center py-2">
+                    <div className="px-3 py-1 rounded-full bg-gray-100 text-gray-600 text-xs font-medium">
+                      {thisBucket}
+                    </div>
+                  </div>
+                ) : null}
+                <div
+                  data-mention-id={message.id}
+                  className="animate-in fade-in slide-in-from-bottom-4 duration-300"
+                >
+                  <ChatMessageItem
+                    message={message}
+                    showHeader={showHeader}
+                    isEditing={editingId === message.id}
+                    editValue={editValue}
+                    isProcessing={isProcessing}
+                    onReply={() => onReplyMessage?.(message.id)}
+                    replyPreview={
+                      typeof (message as any).reply_to_id === 'number'
+                        ? (() => {
+                            const replied = messagesById.get(String((message as any).reply_to_id))
+                            if (!replied) return null
+                            const author = replied.user?.displayName || replied.user?.email
+                            return { author, preview: stripHtml(replied.content || '').slice(0, 120) || '…' }
+                          })()
+                        : null
+                    }
+                    onEditStart={() => {
+                      setEditingId(message.id)
+                      setEditValue(message.content)
+                    }}
+                    onEditChange={setEditValue}
+                    onEditSave={async () => {
+                      if (!onEdit) return
+                      setIsProcessing(true)
+                      await onEdit(message.id, editValue)
+                      setIsProcessing(false)
+                      setEditingId(null)
+                    }}
+                    onEditCancel={() => setEditingId(null)}
+                    onDelete={async () => {
+                      if (!onDelete) return
+                      setIsProcessing(true)
+                      await onDelete(message.id)
+                      setIsProcessing(false)
+                    }}
+                    currentPublicUserId={currentPublicUserId}
+                  />
+                </div>
               </div>
             )
           })}
         </div>
       </div>
       {!hideInput && (
-        <form onSubmit={handleSendMessage} className="flex w-full gap-2 border-t border-border p-4">
+        <form onSubmit={handleSendMessage} className="flex w-full flex-col gap-2 border-t border-border p-4">
+          {replyTo ? (
+            <div className="flex items-start justify-between gap-3 rounded-md border bg-gray-50 px-3 py-2">
+              <div className="min-w-0">
+                <div className="text-xs font-medium text-gray-700">Replying to {replyTo.author || 'message'}</div>
+                <div className="text-xs text-gray-600 truncate">{replyTo.preview}</div>
+              </div>
+              <button
+                type="button"
+                className="text-xs text-gray-500 hover:text-gray-900"
+                onClick={onClearReply}
+                aria-label="Cancel reply"
+                title="Cancel reply"
+              >
+                ×
+              </button>
+            </div>
+          ) : null}
+          <div className="flex w-full gap-2">
           <Input
             className={cn(
               'rounded-full bg-background text-sm transition-all duration-300',
@@ -165,6 +237,7 @@ export const RealtimeChat = ({
               <Send className="size-4" />
             </Button>
           )}
+          </div>
         </form>
       )}
     </div>

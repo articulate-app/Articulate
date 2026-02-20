@@ -25,9 +25,11 @@ interface StickyAddCommentInputProps {
   latestMentions?: Record<number, Mention | null>
   activeThreadId?: number | null
   handleDeleteThread?: (threadId: number) => void
+  replyTo?: { id: number; author?: string; preview: string } | null
+  onClearReply?: () => void
 }
 
-export function StickyAddCommentInput({ taskId, onCommentAdded, pendingParticipants = [], setPendingParticipants, removedParticipants = [], setRemovedParticipants, threads = [], latestMentions = {}, activeThreadId: propActiveThreadId = null, handleDeleteThread }: StickyAddCommentInputProps) {
+export function StickyAddCommentInput({ taskId, onCommentAdded, pendingParticipants = [], setPendingParticipants, removedParticipants = [], setRemovedParticipants, threads = [], latestMentions = {}, activeThreadId: propActiveThreadId = null, handleDeleteThread, replyTo, onClearReply }: StickyAddCommentInputProps) {
   // Remove all local fetching state
   // const [threads, setThreads] = useState<Thread[]>([])
   // const [latestMentions, setLatestMentions] = useState<Record<number, Mention | null>>({})
@@ -62,6 +64,8 @@ export function StickyAddCommentInput({ taskId, onCommentAdded, pendingParticipa
           }}
           pendingParticipants={pendingParticipants}
           setPendingParticipants={setPendingParticipants}
+          replyTo={replyTo}
+          onClearReply={onClearReply}
         />
       </div>
     )
@@ -77,6 +81,8 @@ export function StickyAddCommentInput({ taskId, onCommentAdded, pendingParticipa
         onThreadCreated={(thread) => {
           // Parent should update activeThreadId prop
         }}
+        replyTo={replyTo}
+        onClearReply={onClearReply}
       />
       
     </div>

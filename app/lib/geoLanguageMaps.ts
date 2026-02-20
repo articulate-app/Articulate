@@ -12,11 +12,11 @@ export const regions: Region[] = [
   { id: '', name: 'Any' },
   { id: '2840', name: 'United States' },
   { id: '2826', name: 'United Kingdom' },
-  { id: '2250', name: 'Portugal' },
+  { id: '2620', name: 'Portugal' },
   { id: '2724', name: 'Spain' },
   { id: '2076', name: 'Brazil' },
   { id: '2276', name: 'Germany' },
-  { id: '2252', name: 'France' },
+  { id: '2250', name: 'France' },
 ];
 
 export const languages: Language[] = [

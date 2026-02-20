@@ -81,9 +81,9 @@ export function useThreadContext(threadId?: string) {
   const supabase = getSupabaseBrowser()
   const { data, isLoading, isError, refetch } = useQuery({
     queryKey: ['ai-thread-context', threadId],
-    enabled: !!threadId,
+    enabled: !!threadId && !threadId.startsWith('temp-'),
     queryFn: async () => {
-      if (!threadId) return null
+      if (!threadId || threadId.startsWith('temp-')) return null
       const { data, error } = await supabase
         .from('v_ai_thread_context_live')
         .select('*')
@@ -102,9 +102,9 @@ export function useMessages(threadId?: string, pageSize: number = MESSAGES_PAGE_
 
   const { data, isLoading, isError, refetch } = useQuery({
     queryKey: ['ai-messages', threadId, pageSize],
-    enabled: !!threadId,
+    enabled: !!threadId && !threadId.startsWith('temp-'),
     queryFn: async () => {
-      if (!threadId) return [] as AiMessage[]
+      if (!threadId || threadId.startsWith('temp-')) return [] as AiMessage[]
       const { data, error } = await supabase
         .from('v_ai_messages_enriched')
         .select('*')
@@ -118,7 +118,7 @@ export function useMessages(threadId?: string, pageSize: number = MESSAGES_PAGE_
 
   // Realtime for ai_messages
   useEffect(() => {
-    if (!threadId) return
+    if (!threadId || threadId.startsWith('temp-')) return
     const channel = supabase
       .channel('ai-messages-' + threadId)
       .on('postgres_changes', { event: '*', schema: 'public', table: 'ai_messages', filter: `thread_id=eq.${threadId}` }, () => {

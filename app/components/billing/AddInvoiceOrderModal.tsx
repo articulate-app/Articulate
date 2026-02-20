@@ -102,7 +102,7 @@ export function AddInvoiceOrderModal({
       })
 
       onOrderAdded()
-      onClose()
+      handleClose()
       setSelectedOrder(null)
       setAllocationAmount('')
     } catch (error: any) {
@@ -127,8 +127,27 @@ export function AddInvoiceOrderModal({
     return new Date(dateString).toLocaleDateString()
   }
 
+  const handleClose = () => {
+    onClose()
+    // Manually restore body pointer-events in case Radix UI didn't clean up properly
+    // This is a safety net to prevent the app from freezing
+    setTimeout(() => {
+      const computedStyle = window.getComputedStyle(document.body)
+      if (computedStyle.pointerEvents === 'none') {
+        document.body.style.pointerEvents = 'auto'
+      }
+    }, 300) // Wait for Dialog closing animation to complete
+  }
+
+  const handleOpenChange = (open: boolean) => {
+    // Only handle close, not open (open is controlled by isOpen prop)
+    if (!open) {
+      handleClose()
+    }
+  }
+
   return (
-    <Dialog open={isOpen} onOpenChange={onClose}>
+    <Dialog open={isOpen} onOpenChange={handleOpenChange}>
       <DialogContent className="max-w-2xl max-h-[80vh] overflow-hidden flex flex-col">
         <DialogHeader>
           <DialogTitle>Add Invoice Order</DialogTitle>
@@ -231,7 +250,7 @@ export function AddInvoiceOrderModal({
           <Button
             type="button"
             variant="outline"
-            onClick={onClose}
+            onClick={handleClose}
             disabled={isSubmitting}
           >
             Cancel

@@ -1,18 +1,18 @@
 "use client"
 
 import React, { useState, useCallback, useRef, useEffect } from 'react';
-import { X, Search, Loader2, ChevronUp, ChevronDown, Download, AlertCircle, RefreshCw, BookmarkPlus, Bookmark, ExternalLink } from 'lucide-react';
+import { X, Search, Loader2, ChevronUp, ChevronDown, Download, AlertCircle, RefreshCw, BookmarkPlus, Bookmark } from 'lucide-react';
 import { Button } from './ui/button';
 import { Input } from './ui/input';
 import { Badge } from './ui/badge';
 import { useKeywordPlanner, type KeywordPlannerFilters } from '../hooks/useKeywordPlanner';
 import { regions, languages } from '../lib/geoLanguageMaps';
 import { SaveKeywordModal } from './SaveKeywordModal';
-import { SavedKeywordsSection } from './SavedKeywordsSection';
 import { type KeywordIdea } from '../hooks/useKeywordPlanner';
 import { useKeywordListsApi } from '../store/keyword-lists-api';
 import { useTopResults } from '../hooks/useTopResults';
 import { TopResultsSection } from './TopResultsSection';
+import { SavedKeywordsModal } from './SavedKeywordsModal';
 
 interface KeywordPlannerPaneProps {
   isOpen: boolean;
@@ -30,10 +30,10 @@ export function KeywordPlannerPane({ isOpen, onClose }: KeywordPlannerPaneProps)
   const [sortDirection, setSortDirection] = useState<'asc' | 'desc'>('desc');
   const [showErrorDetails, setShowErrorDetails] = useState(false);
   const [saveModalOpen, setSaveModalOpen] = useState(false);
-  const [selectedKeyword, setSelectedKeyword] = useState<KeywordIdea | null>(null);
-  const [showSavedKeywords, setShowSavedKeywords] = useState(false);
+  const [keywordToSave, setKeywordToSave] = useState<KeywordIdea | null>(null);
+  const [selectedKeywordForTopResults, setSelectedKeywordForTopResults] = useState<string | null>(null);
+  const [isSavedKeywordsOpen, setIsSavedKeywordsOpen] = useState(false);
   const [showSearchHistory, setShowSearchHistory] = useState(false);
-  const [showTopResults, setShowTopResults] = useState(false);
 
   // Use the new API store
   const { logSearch, searchHistory, fetchSearchHistory } = useKeywordListsApi();
@@ -129,9 +129,28 @@ export function KeywordPlannerPane({ isOpen, onClose }: KeywordPlannerPaneProps)
 
   // Handle save keyword
   const handleSaveKeyword = useCallback((keyword: KeywordIdea) => {
-    setSelectedKeyword(keyword);
+    setKeywordToSave(keyword);
     setSaveModalOpen(true);
   }, []);
+
+  // When new results arrive, default-select the first keyword (or keep selection if still present)
+  useEffect(() => {
+    const results = data?.results;
+    if (!results || results.length === 0) {
+      setSelectedKeywordForTopResults(null);
+      return;
+    }
+
+    if (!selectedKeywordForTopResults) {
+      setSelectedKeywordForTopResults(results[0]?.keyword ?? null);
+      return;
+    }
+
+    const isSelectionStillVisible = results.some(r => r.keyword === selectedKeywordForTopResults);
+    if (!isSelectionStillVisible) {
+      setSelectedKeywordForTopResults(results[0]?.keyword ?? null);
+    }
+  }, [data?.results, selectedKeywordForTopResults]);
 
   // Sort results
   const sortedResults = React.useMemo(() => {
@@ -181,8 +200,21 @@ export function KeywordPlannerPane({ isOpen, onClose }: KeywordPlannerPaneProps)
 
   if (!isOpen) return null;
 
+  const topResultsLanguage = getLanguageName(filters.languageId);
+  const topResultsRegion = getRegionName(filters.regionId);
+  const activeTopResultsKeyword = selectedKeywordForTopResults;
+  const activeTopResultsData = activeTopResultsKeyword
+    ? getTopResults(activeTopResultsKeyword, topResultsLanguage, topResultsRegion)
+    : undefined;
+  const activeTopResultsError = activeTopResultsKeyword
+    ? getTopResultsError(activeTopResultsKeyword, topResultsLanguage, topResultsRegion)
+    : undefined;
+  const isActiveTopResultsLoading = activeTopResultsKeyword
+    ? isTopResultsLoading(activeTopResultsKeyword, topResultsLanguage, topResultsRegion)
+    : false;
+
   return (
-    <div className="fixed top-0 right-0 w-96 bg-white border-l border-gray-200 flex flex-col h-screen z-50 shadow-lg">
+    <div className="fixed top-0 right-0 w-[1100px] max-w-[95vw] bg-white border-l border-gray-200 flex flex-col h-screen z-50 shadow-lg">
       {/* Header */}
       <div className="flex items-center justify-between p-4 border-b border-gray-200 flex-shrink-0">
         <div className="flex items-center gap-2">
@@ -193,16 +225,7 @@ export function KeywordPlannerPane({ isOpen, onClose }: KeywordPlannerPaneProps)
           <Button
             variant="ghost"
             size="sm"
-            onClick={() => setShowTopResults(!showTopResults)}
-            className="text-xs"
-          >
-            <ExternalLink className="w-4 h-4 mr-1" />
-            Top Results
-          </Button>
-          <Button
-            variant="ghost"
-            size="sm"
-            onClick={() => setShowSavedKeywords(!showSavedKeywords)}
+            onClick={() => setIsSavedKeywordsOpen(true)}
             className="text-xs"
           >
             <Bookmark className="w-4 h-4 mr-1" />
@@ -217,25 +240,6 @@ export function KeywordPlannerPane({ isOpen, onClose }: KeywordPlannerPaneProps)
       {/* Content */}
       <div className="flex-1 overflow-auto">
         <div className="p-4 space-y-4">
-          {/* Saved Keywords Section */}
-          {showSavedKeywords && (
-            <SavedKeywordsSection />
-          )}
-          
-          {/* Top Results Section */}
-          {showTopResults && filters.keyword.trim() && (
-            <TopResultsSection
-              keyword={filters.keyword}
-              languageId={getLanguageName(filters.languageId)}
-              regionId={getRegionName(filters.regionId)}
-              results={getTopResults(filters.keyword, getLanguageName(filters.languageId), getRegionName(filters.regionId))?.results}
-              isLoading={isTopResultsLoading(filters.keyword, getLanguageName(filters.languageId), getRegionName(filters.regionId))}
-              error={getTopResultsError(filters.keyword, getLanguageName(filters.languageId), getRegionName(filters.regionId))}
-              onRetry={() => retryTopResults(filters.keyword, getLanguageName(filters.languageId), getRegionName(filters.regionId))}
-              onFetch={() => fetchTopResults(filters.keyword, getLanguageName(filters.languageId), getRegionName(filters.regionId))}
-            />
-          )}
-          
           {/* Search Form */}
           <form onSubmit={handleSubmit} className="space-y-3">
             <div>
@@ -376,7 +380,9 @@ export function KeywordPlannerPane({ isOpen, onClose }: KeywordPlannerPaneProps)
 
           {/* Results Section */}
           {hasResults && (
-            <div className="space-y-3">
+            <div className="grid grid-cols-1 gap-4 lg:grid-cols-[minmax(0,1fr)_360px]">
+              {/* Left: table */}
+              <div className="space-y-3 min-w-0">
               {/* Results Header */}
               <div className="flex items-center justify-between">
                 <div className="flex items-center gap-2">
@@ -442,77 +448,85 @@ export function KeywordPlannerPane({ isOpen, onClose }: KeywordPlannerPaneProps)
                   </thead>
                   <tbody className="divide-y divide-gray-200">
                     {sortedResults.map((result, index) => {
-                      const topResults = getTopResults(result.keyword, getLanguageName(filters.languageId), getRegionName(filters.regionId));
-                      const isTopResultsLoadingForRow = isTopResultsLoading(result.keyword, getLanguageName(filters.languageId), getRegionName(filters.regionId));
-                      const topResultsError = getTopResultsError(result.keyword, getLanguageName(filters.languageId), getRegionName(filters.regionId));
-                      
+                      const isSelected = result.keyword === activeTopResultsKeyword;
+
                       return (
-                        <React.Fragment key={index}>
-                          <tr className="hover:bg-gray-50">
-                            <td className="px-3 py-2 text-gray-900 font-medium">
+                        <tr
+                          key={index}
+                          className={`hover:bg-gray-50 cursor-pointer ${isSelected ? 'bg-blue-50 hover:bg-blue-50' : ''}`}
+                          onClick={() => setSelectedKeywordForTopResults(result.keyword)}
+                        >
+                          <td className="px-3 py-2 text-gray-900 font-medium">
                               {result.keyword}
-                            </td>
-                            <td className="px-3 py-2 text-gray-700">
-                              {formatNumber(result.avgMonthlySearches)}
-                            </td>
-                            <td className="px-3 py-2">
-                              <div className="flex items-center gap-2">
-                                <Badge 
-                                  variant="outline" 
-                                  className={`text-xs ${getCompetitionColor(result.competitionIndex)}`}
-                                >
-                                  {getCompetitionLevel(result.competitionIndex)}
-                                </Badge>
-                                <Button
-                                  variant="ghost"
-                                  size="sm"
-                                  onClick={() => handleSaveKeyword(result)}
-                                  className="h-6 w-6 p-0 text-gray-400 hover:text-blue-600"
-                                  title="Save to list"
-                                >
-                                  <BookmarkPlus className="w-3 h-3" />
-                                </Button>
-                                <Button
-                                  variant="ghost"
-                                  size="sm"
-                                  onClick={() => {
-                                    fetchTopResults(result.keyword, getLanguageName(filters.languageId), getRegionName(filters.regionId));
-                                  }}
-                                  className="h-6 w-6 p-0 text-gray-400 hover:text-green-600"
-                                  title="View top results"
-                                  disabled={isTopResultsLoadingForRow}
-                                >
-                                  {isTopResultsLoadingForRow ? (
-                                    <Loader2 className="w-3 h-3 animate-spin" />
-                                  ) : (
-                                    <ExternalLink className="w-3 h-3" />
-                                  )}
-                                </Button>
-                              </div>
-                            </td>
-                          </tr>
-                          {/* Top Results Row */}
-                          {(topResults?.results || isTopResultsLoadingForRow || topResultsError) && (
-                            <tr>
-                              <td colSpan={3} className="px-3 py-2 bg-gray-50">
-                                <TopResultsSection
-                                  keyword={result.keyword}
-                                  languageId={getLanguageName(filters.languageId)}
-                                  regionId={getRegionName(filters.regionId)}
-                                  results={topResults?.results}
-                                  isLoading={isTopResultsLoadingForRow}
-                                  error={topResultsError}
-                                  onRetry={() => retryTopResults(result.keyword, getLanguageName(filters.languageId), getRegionName(filters.regionId))}
-                                  onFetch={() => fetchTopResults(result.keyword, getLanguageName(filters.languageId), getRegionName(filters.regionId))}
-                                />
-                              </td>
-                            </tr>
-                          )}
-                        </React.Fragment>
+                          </td>
+                          <td className="px-3 py-2 text-gray-700">
+                            {formatNumber(result.avgMonthlySearches)}
+                          </td>
+                          <td className="px-3 py-2">
+                            <div className="flex items-center gap-2">
+                              <Badge
+                                variant="outline"
+                                className={`text-xs ${getCompetitionColor(result.competitionIndex)}`}
+                              >
+                                {getCompetitionLevel(result.competitionIndex)}
+                              </Badge>
+                              <Button
+                                variant="ghost"
+                                size="sm"
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  handleSaveKeyword(result);
+                                }}
+                                className="h-6 w-6 p-0 text-gray-400 hover:text-blue-600"
+                                title="Save to list"
+                              >
+                                <BookmarkPlus className="w-3 h-3" />
+                              </Button>
+                            </div>
+                          </td>
+                        </tr>
                       );
                     })}
                   </tbody>
                 </table>
+              </div>
+              </div>
+
+              {/* Right: Top results (always visible) */}
+              <div className="lg:sticky lg:top-4 h-fit">
+                <div className="flex items-center justify-between mb-2">
+                  <div className="text-sm font-medium text-gray-900">
+                    Top results
+                    {activeTopResultsKeyword ? (
+                      <span className="text-gray-500 font-normal"> for "{activeTopResultsKeyword}"</span>
+                    ) : null}
+                  </div>
+                </div>
+
+                {activeTopResultsKeyword ? (
+                  <TopResultsSection
+                    keyword={activeTopResultsKeyword}
+                    languageId={topResultsLanguage}
+                    regionId={topResultsRegion}
+                    results={activeTopResultsData?.results}
+                    isLoading={isActiveTopResultsLoading}
+                    error={activeTopResultsError}
+                    onRetry={() => retryTopResults(activeTopResultsKeyword, topResultsLanguage, topResultsRegion)}
+                    onFetch={() => {
+                      // Avoid rate-limit errors when we already have cached results
+                      if (
+                        !getTopResults(activeTopResultsKeyword, topResultsLanguage, topResultsRegion) &&
+                        !isTopResultsLoading(activeTopResultsKeyword, topResultsLanguage, topResultsRegion)
+                      ) {
+                        void fetchTopResults(activeTopResultsKeyword, topResultsLanguage, topResultsRegion);
+                      }
+                    }}
+                  />
+                ) : (
+                  <div className="border border-gray-200 rounded-md p-3 text-sm text-gray-500">
+                    Click a keyword to see its top results.
+                  </div>
+                )}
               </div>
             </div>
           )}
@@ -607,16 +621,21 @@ export function KeywordPlannerPane({ isOpen, onClose }: KeywordPlannerPaneProps)
       </div>
 
       {/* Save Keyword Modal */}
-      {selectedKeyword && (
+      {keywordToSave && (
         <SaveKeywordModal
           isOpen={saveModalOpen}
           onClose={() => {
             setSaveModalOpen(false);
-            setSelectedKeyword(null);
+            setKeywordToSave(null);
           }}
-          keyword={selectedKeyword}
+          keyword={keywordToSave}
         />
       )}
+
+      <SavedKeywordsModal
+        isOpen={isSavedKeywordsOpen}
+        onClose={() => setIsSavedKeywordsOpen(false)}
+      />
     </div>
   );
 } 

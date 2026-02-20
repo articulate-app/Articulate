@@ -6,9 +6,9 @@ import { Button } from '../ui/button'
 import { Input } from '../ui/input'
 import { InfiniteList } from '../ui/infinite-list'
 import { Badge } from '../ui/badge'
-import { useQueryClient } from '@tanstack/react-query'
+import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { InvoiceOrder, InvoiceLine } from '../../lib/types/billing'
-import { fetchIssuedInvoicesForOrder, unlinkInvoiceOrder, fetchInvoiceOrder, getInvoicePDFSignedUrl } from '../../lib/services/billing'
+import { unlinkInvoiceOrder, getInvoicePDFSignedUrl } from '../../lib/services/billing'
 import { updateInvoiceOrderInCaches } from './invoice-order-cache-utils'
 import { toast } from '../ui/use-toast'
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter, DialogDescription } from '../ui/dialog'
@@ -18,6 +18,7 @@ import { EditLinkedOrderModal } from './EditLinkedOrderModal'
 import { CreateAndIssueInvoiceModal } from './CreateAndIssueInvoiceModal'
 import { BillableTasksSection } from './BillableTasksSection'
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from '../ui/dropdown-menu'
+import { createClientComponentClient } from '@supabase/auth-helpers-nextjs'
 
 interface InvoiceOrderLinesDrawerProps {
   order: InvoiceOrder
@@ -28,6 +29,11 @@ interface InvoiceOrderLinesDrawerProps {
   hasOpenInvoiceDetail?: boolean // New prop to indicate if invoice detail pane is open
   hasOpenTaskDetails?: boolean // New prop to indicate if task details pane is open
   onRelatedDocumentSelect?: (document: any, type: string) => void // New prop for third pane navigation
+  /**
+   * When true, render as a normal panel inside an existing pane (not fixed to the viewport).
+   * This prevents the panel from being covered when the 3rd pane opens.
+   */
+  isEmbedded?: boolean
 }
 
 const formatPeriod = (start: string, end: string) => {
@@ -356,12 +362,12 @@ export function InvoiceOrderLinesDrawer({
   onTaskClick,
   hasOpenInvoiceDetail = false,
   hasOpenTaskDetails = false,
-  onRelatedDocumentSelect
+  onRelatedDocumentSelect,
+  isEmbedded = false,
 }: InvoiceOrderLinesDrawerProps) {
   const [localOrder, setLocalOrder] = useState<InvoiceOrder>(order)
   const [searchQuery, setSearchQuery] = useState('')
   const [issuedInvoices, setIssuedInvoices] = useState<any[]>([])
-  const [isLoadingIssuedInvoices, setIsLoadingIssuedInvoices] = useState(false)
   const [loadedInvoiceLines, setLoadedInvoiceLines] = useState<any[]>([])
   const [unlinkingInvoiceId, setUnlinkingInvoiceId] = useState<number | null>(null)
   const [unlinkConfirmation, setUnlinkConfirmation] = useState<{ invoice: any; invoiceName: string } | null>(null)
@@ -373,6 +379,27 @@ export function InvoiceOrderLinesDrawer({
   const [isBillableTasksPaneOpen, setIsBillableTasksPaneOpen] = useState(false)
   const [cachedTasksData, setCachedTasksData] = useState<{ tasks: any[], totalCount: number } | null>(null)
   const queryClient = useQueryClient()
+  const supabase = createClientComponentClient()
+
+  const {
+    data: paneData,
+    isLoading: isPaneLoading,
+    error: paneError,
+  } = useQuery({
+    queryKey: ['ar-invoice-order-pane', order.id],
+    queryFn: async () => {
+      const { data, error } = await supabase.rpc('fn_ar_invoice_order_pane', { p_invoice_order_id: order.id })
+      if (error) throw error
+      const pane = data as any
+      if (!pane?.header) throw new Error('Invoice order not found or unauthorized')
+      return {
+        header: pane.header,
+        issued_invoices: Array.isArray(pane.issued_invoices) ? pane.issued_invoices : [],
+        tasks: Array.isArray(pane.tasks) ? pane.tasks : [],
+      }
+    },
+    enabled: !!order?.id,
+  })
 
   
   // Prevent hydration mismatch
@@ -391,26 +418,30 @@ export function InvoiceOrderLinesDrawer({
     setLocalOrder(order)
   }, [order])
 
-  // Fetch issued invoices when order changes
+  // Hydrate pane state from fn_ar_invoice_order_pane response (single call).
   useEffect(() => {
-    const loadIssuedInvoices = async () => {
-      setIsLoadingIssuedInvoices(true)
-      try {
-        const { data, error } = await fetchIssuedInvoicesForOrder(order.id)
-        if (error) {
-          console.error('Error fetching issued invoices:', error)
-        } else {
-          setIssuedInvoices(data)
-        }
-      } catch (err) {
-        console.error('Error fetching issued invoices:', err)
-      } finally {
-        setIsLoadingIssuedInvoices(false)
-      }
-    }
+    if (!paneData) return
 
-    loadIssuedInvoices()
-  }, [order.id])
+    const h = paneData.header as any
+    // Keep existing UI model (InvoiceOrder) but merge in authoritative pane header fields.
+    setLocalOrder((prev) => ({
+      ...prev,
+      id: h.doc_id ?? prev.id,
+      project_name: h.projects_text ?? prev.project_name,
+      billing_period_start: h.doc_date ?? prev.billing_period_start,
+      billing_period_end: h.doc_date ?? prev.billing_period_end,
+      subtotal_amount: h.subtotal_amount ?? prev.subtotal_amount,
+      vat_amount: h.vat_amount ?? prev.vat_amount,
+      total_amount: h.total_amount ?? prev.total_amount,
+      currency_code: h.currency_code ?? prev.currency_code,
+      status: (h.status ?? prev.status) as any,
+      created_at: h.created_at ?? prev.created_at,
+      updated_at: h.updated_at ?? prev.updated_at,
+    }))
+
+    setIssuedInvoices(paneData.issued_invoices || [])
+    setCachedTasksData({ tasks: paneData.tasks || [], totalCount: (paneData.tasks || []).length })
+  }, [paneData])
 
   // Function to refresh the local order data from the store
   const refreshLocalOrderData = () => {
@@ -423,19 +454,6 @@ export function InvoiceOrderLinesDrawer({
         return
       }
     }
-    
-    // Fallback: fetch the latest order data
-    const refreshOrderData = async () => {
-      try {
-        const { data: updatedOrder, error } = await fetchInvoiceOrder(order.id)
-        if (!error && updatedOrder) {
-          setLocalOrder(updatedOrder)
-        }
-      } catch (err) {
-        console.error('Error refreshing order data:', err)
-      }
-    }
-    refreshOrderData()
   }
 
   // Listen for store updates to refresh the local order data
@@ -483,18 +501,8 @@ export function InvoiceOrderLinesDrawer({
     const handleInvoiceCreatedAndIssued = (event: CustomEvent) => {
       const { orderIds, action } = event.detail
       if (action === 'invoice_created_and_issued' && orderIds.includes(order.id)) {
-        // Refresh the issued invoices list to show the new invoice
-        const loadIssuedInvoices = async () => {
-          try {
-            const { data, error } = await fetchIssuedInvoicesForOrder(order.id)
-            if (!error && data) {
-              setIssuedInvoices(data)
-            }
-          } catch (err) {
-            console.error('Error fetching issued invoices:', err)
-          }
-        }
-        loadIssuedInvoices()
+        // Refresh pane data (includes issued invoices + tasks)
+        queryClient.invalidateQueries({ queryKey: ['ar-invoice-order-pane', order.id] })
         
         // Get updated order data directly from the store to update the summary immediately
         // Add a small delay to ensure the store has been updated
@@ -690,46 +698,57 @@ export function InvoiceOrderLinesDrawer({
 
   return (
     <>
-    <div className="fixed top-0 w-96 bg-white border-l border-gray-200 flex flex-col h-screen z-40 shadow-lg" style={{ 
-      right: hasOpenInvoiceDetail ? '384px' : (hasOpenTaskDetails ? '384px' : '0px')
-    }}>
-      {/* Header */}
-      <div className="flex items-center justify-between p-4 border-b border-gray-200 flex-shrink-0">
-        <div className="flex-1 min-w-0">
-          <h2 className="text-lg font-semibold text-gray-900 truncate">
-            Invoice Order
-          </h2>
+    <div
+      className={
+        isEmbedded
+          ? "w-full bg-white border-l border-gray-200 flex flex-col h-full"
+          : "fixed top-0 w-96 bg-white border-l border-gray-200 flex flex-col h-screen z-40 shadow-lg"
+      }
+      style={
+        isEmbedded
+          ? undefined
+          : { right: hasOpenInvoiceDetail ? '384px' : (hasOpenTaskDetails ? '384px' : '0px') }
+      }
+    >
+      {/* Header (hide when embedded; DocumentDetailsPane already provides a header) */}
+      {!isEmbedded && (
+        <div className="flex items-center justify-between p-4 border-b border-gray-200 flex-shrink-0">
+          <div className="flex-1 min-w-0">
+            <h2 className="text-lg font-semibold text-gray-900 truncate">
+              Invoice Order
+            </h2>
+          </div>
+          <div className="flex items-center space-x-2">
+            <DropdownMenu>
+              <DropdownMenuTrigger asChild>
+                <Button variant="ghost" size="sm" className="h-8 w-8 p-0">
+                  <MoreHorizontal className="h-4 w-4" />
+                </Button>
+              </DropdownMenuTrigger>
+              <DropdownMenuContent align="end">
+                <DropdownMenuItem onClick={handleCopyLink}>
+                  <Copy className="w-4 h-4 mr-2" />
+                  Copy link
+                </DropdownMenuItem>
+                <DropdownMenuItem onClick={() => {
+                  const params = new URLSearchParams()
+                  params.set('ctx', 'order')
+                  params.set('id', localOrder.id.toString())
+                  params.set('focus', 'true')
+                  const url = `/billing/billable-tasks?${params.toString()}`
+                  window.location.href = url
+                }}>
+                  <FileText className="w-4 h-4 mr-2" />
+                  See Billable Tasks
+                </DropdownMenuItem>
+              </DropdownMenuContent>
+            </DropdownMenu>
+            <Button variant="ghost" size="sm" onClick={onClose}>
+              <X className="w-4 h-4" />
+            </Button>
+          </div>
         </div>
-        <div className="flex items-center space-x-2">
-          <DropdownMenu>
-            <DropdownMenuTrigger asChild>
-              <Button variant="ghost" size="sm" className="h-8 w-8 p-0">
-                <MoreHorizontal className="h-4 w-4" />
-              </Button>
-            </DropdownMenuTrigger>
-            <DropdownMenuContent align="end">
-              <DropdownMenuItem onClick={handleCopyLink}>
-                <Copy className="w-4 h-4 mr-2" />
-                Copy link
-              </DropdownMenuItem>
-              <DropdownMenuItem onClick={() => {
-                const params = new URLSearchParams()
-                params.set('ctx', 'order')
-                params.set('id', localOrder.id.toString())
-                params.set('focus', 'true')
-                const url = `/billing/billable-tasks?${params.toString()}`
-                window.location.href = url
-              }}>
-                <FileText className="w-4 h-4 mr-2" />
-                See Billable Tasks
-              </DropdownMenuItem>
-            </DropdownMenuContent>
-          </DropdownMenu>
-        <Button variant="ghost" size="sm" onClick={onClose}>
-          <X className="w-4 h-4" />
-        </Button>
-        </div>
-      </div>
+      )}
 
       {/* Content */}
       <div className="overflow-auto pb-20" style={{ height: 'calc(100% - 120px)' }}>
@@ -786,7 +805,7 @@ export function InvoiceOrderLinesDrawer({
         <div className="p-4">
           <h3 className="text-sm font-medium text-gray-900 mb-3">Invoices</h3>
           <div>
-          {isLoadingIssuedInvoices ? (
+          {isPaneLoading ? (
             <div className="space-y-2">
               {Array.from({ length: 3 }).map((_, i) => (
                 <div key={i} className="flex items-center justify-between p-3 border border-gray-200 rounded animate-pulse">
@@ -800,6 +819,10 @@ export function InvoiceOrderLinesDrawer({
                   </div>
                 </div>
               ))}
+            </div>
+          ) : paneError ? (
+            <div className="text-center py-4">
+              <p className="text-sm text-red-500">Failed to load issued invoices</p>
             </div>
           ) : issuedInvoices.length > 0 ? (
             <div className="mb-4">
@@ -946,14 +969,21 @@ export function InvoiceOrderLinesDrawer({
 
         {/* Billable Tasks Section */}
         <div className="p-4">
-          <BillableTasksSection
-            ctxType="order"
-            ctxId={order.id}
-            title="Tasks"
-            onTaskClick={onTaskClick}
-            onExpand={() => setIsBillableTasksPaneOpen(true)}
-            onDataLoaded={(tasks, totalCount) => setCachedTasksData({ tasks, totalCount })}
-          />
+          {cachedTasksData ? (
+            <BillableTasksSection
+              ctxType="order"
+              ctxId={order.id}
+              title="Tasks"
+              onTaskClick={onTaskClick}
+              onExpand={() => setIsBillableTasksPaneOpen(true)}
+              preloadedTasks={cachedTasksData.tasks}
+              preloadedTotalCount={cachedTasksData.totalCount}
+            />
+          ) : (
+            <div className="text-sm text-gray-500">
+              {isPaneLoading ? 'Loading tasks…' : 'No tasks found'}
+            </div>
+          )}
         </div>
       </div>
 
@@ -987,14 +1017,20 @@ export function InvoiceOrderLinesDrawer({
           </Button>
         </div>
         <div className="flex-1 overflow-auto p-4">
-          <BillableTasksSection
-            ctxType="order"
-            ctxId={order.id}
-            title="Tasks"
-            onTaskClick={onTaskClick}
-            preloadedTasks={cachedTasksData?.tasks}
-            preloadedTotalCount={cachedTasksData?.totalCount}
-          />
+          {cachedTasksData ? (
+            <BillableTasksSection
+              ctxType="order"
+              ctxId={order.id}
+              title="Tasks"
+              onTaskClick={onTaskClick}
+              preloadedTasks={cachedTasksData.tasks}
+              preloadedTotalCount={cachedTasksData.totalCount}
+            />
+          ) : (
+            <div className="text-sm text-gray-500">
+              {isPaneLoading ? 'Loading tasks…' : 'No tasks found'}
+            </div>
+          )}
         </div>
       </div>
     )}
@@ -1019,18 +1055,8 @@ export function InvoiceOrderLinesDrawer({
             description: `Invoice #${invoice.issued_invoice_id} has been linked to this order.`,
           })
         } else {
-          // This is for create and issue - refresh data since it's handled by CreateAndIssueInvoiceModal optimistically
-          const loadIssuedInvoices = async () => {
-            try {
-              const { data, error } = await fetchIssuedInvoicesForOrder(order.id)
-              if (!error && data) {
-                setIssuedInvoices(data)
-              }
-            } catch (err) {
-              console.error('Error refreshing issued invoices:', err)
-            }
-          }
-          loadIssuedInvoices()
+          // This is for create and issue - refresh pane data
+          queryClient.invalidateQueries({ queryKey: ['ar-invoice-order-pane', order.id] })
         }
       }}
     />
@@ -1089,18 +1115,8 @@ export function InvoiceOrderLinesDrawer({
         setEditingLinkedInvoice(null)
       }}
       onOrderUpdated={() => {
-        // Refresh the issued invoices list
-        const loadIssuedInvoices = async () => {
-          try {
-            const { data, error } = await fetchIssuedInvoicesForOrder(order.id)
-            if (!error && data) {
-              setIssuedInvoices(data)
-            }
-          } catch (err) {
-            console.error('Error refreshing issued invoices:', err)
-          }
-        }
-        loadIssuedInvoices()
+        // Refresh pane data
+        queryClient.invalidateQueries({ queryKey: ['ar-invoice-order-pane', order.id] })
       }}
     />
 
@@ -1110,18 +1126,8 @@ export function InvoiceOrderLinesDrawer({
       onClose={() => setIsCreateAndIssueModalOpen(false)}
       selectedOrders={[localOrder]}
       onSuccess={(invoiceId: number) => {
-        // Refresh the issued invoices list
-        const loadIssuedInvoices = async () => {
-          try {
-            const { data, error } = await fetchIssuedInvoicesForOrder(order.id)
-            if (!error && data) {
-              setIssuedInvoices(data)
-            }
-          } catch (err) {
-            console.error('Error refreshing issued invoices:', err)
-          }
-        }
-        loadIssuedInvoices()
+        // Refresh pane data
+        queryClient.invalidateQueries({ queryKey: ['ar-invoice-order-pane', order.id] })
         
         // Also trigger a refresh of the invoice order data in the parent component
         if (typeof window !== 'undefined') {

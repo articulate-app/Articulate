@@ -15,7 +15,7 @@ import type { AiThread, AiMessage } from "./types"
  * Ensure an AI thread exists for a task
  * Note: ai_threads table doesn't have channel_id - threads are per task, not per channel
  * @param taskId - The task ID
- * @param channelId - The channel ID (used for context, not stored in thread)
+ * @param channelId - The channel ID (used for context, not stored in thread) - optional
  * @returns The thread ID
  */
 export async function ensureAiThread({
@@ -23,7 +23,7 @@ export async function ensureAiThread({
   channelId,
 }: {
   taskId: number
-  channelId: number
+  channelId?: number
 }): Promise<string> {
   const supabase = getSupabaseBrowser()
   
@@ -61,6 +61,116 @@ export async function ensureAiThread({
   if (createError) {
     console.error('Error creating thread:', createError)
     throw new Error('Failed to create AI thread')
+  }
+  
+  return created.id
+}
+
+/**
+ * Ensure an AI thread exists for a task (alias for ensureAiThread without channel requirement)
+ * @param taskId - The task ID
+ * @returns The thread ID
+ */
+export async function ensureTaskThread(taskId: number): Promise<string> {
+  return ensureAiThread({ taskId })
+}
+
+/**
+ * Ensure an AI thread exists for a project
+ * Looks for existing thread with project_id and task_id IS NULL
+ * Creates one if it doesn't exist
+ * @param projectId - The project ID
+ * @returns The thread ID
+ */
+export async function ensureProjectThread(projectId: number): Promise<string> {
+  const supabase = getSupabaseBrowser()
+  
+  // 1. Try to fetch existing thread for this project
+  const { data, error: fetchError } = await supabase
+    .from('ai_threads')
+    .select('*')
+    .eq('project_id', projectId)
+    .is('task_id', null)
+    .eq('scope', 'project')
+    .eq('is_deleted', false)
+    .order('created_at', { ascending: false })
+    .limit(1)
+    .maybeSingle()
+  
+  if (fetchError) {
+    console.error('Error fetching existing project thread:', fetchError)
+    throw new Error('Failed to fetch existing project thread')
+  }
+  
+  if (data) return data.id
+  
+  // 2. Create new one
+  const { data: created, error: createError } = await supabase
+    .from('ai_threads')
+    .insert({
+      project_id: projectId,
+      task_id: null,
+      scope: 'project',
+      visibility: 'project',
+      is_collaborative: true,
+      title: 'Project AI Assistant'
+    })
+    .select('*')
+    .single()
+  
+  if (createError) {
+    console.error('Error creating project thread:', createError)
+    throw new Error('Failed to create project AI thread')
+  }
+  
+  return created.id
+}
+
+/**
+ * Ensure an AI thread exists for global chat
+ * Looks for existing thread with project_id IS NULL, task_id IS NULL
+ * Creates one if it doesn't exist
+ * @returns The thread ID
+ */
+export async function ensureGlobalThread(): Promise<string> {
+  const supabase = getSupabaseBrowser()
+  
+  // 1. Try to fetch existing global thread
+  const { data, error: fetchError } = await supabase
+    .from('ai_threads')
+    .select('*')
+    .is('project_id', null)
+    .is('task_id', null)
+    .eq('scope', 'global')
+    .eq('is_deleted', false)
+    .order('created_at', { ascending: false })
+    .limit(1)
+    .maybeSingle()
+  
+  if (fetchError) {
+    console.error('Error fetching existing global thread:', fetchError)
+    throw new Error('Failed to fetch existing global thread')
+  }
+  
+  if (data) return data.id
+  
+  // 2. Create new one
+  const { data: created, error: createError } = await supabase
+    .from('ai_threads')
+    .insert({
+      project_id: null,
+      task_id: null,
+      scope: 'global',
+      visibility: 'private',
+      is_collaborative: false,
+      title: 'Global AI Assistant'
+    })
+    .select('*')
+    .single()
+  
+  if (createError) {
+    console.error('Error creating global thread:', createError)
+    throw new Error('Failed to create global AI thread')
   }
   
   return created.id
@@ -368,5 +478,59 @@ export function parseAIResponse(
   }
   
   return contentMap
+}
+
+/**
+ * Build a generic task prompt for AI content generation
+ * @param params - Task information for building the prompt
+ * @returns Formatted prompt string
+ */
+export function buildGenericTaskPrompt({
+  projectTitle,
+  contentTypeTitle,
+  taskTitle,
+  taskNotes,
+  taskBriefing,
+  languageCode,
+}: {
+  projectTitle?: string | null
+  contentTypeTitle?: string | null
+  taskTitle: string
+  taskNotes?: string | null
+  taskBriefing?: string | null
+  languageCode?: string | null
+}): string {
+  const lines: string[] = []
+
+  lines.push(`Create the content for this task.`)
+  lines.push("")
+
+  lines.push("Context:")
+
+  if (projectTitle) {
+    lines.push(`- Project: ${projectTitle}`)
+  }
+
+  if (contentTypeTitle) {
+    lines.push(`- Content type: ${contentTypeTitle}`)
+  }
+
+  if (languageCode) {
+    lines.push(`- Language: ${languageCode}`)
+  }
+
+  lines.push(`- Task: ${taskTitle}`)
+
+  if (taskBriefing) {
+    lines.push(`- Briefing: ${taskBriefing}`)
+  }
+
+  if (taskNotes) {
+    lines.push(`- Client notes: ${taskNotes}`)
+  }
+
+  lines.push("")
+
+  return lines.join("\n")
 }
 

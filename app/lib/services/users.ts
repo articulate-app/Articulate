@@ -228,6 +228,20 @@ export async function updateUserProfile(
 }
 
 /**
+ * Update user's photo storage path (or legacy URL).
+ */
+export async function updateUserPhoto(userId: number, photo: string | null) {
+  const { data, error } = await supabase
+    .from("users")
+    .update({ photo })
+    .eq("id", userId)
+    .select()
+    .single()
+
+  return { data, error }
+}
+
+/**
  * Soft delete a user
  */
 export async function softDeleteUser(userId: number) {
@@ -304,13 +318,13 @@ export async function searchUserDmMentions(
 
 /**
  * Get users for a specific project (project watchers)
- * Returns users in the format { value: string, label: string }
+ * Returns users in the format { value: string, label: string, photo?: string | null }
  */
-export async function getUsersForProject(projectId: string | number): Promise<{ value: string; label: string }[]> {
+export async function getUsersForProject(projectId: string | number): Promise<{ value: string; label: string; photo?: string | null }[]> {
   try {
     const { data, error } = await supabase
       .from('v_project_watchers_with_user')
-      .select('user_id, full_name')
+      .select('user_id, full_name, photo')
       .eq('project_id', projectId)
       .order('full_name')
 
@@ -324,6 +338,7 @@ export async function getUsersForProject(projectId: string | number): Promise<{ 
       .map((user: any) => ({
         value: String(user.user_id),
         label: user.full_name || 'Unnamed User',
+        photo: user.photo ?? null,
       }))
   } catch (error) {
     console.error('Error in getUsersForProject:', error)
