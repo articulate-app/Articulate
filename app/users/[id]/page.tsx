@@ -6,13 +6,14 @@ import { UserDetailsPage } from '../../components/users/UserDetailsPageTabs'
 import { useState, useEffect, useRef } from 'react'
 import { Panel, PanelGroup, PanelResizeHandle } from 'react-resizable-panels'
 import { ThreadedRealtimeChat } from '../../components/threaded-realtime-chat'
-import { X, Trash2, Plus, Clock, Search, Loader2 } from 'lucide-react'
+import { X, Trash2, Plus, Clock, Search, Loader2, ChevronLeft } from 'lucide-react'
 import { useCurrentUserStore } from '../../store/current-user'
 import { TaskDetails } from '../../components/tasks/TaskDetails'
 import { BriefingsPage } from '../../components/project-briefings/BriefingsPage'
 import { useQuery } from '@tanstack/react-query'
 import { createClientComponentClient } from '@supabase/auth-helpers-nextjs'
 import { useTaskEditFields } from '../../hooks/use-task-edit-fields'
+import { invokeEdgeFunctionFetch } from '../../lib/edge-functions'
 import {
   AlertDialog,
   AlertDialogAction,
@@ -56,6 +57,9 @@ export default function UserPage() {
   // Read right pane state from URL
   const rightView = searchParams.get('rightView')
   const rightThreadId = searchParams.get('rightThreadId')
+  const rightMentionId = searchParams.get('rightMentionId')
+  const shouldAutoFocusComposer = searchParams.get('rightComposerFocus') === '1'
+  const activeTab = searchParams.get('tab')
   const rightTaskId = searchParams.get('rightTaskId')
   const rightProjectId = searchParams.get('rightProjectId')
   const rightTeamId = searchParams.get('rightTeamId')
@@ -76,20 +80,21 @@ export default function UserPage() {
 
   // Fetch task bootstrap data using the correct endpoint and method
   const { data: taskBootstrap, isLoading: taskLoading } = useQuery({
-    queryKey: ['task', rightTaskId, accessToken],
+    queryKey: ['task', rightTaskId],
     queryFn: async () => {
-      if (!rightTaskId || !accessToken) return null
-      
-      const response = await fetch(
-        `${process.env.NEXT_PUBLIC_SUPABASE_URL}/functions/v1/task-details-bootstrap?task_id=${rightTaskId}`,
-        {
+      if (!rightTaskId) return null
+
+      const response = await invokeEdgeFunctionFetch({
+        supabase,
+        url: `${process.env.NEXT_PUBLIC_SUPABASE_URL}/functions/v1/task-details-bootstrap?task_id=${rightTaskId}`,
+        debugLabel: "task-details-bootstrap",
+        init: {
           method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-            Authorization: `Bearer ${accessToken}`,
-          },
-        }
-      )
+        },
+        headers: {
+          'Content-Type': 'application/json',
+        },
+      })
       
       if (!response.ok) {
         console.error('Failed to fetch task details:', response.status, response.statusText)
@@ -100,7 +105,7 @@ export default function UserPage() {
       console.log('Task details bootstrap data:', data)
       return data
     },
-    enabled: rightView === 'task-details' && !!rightTaskId && !!accessToken,
+    enabled: rightView === 'task-details' && !!rightTaskId,
     staleTime: 0,
   })
 
@@ -119,7 +124,24 @@ export default function UserPage() {
   const [isSearching, setIsSearching] = useState(false)
   const [showSearchResults, setShowSearchResults] = useState(false)
   const [focusedMentionId, setFocusedMentionId] = useState<number | null>(null)
+  const [activeThreadId, setActiveThreadId] = useState<number | null>(null)
+  const [activeMentionId, setActiveMentionId] = useState<number | null>(null)
   const searchResultsRef = useRef<HTMLDivElement>(null)
+
+  useEffect(() => {
+    if (rightView !== 'thread-chat' || !rightThreadId) return
+    const nextThreadId = Number(rightThreadId)
+    if (!Number.isFinite(nextThreadId)) return
+    setActiveThreadId(nextThreadId)
+    const nextMentionId = rightMentionId ? Number(rightMentionId) : null
+    setActiveMentionId(nextMentionId && Number.isFinite(nextMentionId) ? nextMentionId : null)
+  }, [rightView, rightThreadId, rightMentionId])
+
+  useEffect(() => {
+    if (rightView === 'thread-chat') return
+    setActiveThreadId(null)
+    setActiveMentionId(null)
+  }, [rightView])
 
   // Close search results when clicking outside
   useEffect(() => {
@@ -140,20 +162,20 @@ export default function UserPage() {
 
   // Fetch thread info for DM threads
   const { data: threadInfo } = useQuery({
-    queryKey: ['thread-info', rightThreadId],
+    queryKey: ['thread-info', activeThreadId],
     queryFn: async () => {
-      if (!rightThreadId || rightView !== 'thread-chat') return null
+      if (!activeThreadId || rightView !== 'thread-chat') return null
       
       const { data, error } = await supabase
         .from('threads')
         .select('id, title')
-        .eq('id', rightThreadId)
+        .eq('id', activeThreadId)
         .single()
       
       if (error) throw error
       return data
     },
-    enabled: rightView === 'thread-chat' && !!rightThreadId,
+    enabled: rightView === 'thread-chat' && !!activeThreadId,
   })
 
   // Fetch user profile for search
@@ -196,11 +218,11 @@ export default function UserPage() {
   }, [searchTerm, userId])
 
   const handleDeleteThread = async () => {
-    if (!rightThreadId) return
+    if (!activeThreadId) return
     
     setIsDeletingThread(true)
     try {
-      const { error } = await deleteThread(Number(rightThreadId))
+      const { error } = await deleteThread(activeThreadId)
       
       if (error) throw error
 
@@ -274,6 +296,8 @@ export default function UserPage() {
     const newParams = new URLSearchParams(searchParams.toString())
     newParams.set('rightView', 'thread-chat')
     newParams.set('rightThreadId', String(threadId))
+    newParams.delete('rightMentionId')
+    newParams.delete('rightComposerFocus')
     router.push(`${pathname}?${newParams.toString()}`)
   }
 
@@ -287,16 +311,17 @@ export default function UserPage() {
     const newParams = new URLSearchParams(searchParams.toString())
     newParams.set('rightView', 'thread-chat')
     newParams.set('rightThreadId', String(result.thread_id))
+    newParams.set('rightMentionId', String(result.mention_id))
+    newParams.delete('rightComposerFocus')
     router.push(`${pathname}?${newParams.toString()}`)
-    
-    // Set focused mention ID to highlight the message
-    setFocusedMentionId(result.mention_id)
   }
 
   const handleCloseRightPane = () => {
     const newParams = new URLSearchParams(searchParams.toString())
     newParams.delete('rightView')
     newParams.delete('rightThreadId')
+    newParams.delete('rightMentionId')
+    newParams.delete('rightComposerFocus')
     newParams.delete('rightTaskId')
     newParams.delete('rightProjectId')
     newParams.delete('rightTeamId')
@@ -349,14 +374,27 @@ export default function UserPage() {
                   {/* Right Pane Header */}
                   <div className="flex flex-col border-b bg-white">
                     <div className="flex items-center justify-between px-4 py-3">
-                      <h3 className="font-semibold text-sm text-gray-900">
-                        {rightView === 'thread-chat' && (threadInfo?.title || 'Chat')}
-                        {rightView === 'task-details' && 'Task Details'}
-                        {rightView === 'project-details' && 'Project Details'}
-                        {rightView === 'team-details' && 'Team Details'}
-                      </h3>
                       <div className="flex items-center gap-2">
-                        {rightView === 'thread-chat' && rightThreadId && (
+                        {rightView === 'thread-chat' && activeTab === 'comments' ? (
+                          <button
+                            type="button"
+                            onClick={handleCloseRightPane}
+                            className="inline-flex h-7 w-7 items-center justify-center rounded hover:bg-gray-100"
+                            aria-label="Back to comments list"
+                            title="Back to comments list"
+                          >
+                            <ChevronLeft className="h-4 w-4 text-gray-600" />
+                          </button>
+                        ) : null}
+                        <h3 className="font-semibold text-sm text-gray-900">
+                          {rightView === 'thread-chat' && (threadInfo?.title || 'Chat')}
+                          {rightView === 'task-details' && 'Task Details'}
+                          {rightView === 'project-details' && 'Project Details'}
+                          {rightView === 'team-details' && 'Team Details'}
+                        </h3>
+                      </div>
+                      <div className="flex items-center gap-2">
+                        {rightView === 'thread-chat' && activeThreadId && (
                           <>
                             {isSearchExpanded ? (
                               <div className="relative flex-1 max-w-xs" ref={searchResultsRef}>
@@ -485,17 +523,25 @@ export default function UserPage() {
 
                   {/* Right Pane Content */}
                   <div className="flex-1 overflow-auto">
-                    {rightView === 'thread-chat' && rightThreadId && publicUserId && (
+                    {rightView === 'thread-chat' && activeThreadId && publicUserId && (
                       <ThreadedRealtimeChat
-                        threadId={Number(rightThreadId)}
+                        key={`user-thread-chat-${activeThreadId}`}
+                        threadId={activeThreadId}
                         currentUserId={publicUserId}
                         currentUserName={fullName || undefined}
                         currentUserAvatar={userMetadata?.avatar_url || undefined}
                         currentUserEmail={userMetadata?.email || ''}
                         currentPublicUserId={publicUserId}
                         hideInput={false}
-                        focusedMentionId={focusedMentionId}
-                        onFocusedMentionCleared={() => setFocusedMentionId(null)}
+                        focusedMentionId={
+                          focusedMentionId ??
+                          activeMentionId
+                        }
+                        onFocusedMentionCleared={() => {
+                          setFocusedMentionId(null)
+                          setActiveMentionId(null)
+                        }}
+                        autoFocusInput={shouldAutoFocusComposer}
                       />
                     )}
 
@@ -600,7 +646,7 @@ export default function UserPage() {
         open={showThreadHistory}
         onOpenChange={setShowThreadHistory}
         userId={userId}
-        activeThreadId={rightThreadId ? parseInt(rightThreadId, 10) : null}
+        activeThreadId={activeThreadId}
         onSelectThread={handleSelectThread}
       />
 

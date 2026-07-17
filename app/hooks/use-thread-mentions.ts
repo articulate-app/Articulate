@@ -1,6 +1,8 @@
-import { useQuery, useQueryClient } from '@tanstack/react-query'
+import { useMemo } from 'react'
+import { useQueryClient } from '@tanstack/react-query'
 import { createClientComponentClient } from '@supabase/auth-helpers-nextjs'
 import { useEffect } from 'react'
+import { useThreadMentionsBatch } from './use-thread-mentions-batch'
 
 export interface ThreadMention {
   id: number
@@ -20,7 +22,7 @@ export interface ThreadMention {
 }
 
 interface UseThreadMentionsOptions {
-  threadId: number | null
+  threadId: number | string | null
   pageSize?: number
   enabled?: boolean
 }
@@ -29,38 +31,28 @@ export function useThreadMentions({ threadId, pageSize = 50, enabled = true }: U
   const supabase = createClientComponentClient()
   const queryClient = useQueryClient()
 
-  // Fetch mentions for the thread
-  const { data: mentions, isLoading, error, refetch } = useQuery({
-    queryKey: ['thread-mentions', threadId, pageSize],
-    queryFn: async () => {
-      if (!threadId) return []
-
-      // Try the view first, fallback to mentions table if the view errors (no throwing)
-      const viewResult = await supabase
-        .from('v_thread_mentions_i_can_see')
-        .select('*, users:created_by(id, full_name, email, photo)')
-        .eq('thread_id', threadId)
-        .order('created_at', { ascending: true })
-        .limit(pageSize)
-
-      if (!viewResult.error) {
-        return (viewResult.data || []) as ThreadMention[]
-      }
-
-      const tableResult = await supabase
-        .from('mentions')
-        .select('*, users:created_by(id, full_name, email, photo)')
-        .eq('thread_id', threadId)
-        .order('created_at', { ascending: true })
-        .limit(pageSize)
-
-      if (tableResult.error) throw tableResult.error
-
-      // Table doesn't include is_read; default false (read state is managed via seen_mentions)
-      return ((tableResult.data || []) as any[]).map((m) => ({ ...m, is_read: false })) as ThreadMention[]
-    },
-    enabled: enabled && !!threadId,
-  })
+  const numericThreadId = threadId != null ? Number(threadId) : null
+  const threadMentionsBatchQuery = useThreadMentionsBatch(
+    numericThreadId != null && Number.isFinite(numericThreadId) ? [numericThreadId] : [],
+    { enabled: enabled && numericThreadId != null && Number.isFinite(numericThreadId) }
+  )
+  const mentions = useMemo(() => {
+    const rows = threadMentionsBatchQuery.data ?? []
+    return rows
+      .filter((row) => Number(row.thread_id) === Number(threadId))
+      .slice(0, pageSize)
+      .map((row) => ({
+        id: row.id,
+        thread_id: row.thread_id,
+        comment: row.comment ?? '',
+        attachment: row.attachment ?? null,
+        reply_to_id: row.reply_to_id ?? null,
+        created_at: row.created_at ?? new Date().toISOString(),
+        created_by: row.created_by ?? 0,
+        is_read: false,
+        users: row.users ?? null,
+      })) as ThreadMention[]
+  }, [threadMentionsBatchQuery.data, threadId, pageSize])
 
   // Realtime subscription for new mentions in this thread
   useEffect(() => {
@@ -77,7 +69,7 @@ export function useThreadMentions({ threadId, pageSize = 50, enabled = true }: U
           filter: `thread_id=eq.${threadId}`,
         },
         () => {
-          queryClient.invalidateQueries({ queryKey: ['thread-mentions', threadId] })
+          queryClient.invalidateQueries({ queryKey: ['thread-mentions-batch'] })
         }
       )
       .subscribe()
@@ -89,9 +81,9 @@ export function useThreadMentions({ threadId, pageSize = 50, enabled = true }: U
 
   return {
     mentions: mentions || [],
-    isLoading,
-    error,
-    refetch,
+    isLoading: threadMentionsBatchQuery.isLoading,
+    error: threadMentionsBatchQuery.error,
+    refetch: threadMentionsBatchQuery.refetch,
   }
 }
 

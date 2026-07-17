@@ -41,8 +41,17 @@ import {
   DialogTitle,
 } from "../ui/dialog"
 
+interface DateRangeValue {
+  from?: Date
+  to?: Date
+}
+
 interface ProjectKeywordTrackingTabProps {
   projectId: number
+  /** Overview embed: global rankings chart only. */
+  variant?: "full" | "preview"
+  dateRange?: DateRangeValue
+  onDateRangeChange?: (range: DateRangeValue) => void
 }
 
 type KeywordRow = {
@@ -83,11 +92,6 @@ type KeywordSnapshot = {
   found_url: string | null
   found_domain: string | null
   top_results: any | null
-}
-
-interface DateRangeValue {
-  from?: Date
-  to?: Date
 }
 
 const LANGUAGE_OPTIONS: { code: string; label: string }[] = [
@@ -137,7 +141,11 @@ const shortenUrl = (url: string) => {
 
 export function ProjectKeywordTrackingTab({
   projectId,
+  variant = "full",
+  dateRange: controlledDateRange,
+  onDateRangeChange,
 }: ProjectKeywordTrackingTabProps) {
+  const isPreview = variant === "preview"
   const supabase = useMemo(() => createClient(), [])
   const queryClient = useQueryClient()
   const functionsClient = useMemo(() => createClientComponentClient(), [])
@@ -152,9 +160,11 @@ export function ProjectKeywordTrackingTab({
   const [isSyncing, setIsSyncing] = useState(false)
   const [selectedKeywordId, setSelectedKeywordId] = useState<number | null>(null)
   const [isDetailsOpen, setIsDetailsOpen] = useState(false)
-  const [dateRange, setDateRange] = useState<DateRangeValue>(() =>
+  const [uncontrolledDateRange, setUncontrolledDateRange] = useState<DateRangeValue>(() =>
     getDefaultDateRange(),
   )
+  const dateRange = controlledDateRange ?? uncontrolledDateRange
+  const setDateRange = onDateRangeChange ?? setUncontrolledDateRange
   const [selectedDate, setSelectedDate] = useState<Date | null>(null)
   const [snapshot, setSnapshot] = useState<KeywordSnapshot | null>(null)
   const [isSnapshotLoading, setIsSnapshotLoading] = useState(false)
@@ -753,6 +763,110 @@ export function ProjectKeywordTrackingTab({
     })
   }
 
+  const globalRankingsCard = (
+    <Card
+      className={
+        isPreview
+          ? "min-w-0 border-0 bg-transparent p-0 shadow-none"
+          : "min-w-0 p-4 md:p-6"
+      }
+    >
+      {isPreview ? null : (
+        <div className="mb-3 min-w-0">
+          <h4 className="text-sm font-semibold text-gray-900">
+            Global rankings
+          </h4>
+          <p className="text-[11px] text-gray-500">
+            Best and average rank across all tracked keywords.
+          </p>
+        </div>
+      )}
+      <div className="h-64 min-w-0">
+        {isLoadingGlobal ? (
+          <div className="flex h-full items-center justify-center text-sm text-gray-500">
+            <Loader2 className="mr-2 h-5 w-5 animate-spin" />
+            Loading global rankings…
+          </div>
+        ) : globalError ? (
+          <div className="flex h-full items-center gap-2 rounded-md border border-red-200 bg-red-50 px-3 py-2 text-xs text-red-700">
+            <AlertCircle className="h-4 w-4" />
+            <span>Failed to load global rankings.</span>
+          </div>
+        ) : !hasGlobalSeries ? (
+          <div className="flex h-full items-center justify-center text-sm text-gray-500">
+            No ranking data yet. Use &quot;Check rankings now&quot; to
+            fetch data.
+          </div>
+        ) : (
+          <ResponsiveContainer width="100%" height="100%">
+            <LineChart
+              data={globalSeries}
+              margin={
+                isPreview
+                  ? { top: 8, right: 8, left: 0, bottom: 0 }
+                  : { top: 5, right: 20, left: 0, bottom: 5 }
+              }
+            >
+              <CartesianGrid strokeDasharray="3 3" stroke="#e5e7eb" />
+              <XAxis
+                dataKey="check_date"
+                stroke="#6b7280"
+                style={{ fontSize: "12px" }}
+                tickFormatter={formatShortDate}
+                tickMargin={8}
+              />
+              <YAxis
+                width={isPreview ? 36 : 48}
+                stroke="#6b7280"
+                style={{ fontSize: "12px" }}
+                reversed
+              />
+              <RechartsTooltip
+                formatter={(value: any, name: string) => {
+                  if (value == null) return ["—", name]
+                  return [value, name === "best_rank" ? "Best rank" : "Avg rank"]
+                }}
+                labelFormatter={(label) =>
+                  `Date: ${format(new Date(label), "yyyy-MM-dd")}`
+                }
+              />
+              {isPreview ? null : (
+                <Legend
+                  formatter={(value) =>
+                    value === "best_rank" ? "Best rank" : "Avg rank"
+                  }
+                />
+              )}
+              {isPreview ? null : (
+                <Line
+                  type="monotone"
+                  dataKey="best_rank"
+                  stroke="#2563eb"
+                  strokeWidth={2}
+                  dot={false}
+                  activeDot={{ r: 4 }}
+                />
+              )}
+              <Line
+                type="monotone"
+                dataKey="avg_rank"
+                name={isPreview ? "Avg rank" : "avg_rank"}
+                stroke="#10b981"
+                strokeWidth={2}
+                dot={false}
+                activeDot={{ r: 4 }}
+              />
+            </LineChart>
+          </ResponsiveContainer>
+        )}
+      </div>
+    </Card>
+  )
+
+  if (isPreview) {
+    return <div className="min-w-0">{globalRankingsCard}</div>
+  }
+
   return (
     <>
       <div className="space-y-6">
@@ -760,9 +874,9 @@ export function ProjectKeywordTrackingTab({
       <div className="space-y-4">
         <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
           <div>
-            <h3 className="text-base font-semibold text-gray-900">
+            <h2 className="text-xl font-semibold">
               Ranking evolution
-            </h3>
+            </h2>
             <p className="text-xs text-gray-500">
               Lower rank is better (1 = top position).
             </p>
@@ -775,81 +889,7 @@ export function ProjectKeywordTrackingTab({
           </div>
         </div>
 
-        <Card className="p-4 md:p-6">
-          <div className="mb-3">
-            <h4 className="text-sm font-semibold text-gray-900">
-              Global rankings
-            </h4>
-            <p className="text-[11px] text-gray-500">
-              Best and average rank across all tracked keywords.
-            </p>
-          </div>
-          <div className="h-64">
-            {isLoadingGlobal ? (
-              <div className="flex h-full items-center justify-center text-sm text-gray-500">
-                <Loader2 className="mr-2 h-5 w-5 animate-spin" />
-                Loading global rankings…
-              </div>
-            ) : globalError ? (
-              <div className="flex h-full items-center gap-2 rounded-md border border-red-200 bg-red-50 px-3 py-2 text-xs text-red-700">
-                <AlertCircle className="h-4 w-4" />
-                <span>Failed to load global rankings.</span>
-              </div>
-            ) : !hasGlobalSeries ? (
-              <div className="flex h-full items-center justify-center text-sm text-gray-500">
-                No ranking data yet. Use &quot;Check rankings now&quot; to
-                fetch data.
-              </div>
-            ) : (
-              <ResponsiveContainer width="100%" height="100%">
-                <LineChart data={globalSeries}>
-                  <CartesianGrid strokeDasharray="3 3" stroke="#e5e7eb" />
-                  <XAxis
-                    dataKey="check_date"
-                    stroke="#6b7280"
-                    style={{ fontSize: "12px" }}
-                    tickFormatter={formatShortDate}
-                  />
-                  <YAxis
-                    stroke="#6b7280"
-                    style={{ fontSize: "12px" }}
-                    reversed
-                  />
-                  <RechartsTooltip
-                    formatter={(value: any, name: string) => {
-                      if (value == null) return ["—", name]
-                      return [value, name === "best_rank" ? "Best rank" : "Avg rank"]
-                    }}
-                    labelFormatter={(label) =>
-                      `Date: ${format(new Date(label), "yyyy-MM-dd")}`
-                    }
-                  />
-                  <Legend
-                    formatter={(value) =>
-                      value === "best_rank" ? "Best rank" : "Avg rank"
-                    }
-                  />
-                  <Line
-                    type="monotone"
-                    dataKey="best_rank"
-                    stroke="#2563eb"
-                    strokeWidth={2}
-                    dot={false}
-                    activeDot={{ r: 4 }}
-                  />
-                  <Line
-                    type="monotone"
-                    dataKey="avg_rank"
-                    stroke="#10b981"
-                    strokeWidth={2}
-                    dot={false}
-                    activeDot={{ r: 4 }}
-                  />
-                </LineChart>
-              </ResponsiveContainer>
-            )}
-          </div>
-        </Card>
+        {globalRankingsCard}
       </div>
 
       {/* Keyword list + add form + sync button */}

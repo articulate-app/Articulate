@@ -1,4 +1,5 @@
 import React from 'react';
+import { Zap } from 'lucide-react';
 import type { Task } from '../../lib/types/tasks';
 
 interface TaskCardProps {
@@ -6,10 +7,11 @@ interface TaskCardProps {
   colorClass: string;
   onClick?: () => void;
   isSelected?: boolean;
+  isBulkSelected?: boolean;
   style?: React.CSSProperties;
 }
 
-export function CalendarTaskCard({ task, colorClass, onClick, isSelected, style }: TaskCardProps) {
+export function CalendarTaskCard({ task, colorClass, onClick, isSelected, isBulkSelected, style }: TaskCardProps) {
   const isSuggestion = task?.kind === 'suggestion'
 
   // Extract background color from colorClass or style
@@ -46,7 +48,13 @@ export function CalendarTaskCard({ task, colorClass, onClick, isSelected, style 
   return (
     <button
       className={`w-full min-h-[26px] flex items-center gap-2 rounded shadow-sm ${colorClass} px-2 py-1 mb-1 text-xs font-medium truncate ${
-        isSelected ? 'ring-2 ring-blue-400 border border-blue-400' : isSuggestion ? 'border border-dashed border-gray-300' : 'border border-transparent'
+        isBulkSelected
+          ? 'ring-2 ring-gray-700 border border-gray-700'
+          : isSelected
+            ? 'ring-2 ring-blue-400 border border-blue-400'
+            : isSuggestion
+              ? 'border border-dashed border-gray-300'
+              : 'border border-transparent'
       } `}
       title={task.title}
       style={{ maxWidth: '100%', ...style }}
@@ -57,8 +65,12 @@ export function CalendarTaskCard({ task, colorClass, onClick, isSelected, style 
     >
       <span className="truncate block" style={{ maxWidth: '100%' }}>{task.title}</span>
       {isSuggestion ? (
-        <span className="shrink-0 inline-flex items-center rounded-full border border-dashed border-gray-300 bg-white/60 px-2 py-0.5 text-[10px] font-medium text-gray-700">
-          AI suggestion
+        <span
+          className="shrink-0 inline-flex items-center text-gray-500"
+          title="AI suggestion"
+          aria-label="AI suggestion"
+        >
+          <Zap className="h-3 w-3" />
         </span>
       ) : null}
     </button>

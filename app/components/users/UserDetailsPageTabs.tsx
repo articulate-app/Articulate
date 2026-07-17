@@ -1,15 +1,16 @@
 "use client"
 
 import { useState, useCallback, useEffect, useMemo, useRef } from "react"
-import { useQuery, useQueryClient } from "@tanstack/react-query"
+import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query"
 import { useRouter, useSearchParams, usePathname } from "next/navigation"
 import { 
   Loader2, Trash2, MessageSquare, Mail, FileText, Lightbulb, BarChart3, 
-  Plus, Edit, X as XIcon, UserPlus, Search, ArrowUpDown, ArrowUp, ArrowDown, CalendarIcon 
+  Plus, Edit, X as XIcon, UserPlus, Search, ArrowUpDown, CalendarIcon, Maximize2, Minimize2
 } from "lucide-react"
 import { Button } from "../ui/button"
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "../ui/tabs"
 import { Card } from "../ui/card"
+import { Badge } from "../ui/badge"
 import { toast } from "../ui/use-toast"
 import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle } from "../ui/alert-dialog"
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "../ui/dialog"
@@ -24,7 +25,22 @@ import { TaskList } from "../tasks/TaskList"
 import { CalendarView } from "../calendar-view/calendar-view"
 import { KanbanView } from "../kanban-view/kanban-view"
 import { ImprovementPlanSection } from "./ImprovementPlanSection"
+import { UserSharedCommentsTab } from "./user-shared-comments-tab"
+import { UserOverviewStatCards, UserOccupationStatCards } from "./user-overview-stat-cards"
 import { createClientComponentClient } from "@supabase/auth-helpers-nextjs"
+import { shallowReplaceSearchParams, TASKS_SHALLOW_NAV_EVENT } from "../../lib/tasks-shallow-nav"
+import {
+  buildSeeMoreTasksSearchParams,
+  type TaskFiltersForUrl,
+} from "../../lib/tasks-filter-url"
+import { mergeWorkspaceUrlState } from "../../lib/workspace-url-state"
+import { useMobileDetection } from "../../hooks/use-mobile-detection"
+import { MobileDetailHeader, type MobileDetailAction } from "../ui/mobile-detail-header"
+import { UserAvatar } from "../UserAvatar"
+import {
+  TaskOverviewReadonlySection,
+  type TaskOverviewRowData,
+} from "../tasks/task-overview-readonly-table"
 import {
   LineChart,
   Line,
@@ -37,6 +53,7 @@ import {
   ReferenceLine,
 } from "recharts"
 
+import { useTaskEditFields } from "../../hooks/use-task-edit-fields"
 import {
   getUserProfile,
   getUserProjects,
@@ -74,20 +91,67 @@ import {
   type Language,
   type Role,
 } from "../../lib/services/userSkillsAndMemberships"
+import {
+  getActiveUserWorkloadSetting,
+  upsertCurrentDailyCapacity,
+  parseDailyCapacityInput,
+  DEFAULT_DAILY_CAPACITY_HOURS,
+} from "../../lib/services/user-workload-settings"
 
 interface UserDetailsPageProps {
   userId: number
+  onClose?: () => void
+  isDetailsFocused?: boolean
+  onFocusToggle?: () => void
+  /** Tasks shell: open TaskDetails without clearing entity detail params. */
+  onOpenTaskKeepingDetail?: (task: UserTask) => void
+  /** Tasks shell: stack TeamDetails above user detail (`stackTeamId` URL param). */
+  onOpenTeamKeepingDetail?: (teamId: number) => void
 }
 
-type TabValue = 'overview' | 'projects' | 'skills' | 'tasks' | 'preferences' | 'reviews' | 'occupation'
+type TabValue =
+  | 'overview'
+  | 'projects'
+  | 'comments'
+  | 'skills'
+  | 'tasks'
+  | 'preferences'
+  | 'reviews'
+  | 'occupation'
 type TaskViewMode = 'list' | 'calendar' | 'kanban'
 
-function getInitials(name: string): string {
-  if (!name) return '??'
-  const parts = name.trim().split(' ')
-  if (parts.length === 1) return parts[0][0].toUpperCase()
-  return (parts[0][0] + parts[parts.length - 1][0]).toUpperCase()
+/** Overview pane sub-views, surfaced as pills above the task list. */
+type UserOverviewView = 'upcoming' | 'overdue' | 'publication'
+const USER_OVERVIEW_VIEWS: UserOverviewView[] = ['upcoming', 'overdue', 'publication']
+const USER_OVERVIEW_VIEW_PARAM = 'userOverviewView'
+
+const EMPTY_TASK_FILTERS_FOR_URL: TaskFiltersForUrl = {
+  assignedTo: [],
+  status: [],
+  deliveryDate: {},
+  publicationDate: {},
+  project: [],
+  contentType: [],
+  productionType: [],
+  language: [],
+  channels: [],
+  overdueStatus: [],
 }
+
+function readCurrentSearchParams(fallback: { toString: () => string }): URLSearchParams {
+  if (typeof window !== "undefined") return new URLSearchParams(window.location.search)
+  return new URLSearchParams(fallback.toString())
+}
+const USER_ALLOWED_TABS: TabValue[] = [
+  'overview',
+  'projects',
+  'comments',
+  'skills',
+  'tasks',
+  'preferences',
+  'reviews',
+  'occupation',
+]
 
 type SortField = 'content_type_title' | 'production_type_title' | 'language_name' | 'valid_from' | 'price_novat' | 'price_withvat'
 type SortOrder = 'asc' | 'desc'
@@ -164,15 +228,33 @@ type TimeFrame = "next7" | "last7" | "last30"
 
 const supabase = createClientComponentClient()
 
-export function UserDetailsPage({ userId }: UserDetailsPageProps) {
+export function UserDetailsPage({
+  userId,
+  onClose,
+  isDetailsFocused = false,
+  onFocusToggle,
+  onOpenTaskKeepingDetail,
+  onOpenTeamKeepingDetail,
+}: UserDetailsPageProps) {
+  const isMobile = useMobileDetection()
   const router = useRouter()
   const searchParams = useSearchParams()
   const pathname = usePathname()
   const queryClient = useQueryClient()
 
-  // Read tab from URL, default to 'overview'
-  const tabFromUrl = (searchParams.get('tab') as TabValue) || 'overview'
-  const [activeTab, setActiveTab] = useState<TabValue>(tabFromUrl)
+  const [taskEditAccessToken, setTaskEditAccessToken] = useState<string | null>(null)
+  useEffect(() => {
+    void supabase.auth.getSession().then(({ data }) => {
+      setTaskEditAccessToken(data.session?.access_token ?? null)
+    })
+  }, [])
+  const { data: taskEditFields } = useTaskEditFields(taskEditAccessToken)
+
+  // URL is the single source of truth for the active tab.
+  const tabFromUrl = searchParams.get('centerTab') ?? searchParams.get('rightTab') ?? searchParams.get('tab')
+  const activeTab: TabValue = USER_ALLOWED_TABS.includes(tabFromUrl as TabValue)
+    ? (tabFromUrl as TabValue)
+    : 'overview'
 
   // State for dialogs
   const [showDeleteDialog, setShowDeleteDialog] = useState(false)
@@ -181,6 +263,8 @@ export function UserDetailsPage({ userId }: UserDetailsPageProps) {
   const [showEditProfileDialog, setShowEditProfileDialog] = useState(false)
   const [isPhotoUploading, setIsPhotoUploading] = useState(false)
   const photoInputRef = useRef<HTMLInputElement | null>(null)
+  const tabsScrollRef = useRef<HTMLDivElement | null>(null)
+  const [isTabsHovered, setIsTabsHovered] = useState(false)
   const [editProfileForm, setEditProfileForm] = useState({
     full_name: "",
   })
@@ -209,11 +293,47 @@ export function UserDetailsPage({ userId }: UserDetailsPageProps) {
 
   // Skills table state
   const [skillsSearch, setSkillsSearch] = useState("")
-  const [skillsSortField, setSkillsSortField] = useState<SortField>('valid_from')
-  const [skillsSortOrder, setSkillsSortOrder] = useState<SortOrder>('desc')
+  const skillsSortField = 'valid_from' as SortField
+  const skillsSortOrder = 'desc' as SortOrder
 
   // Tasks view state
   const [taskViewMode, setTaskViewMode] = useState<TaskViewMode>('list')
+
+  // Overview sub-view (Upcoming / Overdue / Publication) — URL-backed so reloads
+  // and browser back/forward preserve the selected pill.
+  const readOverviewViewFromUrl = useCallback((): UserOverviewView => {
+    const raw =
+      typeof window !== "undefined"
+        ? new URLSearchParams(window.location.search).get(USER_OVERVIEW_VIEW_PARAM)
+        : searchParams.get(USER_OVERVIEW_VIEW_PARAM)
+    return USER_OVERVIEW_VIEWS.includes(raw as UserOverviewView)
+      ? (raw as UserOverviewView)
+      : 'upcoming'
+  }, [searchParams])
+  const [overviewView, setOverviewView] = useState<UserOverviewView>(readOverviewViewFromUrl)
+
+  // Keep the pill in sync with browser back/forward and other shallow URL writes.
+  useEffect(() => {
+    if (typeof window === "undefined") return
+    const sync = () => setOverviewView(readOverviewViewFromUrl())
+    sync()
+    window.addEventListener("popstate", sync)
+    window.addEventListener(TASKS_SHALLOW_NAV_EVENT, sync)
+    return () => {
+      window.removeEventListener("popstate", sync)
+      window.removeEventListener(TASKS_SHALLOW_NAV_EVENT, sync)
+    }
+  }, [readOverviewViewFromUrl])
+
+  const handleOverviewViewChange = useCallback((value: string) => {
+    if (!USER_OVERVIEW_VIEWS.includes(value as UserOverviewView)) return
+    const next = value as UserOverviewView
+    setOverviewView(next)
+    mergeWorkspaceUrlState(
+      { [USER_OVERVIEW_VIEW_PARAM]: next === 'upcoming' ? null : next },
+      { source: "user-overview-view-change" },
+    )
+  }, [])
 
   // Reviews Tab state
   const [reviewSummary, setReviewSummary] = useState<UserReviewSummary | null>(null)
@@ -238,50 +358,137 @@ export function UserDetailsPage({ userId }: UserDetailsPageProps) {
   const [datePickerOpen, setDatePickerOpen] = useState(false)
   const [dateFrom, setDateFrom] = useState<Date | undefined>(undefined)
   const [dateTo, setDateTo] = useState<Date | undefined>(undefined)
+  const [occupationRefreshKey, setOccupationRefreshKey] = useState(0)
 
-  // Initialize URL with default tab if none specified
+  // Daily capacity (user_workload_settings) state
+  const numericUserId = Number(userId)
+  const { data: activeWorkloadSetting, isLoading: isLoadingCapacity } = useQuery({
+    queryKey: ["user-workload-setting", numericUserId],
+    queryFn: () => getActiveUserWorkloadSetting(numericUserId),
+    enabled: Number.isFinite(numericUserId),
+  })
+  const currentDailyCapacity =
+    activeWorkloadSetting?.daily_capacity_hours ?? DEFAULT_DAILY_CAPACITY_HOURS
+  const [capacityInput, setCapacityInput] = useState("")
+  const [isEditingCapacity, setIsEditingCapacity] = useState(false)
+
   useEffect(() => {
-    if (!searchParams.get('tab')) {
-      const params = new URLSearchParams(searchParams.toString())
-      params.set('tab', 'overview')
-      router.replace(`${pathname}?${params.toString()}`, { scroll: false })
+    if (!isEditingCapacity) {
+      setCapacityInput(String(currentDailyCapacity))
     }
-  }, [])
+  }, [currentDailyCapacity, isEditingCapacity])
+
+  const capacityMutation = useMutation({
+    mutationFn: (hours: number) => upsertCurrentDailyCapacity(numericUserId, hours),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["user-workload-setting", numericUserId] })
+      // Occupation/backlog figures depend on capacity; re-run the loaders.
+      setOccupationRefreshKey((key) => key + 1)
+      setIsEditingCapacity(false)
+      toast({ title: "Success", description: "Daily capacity updated successfully" })
+    },
+    onError: (err: any) => {
+      toast({
+        title: "Error",
+        description: err?.message || "Failed to update daily capacity",
+        variant: "destructive",
+      })
+    },
+  })
+
+  const handleSaveCapacity = () => {
+    const parsed = parseDailyCapacityInput(capacityInput)
+    if (parsed === null) {
+      toast({
+        title: "Invalid value",
+        description: "Enter a number greater than 0.",
+        variant: "destructive",
+      })
+      return
+    }
+    capacityMutation.mutate(parsed)
+  }
+
+  const handleCancelCapacityEdit = () => {
+    setIsEditingCapacity(false)
+    setCapacityInput(String(currentDailyCapacity))
+  }
+
+  useEffect(() => {
+    console.log("[user-detail] active tab from URL", activeTab)
+  }, [activeTab])
 
   // Handle tab change and update URL
   const handleTabChange = (value: string) => {
     const newTab = value as TabValue
-    setActiveTab(newTab)
+    if (!USER_ALLOWED_TABS.includes(newTab)) return
+    if (newTab === activeTab) return
+    console.log("[user-detail] tab click", newTab)
     
-    const params = new URLSearchParams(searchParams.toString())
-    params.set('tab', newTab)
-    
-    // When switching to tasks tab, add assignedTo filter
-    if (newTab === 'tasks') {
-      params.set('assignedTo', String(userId))
-    } else {
-      params.delete('assignedTo')
-    }
-    
-    router.replace(`${pathname}?${params.toString()}`, { scroll: false })
+    const params = new URLSearchParams(
+      typeof window !== "undefined" ? window.location.search : searchParams.toString(),
+    )
+    const isAiRightPane = params.get('rightView') === 'ai'
+    const tabPatch = isAiRightPane
+      ? {
+          centerTab: newTab === "overview" ? null : newTab,
+          rightTab: null,
+        }
+      : {
+          rightTab: newTab === "overview" ? null : newTab,
+          centerTab: null,
+        }
+    console.log("[user-detail][tab-write]", {
+      source: "tab-click",
+      from: activeTab,
+      to: newTab,
+    })
+    mergeWorkspaceUrlState(
+      {
+        ...tabPatch,
+        tab: null,
+        detailType: null,
+        detailId: null,
+        assignedTo: newTab === "tasks" ? String(userId) : null,
+      },
+      { source: "user-tab-change" },
+    )
   }
 
-  // Sync state with URL changes (e.g., browser back/forward)
   useEffect(() => {
-    const urlTab = (searchParams.get('tab') as TabValue) || 'overview'
-    if (urlTab !== activeTab) {
-      setActiveTab(urlTab)
+    const el = tabsScrollRef.current
+    if (!el) return
+    const onWheel = (e: WheelEvent) => {
+      if (!isTabsHovered) return
+      if (el.scrollWidth <= el.clientWidth) return
+      let deltaX = e.deltaX
+      let deltaY = e.deltaY
+      if (e.deltaMode === WheelEvent.DOM_DELTA_LINE) {
+        deltaX *= 16
+        deltaY *= 16
+      } else if (e.deltaMode === WheelEvent.DOM_DELTA_PAGE) {
+        deltaX *= el.clientWidth
+        deltaY *= el.clientHeight
+      }
+      const delta = e.shiftKey ? deltaY : Math.abs(deltaX) > Math.abs(deltaY) ? deltaX : deltaY
+      if (delta === 0) return
+      e.preventDefault()
+      el.scrollLeft += delta
     }
-  }, [searchParams])
+    el.addEventListener("wheel", onWheel, { passive: false, capture: true })
+    return () => el.removeEventListener("wheel", onWheel, true)
+  }, [isTabsHovered])
 
   // Fetch user profile
-  const { data: profile, isLoading: profileLoading } = useQuery({
+  const { data: profile, isLoading: profileLoading, isFetching: profileFetching } = useQuery({
     queryKey: ["user-profile", userId],
     queryFn: async () => {
       const result = await getUserProfile(userId)
       if (result.error) throw result.error
       return result.data
     },
+    initialData: () => queryClient.getQueryData<UserProfile>(["user-profile", userId]),
+    staleTime: 0,
   })
 
   // Fetch user projects
@@ -478,16 +685,33 @@ export function UserDetailsPage({ userId }: UserDetailsPageProps) {
     router.push(`/projects/${projectId}?tab=overview`)
   }
 
-  const handleTeamClick = (teamId: number) => {
-    router.push(`/teams/${teamId}`)
-  }
+  const handleTeamClick = useCallback(
+    (teamId: number) => {
+      if (onOpenTeamKeepingDetail) {
+        onOpenTeamKeepingDetail(teamId)
+        return
+      }
+      router.push(`/teams/${teamId}`)
+    },
+    [onOpenTeamKeepingDetail, router],
+  )
 
-  const handleTaskSelect = (task: any) => {
-    const params = new URLSearchParams(searchParams.toString())
-    params.set('rightView', 'task-details')
-    params.set('rightTaskId', String(task.id))
-    router.push(`${pathname}?${params.toString()}`)
-  }
+  const navigateToTask = useCallback(
+    (task: unknown) => {
+      const row = task as { id?: number; entity_id?: number }
+      const rawId = row.entity_id ?? row.id
+      const taskId = Number(rawId)
+      if (!Number.isFinite(taskId)) return
+
+      if (onOpenTaskKeepingDetail) {
+        onOpenTaskKeepingDetail(task as UserTask)
+        return
+      }
+
+      router.push(`/tasks?id=${taskId}`)
+    },
+    [onOpenTaskKeepingDetail, router],
+  )
 
   // Get available projects (not already watching)
   const availableProjects = useMemo(() => {
@@ -504,36 +728,126 @@ export function UserDetailsPage({ userId }: UserDetailsPageProps) {
     return tasks.filter(task => {
       const deliveryDate = task.delivery_date ? new Date(task.delivery_date) : null
       return deliveryDate && deliveryDate >= now && deliveryDate <= next7Days
-    }).slice(0, 5)
+    })
   }, [tasks])
 
   // Get overdue tasks
   const overdueTasks = useMemo(() => {
     if (!tasks) return []
-    return tasks.filter(task => task.is_overdue).slice(0, 5)
+    return tasks.filter(task => task.is_overdue)
   }, [tasks])
 
   // Get publication overdue tasks
   const publicationOverdueTasks = useMemo(() => {
     if (!tasks) return []
-    return tasks.filter(task => task.is_publication_overdue).slice(0, 5)
+    return tasks.filter(task => task.is_publication_overdue)
   }, [tasks])
 
-  // Get recent projects (from user's watching list)
-  const recentProjects = useMemo(() => {
-    if (!projects) return []
-    return projects.slice(0, 5)
-  }, [projects])
-
-  // Skills sorting handler
-  const handleSkillSort = (field: SortField) => {
-    if (skillsSortField === field) {
-      setSkillsSortOrder(skillsSortOrder === 'asc' ? 'desc' : 'asc')
-    } else {
-      setSkillsSortField(field)
-      setSkillsSortOrder('asc')
+  const projectLogoUrlByProjectId = useMemo(() => {
+    const m = new Map<number, string | null>()
+    for (const p of minimalProjects ?? []) {
+      const row = p as { id: number; logo?: string | null }
+      m.set(row.id, getImageUrl(row.logo ?? null))
     }
-  }
+    return m
+  }, [minimalProjects])
+
+  const resolveProjectStatusColor = useCallback(
+    (projectId: number, statusId: number | null | undefined) => {
+      if (statusId == null || !taskEditFields?.project_statuses?.length) return null
+      const list = taskEditFields.project_statuses
+      const exact = list.find((s) => s.id === statusId && s.project_id === projectId)
+      if (exact?.color) return exact.color
+      return list.find((s) => s.id === statusId)?.color ?? null
+    },
+    [taskEditFields],
+  )
+
+  const enrichUserTaskOverviewRow = useCallback(
+    (task: UserTask): TaskOverviewRowData => {
+      const statusColor =
+        resolveProjectStatusColor(task.project_id, task.project_status_id) ??
+        task.project_status_color ??
+        null
+      // Overview tables use `getUserTasks` → `v_user_tasks_i_can_see` (assigned_to_id = this user).
+      // Prefer profile photo (reliable); fall back to row field if types/strict equality ever diverge.
+      const assigneePhotoUrl =
+        getImageUrl(profile?.photo ?? null) || getImageUrl(task.assigned_to_photo ?? null)
+      return {
+        id: task.id,
+        title: task.title,
+        assigned_to_id: task.assigned_to_id,
+        assigned_to_name: task.assigned_to_name,
+        assignee_photo_url: assigneePhotoUrl,
+        project_name: task.project_name,
+        project_color: task.project_color,
+        project_logo_url: projectLogoUrlByProjectId.get(task.project_id) ?? null,
+        status_name: task.project_status_name,
+        status_color: statusColor,
+        delivery_date: task.delivery_date,
+        publication_date: task.publication_date,
+        is_delivery_overdue: Boolean(task.is_overdue),
+        is_publication_overdue: Boolean(task.is_publication_overdue),
+      }
+    },
+    [profile?.photo, projectLogoUrlByProjectId, resolveProjectStatusColor],
+  )
+
+  const upcomingOverviewRows = useMemo(
+    () => upcomingTasks.map(enrichUserTaskOverviewRow),
+    [upcomingTasks, enrichUserTaskOverviewRow],
+  )
+  const overdueOverviewRows = useMemo(
+    () => overdueTasks.map(enrichUserTaskOverviewRow),
+    [overdueTasks, enrichUserTaskOverviewRow],
+  )
+  const publicationOverdueOverviewRows = useMemo(
+    () => publicationOverdueTasks.map(enrichUserTaskOverviewRow),
+    [publicationOverdueTasks, enrichUserTaskOverviewRow],
+  )
+
+  const handleOverviewRowActivate = useCallback(
+    (row: TaskOverviewRowData) => {
+      const task = tasks?.find((t) => t.id === row.id)
+      if (task) navigateToTask(task)
+    },
+    [tasks, navigateToTask],
+  )
+
+  const handleSeeMoreOverviewUpcoming = useCallback(() => {
+    const base = readCurrentSearchParams(searchParams)
+    const now = new Date()
+    const next7Days = new Date(now.getTime() + 7 * 24 * 60 * 60 * 1000)
+    const startDay = new Date(now.getFullYear(), now.getMonth(), now.getDate())
+    const lastDay = new Date(next7Days.getFullYear(), next7Days.getMonth(), next7Days.getDate())
+    const endExclusive = new Date(lastDay.getFullYear(), lastDay.getMonth(), lastDay.getDate() + 1)
+    const filters: TaskFiltersForUrl = {
+      ...EMPTY_TASK_FILTERS_FOR_URL,
+      assignedTo: [String(userId)],
+      deliveryDate: { from: startDay, to: endExclusive },
+    }
+    shallowReplaceSearchParams(pathname, buildSeeMoreTasksSearchParams(base, filters))
+  }, [pathname, searchParams, userId])
+
+  const handleSeeMoreOverviewDeliveryOverdue = useCallback(() => {
+    const base = readCurrentSearchParams(searchParams)
+    const filters: TaskFiltersForUrl = {
+      ...EMPTY_TASK_FILTERS_FOR_URL,
+      assignedTo: [String(userId)],
+      overdueStatus: ["delivery_overdue"],
+    }
+    shallowReplaceSearchParams(pathname, buildSeeMoreTasksSearchParams(base, filters))
+  }, [pathname, searchParams, userId])
+
+  const handleSeeMoreOverviewPublicationOverdue = useCallback(() => {
+    const base = readCurrentSearchParams(searchParams)
+    const filters: TaskFiltersForUrl = {
+      ...EMPTY_TASK_FILTERS_FOR_URL,
+      assignedTo: [String(userId)],
+      overdueStatus: ["publication_overdue"],
+    }
+    shallowReplaceSearchParams(pathname, buildSeeMoreTasksSearchParams(base, filters))
+  }, [pathname, searchParams, userId])
 
   // Filtered and sorted skills
   const filteredAndSortedSkills = useMemo(() => {
@@ -905,7 +1219,7 @@ export function UserDetailsPage({ userId }: UserDetailsPageProps) {
         loadOccupationData(occupationTimeFrame)
       }
     }
-  }, [userId, occupationTimeFrame, activeTab, occupationDateRange])
+  }, [userId, occupationTimeFrame, activeTab, occupationDateRange, occupationRefreshKey])
 
   useEffect(() => {
     if (selectedOccupationDate) {
@@ -1190,6 +1504,9 @@ export function UserDetailsPage({ userId }: UserDetailsPageProps) {
     setOccupationTimeFrame(frame)
     setOccupationDateRange(null)
     setSelectedOccupationDate(null)
+    setDateFrom(undefined)
+    setDateTo(undefined)
+    setDatePickerOpen(false)
   }
 
   const handleCustomDateRange = () => {
@@ -1207,8 +1524,17 @@ export function UserDetailsPage({ userId }: UserDetailsPageProps) {
       const to = occupationDateRange.to.toLocaleDateString("en-US", { month: "short", day: "numeric" })
       return `${from} - ${to}`
     }
+    if (occupationTimeFrame === "next7") return "Next 7 days"
+    if (occupationTimeFrame === "last7") return "Last 7 days"
+    if (occupationTimeFrame === "last30") return "Last 30 days"
     return "Select dates"
   }
+
+  const OCCUPATION_QUICK_RANGES: { frame: TimeFrame; label: string }[] = [
+    { frame: "next7", label: "Next 7 days" },
+    { frame: "last7", label: "Last 7 days" },
+    { frame: "last30", label: "Last 30 days" },
+  ]
 
   const formatOccupationDate = (dateString: string) => {
     const date = new Date(dateString)
@@ -1238,7 +1564,10 @@ export function UserDetailsPage({ userId }: UserDetailsPageProps) {
     return null
   }
 
-  if (profileLoading || !profile) {
+  const tabTriggerClassName =
+    "relative rounded-none border-b-2 border-transparent data-[state=active]:bg-transparent data-[state=active]:shadow-none after:pointer-events-none after:absolute after:inset-x-0 after:bottom-[-5px] after:h-px after:bg-transparent data-[state=active]:after:bg-black"
+
+  if (profileLoading && !profile) {
     return (
       <div className="flex items-center justify-center h-full">
         <Loader2 className="w-6 h-6 animate-spin text-gray-400" />
@@ -1246,32 +1575,78 @@ export function UserDetailsPage({ userId }: UserDetailsPageProps) {
     )
   }
 
+  if (!profile) {
+    return (
+      <div className="flex items-center justify-center h-full">
+        <div className="text-center">
+          <p className="text-gray-500">User not found</p>
+        </div>
+      </div>
+    )
+  }
+
   const photoUrl = getImageUrl(profile.photo)
+
+  const mobileUserActions: MobileDetailAction[] = [
+    {
+      id: 'edit-profile',
+      label: 'Edit profile',
+      icon: <Edit className="h-4 w-4" />,
+      onSelect: handleOpenEditProfile,
+    },
+    {
+      id: 'chat',
+      label: 'Chat',
+      icon: isChatLoading ? <Loader2 className="h-4 w-4 animate-spin" /> : <MessageSquare className="h-4 w-4" />,
+      onSelect: handleChatWithUser,
+      disabled: isChatLoading,
+    },
+    {
+      id: 'archive',
+      label: 'Archive',
+      icon: <Trash2 className="h-4 w-4" />,
+      onSelect: () => setShowDeleteDialog(true),
+      destructive: true,
+      separatorBefore: true,
+    },
+  ]
 
   return (
     <div className="flex flex-col h-full">
-      {/* Header */}
+      {/* Mobile header: stable title + top-right "..." overflow with user actions. */}
+      {isMobile ? (
+        <MobileDetailHeader
+          onBack={onClose}
+          backLabel="Close details"
+          title={profile.full_name || profile.auth_email}
+          subtitle={profile.auth_email}
+          leadingSlot={
+            <UserAvatar
+              name={profile.full_name || profile.auth_email}
+              photoUrl={photoUrl}
+              size="sm"
+            />
+          }
+          actions={mobileUserActions}
+        />
+      ) : (
+      /* Header */
       <div className="flex items-center justify-between px-6 py-4 bg-white border-t-0">
-        <div className="flex items-center gap-4">
-          <div className="relative">
-            {photoUrl ? (
-              // eslint-disable-next-line @next/next/no-img-element
-              <img
-                src={photoUrl}
-                alt={profile.full_name || profile.auth_email}
-                className="w-12 h-12 rounded-full object-cover border-2 border-gray-200"
-              />
-            ) : (
-              <div className="w-12 h-12 rounded-full bg-gradient-to-br from-blue-500 to-indigo-600 flex items-center justify-center text-lg font-semibold text-white border-2 border-gray-200">
-                {getInitials(profile.full_name || profile.auth_email)}
-              </div>
-            )}
-          </div>
-          <div>
+        <div className="flex min-w-0 items-center gap-4">
+          <UserAvatar
+            name={profile.full_name || profile.auth_email}
+            photoUrl={photoUrl}
+            size="lg"
+            className="border-2 border-gray-200"
+          />
+          <div className="min-w-0">
             <div className="flex items-center gap-2">
               <h1 className="text-xl font-semibold text-gray-900">
                 {profile.full_name || profile.auth_email}
               </h1>
+              {profileFetching && (profile as UserProfile & { __partial?: boolean }).__partial ? (
+                <Loader2 className="w-3.5 h-3.5 animate-spin text-gray-400" aria-label="Loading full details" />
+              ) : null}
               <Button
                 variant="ghost"
                 size="sm"
@@ -1286,278 +1661,216 @@ export function UserDetailsPage({ userId }: UserDetailsPageProps) {
         </div>
         <div className="flex items-center gap-2">
           <Button
-            variant="outline"
+            variant="ghost"
+            size="sm"
             onClick={handleChatWithUser}
             disabled={isChatLoading}
-            className="gap-2"
+            className="h-8 w-8 p-0 text-gray-500 hover:bg-gray-100 hover:text-gray-700"
+            aria-label="Chat"
+            title="Chat"
           >
             {isChatLoading ? (
               <Loader2 className="w-4 h-4 animate-spin" />
             ) : (
               <MessageSquare className="w-4 h-4" />
             )}
-            Chat
           </Button>
           <Button
-            variant="destructive"
+            variant="ghost"
+            size="sm"
             onClick={() => setShowDeleteDialog(true)}
-            className="gap-2"
+            className="h-8 w-8 p-0 text-gray-500 hover:bg-gray-100 hover:text-gray-700"
+            aria-label="Archive"
+            title="Archive"
           >
             <Trash2 className="w-4 h-4" />
-            Archive
           </Button>
+          {onFocusToggle ? (
+            <Button
+              variant="ghost"
+              size="sm"
+              onClick={() => {
+                console.log("[user-detail] focus click", { focused: !isDetailsFocused })
+                onFocusToggle()
+              }}
+              className="h-8 w-8 p-0 text-gray-500 hover:bg-gray-100 hover:text-gray-700"
+              aria-label={isDetailsFocused ? "Restore details pane" : "Expand details pane"}
+              title={isDetailsFocused ? "Restore details pane" : "Expand details pane"}
+            >
+              {isDetailsFocused ? <Minimize2 className="w-4 h-4" /> : <Maximize2 className="w-4 h-4" />}
+            </Button>
+          ) : null}
+          {onClose ? (
+            <Button
+              variant="ghost"
+              size="sm"
+              onClick={onClose}
+              className="h-8 w-8 p-0 text-gray-500 hover:bg-gray-100 hover:text-gray-700"
+              aria-label="Close details"
+              title="Close details"
+            >
+              <XIcon className="w-4 h-4" />
+            </Button>
+          ) : null}
         </div>
       </div>
+      )}
 
       {/* Tabs */}
       <Tabs value={activeTab} onValueChange={handleTabChange} className="flex-1 flex flex-col overflow-hidden">
-        <TabsList className="px-6 bg-transparent border-b border-gray-200 rounded-none justify-start h-auto overflow-x-auto overflow-y-hidden whitespace-nowrap flex-nowrap">
-          <TabsTrigger 
-            value="overview"
-            className="data-[state=active]:border-b-2 data-[state=active]:border-black data-[state=active]:bg-transparent data-[state=active]:shadow-none data-[state=active]:-mb-px rounded-none relative"
-          >
-            Overview
-          </TabsTrigger>
-          <TabsTrigger 
-            value="projects"
-            className="data-[state=active]:border-b-2 data-[state=active]:border-black data-[state=active]:bg-transparent data-[state=active]:shadow-none data-[state=active]:-mb-px rounded-none relative"
-          >
-            Projects
-          </TabsTrigger>
-          <TabsTrigger 
-            value="skills"
-            className="data-[state=active]:border-b-2 data-[state=active]:border-black data-[state=active]:bg-transparent data-[state=active]:shadow-none data-[state=active]:-mb-px rounded-none relative"
-          >
-            Skills
-          </TabsTrigger>
-          <TabsTrigger 
-            value="tasks"
-            className="data-[state=active]:border-b-2 data-[state=active]:border-black data-[state=active]:bg-transparent data-[state=active]:shadow-none data-[state=active]:-mb-px rounded-none relative"
-          >
-            Tasks
-          </TabsTrigger>
-          <TabsTrigger 
-            value="preferences"
-            className="data-[state=active]:border-b-2 data-[state=active]:border-black data-[state=active]:bg-transparent data-[state=active]:shadow-none data-[state=active]:-mb-px rounded-none relative"
-          >
-            Preferences
-          </TabsTrigger>
-          <TabsTrigger 
-            value="reviews"
-            className="data-[state=active]:border-b-2 data-[state=active]:border-black data-[state=active]:bg-transparent data-[state=active]:shadow-none data-[state=active]:-mb-px rounded-none relative"
-          >
-            Reviews
-          </TabsTrigger>
-          <TabsTrigger 
-            value="occupation"
-            className="data-[state=active]:border-b-2 data-[state=active]:border-black data-[state=active]:bg-transparent data-[state=active]:shadow-none data-[state=active]:-mb-px rounded-none relative"
-          >
-            Occupation
-          </TabsTrigger>
-        </TabsList>
+        <div
+          ref={tabsScrollRef}
+          className="ai-chat-tabs-scroll min-h-0 min-w-0 overflow-x-auto overflow-y-hidden border-b border-gray-200"
+          onMouseEnter={() => setIsTabsHovered(true)}
+          onMouseLeave={() => setIsTabsHovered(false)}
+        >
+          <TabsList className="h-auto flex-nowrap justify-start rounded-none border-t-0 bg-transparent px-6 whitespace-nowrap">
+            <TabsTrigger value="overview" className={tabTriggerClassName}>
+              Overview
+            </TabsTrigger>
+            <TabsTrigger value="projects" className={tabTriggerClassName}>
+              Projects
+            </TabsTrigger>
+            <TabsTrigger value="comments" className={tabTriggerClassName}>
+              Comments
+            </TabsTrigger>
+            <TabsTrigger value="skills" className={tabTriggerClassName}>
+              Skills
+            </TabsTrigger>
+            <TabsTrigger value="tasks" className={tabTriggerClassName}>
+              Tasks
+            </TabsTrigger>
+            <TabsTrigger value="preferences" className={tabTriggerClassName}>
+              Preferences
+            </TabsTrigger>
+            <TabsTrigger value="reviews" className={tabTriggerClassName}>
+              Reviews
+            </TabsTrigger>
+            <TabsTrigger value="occupation" className={tabTriggerClassName}>
+              Occupation
+            </TabsTrigger>
+          </TabsList>
+        </div>
 
         {/* Tab Content */}
         <div className="flex-1 overflow-auto">
           {/* Overview Tab */}
           <TabsContent value="overview" className="m-0 mt-0 p-6">
-            {/* Summary Cards */}
-            <div className="grid grid-cols-1 md:grid-cols-4 gap-4 mb-6">
-              <div className="bg-white border border-gray-200 rounded-lg p-4">
-                <div className="text-sm font-medium text-gray-500">Upcoming Tasks</div>
-                <div className="text-2xl font-bold text-gray-900 mt-1">{upcomingTasks.length}</div>
-                <div className="text-xs text-gray-400 mt-1">Next 7 days</div>
-              </div>
-              <div className="bg-white border border-gray-200 rounded-lg p-4">
-                <div className="text-sm font-medium text-gray-500">Overdue Tasks</div>
-                <div className="text-2xl font-bold text-red-600 mt-1">{overdueTasks.length}</div>
-                <div className="text-xs text-gray-400 mt-1">Delivery delayed</div>
-              </div>
-              <div className="bg-white border border-gray-200 rounded-lg p-4">
-                <div className="text-sm font-medium text-gray-500">Publication Overdue</div>
-                <div className="text-2xl font-bold text-orange-600 mt-1">{publicationOverdueTasks.length}</div>
-                <div className="text-xs text-gray-400 mt-1">Publication delayed</div>
-              </div>
-              <div className="bg-white border border-gray-200 rounded-lg p-4">
-                <div className="text-sm font-medium text-gray-500">Active Projects</div>
-                <div className="text-2xl font-bold text-gray-900 mt-1">{projects?.length || 0}</div>
-                <div className="text-xs text-gray-400 mt-1">Watching</div>
-              </div>
-            </div>
+            <UserOverviewStatCards
+              cards={[
+                {
+                  id: "upcoming",
+                  label: "Upcoming Tasks",
+                  value: upcomingTasks.length,
+                  hint: "Next 7 days",
+                },
+                {
+                  id: "overdue",
+                  label: "Overdue Tasks",
+                  value: overdueTasks.length,
+                  hint: "Delivery delayed",
+                  valueClassName: "text-red-600",
+                },
+                {
+                  id: "publication-overdue",
+                  label: "Publication Overdue",
+                  value: publicationOverdueTasks.length,
+                  hint: "Publication delayed",
+                  valueClassName: "text-orange-600",
+                },
+                {
+                  id: "projects",
+                  label: "Active Projects",
+                  value: projects?.length || 0,
+                  hint: "Watching",
+                },
+              ]}
+            />
 
-            <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-              {/* Left Column */}
-              <div className="space-y-6">
-                {/* Basic Info */}
-                <div>
-                  <h3 className="text-lg font-semibold mb-3">Basic Information</h3>
-                  <div className="space-y-3 bg-white border border-gray-200 rounded-lg p-4">
-                    <div>
-                      <Label className="text-sm font-medium text-gray-500">Brand</Label>
-                      <p className="text-sm text-gray-900 mt-1">{profile.brand || 'N/A'}</p>
-                    </div>
-                    <div>
-                      <Label className="text-sm font-medium text-gray-500">Phone</Label>
-                      <p className="text-sm text-gray-900 mt-1">{profile.phone || 'N/A'}</p>
-                    </div>
-                    <div>
-                      <Label className="text-sm font-medium text-gray-500">Start Date</Label>
-                      <p className="text-sm text-gray-900 mt-1">
-                        {profile.start_date ? new Date(profile.start_date).toLocaleDateString() : 'N/A'}
-                      </p>
-                    </div>
-                    {profile.end_date && (
-                      <div>
-                        <Label className="text-sm font-medium text-gray-500">End Date</Label>
-                        <p className="text-sm text-gray-900 mt-1">
-                          {new Date(profile.end_date).toLocaleDateString()}
-                        </p>
-                      </div>
-                    )}
-                    <div>
-                      <Label className="text-sm font-medium text-gray-500">Status</Label>
-                      <p className="text-sm text-gray-900 mt-1">
-                        {profile.active ? (
-                          <span className="text-green-600 font-medium">Active</span>
-                        ) : (
-                          <span className="text-red-600 font-medium">Inactive</span>
+            <h3 className="mb-3 text-lg font-semibold">Tasks</h3>
+            <Tabs value={overviewView} onValueChange={handleOverviewViewChange} className="space-y-4">
+              <TabsList className="h-9 w-full justify-start sm:w-auto">
+                <TabsTrigger value="upcoming" className="gap-1.5">
+                  Upcoming
+                  <span className="rounded-full bg-gray-200 px-1.5 text-[11px] font-semibold leading-5 text-gray-700">
+                    {upcomingTasks.length}
+                  </span>
+                </TabsTrigger>
+                <TabsTrigger value="overdue" className="gap-1.5">
+                  Overdue
+                  <span className="rounded-full bg-gray-200 px-1.5 text-[11px] font-semibold leading-5 text-gray-700">
+                    {overdueTasks.length}
+                  </span>
+                </TabsTrigger>
+                <TabsTrigger value="publication" className="gap-1.5">
+                  Publication
+                  <span className="rounded-full bg-gray-200 px-1.5 text-[11px] font-semibold leading-5 text-gray-700">
+                    {publicationOverdueTasks.length}
+                  </span>
+                </TabsTrigger>
+              </TabsList>
+
+              <TabsContent value="upcoming" className="mt-0">
+                <TaskOverviewReadonlySection
+                  title="Upcoming tasks"
+                  subtitle="Delivery in the next 7 days"
+                  dateKind="delivery"
+                  rows={upcomingOverviewRows}
+                  onRowActivate={handleOverviewRowActivate}
+                  onSeeMore={handleSeeMoreOverviewUpcoming}
+                />
+              </TabsContent>
+              <TabsContent value="overdue" className="mt-0">
+                <TaskOverviewReadonlySection
+                  title="Overdue tasks"
+                  subtitle="Past delivery date"
+                  dateKind="delivery"
+                  rows={overdueOverviewRows}
+                  onRowActivate={handleOverviewRowActivate}
+                  onSeeMore={handleSeeMoreOverviewDeliveryOverdue}
+                />
+              </TabsContent>
+              <TabsContent value="publication" className="mt-0">
+                <TaskOverviewReadonlySection
+                  title="Publication overdue"
+                  subtitle="Past publication date"
+                  dateKind="publication"
+                  rows={publicationOverdueOverviewRows}
+                  onRowActivate={handleOverviewRowActivate}
+                  onSeeMore={handleSeeMoreOverviewPublicationOverdue}
+                />
+              </TabsContent>
+            </Tabs>
+
+            <div className="mt-10">
+              <h3 className="mb-3 text-lg font-semibold">Teams</h3>
+              {teams && teams.length > 0 ? (
+                <div className="space-y-2">
+                  {teams.map((team) => (
+                    <div
+                      key={team.team_id}
+                      className="cursor-pointer rounded-lg border border-gray-200 bg-white p-3 transition-colors hover:bg-gray-50"
+                      onClick={() => handleTeamClick(team.team_id)}
+                    >
+                      <div className="text-sm font-medium text-gray-900">{team.team_title}</div>
+                      <div className="mt-1 flex items-center gap-2">
+                        <span className="rounded bg-blue-100 px-2 py-0.5 text-xs text-blue-700">
+                          {team.role_title}
+                        </span>
+                        {team.has_access_app && (
+                          <span className="rounded bg-green-100 px-2 py-0.5 text-xs text-green-700">
+                            App Access
+                          </span>
                         )}
-                      </p>
+                      </div>
                     </div>
-                  </div>
+                  ))}
                 </div>
-
-                {/* Upcoming Tasks */}
-                <div>
-                  <h3 className="text-lg font-semibold mb-3">Upcoming Tasks</h3>
-                  {upcomingTasks.length > 0 ? (
-                    <div className="space-y-2">
-                      {upcomingTasks.map((task) => (
-                        <div
-                          key={task.id}
-                          className="p-3 bg-white border border-gray-200 rounded-lg hover:bg-gray-50 transition-colors cursor-pointer"
-                          onClick={() => handleTaskSelect(task)}
-                        >
-                          <div className="font-medium text-sm text-gray-900">{task.title}</div>
-                          <div className="text-xs text-gray-500 mt-1">
-                            Due: {task.delivery_date ? new Date(task.delivery_date).toLocaleDateString() : 'N/A'}
-                          </div>
-                        </div>
-                      ))}
-                    </div>
-                  ) : (
-                    <div className="text-center py-8 border border-dashed border-gray-300 rounded-lg bg-white">
-                      <p className="text-sm text-gray-500">No upcoming tasks</p>
-                    </div>
-                  )}
+              ) : (
+                <div className="rounded-lg border border-dashed border-gray-300 bg-white py-8 text-center">
+                  <p className="text-sm text-gray-500">No teams</p>
                 </div>
-
-                {/* Recent Projects */}
-                <div>
-                  <h3 className="text-lg font-semibold mb-3">Recent Projects</h3>
-                  {recentProjects.length > 0 ? (
-                    <div className="space-y-2">
-                      {recentProjects.map((project) => (
-                        <div
-                          key={project.project_id}
-                          className="flex items-center gap-3 p-3 bg-white border border-gray-200 rounded-lg hover:bg-gray-50 transition-colors cursor-pointer"
-                          onClick={() => handleProjectClick(project.project_id)}
-                        >
-                          <div
-                            className="w-3 h-3 rounded-full flex-shrink-0"
-                            style={{ backgroundColor: project.project_color || '#6b7280' }}
-                          />
-                          <div className="flex-1 min-w-0">
-                            <div className="font-medium text-sm text-gray-900 truncate">
-                              {project.project_name}
-                            </div>
-                          </div>
-                        </div>
-                      ))}
-                    </div>
-                  ) : (
-                    <div className="text-center py-8 border border-dashed border-gray-300 rounded-lg bg-white">
-                      <p className="text-sm text-gray-500">No projects</p>
-                    </div>
-                  )}
-                </div>
-              </div>
-
-              {/* Right Column */}
-              <div className="space-y-6">
-                {/* Teams */}
-                <div>
-                  <h3 className="text-lg font-semibold mb-3">Teams</h3>
-                  {teams && teams.length > 0 ? (
-                    <div className="space-y-2">
-                      {teams.slice(0, 5).map((team) => (
-                        <div
-                          key={team.team_id}
-                          className="p-3 bg-white border border-gray-200 rounded-lg hover:bg-gray-50 transition-colors cursor-pointer"
-                          onClick={() => handleTeamClick(team.team_id)}
-                        >
-                          <div className="font-medium text-sm text-gray-900">{team.team_title}</div>
-                          <div className="flex items-center gap-2 mt-1">
-                            <span className="text-xs bg-blue-100 text-blue-700 px-2 py-0.5 rounded">
-                              {team.role_title}
-                            </span>
-                            {team.has_access_app && (
-                              <span className="text-xs bg-green-100 text-green-700 px-2 py-0.5 rounded">
-                                App Access
-                              </span>
-                            )}
-                          </div>
-                        </div>
-                      ))}
-                    </div>
-                  ) : (
-                    <div className="text-center py-8 border border-dashed border-gray-300 rounded-lg bg-white">
-                      <p className="text-sm text-gray-500">No teams</p>
-                    </div>
-                  )}
-                </div>
-
-                {/* Overdue Tasks */}
-                {overdueTasks.length > 0 && (
-                  <div>
-                    <h3 className="text-lg font-semibold mb-3 text-red-600">Overdue Tasks</h3>
-                    <div className="space-y-2">
-                      {overdueTasks.map((task) => (
-                        <div
-                          key={task.id}
-                          className="p-3 bg-red-50 border border-red-200 rounded-lg hover:bg-red-100 transition-colors cursor-pointer"
-                          onClick={() => handleTaskSelect(task)}
-                        >
-                          <div className="font-medium text-sm text-gray-900">{task.title}</div>
-                          <div className="text-xs text-red-600 mt-1">
-                            Was due: {task.delivery_date ? new Date(task.delivery_date).toLocaleDateString() : 'N/A'}
-                          </div>
-                        </div>
-                      ))}
-                    </div>
-                  </div>
-                )}
-
-                {/* Publication Overdue Tasks */}
-                {publicationOverdueTasks.length > 0 && (
-                  <div>
-                    <h3 className="text-lg font-semibold mb-3 text-orange-600">Publication Overdue</h3>
-                    <div className="space-y-2">
-                      {publicationOverdueTasks.map((task) => (
-                        <div
-                          key={task.id}
-                          className="p-3 bg-orange-50 border border-orange-200 rounded-lg hover:bg-orange-100 transition-colors cursor-pointer"
-                          onClick={() => handleTaskSelect(task)}
-                        >
-                          <div className="font-medium text-sm text-gray-900">{task.title}</div>
-                          <div className="text-xs text-orange-600 mt-1">
-                            Was due: {task.publication_date ? new Date(task.publication_date).toLocaleDateString() : 'N/A'}
-                          </div>
-                        </div>
-                      ))}
-                    </div>
-                  </div>
-                )}
-              </div>
+              )}
             </div>
           </TabsContent>
 
@@ -1614,6 +1927,19 @@ export function UserDetailsPage({ userId }: UserDetailsPageProps) {
             )}
           </TabsContent>
 
+          <TabsContent value="comments" className="m-0 mt-0 p-6">
+            <div className="mb-4">
+              <h2 className="text-lg font-semibold">Comments</h2>
+              <p className="mt-1 text-sm text-gray-500">
+                Mentions where you and this user both participate across direct, task, project, and general threads.
+              </p>
+            </div>
+            <UserSharedCommentsTab
+              profileUserId={userId}
+              isActive={activeTab === "comments"}
+              onOpenTaskKeepingDetail={onOpenTaskKeepingDetail}
+            />
+          </TabsContent>
 
           {/* Skills Tab */}
           <TabsContent value="skills" className="m-0 mt-0 p-6">
@@ -1637,117 +1963,66 @@ export function UserDetailsPage({ userId }: UserDetailsPageProps) {
             </div>
 
             {filteredAndSortedSkills && filteredAndSortedSkills.length > 0 ? (
-              <div className="overflow-x-auto bg-white border border-gray-200 rounded-lg">
-                <table className="w-full text-sm">
-                  <thead className="bg-gray-50 border-b">
-                    <tr>
-                      <th 
-                        className="px-4 py-2 text-left font-medium text-gray-500 cursor-pointer hover:bg-gray-100"
-                        onClick={() => handleSkillSort('content_type_title')}
-                      >
-                        <div className="flex items-center gap-1">
-                          Content Type
-                          {skillsSortField === 'content_type_title' && (
-                            skillsSortOrder === 'asc' ? <ArrowUp className="w-3 h-3" /> : <ArrowDown className="w-3 h-3" />
-                          )}
-                        </div>
-                      </th>
-                      <th 
-                        className="px-4 py-2 text-left font-medium text-gray-500 cursor-pointer hover:bg-gray-100"
-                        onClick={() => handleSkillSort('production_type_title')}
-                      >
-                        <div className="flex items-center gap-1">
-                          Production Type
-                          {skillsSortField === 'production_type_title' && (
-                            skillsSortOrder === 'asc' ? <ArrowUp className="w-3 h-3" /> : <ArrowDown className="w-3 h-3" />
-                          )}
-                        </div>
-                      </th>
-                      <th 
-                        className="px-4 py-2 text-left font-medium text-gray-500 cursor-pointer hover:bg-gray-100"
-                        onClick={() => handleSkillSort('language_name')}
-                      >
-                        <div className="flex items-center gap-1">
-                          Language
-                          {skillsSortField === 'language_name' && (
-                            skillsSortOrder === 'asc' ? <ArrowUp className="w-3 h-3" /> : <ArrowDown className="w-3 h-3" />
-                          )}
-                        </div>
-                      </th>
-                      <th 
-                        className="px-4 py-2 text-left font-medium text-gray-500 cursor-pointer hover:bg-gray-100"
-                        onClick={() => handleSkillSort('valid_from')}
-                      >
-                        <div className="flex items-center gap-1">
-                          Valid From
-                          {skillsSortField === 'valid_from' && (
-                            skillsSortOrder === 'asc' ? <ArrowUp className="w-3 h-3" /> : <ArrowDown className="w-3 h-3" />
-                          )}
-                        </div>
-                      </th>
-                      <th 
-                        className="px-4 py-2 text-right font-medium text-gray-500 cursor-pointer hover:bg-gray-100"
-                        onClick={() => handleSkillSort('price_novat')}
-                      >
-                        <div className="flex items-center justify-end gap-1">
-                          Price (No VAT)
-                          {skillsSortField === 'price_novat' && (
-                            skillsSortOrder === 'asc' ? <ArrowUp className="w-3 h-3" /> : <ArrowDown className="w-3 h-3" />
-                          )}
-                        </div>
-                      </th>
-                      <th 
-                        className="px-4 py-2 text-right font-medium text-gray-500 cursor-pointer hover:bg-gray-100"
-                        onClick={() => handleSkillSort('price_withvat')}
-                      >
-                        <div className="flex items-center justify-end gap-1">
-                          Price (With VAT)
-                          {skillsSortField === 'price_withvat' && (
-                            skillsSortOrder === 'asc' ? <ArrowUp className="w-3 h-3" /> : <ArrowDown className="w-3 h-3" />
-                          )}
-                        </div>
-                      </th>
-                      <th className="px-4 py-2 text-left font-medium text-gray-500">Notes</th>
-                      <th className="px-4 py-2 text-right font-medium text-gray-500">Actions</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {filteredAndSortedSkills.map((skill) => (
-                      <tr key={skill.id} className="border-b last:border-b-0 hover:bg-gray-50">
-                        <td className="px-4 py-2">{skill.content_type_title}</td>
-                        <td className="px-4 py-2">{skill.production_type_title}</td>
-                        <td className="px-4 py-2">{skill.language_name || skill.language_code}</td>
-                        <td className="px-4 py-2">
-                          {skill.valid_from ? new Date(skill.valid_from).toLocaleDateString() : 'N/A'}
-                        </td>
-                        <td className="px-4 py-2 text-right">{skill.price_novat || 'N/A'}</td>
-                        <td className="px-4 py-2 text-right">{skill.price_withvat || 'N/A'}</td>
-                        <td className="px-4 py-2 text-sm text-gray-500 truncate max-w-xs">
-                          {skill.notes || '-'}
-                        </td>
-                        <td className="px-4 py-2 text-right">
-                          <div className="flex items-center justify-end gap-1">
-                            <Button
-                              variant="ghost"
-                              size="sm"
-                              onClick={() => handleOpenSkillDialog(skill)}
-                            >
-                              <Edit className="w-4 h-4" />
-                            </Button>
-                            <Button
-                              variant="ghost"
-                              size="sm"
-                              onClick={() => handleDeleteSkill(skill.id)}
-                              className="text-red-600 hover:text-red-700 hover:bg-red-50"
-                            >
-                              <XIcon className="w-4 h-4" />
-                            </Button>
+              <div className="space-y-2">
+                {filteredAndSortedSkills.map((skill) => {
+                  const languageLabel = skill.language_name || skill.language_code
+                  return (
+                    <div
+                      key={skill.id}
+                      className="group rounded-lg border border-gray-200 bg-white p-3 transition-colors hover:bg-gray-50"
+                    >
+                      <div className="flex items-start justify-between gap-3">
+                        <div className="min-w-0">
+                          <div className="truncate text-sm font-medium text-gray-900">
+                            {skill.content_type_title}
                           </div>
-                        </td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
+                          <div className="mt-0.5 flex flex-wrap items-center gap-x-2 gap-y-1 text-xs text-gray-500">
+                            {skill.production_type_title ? (
+                              <span className="truncate">{skill.production_type_title}</span>
+                            ) : null}
+                            {languageLabel ? (
+                              <Badge variant="secondary" className="text-[11px]">
+                                {languageLabel}
+                              </Badge>
+                            ) : null}
+                          </div>
+                        </div>
+                        <div className="flex shrink-0 items-center gap-1">
+                          <Button
+                            variant="ghost"
+                            size="sm"
+                            className="h-7 w-7 p-0"
+                            onClick={() => handleOpenSkillDialog(skill)}
+                            aria-label="Edit skill"
+                          >
+                            <Edit className="w-4 h-4" />
+                          </Button>
+                          <Button
+                            variant="ghost"
+                            size="sm"
+                            className="h-7 w-7 p-0 text-red-600 hover:text-red-700 hover:bg-red-50"
+                            onClick={() => handleDeleteSkill(skill.id)}
+                            aria-label="Delete skill"
+                          >
+                            <XIcon className="w-4 h-4" />
+                          </Button>
+                        </div>
+                      </div>
+
+                      <div className="mt-2 flex flex-wrap items-center gap-x-4 gap-y-1 text-xs text-gray-500">
+                        <span>
+                          Valid from {skill.valid_from ? new Date(skill.valid_from).toLocaleDateString() : 'N/A'}
+                        </span>
+                        <span>No VAT: {skill.price_novat || 'N/A'}</span>
+                        <span>With VAT: {skill.price_withvat || 'N/A'}</span>
+                      </div>
+
+                      {skill.notes ? (
+                        <p className="mt-2 text-sm text-gray-600">{skill.notes}</p>
+                      ) : null}
+                    </div>
+                  )
+                })}
               </div>
             ) : (
               <div className="text-center py-12 border border-dashed border-gray-300 rounded-lg bg-white">
@@ -1790,7 +2065,7 @@ export function UserDetailsPage({ userId }: UserDetailsPageProps) {
             {taskViewMode === 'calendar' ? (
               <div style={{ height: 'calc(100vh - 280px)', minHeight: '600px' }} className="overflow-hidden">
                 <CalendarView
-                  onTaskClick={handleTaskSelect}
+                  onTaskClick={navigateToTask}
                   selectedTaskId={searchParams.get('rightTaskId')}
                   enabled={activeTab === 'tasks'}
                 />
@@ -1799,13 +2074,13 @@ export function UserDetailsPage({ userId }: UserDetailsPageProps) {
               <div className="flex-1 overflow-hidden">
                 {taskViewMode === 'list' && (
                   <TaskList
-                    onTaskSelect={handleTaskSelect}
+                    onTaskSelect={navigateToTask}
                     selectedTaskId={searchParams.get('rightTaskId')}
                   />
                 )}
                 {taskViewMode === 'kanban' && (
                   <KanbanView
-                    onTaskSelect={handleTaskSelect}
+                    onTaskSelect={navigateToTask}
                     selectedTaskId={searchParams.get('rightTaskId')}
                     enabled={activeTab === 'tasks'}
                   />
@@ -2053,82 +2328,80 @@ export function UserDetailsPage({ userId }: UserDetailsPageProps) {
                 <Loader2 className="w-8 h-8 animate-spin text-gray-400" />
               </div>
             ) : (
-              <div className="grid grid-cols-1 md:grid-cols-5 gap-4 mb-6">
-                <Card className="p-4">
-                  <div className="text-sm font-medium text-gray-500">Today</div>
-                  <div className="text-2xl font-bold text-gray-900 mt-1">
-                    {Math.round((occupationSummary?.today_occupation || 0) * 100)}%
-                  </div>
-                </Card>
-                <Card className="p-4">
-                  <div className="text-sm font-medium text-gray-500">Yesterday</div>
-                  <div className="text-2xl font-bold text-gray-900 mt-1">
-                    {Math.round((occupationSummary?.yesterday_occupation || 0) * 100)}%
-                  </div>
-                </Card>
-                <Card className="p-4">
-                  <div className="text-sm font-medium text-gray-500">Last 7 Days</div>
-                  <div className="text-2xl font-bold text-gray-900 mt-1">
-                    {Math.round((occupationSummary?.last_7d_avg_occupation || 0) * 100)}%
-                  </div>
-                </Card>
-                <Card className="p-4">
-                  <div className="text-sm font-medium text-gray-500">Last 30 Days</div>
-                  <div className="text-2xl font-bold text-gray-900 mt-1">
-                    {Math.round((occupationSummary?.last_30d_avg_occupation || 0) * 100)}%
-                  </div>
-                </Card>
-                <Card className="p-4">
-                  <div className="text-sm font-medium text-gray-500">Backlog</div>
-                  <div className="text-2xl font-bold text-orange-600 mt-1">
-                    {occupationBacklog?.backlog_days?.toFixed(1) || 0}d
-                  </div>
-                  <div className="text-xs text-gray-500 mt-1">
-                    {occupationBacklog?.backlog_hours?.toFixed(0) || 0} hours
-                  </div>
-                </Card>
-              </div>
+              <UserOccupationStatCards
+                cards={[
+                  {
+                    id: "today",
+                    label: "Today",
+                    value: `${Math.round((occupationSummary?.today_occupation || 0) * 100)}%`,
+                  },
+                  {
+                    id: "yesterday",
+                    label: "Yesterday",
+                    value: `${Math.round((occupationSummary?.yesterday_occupation || 0) * 100)}%`,
+                  },
+                  {
+                    id: "last-7d",
+                    label: "Last 7 Days",
+                    value: `${Math.round((occupationSummary?.last_7d_avg_occupation || 0) * 100)}%`,
+                  },
+                  {
+                    id: "last-30d",
+                    label: "Last 30 Days",
+                    value: `${Math.round((occupationSummary?.last_30d_avg_occupation || 0) * 100)}%`,
+                  },
+                  {
+                    id: "backlog",
+                    label: "Backlog",
+                    value: `${occupationBacklog?.backlog_days?.toFixed(1) || 0}d`,
+                    valueClassName: "text-orange-600",
+                    footer: (
+                      <div className="mt-1 text-xs text-gray-500">
+                        {occupationBacklog?.backlog_hours?.toFixed(0) || 0} hours
+                      </div>
+                    ),
+                  },
+                ]}
+              />
             )}
 
             {/* Date Range Selector */}
             <div className="flex items-center justify-between mb-4">
               <h3 className="text-md font-semibold">Occupation Timeline</h3>
-              <div className="flex gap-2">
-                <Button
-                  variant={occupationTimeFrame === "next7" && !occupationDateRange ? "default" : "outline"}
-                  size="sm"
-                  onClick={() => handleTimeFrameChange("next7")}
-                >
-                  Next 7 Days
-                </Button>
-                <Button
-                  variant={occupationTimeFrame === "last7" && !occupationDateRange ? "default" : "outline"}
-                  size="sm"
-                  onClick={() => handleTimeFrameChange("last7")}
-                >
-                  Last 7 Days
-                </Button>
-                <Button
-                  variant={occupationTimeFrame === "last30" && !occupationDateRange ? "default" : "outline"}
-                  size="sm"
-                  onClick={() => handleTimeFrameChange("last30")}
-                >
-                  Last 30 Days
-                </Button>
-                
-                <Popover open={datePickerOpen} onOpenChange={setDatePickerOpen}>
-                  <PopoverTrigger asChild>
-                    <Button
-                      variant={occupationDateRange ? "default" : "outline"}
-                      size="sm"
-                      className="gap-2"
-                    >
-                      <CalendarIcon className="w-4 h-4" />
-                      {formatDateRange()}
-                    </Button>
-                  </PopoverTrigger>
-                  <PopoverContent className="w-auto p-4" align="end">
-                    <div className="space-y-4">
+              <Popover open={datePickerOpen} onOpenChange={setDatePickerOpen}>
+                <PopoverTrigger asChild>
+                  <Button variant="outline" size="sm" className="gap-2">
+                    <CalendarIcon className="w-4 h-4" />
+                    {formatDateRange()}
+                  </Button>
+                </PopoverTrigger>
+                <PopoverContent className="w-auto p-4" align="end">
+                  <div className="space-y-4">
+                    <div>
+                      <Label className="mb-2 block text-xs font-medium uppercase tracking-wide text-gray-500">
+                        Quick ranges
+                      </Label>
+                      <div className="flex flex-col gap-1">
+                        {OCCUPATION_QUICK_RANGES.map(({ frame, label }) => (
+                          <Button
+                            key={frame}
+                            type="button"
+                            variant={
+                              occupationTimeFrame === frame && !occupationDateRange ? "secondary" : "ghost"
+                            }
+                            size="sm"
+                            className="h-8 w-full justify-start px-2 font-normal"
+                            onClick={() => handleTimeFrameChange(frame)}
+                          >
+                            {label}
+                          </Button>
+                        ))}
+                      </div>
+                    </div>
+                    <div className="border-t border-gray-100 pt-4">
+                      <Label className="mb-2 block text-xs font-medium uppercase tracking-wide text-gray-500">
+                        Custom range
+                      </Label>
                       <div>
                         <Label className="text-sm font-medium mb-2 block">From Date</Label>
                         <Calendar
@@ -2138,16 +2411,16 @@ export function UserDetailsPage({ userId }: UserDetailsPageProps) {
                           initialFocus
                         />
                       </div>
-                      <div>
+                      <div className="mt-4">
                         <Label className="text-sm font-medium mb-2 block">To Date</Label>
                         <Calendar
                           mode="single"
                           selected={dateTo}
                           onSelect={setDateTo}
-                          disabled={(date) => dateFrom ? date < dateFrom : false}
+                          disabled={(date) => (dateFrom ? date < dateFrom : false)}
                         />
                       </div>
-                      <div className="flex gap-2">
+                      <div className="mt-4 flex gap-2">
                         <Button
                           size="sm"
                           variant="outline"
@@ -2170,9 +2443,9 @@ export function UserDetailsPage({ userId }: UserDetailsPageProps) {
                         </Button>
                       </div>
                     </div>
-                  </PopoverContent>
-                </Popover>
-              </div>
+                  </div>
+                </PopoverContent>
+              </Popover>
             </div>
 
             {/* Occupation Chart */}
@@ -2258,6 +2531,57 @@ export function UserDetailsPage({ userId }: UserDetailsPageProps) {
               )}
             </Card>
 
+            {/* Daily capacity — discreet detail-style field row */}
+            <div className="mb-6 border-t border-gray-200 pt-3">
+              <div className="flex items-center justify-between gap-4">
+                <span className="text-sm font-normal text-gray-400">Daily capacity (hours)</span>
+                <div className="flex items-center justify-end gap-2 text-right">
+                  {isLoadingCapacity ? (
+                    <Loader2 className="w-4 h-4 animate-spin text-gray-400" />
+                  ) : isEditingCapacity ? (
+                    <>
+                      <Input
+                        type="number"
+                        min="0"
+                        step="0.5"
+                        value={capacityInput}
+                        onChange={(e) => setCapacityInput(e.target.value)}
+                        disabled={capacityMutation.isPending}
+                        className="h-8 w-20 text-right"
+                      />
+                      <Button
+                        size="sm"
+                        className="h-8"
+                        onClick={handleSaveCapacity}
+                        disabled={capacityMutation.isPending}
+                      >
+                        {capacityMutation.isPending ? <Loader2 className="w-4 h-4 animate-spin" /> : "Save"}
+                      </Button>
+                      <Button
+                        size="sm"
+                        variant="ghost"
+                        className="h-8"
+                        onClick={handleCancelCapacityEdit}
+                        disabled={capacityMutation.isPending}
+                      >
+                        Cancel
+                      </Button>
+                    </>
+                  ) : (
+                    <button
+                      type="button"
+                      onClick={() => setIsEditingCapacity(true)}
+                      className="group inline-flex items-center gap-1.5 rounded px-1 py-0.5 text-sm font-medium text-gray-900 transition-colors hover:bg-gray-50"
+                      title="Edit daily capacity"
+                    >
+                      <span>{currentDailyCapacity}h</span>
+                      <Edit className="w-3.5 h-3.5 text-gray-400 opacity-0 transition-opacity group-hover:opacity-100" />
+                    </button>
+                  )}
+                </div>
+              </div>
+            </div>
+
             {/* Tasks for Selected Date */}
             {selectedOccupationDate ? (
               <div>
@@ -2330,13 +2654,7 @@ export function UserDetailsPage({ userId }: UserDetailsPageProps) {
                   </div>
                 )}
               </div>
-            ) : (
-              <Card className="p-6 text-center border-dashed">
-                <p className="text-sm text-gray-500">
-                  Click a point in the chart to see tasks for that day
-                </p>
-              </Card>
-            )}
+            ) : null}
           </TabsContent>
         </div>
       </Tabs>
@@ -2376,14 +2694,12 @@ export function UserDetailsPage({ userId }: UserDetailsPageProps) {
             <div className="space-y-2">
               <Label>Photo</Label>
               <div className="flex items-center gap-3">
-                <div className="h-12 w-12 rounded-full border bg-gray-50 overflow-hidden flex items-center justify-center">
-                  {photoUrl ? (
-                    // eslint-disable-next-line @next/next/no-img-element
-                    <img src={photoUrl} alt="User photo" className="h-full w-full object-cover" />
-                  ) : (
-                    <div className="text-xs text-gray-400">Photo</div>
-                  )}
-                </div>
+                <UserAvatar
+                  name={profile.full_name || profile.auth_email}
+                  photoUrl={photoUrl}
+                  size="lg"
+                  className="border border-gray-200 bg-gray-50"
+                />
 
                 <input
                   ref={photoInputRef}
@@ -2600,8 +2916,15 @@ export function UserDetailsPage({ userId }: UserDetailsPageProps) {
         </DialogContent>
       </Dialog>
 
-      {/* Add to Project Dialog */}
-      <Dialog open={showAddProjectDialog} onOpenChange={setShowAddProjectDialog}>
+      {/* Add to Project Dialog — modal={false} avoids body pointer-events lock conflicting with nested tasks shell */}
+      <Dialog
+        modal={false}
+        open={showAddProjectDialog}
+        onOpenChange={(open) => {
+          setShowAddProjectDialog(open)
+          if (!open) setSelectedProjectId(null)
+        }}
+      >
         <DialogContent>
           <DialogHeader>
             <DialogTitle>Add User to Project</DialogTitle>
@@ -2638,6 +2961,7 @@ export function UserDetailsPage({ userId }: UserDetailsPageProps) {
                 setShowAddProjectDialog(false)
                 setSelectedProjectId(null)
               }}
+              type="button"
             >
               Cancel
             </Button>
@@ -2649,7 +2973,17 @@ export function UserDetailsPage({ userId }: UserDetailsPageProps) {
       </Dialog>
 
       {/* Add to Team Dialog */}
-      <Dialog open={showAddTeamDialog} onOpenChange={setShowAddTeamDialog}>
+      <Dialog
+        modal={false}
+        open={showAddTeamDialog}
+        onOpenChange={(open) => {
+          setShowAddTeamDialog(open)
+          if (!open) {
+            setSelectedTeamId(null)
+            setSelectedRoleId(null)
+          }
+        }}
+      >
         <DialogContent>
           <DialogHeader>
             <DialogTitle>Add User to Team</DialogTitle>

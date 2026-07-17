@@ -124,6 +124,42 @@ export interface Database {
       [_ in never]: never
     }
     Functions: {
+      project_channel_briefing_types: {
+        Args: {
+          p_project_id: number
+          p_content_type_id: number
+          p_channel_id: number
+        }
+        Returns: {
+          briefing_type_id: number
+          title: string
+          description: string | null
+          is_assigned_to_channel: boolean
+          is_default_for_channel: boolean
+          effective_default_briefing_type_id: number | null
+          option_group: 'assigned' | 'available'
+          channel_position: number | null
+          project_position: number | null
+        }[]
+      }
+      pcctb_add: {
+        Args: {
+          p_project_id: number
+          p_content_type_id: number
+          p_channel_id: number
+          p_briefing_type_id: number
+        }
+        Returns: unknown
+      }
+      pcctb_set_default: {
+        Args: {
+          p_project_id: number
+          p_content_type_id: number
+          p_channel_id: number
+          p_briefing_type_id: number
+        }
+        Returns: unknown
+      }
       /**
        * Add a project-scoped component to the Project × Content Type × Channel × Briefing Type component list.
        * Note: `p_briefing_type_id` is required so inserted rows match the page filter.

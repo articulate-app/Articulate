@@ -5,6 +5,19 @@ import type { TaskListRow } from '@/lib/types/task-list-view'
 // Create a client-side Supabase client
 const supabase = createClientComponentClient()
 
+/**
+ * Format a Date as a `YYYY-MM-DD` string using its LOCAL calendar components.
+ * Unlike `Date.prototype.toISOString().slice(0, 10)`, this does not convert to
+ * UTC, so a local-midnight date is not shifted to the previous day in
+ * positive-offset timezones (e.g. UTC+1). Use this for month-range bounds.
+ */
+function toLocalYmd(d: Date): string {
+  const year = d.getFullYear()
+  const month = String(d.getMonth() + 1).padStart(2, '0')
+  const day = String(d.getDate()).padStart(2, '0')
+  return `${year}-${month}-${day}`
+}
+
 // Function to check authentication state
 async function checkAuth() {
   const { data: { session }, error } = await supabase.auth.getSession()
@@ -192,8 +205,13 @@ export async function getTasksForMonth(
   const monthStart = new Date(year, month, 1)
   const monthNextStart = new Date(year, month + 1, 1)
 
-  const monthStartStr = monthStart.toISOString().slice(0, 10)
-  const monthNextStartStr = monthNextStart.toISOString().slice(0, 10)
+  // Format from LOCAL date components. Using toISOString() here would convert the
+  // local-midnight date to UTC and, in positive-offset timezones (e.g. UTC+1),
+  // shift it back a day — producing an inclusive start of the previous month's
+  // last day and an exclusive bound of this month's last day, which drops tasks
+  // on the final day of the month. The bounds must be [first day, next-month first day).
+  const monthStartStr = toLocalYmd(monthStart)
+  const monthNextStartStr = toLocalYmd(monthNextStart)
 
   const parseNumList = (v: any): number[] | null => {
     if (!v) return null
@@ -438,8 +456,11 @@ export async function getTasksForCalendarMonthChunk(
 
   const monthStart = new Date(year, month1Based - 1, 1)
   const monthNextStart = new Date(year, month1Based, 1)
-  const monthStartStr = monthStart.toISOString().slice(0, 10)
-  const monthNextStartStr = monthNextStart.toISOString().slice(0, 10)
+  // Format from LOCAL date components (not toISOString) to avoid a UTC shift that
+  // would move the bounds back a day in positive-offset timezones. Bounds must be
+  // [first day of month, first day of next month) so the last day is included.
+  const monthStartStr = toLocalYmd(monthStart)
+  const monthNextStartStr = toLocalYmd(monthNextStart)
 
   const parseNumList = (v: any): number[] | null => {
     if (!v) return null
@@ -588,54 +609,162 @@ export async function updateTaskDate(
   return data as Task;
 }
 
+type CreateTaskMinimalRpcArgs = {
+  p_project_id: number | null
+  p_title: string | null
+  p_briefing: string | null
+  p_project_status_id: number | null
+  p_assigned_to_id: number | null
+  p_content_type_id: number | null
+  p_production_type_id: number | null
+  p_language_id: number | null
+  p_delivery_date: string | null
+  p_publication_date: string | null
+  p_channel_ids: number[] | null
+  p_watcher_user_ids: number[] | null
+}
+
+export type CreatedTaskOptimistic = Task & {
+  id: string
+  assigned_to_id: string
+  content_type_id: string
+  production_type_id: string
+  language_id: string
+  project_status_id: string
+  channel_ids: number[]
+  channel_names: string[]
+}
+
+function toIntOrNull(value: any): number | null {
+  if (value === null || value === undefined || value === '') return null
+  if (typeof value === 'object') {
+    const candidate =
+      (value as any).id ??
+      (value as any).value ??
+      (value as any).channel_id ??
+      null
+    if (candidate === null || candidate === undefined || candidate === '') return null
+    const parsedCandidate = Number.parseInt(String(candidate), 10)
+    return Number.isFinite(parsedCandidate) ? parsedCandidate : null
+  }
+  const parsed = Number.parseInt(String(value), 10)
+  return Number.isFinite(parsed) ? parsed : null
+}
+
+function toStringOrNull(value: any): string | null {
+  if (value === null || value === undefined) return null
+  const asString = String(value).trim()
+  return asString.length > 0 ? asString : null
+}
+
+function toIntList(values: any): number[] {
+  if (!Array.isArray(values)) return []
+  return values
+    .map((value) => toIntOrNull(value))
+    .filter((value): value is number => typeof value === 'number')
+}
+
+function toDateOnlyOrNull(value: any): string | null {
+  if (value === null || value === undefined) return null
+  if (typeof value === 'string') {
+    const trimmed = value.trim()
+    if (!trimmed) return null
+    const isoLike = trimmed.match(/^(\d{4}-\d{2}-\d{2})/)
+    if (isoLike?.[1]) return isoLike[1]
+    const parsed = new Date(trimmed)
+    if (Number.isNaN(parsed.getTime())) return null
+    return parsed.toISOString().slice(0, 10)
+  }
+  if (value instanceof Date) {
+    if (Number.isNaN(value.getTime())) return null
+    return value.toISOString().slice(0, 10)
+  }
+  return null
+}
+
+function parseTaskIdFromRpcResult(data: any): number | null {
+  if (typeof data === 'number' && Number.isFinite(data)) return data
+  if (data && typeof data === 'object') {
+    const direct = toIntOrNull((data as any).task_id)
+    if (direct != null) return direct
+  }
+  if (Array.isArray(data) && data.length > 0) {
+    const first = data[0]
+    if (typeof first === 'number' && Number.isFinite(first)) return first
+    if (first && typeof first === 'object') {
+      return toIntOrNull((first as any).task_id)
+    }
+  }
+  return null
+}
+
 /**
- * Add a new task and link channels (if provided).
- * @param values - Task fields and channels (array of channel IDs)
- * @returns The inserted task
+ * Add a task through the minimal RPC create_task_minimal.
+ * Keep Add Task creation lightweight; channel/component planning is handled post-create.
  */
-export async function addTask({ channels, watchers, ...values }: any): Promise<Task> {
+export async function addTask({
+  watchers,
+  ...values
+}: any): Promise<CreatedTaskOptimistic> {
   const supabase = createClientComponentClient()
+  const projectId = toIntOrNull(values.project_id ?? values.project_id_int)
+  const assignedToId = toIntOrNull(values.assigned_to_id)
+  const contentTypeId = toIntOrNull(values.content_type_id)
+  const productionTypeId = toIntOrNull(values.production_type_id)
+  const languageId = toIntOrNull(values.language_id)
+  const projectStatusId = toIntOrNull(values.project_status_id)
+  const parentTaskIdInt = toIntOrNull(values.parent_task_id_int)
+  // Distinguish "watchers not provided" (undefined -> use project defaults) from
+  // "watchers explicitly provided" (array -> final source of truth, incl. empty []).
+  const watchersProvided = Array.isArray(watchers)
+  const watcherUserIds = toIntList(watchers)
+  const channelIds = toIntList(values.channels)
 
-  // Insert the task (exclude channels)
-  const { data: taskData, error: taskError } = await supabase
-    .from('tasks')
-    .insert([{ ...values, parent_task_id_int: values.parent_task_id_int ?? null }])
-    .select()
-    .single()
-
-  if (taskError || !taskData) {
-    throw new Error(`Failed to add task: ${taskError?.message || 'Unknown error'}`)
+  const rpcArgs: CreateTaskMinimalRpcArgs = {
+    p_project_id: projectId,
+    p_title: toStringOrNull(values.title),
+    p_briefing: toStringOrNull(values.briefing),
+    p_project_status_id: projectStatusId,
+    p_assigned_to_id: assignedToId,
+    p_content_type_id: contentTypeId,
+    p_production_type_id: productionTypeId,
+    p_language_id: languageId,
+    p_delivery_date: toDateOnlyOrNull(values.delivery_date),
+    p_publication_date: toDateOnlyOrNull(values.publication_date),
+    p_channel_ids: channelIds.length > 0 ? channelIds : null,
+    // null => backend uses default project watchers; [] => task created with no watchers.
+    p_watcher_user_ids: watchersProvided ? watcherUserIds : null,
   }
 
-  // Insert into task_channels if channels are provided
-  if (channels && Array.isArray(channels) && channels.length > 0) {
-    const channelRows = channels.map((channelId: string | number) => ({
-      task_id: taskData.id,
-      channel_id: typeof channelId === 'string' ? parseInt(channelId, 10) : channelId,
-    }))
-    const { error: channelError } = await supabase
-      .from('task_channels')
-      .insert(channelRows)
-    if (channelError) {
-      throw new Error(`Task created, but failed to link channels: ${channelError.message}`)
-    }
+  console.debug('[task-create][create_task_minimal][params]', rpcArgs)
+  const { data, error } = await supabase.rpc('create_task_minimal', rpcArgs)
+  if (error) {
+    throw new Error(`Failed to add task: ${error.message}`)
   }
 
-  // Add task watchers (project watchers subset) via RPC to respect server-side rules
-  if (watchers && Array.isArray(watchers) && watchers.length > 0) {
-    const watcherIds = watchers
-      .map((id: string | number) => (typeof id === 'string' ? parseInt(id, 10) : id))
-      .filter((id: number) => Number.isFinite(id))
-    if (watcherIds.length > 0) {
-      const { error: watcherError } = await supabase.rpc('add_task_watchers', {
-        p_task_id: taskData.id,
-        p_user_ids: watcherIds,
-      })
-      if (watcherError) {
-        throw new Error(`Task created, but failed to add watchers: ${watcherError.message}`)
-      }
-    }
+  const taskId = parseTaskIdFromRpcResult(data)
+  if (!taskId) {
+    throw new Error('Task created but no task_id was returned by create_task_minimal')
   }
+  console.info('[task-create][rpc-success]', { taskId: String(taskId) })
 
-  return taskData as Task
-} 
+  // Optimistic-first create: return immediately after RPC success.
+  // TaskDetails hydration now comes from task-details-bootstrap to avoid blocking on /rest/v1/tasks.
+  return {
+    id: String(taskId),
+    title: toStringOrNull(values.title) ?? '',
+    notes: toStringOrNull(values.notes) ?? undefined,
+    briefing: toStringOrNull(values.briefing) ?? undefined,
+    delivery_date: toStringOrNull(values.delivery_date) ?? undefined,
+    publication_date: toStringOrNull(values.publication_date) ?? undefined,
+    assigned_to_id: assignedToId != null ? String(assignedToId) : '',
+    project_id_int: projectId ?? null,
+    content_type_id: contentTypeId != null ? String(contentTypeId) : '',
+    production_type_id: productionTypeId != null ? String(productionTypeId) : '',
+    language_id: languageId != null ? String(languageId) : '',
+    project_status_id: projectStatusId != null ? String(projectStatusId) : '',
+    parent_task_id_int: parentTaskIdInt ?? null,
+    channel_ids: channelIds,
+    channel_names: [],
+  }
+}

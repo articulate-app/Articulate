@@ -2,11 +2,22 @@
 
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { createClientComponentClient } from "@supabase/auth-helpers-nextjs";
+import type { TaskBootstrapTaskWatcher } from "@/lib/types/task-details-bootstrap";
+import { taskBootstrapWatcherToWatcherUser } from "@/lib/types/task-details-bootstrap";
 
 export type TaskWatcherUser = {
   watcher_user_id: number;
   full_name: string | null;
   photo: string | null;
+};
+
+export type UseTaskWatchersOptions = {
+  /** When true, initial lists come only from task-details-bootstrap (no list_* RPC on open). */
+  seedFromBootstrap: boolean;
+  /** From bootstrap `task_watchers` (undefined/omit until merged → empty list). */
+  initialTaskWatchers?: TaskBootstrapTaskWatcher[] | null;
+  /** From bootstrap `eligible_task_watchers`. */
+  initialEligibleTaskWatchers?: TaskBootstrapTaskWatcher[] | null;
 };
 
 function dedupeByWatcherUserId(items: TaskWatcherUser[]): TaskWatcherUser[] {
@@ -36,13 +47,29 @@ function normalizeWatcherRow(row: any): TaskWatcherUser | null {
   };
 }
 
+function normalizeBootstrapList(
+  rows: TaskBootstrapTaskWatcher[] | null | undefined,
+): TaskWatcherUser[] {
+  if (!Array.isArray(rows)) return [];
+  const mapped = rows
+    .map((r) => taskBootstrapWatcherToWatcherUser(r))
+    .filter((w) => Number.isFinite(w.watcher_user_id));
+  return dedupeByWatcherUserId(mapped);
+}
+
 /**
  * Task Watchers
  * - Only project watchers can be task watchers (enforced by RPC).
  * - Use RPCs for mutations (RLS may block direct writes).
  */
-export function useTaskWatchers(taskId?: number) {
+export function useTaskWatchers(taskId?: number, options?: UseTaskWatchersOptions) {
   const supabase = createClientComponentClient();
+  const useBootstrapAwaitPath = options !== undefined;
+  const {
+    seedFromBootstrap = false,
+    initialTaskWatchers,
+    initialEligibleTaskWatchers,
+  } = options ?? {};
 
   const [watchers, setWatchers] = useState<TaskWatcherUser[]>([]);
   const [eligible, setEligible] = useState<TaskWatcherUser[]>([]);
@@ -176,9 +203,31 @@ export function useTaskWatchers(taskId?: number) {
       setMutationError(null);
       return;
     }
-    loadWatchers();
-    loadEligible();
-  }, [taskId, loadWatchers, loadEligible]);
+    if (!useBootstrapAwaitPath) {
+      void loadWatchers();
+      void loadEligible();
+      return;
+    }
+    if (!seedFromBootstrap) {
+      setWatchers([]);
+      setEligible([]);
+      setWatchersError(null);
+      setEligibleError(null);
+      return;
+    }
+    setWatchers(normalizeBootstrapList(initialTaskWatchers));
+    setEligible(normalizeBootstrapList(initialEligibleTaskWatchers));
+    setWatchersError(null);
+    setEligibleError(null);
+  }, [
+    taskId,
+    useBootstrapAwaitPath,
+    seedFromBootstrap,
+    initialTaskWatchers,
+    initialEligibleTaskWatchers,
+    loadWatchers,
+    loadEligible,
+  ]);
 
   const isLoading = useMemo(
     () => isWatchersLoading || isEligibleLoading,

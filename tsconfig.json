@@ -1,12 +1,13 @@
 {
   "compilerOptions": {
-    "target": "es5",
+    "target": "es2020",
     "lib": ["dom", "dom.iterable", "esnext"],
     "allowJs": true,
     "skipLibCheck": true,
     "strict": true,
     "forceConsistentCasingInFileNames": true,
     "noEmit": true,
+    "downlevelIteration": true,
     "esModuleInterop": true,
     "module": "esnext",
     "moduleResolution": "node",
@@ -25,5 +26,10 @@
     }
   },
   "include": ["next-env.d.ts", "**/*.d.ts", "**/*.ts", "**/*.tsx", ".next/types/**/*.ts", "lib/**/*"],
-  "exclude": ["node_modules"]
+  "exclude": [
+    "node_modules",
+    "ai-chat-frontend-review-context",
+    "supabase/functions",
+    "tests"
+  ]
 } 

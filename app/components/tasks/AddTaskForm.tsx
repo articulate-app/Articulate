@@ -8,10 +8,12 @@ import { Input } from "../ui/input"
 import { addTask } from '../../../lib/services/tasks'
 import { getUsersForProject } from '../../lib/services/users'
 import { createClientComponentClient } from '@supabase/auth-helpers-nextjs'
-import { useEffect, useState, useRef } from 'react'
+import { useEffect, useState, useRef, useMemo } from 'react'
 import { addItemToStore, removeItemFromStore } from '../../../hooks/use-infinite-query'
-import { useFilterOptions } from '../../hooks/use-filter-options'
+import { useTaskListEditBootstrap } from '../../hooks/use-task-list-edit-bootstrap'
+import { taskListEditBootstrapToFilterOptions } from '../../lib/services/task-list-edit-bootstrap'
 import { useQueryClient } from '@tanstack/react-query'
+import { useProjectChannelsResolvedQuery, useProjectStatusesQuery } from '../../hooks/use-project-shared-queries'
 import dynamic from 'next/dynamic'
 import { Dropzone } from '../dropzone'
 import { addTaskToGroupedTaskCaches, normalizeTask, updateTaskInCaches, addTaskToCalendarCaches, addTaskToKanbanCaches } from './task-cache-utils'
@@ -19,14 +21,31 @@ import { getTypesenseUpdater } from '../../store/typesense-tasks'
 import { OccupationAwarenessDisplay } from './occupation-awareness-display'
 import { OccupationAwareDatePicker } from '../ui/occupation-aware-date-picker'
 import { cn } from '@/lib/utils'
-import { ChevronDown, ChevronUp, Calendar, Tag, Paperclip, Check, Plus } from 'lucide-react'
+import { ChevronDown, ChevronUp, Calendar, Tag, Paperclip, Check, Plus, X } from 'lucide-react'
 import { getImageUrl } from '@/lib/public-media'
 import { UserAvatar } from '../UserAvatar'
 import { ProjectBadge } from '../ProjectBadge'
+import { SearchableSelect, type SearchableSelectOption } from '../ui/searchable-select'
+import { toast } from '../ui/use-toast'
+import {
+  fetchTaskDetailsBootstrap,
+  mergeTaskDetail,
+} from '../../lib/services/task-details-bootstrap'
+import type { OptimisticTaskDetail } from '../../lib/types/task-details-bootstrap'
+import { usePathname, useRouter, useSearchParams } from 'next/navigation'
+import { applyCreatedTaskSelectionUrlParams, isTaskAiPaneOpen } from './ai-pane-focus-url'
+import { useTasksUI } from '../../store/tasks-ui'
 
 const RichTextEditor = dynamic(() => import('../ui/rich-text-editor').then(mod => ({ default: mod.RichTextEditor })), {
   ssr: false,
-  loading: () => <div className="h-32 border rounded-md bg-gray-50 animate-pulse flex items-center justify-center">Loading editor...</div>
+  loading: () => (
+    <textarea
+      aria-label="Briefing"
+      placeholder="Add briefing..."
+      className="w-full h-full min-h-[180px] border rounded-md p-3 text-sm resize-none focus:outline-none bg-white"
+      defaultValue=""
+    />
+  )
 });
 
 const schema = z.object({
@@ -47,7 +66,7 @@ const schema = z.object({
 
 type FormValues = z.infer<typeof schema>
 
-type Option = { value: string; label: string; active?: boolean; photo?: string | null; color?: string | null; logo?: string | null }
+type Option = { value: string; label: string; active?: boolean; photo?: string | null; color?: string | null; logo?: string | null; email?: string | null }
 
 type StatusOption = { value: string; label: string; color: string; order_priority?: number };
 type ProjectWatcherOption = { value: string; label: string; photo?: string | null; photoUrl?: string | null };
@@ -106,6 +125,12 @@ export function AddTaskForm({
   const mergedDefaults: FormValues = initialValues
     ? {
         ...baseDefaults,
+        title: (initialValues.title != null && String(initialValues.title).trim() !== "")
+          ? String(initialValues.title)
+          : baseDefaults.title,
+        briefing: (initialValues.briefing != null)
+          ? String(initialValues.briefing)
+          : baseDefaults.briefing,
         project_id_int: (initialValues.project_id_int != null && String(initialValues.project_id_int).trim() !== "")
           ? String(initialValues.project_id_int)
           : baseDefaults.project_id_int,
@@ -124,6 +149,14 @@ export function AddTaskForm({
         language_id: (initialValues.language_id != null && String(initialValues.language_id).trim() !== "")
           ? String(initialValues.language_id)
           : baseDefaults.language_id,
+        channels: Array.isArray(initialValues.channels) ? initialValues.channels.map(String) : baseDefaults.channels,
+        watchers: Array.isArray(initialValues.watchers) ? initialValues.watchers.map(String) : baseDefaults.watchers,
+        delivery_date: (initialValues.delivery_date != null && String(initialValues.delivery_date).trim() !== "")
+          ? String(initialValues.delivery_date)
+          : baseDefaults.delivery_date,
+        publication_date: (initialValues.publication_date != null && String(initialValues.publication_date).trim() !== "")
+          ? String(initialValues.publication_date)
+          : baseDefaults.publication_date,
       }
     : baseDefaults;
   const methods = useForm<z.infer<typeof schema>>({
@@ -133,6 +166,13 @@ export function AddTaskForm({
   const { handleSubmit, register, setValue, watch, formState: { errors, isSubmitting, isDirty } } = methods
   const createAndAddAnotherRef = useRef(false)
   const formRef = useRef<HTMLFormElement>(null)
+  const supabase = createClientComponentClient()
+  const [accessToken, setAccessToken] = useState<string | null>(null)
+  useEffect(() => {
+    void supabase.auth.getSession().then(({ data }) => {
+      setAccessToken(data?.session?.access_token ?? null)
+    })
+  }, [supabase])
 
   // Sync form state to composer for minimized bar (use subscription to avoid infinite loop)
   useEffect(() => {
@@ -145,8 +185,13 @@ export function AddTaskForm({
     return () => subscription.unsubscribe()
   }, [variant, onFormChange, watch])
 
-  // Fetch filter options only when form is rendered
-  const { data: options, isLoading: isOptionsLoading } = useFilterOptions()
+  const { data: listEditBootstrapRaw, isLoading: isOptionsLoading } = useTaskListEditBootstrap(accessToken, {
+    enabled: !!accessToken,
+  })
+  const options = useMemo(
+    () => (listEditBootstrapRaw ? taskListEditBootstrapToFilterOptions(listEditBootstrapRaw) : undefined),
+    [listEditBootstrapRaw],
+  )
 
   // State for filtered users
   const [filteredUsers, setFilteredUsers] = useState<Option[]>([])
@@ -158,11 +203,11 @@ export function AddTaskForm({
   const [projectChannels, setProjectChannels] = useState<{ id: string; label: string; isDefault: boolean }[]>([])
   const [watchersExpanded, setWatchersExpanded] = useState(false)
   const [watcherSearch, setWatcherSearch] = useState('')
-  const [projectExpanded, setProjectExpanded] = useState(false)
   const [statusExpanded, setStatusExpanded] = useState(false)
-  const [assigneeExpanded, setAssigneeExpanded] = useState(false)
   const [channelsExpanded, setChannelsExpanded] = useState(false)
   const [attachmentsExpanded, setAttachmentsExpanded] = useState(false)
+  const [isFileDragActive, setIsFileDragActive] = useState(false)
+  const fileDragDepthRef = useRef(0)
 
   // State for parent task info
   const [parentTaskInfo, setParentTaskInfo] = useState<{ title: string; projectName: string } | null>(
@@ -178,6 +223,7 @@ export function AddTaskForm({
 
   // Watch selected project and fetch users for it
   const selectedProjectId = watch('project_id_int')
+  const selectedProjectIdNumber = selectedProjectId ? Number(selectedProjectId) : null
   const selectedWatchers = watch('watchers') || []
 
   // Add this near the top of the component, after options is available
@@ -196,19 +242,19 @@ export function AddTaskForm({
   useEffect(() => {
     if (isOptionsLoading) return
     if (selectedProjectId && !(options?.projects || []).some(opt => String(opt.value) === String(selectedProjectId))) {
-      if (watch('project_id_int') !== '') setValue('project_id_int', '')
+      if (watch('project_id_int') !== '') setValue('project_id_int', '', { shouldDirty: false })
       return
     }
     if (!selectedProjectId) {
       if (filteredUsers.length !== 0) setFilteredUsers([])
-      if (watch('assigned_to_id') !== '') setValue('assigned_to_id', '')
+      if (watch('assigned_to_id') !== '') setValue('assigned_to_id', '', { shouldDirty: false })
       return
     }
     getUsersForProject(selectedProjectId)
       .then(users => {
         if (JSON.stringify(filteredUsers) !== JSON.stringify(users)) setFilteredUsers(users)
       })
-    if (watch('assigned_to_id') !== '') setValue('assigned_to_id', '')
+    if (watch('assigned_to_id') !== '') setValue('assigned_to_id', '', { shouldDirty: false })
   }, [selectedProjectId, options?.projects, isOptionsLoading])
 
   // Load project watchers (default: all selected as task watchers)
@@ -244,61 +290,52 @@ export function AddTaskForm({
     }
   }, [selectedProjectId, setValue])
 
-  // Load project channels from v_project_channels_resolved (defaults preselected).
-  // If the project has no rows (or view is unavailable), fallback to global channels.
+  const { data: projectChannelsData, error: projectChannelsError } = useProjectChannelsResolvedQuery(selectedProjectIdNumber)
+
+  // Use shared project channels cache; fallback to global channels if project has none or query fails.
   useEffect(() => {
     if (!selectedProjectId) {
       setProjectChannels([])
-      setValue('channels', channelOptions.map((ch) => ch.id), { shouldDirty: false })
+      const defaultGlobalIds = channelOptions.filter((channel: any) => (channel as any).isDefault).map((channel) => channel.id)
+      setValue('channels', (defaultGlobalIds.length > 0 ? defaultGlobalIds : channelOptions.map((ch) => ch.id)), { shouldDirty: false })
       return
     }
-    let isMounted = true
-    const loadProjectChannels = async () => {
-      const supabase = createClientComponentClient()
-      const { data, error } = await supabase
-        .from('v_project_channels_resolved')
-        .select('channel_id, name, is_enabled, is_default, position')
-        .eq('project_id', selectedProjectId)
-        .order('position', { ascending: true, nullsFirst: false })
-      if (!isMounted) return
-      if (error) {
-        // Keep form usable even if view is missing/unavailable.
-        setProjectChannels([])
-        setValue('channels', channelOptions.map((ch) => ch.id), { shouldDirty: false })
-        return
-      }
 
-      const projectDefined = (data || [])
-        .map((ch: any) => ({
-          id: String(ch.channel_id),
-          label: ch.name,
-          isDefault: Boolean(ch.is_default),
-        }))
-      setProjectChannels(projectDefined)
-      const defaultIds = projectDefined.length > 0
-        ? projectDefined.map((ch) => ch.id)
-        : channelOptions.map((ch) => ch.id)
-      setValue('channels', defaultIds, { shouldDirty: false })
+    if (projectChannelsError) {
+      setProjectChannels([])
+      const defaultGlobalIds = channelOptions.filter((channel: any) => (channel as any).isDefault).map((channel) => channel.id)
+      setValue('channels', (defaultGlobalIds.length > 0 ? defaultGlobalIds : channelOptions.map((ch) => ch.id)), { shouldDirty: false })
+      return
     }
-    loadProjectChannels()
-    return () => {
-      isMounted = false
-    }
-  }, [selectedProjectId, setValue, channelOptions])
+
+    const projectDefined = (projectChannelsData || []).map((channel: any) => ({
+      id: String(channel.channel_id),
+      label: channel.name,
+      isDefault: Boolean(channel.is_default),
+    }))
+
+    setProjectChannels(projectDefined)
+    const defaultIds = projectDefined.length > 0
+      ? (() => {
+          const projectDefaults = projectDefined.filter((channel) => channel.isDefault).map((channel) => channel.id)
+          return projectDefaults.length > 0 ? projectDefaults : projectDefined.map((channel) => channel.id)
+        })()
+      : channelOptions.map((channel) => channel.id)
+    setValue('channels', defaultIds, { shouldDirty: false })
+  }, [selectedProjectId, projectChannelsData, projectChannelsError, setValue, channelOptions])
 
   // Watch selected user and filter content types, languages, production types
   const selectedUserId = watch('assigned_to_id')
   const selectedContentTypeId = watch('content_type_id');
   const selectedLanguageId = watch('language_id');
   const selectedProductionTypeId = watch('production_type_id');
-  const safeContentTypeIdValue = selectedContentTypeId === undefined ? '' : selectedContentTypeId;
   const safeProductionTypeIdValue = selectedProductionTypeId === undefined ? '' : selectedProductionTypeId;
 
   useEffect(() => {
     if (!parentTaskId) return
     if (parentTaskTitle && parentProjectName && parentProjectId) {
       setParentTaskInfo({ title: parentTaskTitle, projectName: parentProjectName })
-      setValue('project_id_int', String(parentProjectId))
+      setValue('project_id_int', String(parentProjectId), { shouldDirty: false })
       return
     }
     // Fallback: fetch from Supabase if not provided
@@ -324,13 +361,18 @@ export function AddTaskForm({
            projectName,
          })
          // Lock project_id_int to parent's project
-         setValue('project_id_int', String(data.project_id_int))
+         setValue('project_id_int', String(data.project_id_int), { shouldDirty: false })
       }
     }
     fetchParentTask()
   }, [parentTaskId, parentTaskTitle, parentProjectName, parentProjectId, setValue])
 
   const queryClient = useQueryClient()
+  const router = useRouter()
+  const pathname = usePathname()
+  const searchParams = useSearchParams()
+  const setSelectedTaskId = useTasksUI((s) => s.setSelectedTaskId)
+  const setSelectedTaskSeed = useTasksUI((s) => s.setSelectedTaskSeed)
 
   const projectIdValue = watch('project_id_int');
   const contentTypeIdValue = watch('content_type_id');
@@ -345,7 +387,7 @@ export function AddTaskForm({
       const minStatus = (options.statuses as StatusOption[]).reduce((min, s) =>
         min === null || (Number(s.order_priority ?? 9999) < Number(min.order_priority ?? 9999)) ? s : min, null as any)
       if (minStatus && minStatus.value) {
-        setValue('project_status_id', String(minStatus.value))
+        setValue('project_status_id', String(minStatus.value), { shouldDirty: false })
       }
     }
   }, [options?.statuses, setValue])
@@ -359,7 +401,7 @@ export function AddTaskForm({
 
   // Set default title
   useEffect(() => {
-    setValue('title', 'Write an exciting title');
+    setValue('title', 'Write an exciting title', { shouldDirty: false });
   }, [setValue]);
 
   // Set default project: last used or first in list
@@ -371,9 +413,9 @@ export function AddTaskForm({
     }
     const found = options.projects.find(p => String(p.value) === lastUsedProject);
     if (found) {
-      setValue('project_id_int', String(found.value));
+      setValue('project_id_int', String(found.value), { shouldDirty: false });
     } else {
-      setValue('project_id_int', String(options.projects[0].value));
+      setValue('project_id_int', String(options.projects[0].value), { shouldDirty: false });
     }
     setHasSetInitialProject(true);
   }, [hasSetInitialProject, isOptionsLoading, options?.projects, setValue]);
@@ -408,16 +450,16 @@ export function AddTaskForm({
           });
           const mostActive = Object.entries(countMap).sort((a, b) => b[1] - a[1])[0];
           if (mostActive && mostActive[0]) {
-            setValue('assigned_to_id', String(mostActive[0]));
+            setValue('assigned_to_id', String(mostActive[0]), { shouldDirty: false });
           } else if (filteredUsers.length) {
-            setValue('assigned_to_id', filteredUsers[0].value);
+            setValue('assigned_to_id', filteredUsers[0].value, { shouldDirty: false });
           }
         } else if (filteredUsers.length) {
-          setValue('assigned_to_id', filteredUsers[0].value);
+          setValue('assigned_to_id', filteredUsers[0].value, { shouldDirty: false });
         }
         setHasSetInitialAssignee(true);
       } catch {
-        if (filteredUsers.length) setValue('assigned_to_id', filteredUsers[0].value);
+        if (filteredUsers.length) setValue('assigned_to_id', filteredUsers[0].value, { shouldDirty: false });
         setHasSetInitialAssignee(true);
       }
     }
@@ -440,9 +482,9 @@ export function AddTaskForm({
       if (filteredContentTypes.length !== 0) setFilteredContentTypes([])
       if (filteredLanguages.length !== 0) setFilteredLanguages([])
       if (filteredProductionTypes.length !== 0) setFilteredProductionTypes([])
-      if (watch('content_type_id') !== '') setValue('content_type_id', '')
-      if (watch('language_id') !== '') setValue('language_id', '')
-      if (watch('production_type_id') !== '') setValue('production_type_id', '')
+      if (watch('content_type_id') !== '') setValue('content_type_id', '', { shouldDirty: false })
+      if (watch('language_id') !== '') setValue('language_id', '', { shouldDirty: false })
+      if (watch('production_type_id') !== '') setValue('production_type_id', '', { shouldDirty: false })
       return
     }
     
@@ -489,13 +531,13 @@ export function AddTaskForm({
         
         // Only reset if current value is not in filtered options
         if (!filteredCT.some(opt => opt.value === selectedContentTypeId) && watch('content_type_id') !== '') {
-          setValue('content_type_id', '');
+          setValue('content_type_id', '', { shouldDirty: false });
         }
         if (!filteredLang.some(opt => opt.value === selectedLanguageId) && watch('language_id') !== '') {
-          setValue('language_id', '');
+          setValue('language_id', '', { shouldDirty: false });
         }
         if (!filteredPT.some(opt => opt.value === selectedProductionTypeId) && watch('production_type_id') !== '') {
-          setValue('production_type_id', '');
+          setValue('production_type_id', '', { shouldDirty: false });
         }
         
         // Set default types if we have a project and haven't set them yet
@@ -503,7 +545,7 @@ export function AddTaskForm({
           // Check for content_type_id='1' in costs data
           const hasContentType1 = costsData?.some((row: any) => String(row.content_type_id) === '1');
           if (hasContentType1) {
-            setValue('content_type_id', '1');
+            setValue('content_type_id', '1', { shouldDirty: false });
             console.log('Set default content_type_id to 1');
           } else {
             // Fallback: most common content type in last 30 days for user/project
@@ -523,7 +565,7 @@ export function AddTaskForm({
               });
               const mostCommon = Object.entries(countMap).sort((a, b) => b[1] - a[1])[0];
               if (mostCommon && mostCommon[0]) {
-                setValue('content_type_id', String(mostCommon[0]));
+                setValue('content_type_id', String(mostCommon[0]), { shouldDirty: false });
               }
             }
           }
@@ -531,7 +573,7 @@ export function AddTaskForm({
           // Check for production_type_id='1' in costs data
           const hasProductionType1 = costsData?.some((row: any) => String(row.production_type_id) === '1');
           if (hasProductionType1) {
-            setValue('production_type_id', '1');
+            setValue('production_type_id', '1', { shouldDirty: false });
             console.log('Set default production_type_id to 1');
           } else {
             // Fallback: most common production type in last 30 days for user/project
@@ -551,7 +593,7 @@ export function AddTaskForm({
               });
               const mostCommon = Object.entries(countMap).sort((a, b) => b[1] - a[1])[0];
               if (mostCommon && mostCommon[0]) {
-                setValue('production_type_id', String(mostCommon[0]));
+                setValue('production_type_id', String(mostCommon[0]), { shouldDirty: false });
               }
             }
           }
@@ -560,7 +602,7 @@ export function AddTaskForm({
           if (!watch('language_id')) {
             const hasLanguage1 = costsData?.some((row: any) => String(row.language_id) === '1');
             if (hasLanguage1) {
-              setValue('language_id', '1');
+              setValue('language_id', '1', { shouldDirty: false });
               console.log('Set default language_id to 1');
             }
           }
@@ -588,43 +630,56 @@ export function AddTaskForm({
   const uniqueProductionTypes = Array.from(new Map((filteredProductionTypes || []).map(opt => [String(opt.value), opt])).values());
   const uniqueLanguages = Array.from(new Map((filteredLanguages || []).map(opt => [String(opt.value), opt])).values());
 
+  // Searchable dropdown option lists (project / assignee / content type)
+  const projectSelectOptions = useMemo<SearchableSelectOption[]>(
+    () => uniqueProjects.map(opt => ({
+      value: String(opt.value),
+      label: opt.label,
+      logo: (opt as any).logo ?? null,
+      color: (opt as any).color ?? null,
+    })),
+    [uniqueProjects]
+  )
+  const assigneeSelectOptions = useMemo<SearchableSelectOption[]>(
+    () => uniqueAssignees.map(opt => ({
+      value: String(opt.value),
+      label: opt.label,
+      keywords: (opt as any).email ?? "",
+      photo: (opt as any).photo ?? null,
+    })),
+    [uniqueAssignees]
+  )
+  const contentTypeSelectOptions = useMemo<SearchableSelectOption[]>(
+    () => uniqueContentTypes.map(opt => ({
+      value: String(opt.value),
+      label: opt.label,
+    })),
+    [uniqueContentTypes]
+  )
+
   // State for project-specific statuses
   const [projectStatuses, setProjectStatuses] = useState<{ value: string; label: string; color: string; order_priority?: number }[]>([]);
 
-  // Fetch project-specific statuses
+  const { data: projectStatusesData } = useProjectStatusesQuery(selectedProjectIdNumber)
+
+  // Use shared project-statuses cache from fn_list_project_statuses RPC.
   useEffect(() => {
     if (!selectedProjectId) {
-      setProjectStatuses([]);
-      return;
+      setProjectStatuses([])
+      return
     }
 
-    const fetchProjectStatuses = async () => {
-      const supabase = createClientComponentClient();
-      const { data: statuses, error } = await supabase
-        .from('project_statuses')
-        .select('id, name, color, order_priority')
-        .eq('project_id', selectedProjectId)
-        .order('order_priority', { ascending: true });
+    const mappedStatuses = (projectStatusesData || [])
+      .filter((status: any) => status.name !== 'Overdue')
+      .map((status: any) => ({
+        value: String(status.id),
+        label: status.name,
+        color: status.color,
+        order_priority: status.order_priority,
+      }))
 
-      if (error) {
-        console.error('Error fetching project statuses:', error);
-        return;
-      }
-
-      const mappedStatuses = (statuses || [])
-        .filter(status => status.name !== 'Overdue')
-        .map(status => ({
-          value: String(status.id),
-          label: status.name,
-          color: status.color,
-          order_priority: status.order_priority
-        }));
-
-      setProjectStatuses(mappedStatuses);
-    };
-
-    fetchProjectStatuses();
-  }, [selectedProjectId]);
+    setProjectStatuses(mappedStatuses)
+  }, [selectedProjectId, projectStatusesData])
 
   // Filter only project-specific statuses and exclude 'Overdue'
   const filteredStatuses = projectStatuses;
@@ -660,7 +715,7 @@ export function AddTaskForm({
     const minStatus = projectStatuses.reduce((min, s) =>
       min === null || (Number(s.order_priority ?? 9999) < Number(min.order_priority ?? 9999)) ? s : min, null as any);
     if (minStatus && minStatus.value) {
-      setValue('project_status_id', String(minStatus.value));
+      setValue('project_status_id', String(minStatus.value), { shouldDirty: false });
       setHasSetInitialStatus(true);
     }
   }, [projectStatuses, selectedProjectId, setValue, hasSetInitialStatus]);
@@ -670,7 +725,7 @@ export function AddTaskForm({
   const [uploading, setUploading] = useState(false);
   const [uploadError, setUploadError] = useState<string | null>(null);
   const [formError, setFormError] = useState<string | null>(null);
-  const [activeDetailPanel, setActiveDetailPanel] = useState<null | 'project' | 'assignee' | 'dates' | 'types' | 'language' | 'channels' | 'attachments' | 'watchers'>(null);
+  const [activeDetailPanel, setActiveDetailPanel] = useState<null | 'project' | 'assignee' | 'dates' | 'types' | 'language' | 'attachments' | 'watchers'>(null);
   const [datePanelMode, setDatePanelMode] = useState<'delivery' | 'publication'>('delivery')
   const detailPanelRef = useRef<HTMLDivElement | null>(null)
   const iconRowRef = useRef<HTMLDivElement | null>(null)
@@ -685,6 +740,50 @@ export function AddTaskForm({
     return Promise.resolve();
   };
 
+  const isFileTransfer = (event: React.DragEvent) => {
+    const types = event.dataTransfer?.types
+    return Array.from(types || []).includes('Files')
+  }
+
+  const handleRootDragEnter = (event: React.DragEvent<HTMLDivElement>) => {
+    if (!isFileTransfer(event)) return
+    event.preventDefault()
+    fileDragDepthRef.current += 1
+    setIsFileDragActive(true)
+  }
+
+  const handleRootDragOver = (event: React.DragEvent<HTMLDivElement>) => {
+    if (!isFileTransfer(event)) return
+    event.preventDefault()
+    if (!isFileDragActive) setIsFileDragActive(true)
+  }
+
+  const handleRootDragLeave = (event: React.DragEvent<HTMLDivElement>) => {
+    if (!isFileTransfer(event)) return
+    event.preventDefault()
+    fileDragDepthRef.current = Math.max(0, fileDragDepthRef.current - 1)
+    if (fileDragDepthRef.current === 0) setIsFileDragActive(false)
+  }
+
+  const handleRootDrop = async (event: React.DragEvent<HTMLDivElement>) => {
+    if (!isFileTransfer(event)) return
+    event.preventDefault()
+    fileDragDepthRef.current = 0
+    setIsFileDragActive(false)
+    const files = event.dataTransfer?.files
+    if (files && files.length > 0) {
+      await handleDropzoneFiles(files)
+      event.dataTransfer.clearData()
+    }
+  }
+
+  const formatFileSize = (bytes: number) => {
+    if (!Number.isFinite(bytes) || bytes <= 0) return ''
+    if (bytes < 1024) return `${bytes} B`
+    if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`
+    return `${(bytes / (1024 * 1024)).toFixed(1)} MB`
+  }
+
   function cleanPayload(obj: Record<string, any>) {
     const cleaned: Record<string, any> = {};
     for (const [key, value] of Object.entries(obj)) {
@@ -697,9 +796,180 @@ export function AddTaskForm({
     return cleaned;
   }
 
+  type TaskCreateInputPayload = {
+    task: {
+      title: string | null
+      briefing: string | null
+      notes: string | null
+      assigned_to_id: string | null
+      project_id_int: string | null
+      content_type_id: string | null
+      production_type_id: string | null
+      language_id: string | null
+      project_status_id: string | null
+      parent_task_id_int: string | null
+      delivery_date: string | null
+      publication_date: string | null
+    }
+    channels: Array<{ channel_id: string }>
+  }
+
+  type TaskCreateLocalLookups = {
+    assignedToName: string | null
+    project: { id: string; label: string; color: string | null; logo: string | null } | null
+    projectStatus: { id: string; label: string; color: string | null } | null
+    contentTypeTitle: string | null
+    productionTypeTitle: string | null
+    languageCode: string | null
+    channelNames: string[]
+  }
+
+  function buildOptimisticTaskDetail(
+    createPayload: TaskCreateInputPayload,
+    taskId: string | number,
+    localLookups: TaskCreateLocalLookups,
+  ): OptimisticTaskDetail {
+    const assignedToId = createPayload.task.assigned_to_id ?? ''
+    const projectId = createPayload.task.project_id_int
+    const statusId = createPayload.task.project_status_id ?? ''
+    const contentTypeId = createPayload.task.content_type_id ?? ''
+    const productionTypeId = createPayload.task.production_type_id ?? ''
+    const languageId = createPayload.task.language_id ?? ''
+
+    return {
+      id: String(taskId),
+      title: createPayload.task.title ?? '',
+      briefing: createPayload.task.briefing ?? null,
+      notes: createPayload.task.notes ?? null,
+      delivery_date: createPayload.task.delivery_date ?? null,
+      publication_date: createPayload.task.publication_date ?? null,
+      assigned_to_id: assignedToId,
+      assigned_to_name: localLookups.assignedToName,
+      assigned_user: assignedToId && localLookups.assignedToName
+        ? { id: assignedToId, full_name: localLookups.assignedToName }
+        : null,
+      project_id_int: projectId ? Number(projectId) : null,
+      project_name: localLookups.project?.label ?? null,
+      project_color: localLookups.project?.color ?? null,
+      project_logo: localLookups.project?.logo ?? null,
+      projects: localLookups.project
+        ? {
+            id: Number(localLookups.project.id),
+            name: localLookups.project.label,
+            color: localLookups.project.color ?? undefined,
+            logo: localLookups.project.logo ?? undefined,
+          }
+        : null,
+      project_status_id: statusId,
+      project_status_name: localLookups.projectStatus?.label ?? null,
+      project_status_color: localLookups.projectStatus?.color ?? null,
+      project_statuses: localLookups.projectStatus
+        ? {
+            id: Number(localLookups.projectStatus.id),
+            name: localLookups.projectStatus.label,
+            color: localLookups.projectStatus.color ?? undefined,
+          }
+        : null,
+      content_type_id: contentTypeId,
+      content_type_title: localLookups.contentTypeTitle,
+      production_type_id: productionTypeId,
+      production_type_title: localLookups.productionTypeTitle,
+      language_id: languageId,
+      language_code: localLookups.languageCode,
+      parent_task_id_int: createPayload.task.parent_task_id_int ? Number(createPayload.task.parent_task_id_int) : null,
+      channel_names: localLookups.channelNames,
+      task_channels: createPayload.channels.map((channel, index) => ({
+        channel_id: Number(channel.channel_id),
+        channels: {
+          id: Number(channel.channel_id),
+          name: localLookups.channelNames[index] ?? null,
+        },
+      })),
+      attachments: [],
+      __bootstrapStatus: 'pending',
+      __bootstrapError: null,
+    }
+  }
+
+  function mergeTaskDetailForCreate(
+    currentOptimistic: Record<string, unknown> | null | undefined,
+    bootstrapResponse: Record<string, unknown> | null | undefined,
+  ): Record<string, unknown> {
+    return mergeTaskDetail(currentOptimistic, bootstrapResponse ?? undefined).merged
+  }
+
+  async function fetchTaskDetailsBootstrapAfterCreate(
+    taskId: string | number,
+    optimisticTask: Record<string, unknown>,
+    cacheAccessKey: string | null,
+  ): Promise<void> {
+    const queryKey = ['task', String(taskId), cacheAccessKey] as const
+    queryClient.setQueryData(queryKey, optimisticTask)
+    try {
+      const bootstrapResponse = await fetchTaskDetailsBootstrap(taskId, cacheAccessKey ?? '')
+      queryClient.setQueryData(queryKey, (current: Record<string, unknown> | undefined) => {
+        const merged = mergeTaskDetailForCreate(current ?? optimisticTask, bootstrapResponse)
+        return { ...merged, __bootstrapStatus: 'loaded', __bootstrapError: null }
+      })
+    } catch (error: any) {
+      queryClient.setQueryData(queryKey, (current: Record<string, unknown> | undefined) => ({
+        ...(current ?? optimisticTask),
+        __bootstrapStatus: 'error',
+        __bootstrapError: error?.message ?? 'Failed to load additional task details',
+      }))
+      toast({
+        title: 'Task details are still loading',
+        description: 'The task was created, but some details will appear after background refresh.',
+      })
+    }
+  }
+
+  function openAndSelectTask(taskId: string | number, optimisticTask: Record<string, unknown>): void {
+    const normalizedTaskId = String(taskId)
+    const beforeSelectedTaskId = useTasksUI.getState().selectedTaskId
+    const beforeUrl = typeof window !== 'undefined' ? window.location.href : null
+    setSelectedTaskSeed(optimisticTask)
+    setSelectedTaskId(normalizedTaskId)
+
+    const tokenKey = accessToken ?? null
+    queryClient.setQueryData(['task', normalizedTaskId, tokenKey], (current: Record<string, unknown> | undefined) => {
+      const seeded = current ?? optimisticTask
+      return { ...seeded, id: normalizedTaskId }
+    })
+
+    const basePath =
+      pathname ??
+      (typeof window !== 'undefined' ? window.location.pathname : '/tasks')
+    const currentParams =
+      typeof window !== 'undefined'
+        ? new URLSearchParams(window.location.search)
+        : new URLSearchParams(searchParams.toString())
+
+    const nextParams = applyCreatedTaskSelectionUrlParams(currentParams, normalizedTaskId)
+
+    const nextUrl = `${basePath}?${nextParams.toString()}`
+    router.replace(nextUrl, { scroll: false })
+
+    const afterSelectedTaskId = useTasksUI.getState().selectedTaskId
+    const afterUrl = typeof window !== 'undefined' ? `${window.location.pathname}${window.location.search}` : nextUrl
+    console.info('[task-create][openAndSelectTask]', {
+      taskId: normalizedTaskId,
+      beforeSelectedTaskId,
+      afterSelectedTaskId,
+      beforeUrl,
+      afterUrl,
+      paneIntent: isTaskAiPaneOpen(nextParams) ? 'ai-preserved' : 'details-open',
+    })
+  }
+
   const onSubmit = async (values: FormValues) => {
     setFormError(null);
     const handleSuccess = (task: any) => {
+      if (task?.id != null) {
+        // Keep route, selected-task store, and seeded detail cache in sync in one place.
+        // This guarantees the newly created task opens immediately without waiting for any fetch.
+        openAndSelectTask(task.id, task)
+      }
       if (createAndAddAnotherRef.current && onCreateAndAddAnother) {
         createAndAddAnotherRef.current = false;
         onCreateAndAddAnother(task);
@@ -716,15 +986,45 @@ export function AddTaskForm({
     };
     console.log('Submitting task', values);
     try {
-      // Debug: log Supabase client, user, session
-      const supabase = createClientComponentClient()
-      console.log('Supabase client (AddTaskForm):', supabase)
-      const { data: authData, error: authError } = await supabase.auth.getUser()
-      console.log('Auth user (AddTaskForm):', authData.user, 'Auth error:', authError)
-      if (typeof supabase.auth.getSession === 'function') {
-        const { data: sessionData, error: sessionError } = await supabase.auth.getSession()
-        console.log('Session (AddTaskForm):', sessionData, 'Session error:', sessionError)
+      const buildSubmittedChannels = (): Array<{ channel_id: string }> => {
+        return (values.channels ?? []).map((channelId) => ({ channel_id: String(channelId) }))
       }
+
+      const buildLocalLookups = (taskLike: Record<string, any>, submittedChannels: Array<{ channel_id: string }>): TaskCreateLocalLookups => {
+        const assignedTo = options?.users?.find((opt) => String(opt.value) === String(taskLike.assigned_to_id))
+        const project = options?.projects?.find((opt) => String(opt.value) === String(taskLike.project_id_int))
+        const status = projectStatuses?.find((opt) => String(opt.value) === String(taskLike.project_status_id))
+        const contentType = options?.contentTypes?.find((opt) => String(opt.value) === String(taskLike.content_type_id))
+        const productionType = options?.productionTypes?.find((opt) => String(opt.value) === String(taskLike.production_type_id))
+        const language = options?.languages?.find((opt) => String(opt.value) === String(taskLike.language_id))
+        const channelNameById = new Map<string, string>()
+        effectiveChannelOptions.forEach((channel) => channelNameById.set(String(channel.id), channel.label))
+        const channelNames = submittedChannels.map((channel) => channelNameById.get(String(channel.channel_id)) ?? String(channel.channel_id))
+        return {
+          assignedToName: assignedTo?.label ?? null,
+          project: project
+            ? {
+                id: String(project.value),
+                label: project.label,
+                color: project.color ?? null,
+                logo: project.logo ?? null,
+              }
+            : null,
+          projectStatus: status
+            ? {
+                id: String(status.value),
+                label: status.label,
+                color: status.color ?? null,
+              }
+            : null,
+          contentTypeTitle: contentType?.label ?? null,
+          productionTypeTitle: productionType?.label ?? null,
+          languageCode: language?.label ?? null,
+          channelNames,
+        }
+      }
+
+      const bootstrapToken = accessToken ?? null
       if (parentTaskId) {
         // Fetch the parent task to check if it's a main task
         const { data: parentTask, error: parentError } = await supabase
@@ -812,16 +1112,12 @@ export function AddTaskForm({
           handleSuccess(optimisticSubtask)
           // 4. Now do the real network requests in parallel
           // Create the real main task (no assignee/status)
-          const { data: newMainTask, error: mainTaskError } = await supabase
-            .from('tasks')
-            .insert({
+          const newMainTask = await addTask({
               title: optimisticMainTask.title,
               content_type_id: 39,
               project_id_int: parentTask.project_id_int,
             })
-            .select('id, title, content_type_id, project_id_int')
-            .single()
-          if (mainTaskError || !newMainTask) throw mainTaskError || new Error('Failed to create main task')
+          if (!newMainTask) throw new Error('Failed to create main task')
           const newMainTaskId = newMainTask.id
           // Expand the real main task
           onMainTaskCreated?.(newMainTaskId)
@@ -831,7 +1127,9 @@ export function AddTaskForm({
               .from('tasks')
               .update({ parent_task_id_int: newMainTaskId })
               .eq('id', parentTaskId),
-            addTask(subtaskPayload as any)
+            addTask({
+              ...(subtaskPayload as any),
+            })
           ])
           // Fetch the real joined data for the new main, regular, and subtask
           const [{ data: joinedMain }, { data: joinedRegular }, { data: joinedSubtask }] = await Promise.all([
@@ -901,47 +1199,67 @@ export function AddTaskForm({
       });
       if (parentTaskId) {
         subtaskPayload = { ...subtaskPayload, parent_task_id_int: String(parentTaskId) }
-        newTask = await addTask(subtaskPayload as any)
-        const hydratedOptimisticSubtask = {
-          ...newTask,
-          assigned_user: options?.users?.find(u => String(u.value) === String(newTask.assigned_to_id))
-            ? { id: newTask.assigned_to_id, full_name: options.users.find(u => String(u.value) === String(newTask.assigned_to_id))?.label }
-            : null,
-          projects: options?.projects?.find(p => String(p.value) === String(newTask.project_id_int))
-            ? { id: newTask.project_id_int, name: options.projects.find(p => String(p.value) === String(newTask.project_id_int))?.label }
-            : null,
-          project_statuses: projectStatuses?.find(s => String(s.value) === String(newTask.project_status_id))
-            ? { id: newTask.project_status_id, name: projectStatuses.find(s => String(s.value) === String(newTask.project_status_id))?.label, color: projectStatuses.find(s => String(s.value) === String(newTask.project_status_id))?.color }
-            : null,
-          content_type_title: options?.contentTypes?.find(ct => String(ct.value) === String(newTask.content_type_id))?.label,
-          production_type_title: options?.productionTypes?.find(pt => String(pt.value) === String(newTask.production_type_id))?.label,
-          language_code: options?.languages?.find(l => String(l.value) === String(newTask.language_id))?.label,
+        newTask = await addTask({
+          ...(subtaskPayload as any),
+        })
+        const submittedChannels = buildSubmittedChannels()
+        const createPayload: TaskCreateInputPayload = {
+          task: {
+            title: (subtaskPayload.title as string | null) ?? null,
+            briefing: (subtaskPayload.briefing as string | null) ?? null,
+            notes: (subtaskPayload.notes as string | null) ?? null,
+            assigned_to_id: (subtaskPayload.assigned_to_id as string | null) ?? null,
+            project_id_int: (subtaskPayload.project_id_int as string | null) ?? null,
+            content_type_id: (subtaskPayload.content_type_id as string | null) ?? null,
+            production_type_id: (subtaskPayload.production_type_id as string | null) ?? null,
+            language_id: (subtaskPayload.language_id as string | null) ?? null,
+            project_status_id: (subtaskPayload.project_status_id as string | null) ?? null,
+            parent_task_id_int: (subtaskPayload.parent_task_id_int as string | null) ?? null,
+            delivery_date: (subtaskPayload.delivery_date as string | null) ?? null,
+            publication_date: (subtaskPayload.publication_date as string | null) ?? null,
+          },
+          channels: submittedChannels,
         }
+        const hydratedOptimisticSubtask = buildOptimisticTaskDetail(
+          createPayload,
+          newTask.id,
+          buildLocalLookups(subtaskPayload, submittedChannels),
+        )
         addItemToStore('subtasks', String(parentTaskId), hydratedOptimisticSubtask)
         // --- Patch all caches for subtasks ---
         updateTaskInCaches(queryClient, normalizeTask(hydratedOptimisticSubtask))
         // --- Patch Typesense store for subtask list optimistic updates ---
         getTypesenseUpdater()?.(hydratedOptimisticSubtask)
         queryClient.invalidateQueries({ queryKey: ['subtasks', parentTaskId] })
+        void fetchTaskDetailsBootstrapAfterCreate(newTask.id, hydratedOptimisticSubtask, bootstrapToken)
         handleSuccess(hydratedOptimisticSubtask) // Open details pane for the new task
       } else {
-        newTask = await addTask(subtaskPayload as any)
-        // --- Hydrate all fields for optimistic update ---
-        const hydratedOptimisticTask = {
-          ...newTask,
-          assigned_user: options?.users?.find(u => String(u.value) === String(newTask.assigned_to_id))
-            ? { id: newTask.assigned_to_id, full_name: options.users.find(u => String(u.value) === String(newTask.assigned_to_id))?.label }
-            : null,
-          projects: options?.projects?.find(p => String(p.value) === String(newTask.project_id_int))
-            ? { id: newTask.project_id_int, name: options.projects.find(p => String(p.value) === String(newTask.project_id_int))?.label }
-            : null,
-          project_statuses: projectStatuses?.find(s => String(s.value) === String(newTask.project_status_id))
-            ? { id: newTask.project_status_id, name: projectStatuses.find(s => String(s.value) === String(newTask.project_status_id))?.label, color: projectStatuses.find(s => String(s.value) === String(newTask.project_status_id))?.color }
-            : null,
-          content_type_title: options?.contentTypes?.find(ct => String(ct.value) === String(newTask.content_type_id))?.label,
-          production_type_title: options?.productionTypes?.find(pt => String(pt.value) === String(newTask.production_type_id))?.label,
-          language_code: options?.languages?.find(l => String(l.value) === String(newTask.language_id))?.label,
+        newTask = await addTask({
+          ...(subtaskPayload as any),
+        })
+        const submittedChannels = buildSubmittedChannels()
+        const createPayload: TaskCreateInputPayload = {
+          task: {
+            title: (subtaskPayload.title as string | null) ?? null,
+            briefing: (subtaskPayload.briefing as string | null) ?? null,
+            notes: (subtaskPayload.notes as string | null) ?? null,
+            assigned_to_id: (subtaskPayload.assigned_to_id as string | null) ?? null,
+            project_id_int: (subtaskPayload.project_id_int as string | null) ?? null,
+            content_type_id: (subtaskPayload.content_type_id as string | null) ?? null,
+            production_type_id: (subtaskPayload.production_type_id as string | null) ?? null,
+            language_id: (subtaskPayload.language_id as string | null) ?? null,
+            project_status_id: (subtaskPayload.project_status_id as string | null) ?? null,
+            parent_task_id_int: (subtaskPayload.parent_task_id_int as string | null) ?? null,
+            delivery_date: (subtaskPayload.delivery_date as string | null) ?? null,
+            publication_date: (subtaskPayload.publication_date as string | null) ?? null,
+          },
+          channels: submittedChannels,
         }
+        const hydratedOptimisticTask = buildOptimisticTaskDetail(
+          createPayload,
+          newTask.id,
+          buildLocalLookups(subtaskPayload, submittedChannels),
+        )
         addItemToStore('tasks', undefined, hydratedOptimisticTask)
         // --- Patch all caches for tasks (list, kanban, calendar) ---
         updateTaskInCaches(queryClient, normalizeTask(hydratedOptimisticTask))
@@ -988,6 +1306,7 @@ export function AddTaskForm({
             });
           });
         });
+        void fetchTaskDetailsBootstrapAfterCreate(newTask.id, hydratedOptimisticTask, bootstrapToken)
         handleSuccess(hydratedOptimisticTask)
       }
 
@@ -1031,6 +1350,23 @@ export function AddTaskForm({
     };
   }, []);
 
+  useEffect(() => {
+    if (variant !== 'composer' || (!activeDetailPanel && !statusExpanded)) return
+    const onPointerDown = (event: MouseEvent) => {
+      const target = event.target as Node
+      const panel = detailPanelRef.current
+      const icons = iconRowRef.current
+      const statusPanel = statusPanelRef.current
+      if (panel?.contains(target) || icons?.contains(target) || statusPanel?.contains(target)) return
+      setActiveDetailPanel(null)
+      setChannelsExpanded(false)
+      setAttachmentsExpanded(false)
+      setStatusExpanded(false)
+    }
+    document.addEventListener('mousedown', onPointerDown)
+    return () => document.removeEventListener('mousedown', onPointerDown)
+  }, [variant, activeDetailPanel, statusExpanded])
+
   // Show a minimal loading state only if absolutely necessary
   if (!options) {
     return (
@@ -1048,11 +1384,17 @@ export function AddTaskForm({
   const filteredWatcherItems = projectWatchers.filter((w) =>
     w.label.toLowerCase().includes(watcherSearch.toLowerCase())
   )
+  const allWatcherIds = projectWatchers.map((w) => w.value)
+  const allWatchersSelected =
+    allWatcherIds.length > 0 && allWatcherIds.every((id) => (selectedWatchers || []).includes(id))
+  const selectAllWatchers = () => setValue('watchers', allWatcherIds, { shouldDirty: true })
+  const unselectAllWatchers = () => setValue('watchers', [], { shouldDirty: true })
   const selectedProject = uniqueProjects.find((p) => String(p.value) === String(watch('project_id_int')))
   const selectedStatus = filteredStatuses.find((s) => String(s.value) === String(watch('project_status_id')))
   const selectedAssignee = uniqueAssignees.find((u) => String(u.value) === String(watch('assigned_to_id')))
   const selectedLanguage = uniqueLanguages.find((l) => String(l.value) === String(watch('language_id')))
   const selectedChannels = effectiveChannelOptions.filter((opt) => (watch('channels') || []).includes(opt.id))
+  const isChannelDraftMode = false
   const languageCode = (() => {
     if (!selectedLanguage?.label) return 'LA'
     const words = selectedLanguage.label.trim().split(/\s+/).filter(Boolean)
@@ -1088,37 +1430,30 @@ export function AddTaskForm({
     setValue('channels', Array.from(current), { shouldDirty: true })
   }
 
-  useEffect(() => {
-    if (variant !== 'composer' || (!activeDetailPanel && !statusExpanded)) return
-    const onPointerDown = (event: MouseEvent) => {
-      const target = event.target as Node
-      const panel = detailPanelRef.current
-      const icons = iconRowRef.current
-      const statusPanel = statusPanelRef.current
-      if (panel?.contains(target) || icons?.contains(target) || statusPanel?.contains(target)) return
-      setActiveDetailPanel(null)
-      setAssigneeExpanded(false)
-      setChannelsExpanded(false)
-      setAttachmentsExpanded(false)
-      setProjectExpanded(false)
-      setStatusExpanded(false)
-    }
-    document.addEventListener('mousedown', onPointerDown)
-    return () => document.removeEventListener('mousedown', onPointerDown)
-  }, [variant, activeDetailPanel, statusExpanded])
-
   return (
     <FormProvider {...methods}>
       <div
         className={cn(
-          "min-w-0 flex flex-col bg-white",
+          "min-w-0 flex flex-col bg-white relative",
+          isFileDragActive && "ring-2 ring-blue-400 ring-inset",
           isModal ? "h-full" : "h-screen"
         )}
+        onDragEnter={handleRootDragEnter}
+        onDragOver={handleRootDragOver}
+        onDragLeave={handleRootDragLeave}
+        onDrop={handleRootDrop}
         style={{ boxSizing: 'border-box' }}
       >
+        {isFileDragActive ? (
+          <div className="pointer-events-none absolute inset-0 z-30 flex items-center justify-center bg-blue-50/55">
+            <div className="rounded-md border border-blue-300 bg-white/95 px-3 py-2 text-sm font-medium text-blue-700">
+              Drop files to attach
+            </div>
+          </div>
+        ) : null}
         {/* Show header only when not in modal context and not in composer (composer has its own header) */}
         {!isModal && variant !== 'composer' && (
-          <div className="sticky top-0 z-10 bg-white py-4 px-6 flex items-center justify-between relative min-w-0 w-full">
+          <div className="sticky top-0 z-10 py-4 px-6 flex items-center justify-between relative min-w-0 w-full">
             <h2 className="text-lg font-semibold">Add Task</h2>
             {onClose && (
               <button
@@ -1134,67 +1469,58 @@ export function AddTaskForm({
         )}
         {children}
         <div className={cn("flex-1 min-h-0", isModal ? "" : "overflow-y-auto")}>
-          <form ref={formRef} onSubmit={handleSubmit(onSubmit)} className={cn("space-y-4 px-6 w-full min-w-0 flex flex-col h-full", isModal ? "pt-4 pb-4" : "pt-2 pb-4 overflow-y-auto", variant === 'composer' && "relative")}>
+          <form
+            ref={formRef}
+            onSubmit={handleSubmit(onSubmit)}
+            className={cn(
+              "space-y-4 w-full min-w-0 flex flex-col h-full",
+              variant === 'composer' ? "px-4" : "px-6",
+              isModal ? "pt-4 pb-4" : "pt-2 pb-4 overflow-y-auto",
+              variant === 'composer' && "relative"
+            )}
+          >
             {/* Stage 1: Title, Project, Status, Briefing (composer) or full form (default) */}
             {/* Title */}
-            <div className="w-full">
-              {variant !== 'composer' && <label className="block text-sm font-medium mb-1">Title *</label>}
-              <Input {...register("title")}
-                className="w-full px-3 py-2 border rounded-md text-sm focus:outline-none focus:ring-2 focus:ring-gray-200"
-                placeholder="Write an exciting title"
-              />
-              {errors.title && <div className="text-red-500 text-xs mt-1">{errors.title.message}</div>}
-            </div>
+            {!isChannelDraftMode && (
+              <div className="w-full">
+                {variant !== 'composer' && <label className="block text-sm font-medium mb-1">Title *</label>}
+                <Input {...register("title")}
+                  className="w-full px-3 py-2 border rounded-md text-sm focus:outline-none focus:ring-2 focus:ring-gray-200"
+                  placeholder="Write an exciting title"
+                  autoFocus={isModal}
+                />
+                {errors.title && <div className="text-red-500 text-xs mt-1">{errors.title.message}</div>}
+              </div>
+            )}
             {/* Project */}
             {variant !== 'composer' && <div className="w-full">
               <label className="block text-sm font-medium mb-1">Project</label>
-              <button
-                type="button"
+              <SearchableSelect
+                options={projectSelectOptions}
+                value={String(watch('project_id_int') || '')}
+                onChange={(val) => setValue('project_id_int', val, { shouldDirty: true })}
+                media="project"
+                placeholder="Select project"
+                searchPlaceholder="Search projects..."
+                emptyText="No projects found."
                 disabled={!!parentTaskId}
-                onClick={() => !parentTaskId && setProjectExpanded((v) => !v)}
-                className="w-full min-h-[40px] px-3 py-2 border rounded-md text-left hover:bg-gray-50 transition flex items-center justify-between disabled:opacity-60 disabled:cursor-not-allowed"
-              >
-                <div className="min-w-0">
-                  {selectedProject ? (
-                    <ProjectBadge
-                      name={selectedProject.label}
-                      logoUrl={getImageUrl((selectedProject as any).logo)}
-                      color={(selectedProject as any).color ?? null}
-                      size="sm"
-                    />
-                  ) : (
-                    <span className="text-sm text-gray-500">Select project</span>
-                  )}
-                </div>
-                <ChevronDown className="w-4 h-4 text-gray-500" />
-              </button>
-              {projectExpanded && !parentTaskId && (
-                <div className="mt-2 border rounded-md max-h-52 overflow-y-auto">
-                  {uniqueProjects.map((opt) => (
-                    <button
-                      key={opt.value}
-                      type="button"
-                      onClick={() => {
-                        setValue('project_id_int', String(opt.value), { shouldDirty: true })
-                        setProjectExpanded(false)
-                      }}
-                      className="w-full px-3 py-2 text-left hover:bg-gray-50 flex items-center justify-between"
-                    >
-                      <ProjectBadge
-                        name={opt.label}
-                        logoUrl={getImageUrl((opt as any).logo)}
-                        color={(opt as any).color ?? null}
-                        size="sm"
-                      />
-                      {String(opt.value) === String(watch('project_id_int')) && <Check className="w-4 h-4 text-gray-700" />}
-                    </button>
-                  ))}
-                </div>
-              )}
+                ariaLabel="Select project"
+              />
             </div>}
             {/* Task Watchers */}
             {variant !== 'composer' && <div className="w-full">
-              <label className="block text-sm font-medium mb-1">Task Watchers</label>
+              <div className="mb-1 flex items-center justify-between">
+                <label className="block text-sm font-medium">Task Watchers</label>
+                {projectWatchers.length > 0 && (
+                  <button
+                    type="button"
+                    onClick={allWatchersSelected ? unselectAllWatchers : selectAllWatchers}
+                    className="text-xs font-medium text-blue-600 hover:text-blue-700"
+                  >
+                    {allWatchersSelected ? 'Unselect all' : 'Select all'}
+                  </button>
+                )}
+              </div>
               <button
                 type="button"
                 onClick={() => setWatchersExpanded((v) => !v)}
@@ -1229,6 +1555,20 @@ export function AddTaskForm({
               </button>
               {watchersExpanded && (
                 <div className="mt-2 border rounded-md max-h-48 overflow-y-auto">
+                  {projectWatchers.length > 0 && (
+                    <div className="sticky top-0 z-10 flex items-center justify-between px-3 py-2 border-b bg-gray-50">
+                      <span className="text-xs text-gray-500">
+                        {selectedWatcherItems.length} of {projectWatchers.length} selected
+                      </span>
+                      <button
+                        type="button"
+                        onClick={allWatchersSelected ? unselectAllWatchers : selectAllWatchers}
+                        className="text-xs font-medium text-blue-600 hover:text-blue-700"
+                      >
+                        {allWatchersSelected ? 'Unselect all' : 'Select all'}
+                      </button>
+                    </div>
+                  )}
                   {projectWatchers.length === 0 ? (
                     <div className="px-3 py-2 text-sm text-gray-500">No project watchers available.</div>
                   ) : (
@@ -1266,8 +1606,8 @@ export function AddTaskForm({
               )}
             </div>}
             {/* Status - moved up for composer Stage 1 */}
-            {variant === 'composer' && (
-              <div ref={statusPanelRef} className="w-full">
+            {variant === 'composer' && !isChannelDraftMode && (
+              <div ref={statusPanelRef} className="relative z-20 w-full shrink-0">
                 <button
                   type="button"
                   onClick={() => setStatusExpanded((v) => !v)}
@@ -1283,10 +1623,14 @@ export function AddTaskForm({
                   ) : (
                     <span className="text-sm text-gray-500">Select status</span>
                   )}
-                  <ChevronDown className="w-4 h-4 text-gray-500" />
+                  {statusExpanded ? (
+                    <ChevronUp className="w-4 h-4 text-gray-500" />
+                  ) : (
+                    <ChevronDown className="w-4 h-4 text-gray-500" />
+                  )}
                 </button>
                 {statusExpanded && (
-                  <div className="mt-2 border rounded-md max-h-52 overflow-y-auto">
+                  <div className="absolute top-full left-0 right-0 z-30 mt-1 max-h-52 overflow-y-auto rounded-md border bg-white shadow-lg">
                     {filteredStatuses.map((opt) => (
                       <button
                         key={opt.value}
@@ -1311,8 +1655,8 @@ export function AddTaskForm({
               </div>
             )}
             {/* Briefing - Stage 1 for composer */}
-            {variant === 'composer' && (
-              <div className="w-full">
+            {variant === 'composer' && !isChannelDraftMode && (
+              <div className="w-full min-h-0 flex-1 overflow-hidden">
                 <Controller
                   control={methods.control}
                   name="briefing"
@@ -1321,9 +1665,12 @@ export function AddTaskForm({
                       value={field.value || ''}
                       onChange={field.onChange}
                       placeholder="Add briefing..."
-                      height={220}
+                      height="100%"
                       fontSize={16}
                       toolbarId="ql-toolbar-rich-briefing-composer"
+                      editorWrapperClassName="h-full border"
+                      toolbarVariant="compact"
+                      toolbarVisibility="always"
                     />
                   )}
                 />
@@ -1333,45 +1680,33 @@ export function AddTaskForm({
             {variant === 'composer' && activeDetailPanel && (
               <div ref={detailPanelRef} className="absolute bottom-[118px] left-6 right-6 z-20">
                 <div className="px-3 pb-3 pt-3 space-y-4 border rounded-md bg-white shadow-lg">
-                    {activeDetailPanel === 'project' && <div className="w-full border rounded-md max-h-52 overflow-y-auto">
-                      {uniqueProjects.map((opt) => (
-                        <button
-                          key={`overlay-project-${opt.value}`}
-                          type="button"
-                          onClick={() => {
-                            setValue('project_id_int', String(opt.value), { shouldDirty: true })
-                            setActiveDetailPanel(null)
-                          }}
-                          className="w-full px-3 py-2 text-left hover:bg-gray-50 flex items-center justify-between"
-                        >
-                          <ProjectBadge
-                            name={opt.label}
-                            logoUrl={getImageUrl((opt as any).logo)}
-                            color={(opt as any).color ?? null}
-                            size="sm"
-                          />
-                          {String(opt.value) === String(watch('project_id_int')) && <Check className="w-4 h-4 text-gray-700" />}
-                        </button>
-                      ))}
+                    {activeDetailPanel === 'project' && <div className="w-full border rounded-md overflow-hidden">
+                      <SearchableSelect
+                        inline
+                        options={projectSelectOptions}
+                        value={String(watch('project_id_int') || '')}
+                        onChange={(val) => {
+                          setValue('project_id_int', val, { shouldDirty: true })
+                          setActiveDetailPanel(null)
+                        }}
+                        media="project"
+                        searchPlaceholder="Search projects..."
+                        emptyText="No projects found."
+                      />
                     </div>}
-                    {activeDetailPanel === 'assignee' && <div className="w-full border rounded-md max-h-52 overflow-y-auto">
-                      {uniqueAssignees.map((opt) => (
-                        <button
-                          key={`overlay-assignee-${opt.value}`}
-                          type="button"
-                          onClick={() => {
-                            setValue('assigned_to_id', String(opt.value), { shouldDirty: true })
-                            setActiveDetailPanel(null)
-                          }}
-                          className="w-full px-3 py-2 text-left hover:bg-gray-50 flex items-center justify-between"
-                        >
-                          <span className="inline-flex items-center gap-2">
-                            <UserAvatar name={opt.label} photoUrl={getImageUrl((opt as any).photo)} size="sm" />
-                            <span className="text-sm text-gray-800">{opt.label}</span>
-                          </span>
-                          {String(opt.value) === String(watch('assigned_to_id')) && <Check className="w-4 h-4 text-gray-700" />}
-                        </button>
-                      ))}
+                    {activeDetailPanel === 'assignee' && <div className="w-full border rounded-md overflow-hidden">
+                      <SearchableSelect
+                        inline
+                        options={assigneeSelectOptions}
+                        value={String(watch('assigned_to_id') || '')}
+                        onChange={(val) => {
+                          setValue('assigned_to_id', val, { shouldDirty: true })
+                          setActiveDetailPanel(null)
+                        }}
+                        media="avatar"
+                        searchPlaceholder="Search assignees..."
+                        emptyText="No assignees found."
+                      />
                     </div>}
                     {activeDetailPanel === 'dates' && <div className="w-full space-y-3">
                       <div className="inline-flex rounded-md border p-0.5">
@@ -1445,12 +1780,16 @@ export function AddTaskForm({
                     </div>}
                     {activeDetailPanel === 'types' && <div className="w-full">
                       <label className="block text-sm font-medium mb-1">Content Type</label>
-                      <select {...register("content_type_id")} className="w-full px-3 py-2 border rounded-md text-sm focus:outline-none focus:ring-2 focus:ring-gray-200">
-                        <option value="">Select content type</option>
-                        {uniqueContentTypes.map(opt => (
-                          <option key={opt.value} value={opt.value}>{opt.label}</option>
-                        ))}
-                      </select>
+                      <div className="w-full border rounded-md overflow-hidden">
+                        <SearchableSelect
+                          inline
+                          options={contentTypeSelectOptions}
+                          value={String(watch('content_type_id') || '')}
+                          onChange={(val) => setValue('content_type_id', val, { shouldDirty: true })}
+                          searchPlaceholder="Search content types..."
+                          emptyText="No content types found."
+                        />
+                      </div>
                     </div>}
                     {activeDetailPanel === 'types' && <div className="w-full">
                       <label className="block text-sm font-medium mb-1">Production Type</label>
@@ -1473,22 +1812,6 @@ export function AddTaskForm({
                           {String(opt.value) === String(watch('language_id')) && <Check className="w-4 h-4 text-gray-700" />}
                         </button>
                       ))}
-                    </div>}
-                    {activeDetailPanel === 'channels' && <div className="w-full border rounded-md max-h-52 overflow-y-auto">
-                      {effectiveChannelOptions.map((opt) => {
-                        const active = (watch('channels') || []).includes(opt.id)
-                        return (
-                          <button
-                            key={`overlay-channel-${opt.id}`}
-                            type="button"
-                            onClick={() => toggleChannel(opt.id)}
-                            className="w-full px-3 py-2 text-left hover:bg-gray-50 flex items-center justify-between"
-                          >
-                            <span className="text-sm text-gray-800">{opt.label}</span>
-                            {active && <Check className="w-4 h-4 text-gray-700" />}
-                          </button>
-                        )
-                      })}
                     </div>}
                     {activeDetailPanel === 'attachments' && <div className="w-full">
                       <button
@@ -1529,13 +1852,27 @@ export function AddTaskForm({
                     </div>}
                     {activeDetailPanel === 'watchers' && <div className="w-full">
                       <div className="border rounded-md max-h-44 overflow-y-auto">
-                        <div className="p-2 border-b">
+                        <div className="p-2 border-b space-y-2">
                           <Input
                             value={watcherSearch}
                             onChange={(e) => setWatcherSearch(e.target.value)}
                             placeholder="Search watchers"
                             className="h-8"
                           />
+                          {projectWatchers.length > 0 && (
+                            <div className="flex items-center justify-between px-1">
+                              <span className="text-xs text-gray-500">
+                                {selectedWatcherItems.length} of {projectWatchers.length} selected
+                              </span>
+                              <button
+                                type="button"
+                                onClick={allWatchersSelected ? unselectAllWatchers : selectAllWatchers}
+                                className="text-xs font-medium text-blue-600 hover:text-blue-700"
+                              >
+                                {allWatchersSelected ? 'Unselect all' : 'Select all'}
+                              </button>
+                            </div>
+                          )}
                         </div>
                         {filteredWatcherItems.map((watcher) => {
                           const isSelected = (selectedWatchers || []).includes(watcher.value)
@@ -1564,42 +1901,16 @@ export function AddTaskForm({
               <>
                 <div className="w-full">
                   <label className="block text-sm font-medium mb-1">Assignee</label>
-                  <button
-                    type="button"
-                    onClick={() => setAssigneeExpanded((v) => !v)}
-                    className="w-full min-h-[40px] px-3 py-2 border rounded-md text-left hover:bg-gray-50 transition flex items-center justify-between"
-                  >
-                    {selectedAssignee ? (
-                      <span className="inline-flex items-center gap-2">
-                        <UserAvatar name={selectedAssignee.label} photoUrl={getImageUrl((selectedAssignee as any).photo)} size="sm" />
-                        <span className="text-sm text-gray-800">{selectedAssignee.label}</span>
-                      </span>
-                    ) : (
-                      <span className="text-sm text-gray-500">Select assignee</span>
-                    )}
-                    <ChevronDown className="w-4 h-4 text-gray-500" />
-                  </button>
-                  {assigneeExpanded && (
-                    <div className="mt-2 border rounded-md max-h-52 overflow-y-auto">
-                      {uniqueAssignees.map((opt) => (
-                        <button
-                          key={opt.value}
-                          type="button"
-                          onClick={() => {
-                            setValue('assigned_to_id', String(opt.value), { shouldDirty: true })
-                            setAssigneeExpanded(false)
-                          }}
-                          className="w-full px-3 py-2 text-left hover:bg-gray-50 flex items-center justify-between"
-                        >
-                          <span className="inline-flex items-center gap-2">
-                            <UserAvatar name={opt.label} photoUrl={getImageUrl((opt as any).photo)} size="sm" />
-                            <span className="text-sm text-gray-800">{opt.label}</span>
-                          </span>
-                          {String(opt.value) === String(watch('assigned_to_id')) && <Check className="w-4 h-4 text-gray-700" />}
-                        </button>
-                      ))}
-                    </div>
-                  )}
+                  <SearchableSelect
+                    options={assigneeSelectOptions}
+                    value={String(watch('assigned_to_id') || '')}
+                    onChange={(val) => setValue('assigned_to_id', val, { shouldDirty: true })}
+                    media="avatar"
+                    placeholder="Select assignee"
+                    searchPlaceholder="Search assignees..."
+                    emptyText="No assignees found."
+                    ariaLabel="Select assignee"
+                  />
                 </div>
                 <div className="w-full">
                   <label className="block text-sm font-medium mb-1">Delivery Date</label>
@@ -1646,12 +1957,15 @@ export function AddTaskForm({
                 </div>
                 <div className="w-full">
                   <label className="block text-sm font-medium mb-1">Content Type</label>
-                  <select {...register("content_type_id")} className="w-full px-3 py-2 border rounded-md focus:outline-none focus:ring-2 focus:ring-gray-200">
-                    <option value="">Select content type</option>
-                    {uniqueContentTypes.map(opt => (
-                      <option key={opt.value} value={opt.value}>{opt.label}</option>
-                    ))}
-                  </select>
+                  <SearchableSelect
+                    options={contentTypeSelectOptions}
+                    value={String(watch('content_type_id') || '')}
+                    onChange={(val) => setValue('content_type_id', val, { shouldDirty: true })}
+                    placeholder="Select content type"
+                    searchPlaceholder="Search content types..."
+                    emptyText="No content types found."
+                    ariaLabel="Select content type"
+                  />
                 </div>
                 <div className="w-full">
                   <label className="block text-sm font-medium mb-1">Production Type</label>
@@ -1671,7 +1985,7 @@ export function AddTaskForm({
                     ))}
                   </select>
                 </div>
-                <div className="w-full">
+                {!isChannelDraftMode && <div className="w-full">
                   <label className="block text-sm font-medium mb-1">Status</label>
                   <button
                     type="button"
@@ -1713,7 +2027,7 @@ export function AddTaskForm({
                       ))}
                     </div>
                   )}
-                </div>
+                </div>}
                 <div className="w-full">
                   <label className="block text-sm font-medium mb-1">Channels</label>
                   <button
@@ -1745,7 +2059,7 @@ export function AddTaskForm({
                     </div>
                   )}
                 </div>
-                <div className="w-full">
+                {!isChannelDraftMode && <div className="w-full">
                   <label className="block text-sm font-medium mb-1">Briefing</label>
                   <Controller
                     control={methods.control}
@@ -1757,10 +2071,12 @@ export function AddTaskForm({
                         placeholder="Add briefing..."
                         fontSize={16}
                         toolbarId="ql-toolbar-rich-briefing"
+                        toolbarVariant="compact"
+                        toolbarVisibility="always"
                       />
                     )}
                   />
-                </div>
+                </div>}
                 <div className="w-full">
                   <button
                     type="button"
@@ -1802,6 +2118,39 @@ export function AddTaskForm({
             )}
             {variant === 'composer' && (
               <div className="pt-2 space-y-2">
+                {(pendingFiles.length > 0 || uploading || uploadError) && (
+                  <div className="rounded-lg border bg-white px-2.5 py-2">
+                    <div className="mb-1.5 flex items-center gap-2 text-xs text-gray-600">
+                      <Paperclip className="h-3.5 w-3.5" />
+                      <span>
+                        {pendingFiles.length > 0 ? `${pendingFiles.length} attachment${pendingFiles.length > 1 ? 's' : ''}` : 'Attachments'}
+                      </span>
+                      {uploading ? <span className="text-gray-500">Uploading...</span> : null}
+                      {uploadError ? <span className="text-red-600 truncate">{uploadError}</span> : null}
+                    </div>
+                    {pendingFiles.length > 0 ? (
+                      <div className="max-h-28 overflow-y-auto space-y-1.5 pr-1">
+                        {pendingFiles.map((file, idx) => (
+                          <div
+                            key={`${file.name}-${idx}`}
+                            className="flex items-center gap-2 text-xs bg-white border border-gray-200 rounded-lg px-2 py-1.5"
+                          >
+                            <span className="truncate text-gray-700 min-w-0" title={file.name}>{file.name}</span>
+                            <span className="text-gray-400 shrink-0">{formatFileSize(file.size)}</span>
+                            <button
+                              type="button"
+                              className="ml-auto inline-flex items-center justify-center h-5 w-5 rounded hover:bg-gray-100 text-gray-500 hover:text-red-600 shrink-0"
+                              onClick={() => handleRemoveFile(file)}
+                              aria-label={`Remove ${file.name}`}
+                            >
+                              <X className="h-3.5 w-3.5" />
+                            </button>
+                          </div>
+                        ))}
+                      </div>
+                    ) : null}
+                  </div>
+                )}
                 <div ref={iconRowRef} className="flex items-center justify-between gap-2">
                   <div className="flex min-w-0 items-center gap-1">
                     <button
@@ -1883,14 +2232,6 @@ export function AddTaskForm({
                     </button>
                     <button
                       type="button"
-                      onClick={() => setActiveDetailPanel((p) => (p === 'channels' ? null : 'channels'))}
-                      className={cn("h-6 w-6 inline-flex items-center justify-center rounded hover:bg-gray-100", activeDetailPanel === 'channels' && "bg-gray-100")}
-                      title="Channels"
-                    >
-                      <Check className="w-4 h-4 text-gray-600" />
-                    </button>
-                    <button
-                      type="button"
                       onClick={() => setActiveDetailPanel((p) => (p === 'attachments' ? null : 'attachments'))}
                       className={cn("h-6 w-6 inline-flex items-center justify-center rounded hover:bg-gray-100", activeDetailPanel === 'attachments' && "bg-gray-100")}
                       title="Attachments"
@@ -1923,6 +2264,16 @@ export function AddTaskForm({
                         +{selectedWatcherItems.length - 2}
                       </span>
                     )}
+                    {projectWatchers.length > 0 && (
+                      <button
+                        type="button"
+                        onClick={allWatchersSelected ? unselectAllWatchers : selectAllWatchers}
+                        className="px-1 text-[11px] font-medium text-blue-600 hover:text-blue-700"
+                        title={allWatchersSelected ? 'Unselect all watchers' : 'Select all watchers'}
+                      >
+                        {allWatchersSelected ? 'Unselect all' : 'Select all'}
+                      </button>
+                    )}
                     <button
                       type="button"
                       onClick={() => setActiveDetailPanel((p) => (p === 'watchers' ? null : 'watchers'))}
@@ -1936,7 +2287,7 @@ export function AddTaskForm({
               </div>
             )}
 
-            <div className={cn("flex gap-2 justify-end pt-4", variant === 'composer' && "flex-wrap")}>
+            <div className={cn("flex gap-2 justify-end pt-4", variant === 'composer' && "flex-wrap", variant === 'composer' && isChannelDraftMode && "mt-auto")}>
               <Button type="submit" disabled={isSubmitting}>
                 {isSubmitting ? "Adding..." : variant === 'composer' ? "Create" : "Add Task"}
               </Button>

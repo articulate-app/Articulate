@@ -2,6 +2,223 @@
 @tailwind components;
 @tailwind utilities;
 
+@layer components {
+  .rte-prose {
+    @apply text-foreground leading-relaxed;
+  }
+  .rte-prose p { @apply my-2; }
+  .rte-prose h1 { @apply text-3xl font-bold mt-6 mb-3 tracking-tight; }
+  .rte-prose h2 { @apply text-2xl font-semibold mt-5 mb-2 tracking-tight; }
+  .rte-prose h3 { @apply text-xl font-semibold mt-4 mb-2; }
+  .rte-prose ul { @apply list-disc pl-6 my-2; }
+  .rte-prose ol { @apply list-decimal pl-6 my-2; }
+  .rte-prose blockquote { @apply border-l-2 border-border pl-4 italic text-muted-foreground my-3; }
+  .rte-prose code {
+    @apply rounded bg-muted px-1.5 py-0.5 text-[0.85em] font-mono;
+  }
+  .rte-prose pre {
+    @apply rounded-md bg-muted p-3 my-3 overflow-x-auto;
+  }
+  .rte-prose pre code { @apply bg-transparent p-0; }
+  .rte-prose a { @apply text-primary underline underline-offset-2; }
+
+  .component-output-field .rte-prose a,
+  .ai-chat-component-edit-preview-body .rte-prose a {
+    @apply cursor-pointer text-primary;
+    text-decoration: underline;
+    text-decoration-style: dotted;
+    text-underline-offset: 3px;
+  }
+
+  .component-output-field .rte-prose a:hover,
+  .ai-chat-component-edit-preview-body .rte-prose a:hover {
+    text-decoration-color: hsl(var(--foreground) / 0.85);
+  }
+
+  .component-output-readonly .ProseMirror {
+    cursor: text;
+  }
+
+  .component-output-field .rte-prose {
+    min-height: 5rem;
+    height: auto !important;
+    padding-top: 0.5rem;
+    padding-bottom: 0.5rem;
+  }
+
+  .component-output-field [data-output-editor="true"] {
+    flex: 0 0 auto !important;
+    height: auto !important;
+  }
+
+  .component-output-field .rte-prose > :last-child {
+    margin-bottom: 0;
+  }
+
+  .component-output-field .rte-prose p {
+    margin-top: 0;
+  }
+
+  .component-output-field .rte-prose p + p {
+    margin-top: 0.5rem;
+  }
+  .rte-prose mark {
+    background-color: hsl(48 96% 76% / 0.6);
+    @apply rounded px-0.5;
+  }
+  .rte-prose hr { @apply my-4 border-border; }
+
+  .ai-chat-user-message {
+    white-space: pre-wrap;
+    overflow-wrap: anywhere;
+    word-break: break-word;
+    line-height: 1.5;
+  }
+
+  .ai-chat-assistant-message {
+    overflow-wrap: anywhere;
+    word-break: break-word;
+    line-height: 1.55;
+    max-width: 100%;
+  }
+
+  .ai-chat-assistant-message > :first-child {
+    margin-top: 0;
+  }
+
+  .ai-chat-assistant-message > :last-child {
+    margin-bottom: 0;
+  }
+
+  .ai-chat-assistant-message p {
+    margin: 0 0 0.75rem;
+  }
+
+  .ai-chat-assistant-message p:last-child {
+    margin-bottom: 0;
+  }
+
+  .ai-chat-assistant-message ul,
+  .ai-chat-assistant-message ol {
+    margin: 0.5rem 0;
+    padding-left: 1.25rem;
+  }
+
+  .ai-chat-assistant-message ul {
+    list-style-type: disc;
+  }
+
+  .ai-chat-assistant-message ol {
+    list-style-type: decimal;
+  }
+
+  .ai-chat-assistant-message li {
+    margin: 0.15rem 0;
+  }
+
+  .ai-chat-assistant-message h1,
+  .ai-chat-assistant-message h2,
+  .ai-chat-assistant-message h3,
+  .ai-chat-assistant-message h4,
+  .ai-chat-assistant-message h5,
+  .ai-chat-assistant-message h6 {
+    margin: 0.85rem 0 0.4rem;
+    font-weight: 600;
+    line-height: 1.3;
+  }
+
+  .ai-chat-assistant-message h1:first-child,
+  .ai-chat-assistant-message h2:first-child,
+  .ai-chat-assistant-message h3:first-child,
+  .ai-chat-assistant-message h4:first-child,
+  .ai-chat-assistant-message h5:first-child,
+  .ai-chat-assistant-message h6:first-child {
+    margin-top: 0;
+  }
+
+  .ai-chat-assistant-message blockquote {
+    margin: 0.5rem 0;
+    padding-left: 0.85rem;
+    border-left: 2px solid hsl(var(--border));
+    color: hsl(var(--muted-foreground));
+  }
+
+  .ai-chat-assistant-message strong,
+  .ai-chat-assistant-message b {
+    font-weight: 600;
+  }
+
+  .ai-chat-assistant-message a:not(.ai-msg-entity-chip) {
+    color: inherit;
+    text-decoration-line: underline;
+    text-decoration-style: dotted;
+    text-underline-offset: 3px;
+    text-decoration-color: hsl(var(--muted-foreground) / 0.75);
+  }
+
+  .ai-chat-assistant-message a:not(.ai-msg-entity-chip):hover {
+    text-decoration-color: hsl(var(--foreground) / 0.85);
+  }
+
+  .ai-chat-assistant-message .ai-msg-entity-chip {
+    text-decoration: none;
+  }
+
+  .ai-chat-component-edit-preview-body {
+    max-height: 200px;
+    overflow-y: auto;
+    overflow-x: hidden;
+  }
+
+  .ai-chat-composer-input:empty::before {
+    float: left;
+    height: 0;
+    pointer-events: none;
+  }
+
+  .component-output-streaming-preview,
+  .ai-chat-component-edit-preview-body .component-output-streaming-preview {
+    white-space: pre-wrap;
+    overflow-wrap: anywhere;
+    font-size: 16px;
+    line-height: 1.5;
+    color: hsl(var(--foreground));
+  }
+
+  @media (min-width: 640px) {
+    .ai-chat-component-edit-preview-body {
+      max-height: 220px;
+    }
+  }
+
+  .rte-prose ul[data-type="taskList"] {
+    @apply list-none pl-0;
+  }
+  .rte-prose ul[data-type="taskList"] li {
+    @apply flex items-start gap-2;
+  }
+  .rte-prose ul[data-type="taskList"] li > label {
+    @apply mt-1;
+  }
+  .rte-prose ul[data-type="taskList"] input[type="checkbox"] {
+    @apply h-4 w-4 rounded border-border;
+  }
+
+  .rte-comment {
+    background-color: hsl(45 100% 60% / 0.18);
+    border-bottom: 2px solid hsl(45 100% 50% / 0.65);
+    @apply cursor-pointer rounded-sm transition-colors;
+  }
+  .rte-comment:hover {
+    background-color: hsl(45 100% 60% / 0.32);
+  }
+
+  .rte-prose p.is-editor-empty:first-child::before {
+    content: attr(data-placeholder);
+    @apply text-muted-foreground float-left h-0 pointer-events-none;
+  }
+}
+
 @layer base {
   :root {
     --background: 0 0% 100%;
@@ -135,19 +352,113 @@ body {
   }
 }
 
+@keyframes comment-pin-pulse {
+  0%, 100% {
+    transform: translate(-50%, -50%) scale(1);
+  }
+  50% {
+    transform: translate(-50%, -50%) scale(1.12);
+  }
+}
+
+/* Animated shimmer for active AI tool/status labels (thinking, searching, planning). */
+.ai-status-active {
+  background-image: linear-gradient(
+    90deg,
+    hsl(var(--muted-foreground)) 0%,
+    hsl(var(--foreground)) 45%,
+    hsl(var(--muted-foreground)) 90%
+  );
+  background-size: 200% 100%;
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+  animation: ai-status-shimmer 2s ease-in-out infinite;
+}
+
+@keyframes ai-status-shimmer {
+  0% {
+    background-position: 200% 0;
+  }
+  100% {
+    background-position: -200% 0;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .ai-status-active {
+    animation: none;
+    background-image: none;
+    color: hsl(var(--muted-foreground));
+  }
+}
+
+figure[data-output-image-wrapper="true"]:hover [data-output-image-remove="true"],
+figure[data-output-image-wrapper="true"]:hover [data-output-image-resize-handle="true"] {
+  opacity: 1 !important;
+  pointer-events: auto !important;
+}
+
+.debug-output-image-overlays .rte-prose figure,
+[data-debug-output-image-overlays="true"] .rte-prose figure {
+  position: relative;
+  overflow: visible !important;
+}
+
+.debug-output-image-overlays .rte-prose img,
+[data-debug-output-image-overlays="true"] .rte-prose img {
+  outline: 2px dashed rgba(239, 68, 68, 0.9) !important;
+  outline-offset: 2px;
+}
+
+.debug-output-image-overlays .rte-prose figure[data-attachment-id]::before,
+[data-debug-output-image-overlays="true"] .rte-prose figure[data-attachment-id]::before {
+  content: "debug img " attr(data-attachment-id);
+  position: absolute;
+  left: 8px;
+  top: 8px;
+  z-index: 999;
+  background: rgba(0, 0, 0, 0.78);
+  color: #fff;
+  border-radius: 6px;
+  padding: 2px 6px;
+  font-size: 10px;
+  line-height: 1.2;
+  pointer-events: none;
+  max-width: min(80%, 340px);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
 html, body {
   overflow: hidden;
 } 
 
 
 
-/* More aggressive scrollbar hiding for Kanban */
+/* Scrollbars hidden (Kanban, AI tab strip, etc.). Plain CSS so it works outside Tailwind content paths. */
+.scrollbar-hide {
+  scrollbar-width: none;
+  -ms-overflow-style: none;
+}
+
 .scrollbar-hide::-webkit-scrollbar,
 .scrollbar-hide::-webkit-scrollbar-track,
 .scrollbar-hide::-webkit-scrollbar-thumb {
   display: none !important;
   width: 0 !important;
   height: 0 !important;
+}
+
+/* Horizontal scroll, hidden bar — do not zero webkit scrollbar dimensions (breaks wheel/scrollLeft in some WebKit builds). */
+.ai-chat-tabs-scroll {
+  scrollbar-width: none;
+  -ms-overflow-style: none;
+}
+
+.ai-chat-tabs-scroll::-webkit-scrollbar {
+  display: none;
 }
 
 /* Always show scrollbars for Kanban columns container */
@@ -300,11 +611,19 @@ html, body {
   line-height: 1rem !important;
 }
 
-/* Additional override for the day top container */
-.fc .fc-daygrid-day.fc-day-today .fc-daygrid-day-top {
-  text-align: center !important;
-  justify-content: center !important;
+/* Force consistent alignment on ALL day number wrappers; day number first, tasks expand downward */
+.fc .fc-daygrid-day-top {
   display: flex !important;
+  justify-content: center !important;
+  align-items: center !important;
+  order: 1 !important;
+  position: relative !important;
+  z-index: 2 !important;
+  overflow: hidden !important;
+}
+
+.fc .fc-daygrid-day.fc-day-today .fc-daygrid-day-top {
+  justify-content: center !important;
 }
 
 /* Fix selected date highlighting to be a circle around the day number */
@@ -319,14 +638,102 @@ html, body {
   position: relative !important;
 }
 
+/* Component output field: ring on wrapper (focus-within) so it wraps editor + toolbar with rounded corners; no inner blue ring */
+.component-output-field *:focus,
+.component-output-field *:focus-visible {
+  outline: none !important;
+  box-shadow: none !important;
+}
+/* Component output field: outer black ring (not inset) so it stays visible around the editor */
+.component-output-field.component-card-focus-ring:focus-within,
+.component-output-field.component-card-focus-ring.component-output-field-active {
+  --tw-ring-color: rgb(0 0 0) !important;
+  --tw-ring-inset: initial;
+  border-color: transparent !important;
+  box-shadow: 0 0 0 2px rgb(0 0 0) !important;
+}
+/* Output resize handle: only visible when output is focused */
+.component-output-field .output-resize-handle {
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 0.15s ease;
+}
+.component-output-field:focus-within .output-resize-handle {
+  opacity: 1;
+  pointer-events: auto;
+}
+
+/* Component card: only the wrapper shows black ring; inner input/textarea must not show blue ring */
+.card-row .component-card-focus-ring:focus-within,
+.card-row .component-card-focus-ring.component-output-field-active {
+  --tw-ring-color: rgb(0 0 0) !important;
+  box-shadow: 0 0 0 2px rgb(0 0 0) !important;
+}
+.card-row .component-card-focus-ring input:focus,
+.card-row .component-card-focus-ring input:focus-visible,
+.card-row .component-card-focus-ring textarea:focus,
+.card-row .component-card-focus-ring textarea:focus-visible {
+  outline: none !important;
+  box-shadow: none !important;
+  --tw-ring-shadow: 0 0 0 0 transparent !important;
+  --tw-ring-width: 0px !important;
+  --tw-ring-color: transparent !important;
+}
+
+/* AI pane inline preview: no black focus ring (Content tab output keeps it). */
+.ai-chat-component-edit-preview-body.component-output-field.component-card-focus-ring:focus-within,
+.ai-chat-component-edit-preview-body.component-output-field.component-card-focus-ring.component-output-field-active,
+.card-row .ai-chat-component-edit-preview-body.component-output-field:focus-within,
+.card-row .ai-chat-component-edit-preview-body.component-output-field.component-output-field-active {
+  box-shadow: none !important;
+  --tw-ring-shadow: 0 0 #0000 !important;
+  --tw-ring-width: 0px !important;
+}
+
+/* Card field: grey border on hover, no layout shift (always 1px border, transparent or gray) */
+.card-field-hover-border {
+  border-width: 1px !important;
+  border-style: solid !important;
+  border-color: transparent !important;
+}
+.component-output-field.card-field-hover-border {
+  border-color: rgb(229 231 235) !important; /* gray-200 */
+}
+.card-field-hover-border:hover {
+  border-color: rgb(229 231 235) !important; /* gray-200 */
+}
+/* Card hover: keep white bg, only strengthen border slightly */
+.card-row:hover,
+.card-row:focus-within,
+.card-row:has([data-state="open"]) {
+  border-color: rgb(209 213 219); /* gray-300 */
+}
+
 .fc .fc-daygrid-day-frame {
   overflow: visible !important;
   position: relative !important;
+  display: flex !important;
+  flex-direction: column !important;
 }
 
-.fc .fc-daygrid-day-top {
-  overflow: hidden !important;
-  position: relative !important;
+/* Weekday header sticky at top during scroll */
+.fc .fc-col-header {
+  position: sticky !important;
+  top: 0 !important;
+  z-index: 20 !important;
+  background: white !important;
+}
+
+.fc .fc-scrollgrid-section-header {
+  position: sticky !important;
+  top: 0 !important;
+  z-index: 20 !important;
+  background: white !important;
+}
+
+/* Day cell content: tasks container comes after day number, expands downward */
+.fc .fc-daygrid-day-events {
+  order: 2 !important;
 }
 
 .fc .fc-daygrid-day-bottom {
@@ -381,21 +788,59 @@ html, body {
   width: max-content;
   min-width: 100%;
 }
+/* Compact (narrow left-pane) variant: fill available width, never overflow horizontally. */
+.task-list-grid--compact {
+  width: 100%;
+  min-width: 0;
+}
+.task-list-grid--compact .task-row {
+  width: 100%;
+}
+/* Compact single-cell rows: keep title truncating so assignee/date stay visible. */
+.task-list-grid--compact .task-row[data-row-type="task"] .task-cell-span-full {
+  min-width: 0;
+  overflow: hidden;
+}
 .task-list-grid .task-row {
   display: grid;
   width: 100%;
   align-items: stretch;
+}
+/* Keep compact ↔ full density stable: same header/task row height in both modes. */
+.task-list-grid .task-row[data-row-type="header"] {
+  min-height: 36px;
+}
+.task-list-grid .task-row[data-row-type="task"] {
+  height: 36px;
+  min-height: 36px;
+  max-height: 36px;
 }
 .task-list-grid .task-cell {
   min-width: 0;
   position: relative;
   overflow: visible;
 }
-/* Content rows: vertically center all cell content */
-.task-list-grid tbody .task-cell {
+.task-list-grid .task-header-cell {
+  display: flex;
+  align-items: center;
+  min-height: 36px;
+  box-sizing: border-box;
+}
+/* Content rows: vertically center; fixed row height prevents large-mode columns from growing taller. */
+.task-list-grid tbody .task-row[data-row-type="task"] .task-cell {
   display: flex;
   align-items: center;
   height: 100%;
+  min-height: 0;
+  max-height: 36px;
+  overflow: hidden;
+  box-sizing: border-box;
+}
+.task-list-grid tbody .task-row[data-row-type="group"] .task-cell,
+.task-list-grid tbody .task-row.group-header .task-cell {
+  min-height: 0;
+  max-height: none;
+  overflow: visible;
 }
 .task-list-grid .resize-handle,
 .task-list-grid [data-resize-handle] {

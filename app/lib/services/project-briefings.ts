@@ -85,6 +85,19 @@ export type ComponentIndexItem = {
   usage_labels: string[]
 }
 
+/**
+ * Row shape returned by RPC project_components_latest(p_project_id).
+ * One row per component_key (global + project, excluding task-only).
+ */
+export type ProjectComponentListRow = {
+  component_key: string // 'g:<id>' | 'p:<id>'
+  component_id: number
+  is_project_component: boolean
+  effective_title: string
+  effective_description: string | null
+  source: 'global' | 'project'
+}
+
 function toSortedUniqueNumberArray(values: Array<number | null | undefined>) {
   return Array.from(new Set(values.filter((v): v is number => typeof v === 'number' && Number.isFinite(v)))).sort(
     (a, b) => a - b
@@ -92,14 +105,37 @@ function toSortedUniqueNumberArray(values: Array<number | null | undefined>) {
 }
 
 /**
- * Load a union list of project + global components relevant to a project.
- *
- * Includes:
- * - Project components from `project_briefing_components`
- * - Global components used in project templates from `v_project_briefing_types_components_resolved`
- * - Global components used in CT×channel briefings from `project_ct_channel_briefing_components`
- *
- * Usage labels are computed for both kinds (templates + CT×channel).
+ * Fetch the up-to-date list of all project-saved components (global + project) from RPC.
+ * Excludes task-only components. One row per component_key; title/description prefer PCCB/PBTC overrides.
+ */
+export async function fetchProjectComponentsLatest(
+  projectId: number
+): Promise<{ data: ProjectComponentListRow[] | null; error: any }> {
+  const supabase = createClientComponentClient()
+  const { data, error } = await supabase.rpc('project_components_latest', {
+    p_project_id: projectId,
+  })
+  if (error) return { data: null, error }
+  return { data: (data ?? []) as ProjectComponentListRow[], error: null }
+}
+
+/** Normalize RPC component_key (e.g. "p:123", "g:456", or "project:123", "global:456") to ComponentIndexItem key. */
+function normalizeComponentKey(component_key: string): { key: string; kind: 'project' | 'global'; component_id: number } {
+  const raw = String(component_key).trim()
+  const parts = raw.split(':')
+  const id = parseInt(parts[1] ?? '', 10)
+  const component_id = Number.isFinite(id) ? id : 0
+  const lower = raw.toLowerCase()
+  if (lower.startsWith('p:') || lower.startsWith('project:')) {
+    return { key: `project:${component_id}`, kind: 'project', component_id }
+  }
+  return { key: `global:${component_id}`, kind: 'global', component_id }
+}
+
+/**
+ * Load a union list of project + global components for the Project Components list.
+ * Uses RPC project_components_latest as source of truth (effective_title / effective_description).
+ * Fetches usage labels from template + CT×channel for filtering/display and merges.
  */
 export async function loadProjectComponentIndex(
   projectId: number
@@ -107,178 +143,79 @@ export async function loadProjectComponentIndex(
   const supabase = createClientComponentClient()
 
   try {
-    const [projectComponentsRes, templateResolvedRes, ctRes, briefingTypesRes] = await Promise.all([
-      supabase
-        .from('project_briefing_components')
-        .select('id, title, description')
-        .eq('project_id', projectId),
+    const { data: rows, error: rpcError } = await fetchProjectComponentsLatest(projectId)
+    if (rpcError) throw rpcError
+    const listRows = rows ?? []
+
+    const itemsByKey = new Map<string, ComponentIndexItem>()
+    for (const row of listRows) {
+      const { key, kind, component_id } = normalizeComponentKey(row.component_key)
+      itemsByKey.set(key, {
+        key,
+        kind,
+        component_id,
+        title: row.effective_title,
+        description: row.effective_description ?? null,
+        usage_labels: [],
+      })
+    }
+
+    if (itemsByKey.size === 0) {
+      return { data: [], error: null }
+    }
+
+    const briefingTypesRes = await supabase
+      .from('v_project_briefing_types')
+      .select('briefing_type_id, display_title')
+      .eq('project_id', projectId)
+    if (briefingTypesRes.error) throw briefingTypesRes.error
+    const briefingTypeTitleById = new Map<number, string>(
+      ((briefingTypesRes.data || []) as any[]).map((bt: any) => [bt.briefing_type_id, bt.display_title])
+    )
+
+    const [templateResolvedRes, ctRes] = await Promise.all([
       supabase
         .from('v_project_briefing_types_components_resolved')
-        .select('briefing_type_id, component_id, is_project_component, effective_title, effective_description, position')
-        .eq('project_id', projectId)
-        .eq('is_project_component', false)
-        .order('position', { ascending: true, nullsFirst: false })
-        .order('effective_title', { ascending: true }),
+        .select('briefing_type_id, component_id, is_project_component')
+        .eq('project_id', projectId),
       supabase
         .from('project_ct_channel_briefing_components')
-        .select(
-          'content_type_id, channel_id, briefing_type_id, position, custom_title, custom_description, briefing_component_id, project_component_id'
-        )
+        .select('content_type_id, channel_id, briefing_type_id, briefing_component_id, project_component_id')
         .eq('project_id', projectId),
-      supabase.from('v_project_briefing_types').select('briefing_type_id, display_title').eq('project_id', projectId),
     ])
-
-    if (projectComponentsRes.error) throw projectComponentsRes.error
     if (templateResolvedRes.error) throw templateResolvedRes.error
     if (ctRes.error) throw ctRes.error
-    if (briefingTypesRes.error) throw briefingTypesRes.error
-
-    const projectComponents = (projectComponentsRes.data || []) as Array<{
-      id: number
-      title: string
-      description: string | null
-    }>
 
     const templateGlobalRows = (templateResolvedRes.data || []) as Array<{
       briefing_type_id: number
       component_id: number
       is_project_component: boolean
-      effective_title: string
-      effective_description: string | null
-      position: number | null
     }>
-
     const ctRows = (ctRes.data || []) as Array<{
       content_type_id: number
       channel_id: number
       briefing_type_id: number | null
-      position: number | null
-      custom_title: string | null
-      custom_description: string | null
       briefing_component_id: number | null
       project_component_id: number | null
     }>
 
-    const briefingTypeTitleById = new Map<number, string>(
-      ((briefingTypesRes.data || []) as any[]).map((bt: any) => [bt.briefing_type_id, bt.display_title])
-    )
-
-    // Collect lookup IDs for CT labels
     const contentTypeIds = toSortedUniqueNumberArray(ctRows.map(r => r.content_type_id))
     const channelIds = toSortedUniqueNumberArray(ctRows.map(r => r.channel_id))
-
-    // CT rows may omit briefing_type_id; resolve from defaults only when needed.
-    const needsDefaults = ctRows.some(r => r.briefing_type_id == null)
     const defaultBriefingTypeByPair = new Map<string, number | null>()
-    if (needsDefaults) {
-      const ctSet = toSortedUniqueNumberArray(ctRows.map(r => r.content_type_id))
-      const chSet = toSortedUniqueNumberArray(ctRows.map(r => r.channel_id))
+    if (ctRows.some(r => r.briefing_type_id == null)) {
       const defaultsRes = await supabase
         .from('project_ct_channel_briefings')
-        .select('content_type_id, channel_id, briefing_type_id')
+        .select('content_type_id, channel_id, briefing_type_id, is_default')
         .eq('project_id', projectId)
-        .in('content_type_id', ctSet)
-        .in('channel_id', chSet)
-
+        .eq('is_default', true)
+        .in('content_type_id', contentTypeIds)
+        .in('channel_id', channelIds)
       if (defaultsRes.error) throw defaultsRes.error
       ;((defaultsRes.data || []) as any[]).forEach((row: any) => {
         defaultBriefingTypeByPair.set(`${row.content_type_id}:${row.channel_id}`, row.briefing_type_id ?? null)
       })
     }
 
-    // Global IDs from templates (view) and CT overrides
-    const globalIdsFromTemplates = toSortedUniqueNumberArray(templateGlobalRows.map(r => r.component_id))
-    const globalIdsFromCt = toSortedUniqueNumberArray(ctRows.map(r => r.briefing_component_id).filter(Boolean) as number[])
-    const allGlobalIds = toSortedUniqueNumberArray([...globalIdsFromTemplates, ...globalIdsFromCt])
-
-    const [contentTypesRes, channelsRes, briefingComponentsRes] = await Promise.all([
-      contentTypeIds.length
-        ? supabase.from('content_types').select('id, title').in('id', contentTypeIds)
-        : Promise.resolve({ data: [], error: null } as any),
-      channelIds.length
-        ? supabase.from('channels').select('id, name').in('id', channelIds)
-        : Promise.resolve({ data: [], error: null } as any),
-      allGlobalIds.length
-        ? supabase.from('briefing_components').select('id, title, description').in('id', allGlobalIds)
-        : Promise.resolve({ data: [], error: null } as any),
-    ])
-
-    if (contentTypesRes.error) throw contentTypesRes.error
-    if (channelsRes.error) throw channelsRes.error
-    if (briefingComponentsRes.error) throw briefingComponentsRes.error
-
-    const contentTypeTitleById = new Map<number, string>(
-      ((contentTypesRes.data || []) as any[]).map((ct: any) => [ct.id, ct.title])
-    )
-    const channelTitleById = new Map<number, string>(
-      ((channelsRes.data || []) as any[]).map((ch: any) => [ch.id, ch.name])
-    )
-    const systemByGlobalId = new Map<number, { title: string; description: string | null }>(
-      ((briefingComponentsRes.data || []) as any[]).map((bc: any) => [bc.id, { title: bc.title, description: bc.description }])
-    )
-
-    // Build project items
-    const itemsByKey = new Map<string, ComponentIndexItem>()
-    projectComponents.forEach((pc) => {
-      const key = `project:${pc.id}`
-      itemsByKey.set(key, {
-        key,
-        kind: 'project',
-        component_id: pc.id,
-        title: pc.title,
-        description: pc.description ?? null,
-        usage_labels: [],
-      })
-    })
-
-    // Global from templates: take first representative (rows already ordered)
-    const globalFromTemplates = new Map<number, { title: string; description: string | null }>()
-    templateGlobalRows.forEach((row) => {
-      if (!globalFromTemplates.has(row.component_id)) {
-        globalFromTemplates.set(row.component_id, {
-          title: row.effective_title || systemByGlobalId.get(row.component_id)?.title || 'Component',
-          description: row.effective_description ?? systemByGlobalId.get(row.component_id)?.description ?? null,
-        })
-      }
-    })
-
-    // Global from CT overrides: prefer custom override titles/desc when present, else system fallback
-    const globalFromCt = new Map<number, { title: string; description: string | null }>()
-    ctRows
-      .filter(r => typeof r.briefing_component_id === 'number')
-      .forEach((r) => {
-        const id = r.briefing_component_id as number
-        if (!globalFromCt.has(id)) {
-          const sys = systemByGlobalId.get(id)
-          globalFromCt.set(id, {
-            title: (r.custom_title ?? sys?.title ?? 'Component') as string,
-            description: (r.custom_description ?? sys?.description ?? null) as string | null,
-          })
-        }
-      })
-
-    // Merge + dedupe global (prefer CT override representation)
-    const mergedGlobalIds = toSortedUniqueNumberArray([
-      ...Array.from(globalFromTemplates.keys()),
-      ...Array.from(globalFromCt.keys()),
-      ...allGlobalIds,
-    ])
-
-    mergedGlobalIds.forEach((id) => {
-      const preferred = globalFromCt.get(id) ?? globalFromTemplates.get(id) ?? systemByGlobalId.get(id)
-      if (!preferred) return
-      const key = `global:${id}`
-      itemsByKey.set(key, {
-        key,
-        kind: 'global',
-        component_id: id,
-        title: preferred.title,
-        description: preferred.description ?? null,
-        usage_labels: [],
-      })
-    })
-
-    // Usage labels: template usage from resolved view (global)
     for (const row of templateGlobalRows) {
       const key = `global:${row.component_id}`
       const item = itemsByKey.get(key)
@@ -287,39 +224,40 @@ export async function loadProjectComponentIndex(
       item.usage_labels.push(normalizeUsageLabel([briefingTitle]))
     }
 
-    // Usage labels: CT usage for both kinds
+    const [contentTypesRes, channelsRes] = await Promise.all([
+      contentTypeIds.length ? supabase.from('content_types').select('id, title').in('id', contentTypeIds) : Promise.resolve({ data: [], error: null } as any),
+      channelIds.length ? supabase.from('channels').select('id, name').in('id', channelIds) : Promise.resolve({ data: [], error: null } as any),
+    ])
+    if (contentTypesRes.error) throw contentTypesRes.error
+    if (channelsRes.error) throw channelsRes.error
+    const contentTypeTitleById = new Map<number, string>(((contentTypesRes.data || []) as any[]).map((ct: any) => [ct.id, ct.title]))
+    const channelTitleById = new Map<number, string>(((channelsRes.data || []) as any[]).map((ch: any) => [ch.id, ch.name]))
+
     for (const row of ctRows) {
       const effectiveBriefingTypeId =
         row.briefing_type_id ?? defaultBriefingTypeByPair.get(`${row.content_type_id}:${row.channel_id}`) ?? null
       if (!effectiveBriefingTypeId) continue
-
       const briefingTitle = briefingTypeTitleById.get(effectiveBriefingTypeId) ?? `Briefing ${effectiveBriefingTypeId}`
       const channelTitle = channelTitleById.get(row.channel_id) ?? `Channel ${row.channel_id}`
       const contentTypeTitle = contentTypeTitleById.get(row.content_type_id) ?? `Content type ${row.content_type_id}`
       const label = normalizeUsageLabel([briefingTitle, channelTitle, contentTypeTitle])
-
       if (typeof row.project_component_id === 'number') {
-        const key = `project:${row.project_component_id}`
-        const item = itemsByKey.get(key)
+        const item = itemsByKey.get(`project:${row.project_component_id}`)
         if (item) item.usage_labels.push(label)
       }
-
       if (typeof row.briefing_component_id === 'number') {
-        const key = `global:${row.briefing_component_id}`
-        const item = itemsByKey.get(key)
+        const item = itemsByKey.get(`global:${row.briefing_component_id}`)
         if (item) item.usage_labels.push(label)
       }
     }
 
-    // Dedupe labels
-    for (const item of Array.from(itemsByKey.values())) {
+    for (const item of itemsByKey.values()) {
       item.usage_labels = Array.from(new Set(item.usage_labels))
     }
 
-    // Return stable ordering: project first, then global; within each by title
     const items = Array.from(itemsByKey.values()).sort((a, b) => {
       if (a.kind !== b.kind) return a.kind === 'project' ? -1 : 1
-      return a.title.localeCompare(b.title)
+      return a.title.localeCompare(b.title, undefined, { sensitivity: 'base' })
     })
 
     return { data: items, error: null }
@@ -477,8 +415,9 @@ export async function fetchProjectComponentUsage(
       missingPairsKey.size
         ? supabase
             .from('project_ct_channel_briefings')
-            .select('content_type_id, channel_id, briefing_type_id')
+            .select('content_type_id, channel_id, briefing_type_id, is_default')
             .eq('project_id', projectId)
+            .eq('is_default', true)
             .in('content_type_id', Array.from(new Set(missingBriefingPairs.map(p => p.content_type_id))))
         : Promise.resolve({ data: [], error: null } as any),
     ])
@@ -594,8 +533,9 @@ export async function fetchProjectComponentUsageIndex(
       missingPairs.length
         ? supabase
             .from('project_ct_channel_briefings')
-            .select('content_type_id, channel_id, briefing_type_id')
+            .select('content_type_id, channel_id, briefing_type_id, is_default')
             .eq('project_id', projectId)
+            .eq('is_default', true)
             .in('content_type_id', Array.from(new Set(missingPairs.map(p => p.content_type_id))))
         : Promise.resolve({ data: [], error: null } as any),
     ])
@@ -707,8 +647,9 @@ export async function fetchGlobalComponentUsage(
         .eq('briefing_component_id', briefingComponentId),
       supabase
         .from('project_ct_channel_briefings')
-        .select('content_type_id, channel_id, briefing_type_id')
-        .eq('project_id', projectId),
+        .select('content_type_id, channel_id, briefing_type_id, is_default')
+        .eq('project_id', projectId)
+        .eq('is_default', true),
     ])
 
     if (systemRes.error) throw systemRes.error
@@ -803,29 +744,18 @@ export async function fetchAvailableBriefingTypes(
   projectId: number
 ): Promise<{ data: Array<{ id: number; title: string; description: string | null }> | null; error: any }> {
   const supabase = createClientComponentClient()
+  const { data, error } = await supabase.rpc('project_available_briefing_types', {
+    p_project_id: projectId,
+  })
+  if (error) return { data: null, error }
 
-  // Get all briefing types
-  const { data: allTypes, error: allError } = await supabase
-    .from('briefing_types')
-    .select('id, title, description')
-    .order('title')
+  const mapped = ((data || []) as any[]).map((row: any) => ({
+    id: Number(row.briefing_type_id),
+    title: String(row.title ?? ''),
+    description: (row.description ?? null) as string | null,
+  }))
 
-  if (allError) return { data: null, error: allError }
-
-  // Get already added types
-  const { data: addedTypes, error: addedError } = await supabase
-    .from('project_briefing_types')
-    .select('briefing_type_id')
-    .eq('project_id', projectId)
-
-  if (addedError) return { data: null, error: addedError }
-
-  const addedIds = new Set((addedTypes || []).map(t => t.briefing_type_id))
-
-  // Filter out already added
-  const available = (allTypes || []).filter(t => !addedIds.has(t.id))
-
-  return { data: available, error: null }
+  return { data: mapped, error: null }
 }
 
 /**

@@ -10,8 +10,12 @@ export function useFilterOptions(options?: { enabled?: boolean }) {
   return useQuery({
     queryKey: ['filterOptions'],
     queryFn: getFilterOptions,
-    staleTime: 1000 * 60 * 10, // 10 minutes
+    staleTime: 1000 * 60 * 30, // 30 minutes
+    gcTime: 1000 * 60 * 60, // 1 hour
+    refetchOnMount: false,
     refetchOnWindowFocus: false,
+    refetchOnReconnect: false,
+    placeholderData: (previousData) => previousData,
     enabled: options?.enabled !== undefined ? options.enabled : true,
   });
 } 

@@ -1,4 +1,5 @@
 import { createClientComponentClient } from '@supabase/auth-helpers-nextjs'
+import { getCurrentUser } from '../../../lib/utils/getCurrentUser'
 
 const supabase = createClientComponentClient()
 
@@ -291,6 +292,11 @@ export async function listFiles(
 }
 
 export async function uploadProjectFile(projectId: number, file: File) {
+  const currentUser = await getCurrentUser()
+  if (!currentUser?.id) {
+    throw new Error('You must be signed in to upload files')
+  }
+
   const ext = file.name.split('.').pop()
   const uuid = crypto.randomUUID()
   const storagePath = `${projectId}/${uuid}-${file.name.replace(/[^a-zA-Z0-9._-]/g, '_')}`
@@ -317,6 +323,7 @@ export async function uploadProjectFile(projectId: number, file: File) {
       file_size: file.size,
       file_url: signed?.signedUrl ?? storagePath,
       storage_path: storagePath,
+      uploaded_by: currentUser.id,
     })
     .select()
     .single()
@@ -390,6 +397,76 @@ export async function addProjectWatcher(projectId: number, userId: number) {
 export async function removeProjectWatcher(watcherId: number) {
   const { data, error } = await supabase.rpc('fn_remove_project_watcher', {
     p_watcher_id: watcherId,
+  })
+
+  return { data, error }
+}
+
+/**
+ * A user eligible to be added/removed as a project watcher by the current user.
+ * Sourced from the `project_watcher_candidates` RPC, which already scopes the
+ * options to the project's team plus (for Articulate/team 22 members) the
+ * Articulate team. These are the ONLY selectable options for the watchers
+ * dropdown.
+ */
+export interface ProjectWatcherCandidate {
+  user_id: number
+  full_name: string | null
+  email: string | null
+  photo: string | null
+  team_ids: number[] | null
+  team_titles: string[] | null
+  is_watcher: boolean
+}
+
+/**
+ * A current project watcher (including watchers the current user cannot manage).
+ * Sourced from the `project_watchers_current` RPC. Used for display only; a
+ * watcher with `is_manageable === false` must be shown read-only.
+ */
+export interface ProjectWatcherCurrent {
+  watcher_id: number
+  user_id: number
+  full_name: string | null
+  email: string | null
+  photo: string | null
+  is_manageable: boolean
+  created_at: string
+  updated_at: string
+}
+
+/**
+ * Selectable watcher options for a project, scoped by team permissions.
+ * Use this as the ONLY source for the watchers dropdown options.
+ */
+export async function getProjectWatcherCandidates(projectId: number) {
+  const { data, error } = await supabase.rpc('project_watcher_candidates', {
+    p_project_id: projectId,
+  })
+
+  return { data: (data ?? null) as ProjectWatcherCandidate[] | null, error }
+}
+
+/**
+ * Current watchers for a project, including non-manageable ones (display only).
+ */
+export async function getProjectWatchersCurrent(projectId: number) {
+  const { data, error } = await supabase.rpc('project_watchers_current', {
+    p_project_id: projectId,
+  })
+
+  return { data: (data ?? null) as ProjectWatcherCurrent[] | null, error }
+}
+
+/**
+ * Persist the selected manageable watchers for a project. Only pass user ids
+ * that came from `project_watcher_candidates`; the backend preserves existing
+ * non-manageable watchers.
+ */
+export async function setProjectWatchers(projectId: number, watcherUserIds: number[]) {
+  const { data, error } = await supabase.rpc('set_project_watchers', {
+    p_project_id: projectId,
+    p_watcher_user_ids: watcherUserIds,
   })
 
   return { data, error }

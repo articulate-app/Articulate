@@ -1,6 +1,6 @@
 "use client"
 
-import { useCallback, useEffect, useMemo, useRef } from "react"
+import { useCallback, useMemo } from "react"
 import { useInfiniteQuery } from "@tanstack/react-query"
 import {
   listProjectActivityFeedPage,
@@ -53,7 +53,7 @@ export function useProjectActivityFeedInfinite({
     getNextPageParam: (lastPage) => {
       if (!lastPage || lastPage.length < pageSize) return undefined
       const last = lastPage[lastPage.length - 1]
-      const sortValue = last[sort.field]
+      const sortValue = last[sort.field] ?? last.created_at ?? last.timestamp
       return {
         sortField: sort.field,
         sortDirection: sort.direction,
@@ -61,7 +61,9 @@ export function useProjectActivityFeedInfinite({
         lastUid: last.uid,
       }
     },
-    enabled: enabled && Number.isFinite(projectId),
+    enabled,
+    staleTime: 30_000,
+    refetchOnMount: "always",
   })
 
   const logs = useMemo(() => {
@@ -77,28 +79,10 @@ export function useProjectActivityFeedInfinite({
     return deduped
   }, [query.data])
 
-  const loadMoreRef = useRef<HTMLDivElement | null>(null)
-
   const fetchNextPage = useCallback(() => {
     if (query.hasNextPage && !query.isFetchingNextPage) {
       query.fetchNextPage()
     }
-  }, [query.hasNextPage, query.isFetchingNextPage, query.fetchNextPage])
-
-  useEffect(() => {
-    const sentinel = loadMoreRef.current
-    if (!sentinel || !query.hasNextPage || query.isFetchingNextPage) return
-
-    const observer = new IntersectionObserver(
-      (entries) => {
-        if (entries[0]?.isIntersecting && query.hasNextPage && !query.isFetchingNextPage) {
-          query.fetchNextPage()
-        }
-      },
-      { threshold: 0.1, rootMargin: "50px" }
-    )
-    observer.observe(sentinel)
-    return () => observer.disconnect()
   }, [query.hasNextPage, query.isFetchingNextPage, query.fetchNextPage])
 
   return {
@@ -109,7 +93,6 @@ export function useProjectActivityFeedInfinite({
     hasMore: query.hasNextPage ?? false,
     error: query.error,
     fetchNextPage,
-    loadMoreRef,
     refetch: query.refetch,
   }
 }

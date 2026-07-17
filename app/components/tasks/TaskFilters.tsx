@@ -1,6 +1,6 @@
 "use client"
 
-import { useState, useEffect } from "react"
+import { useState, useEffect, useMemo } from "react"
 import { X, Filter } from "lucide-react"
 import { Button } from "../ui/button"
 import { Badge } from "../ui/badge"
@@ -9,10 +9,14 @@ import { MultiSelect } from "../ui/multi-select"
 import { DateRangePicker } from "../ui/date-range-picker"
 import { createClientComponentClient } from "@supabase/auth-helpers-nextjs"
 import { cn } from "@/lib/utils"
-import { useRouter, useSearchParams } from 'next/navigation'
+import { useRouter, useSearchParams, usePathname } from 'next/navigation'
 import { SlidePanel } from "../ui/slide-panel"
-import { useFilterOptions } from "../../hooks/use-filter-options"
+import { useTaskListEditBootstrap } from "../../hooks/use-task-list-edit-bootstrap"
+import { taskListEditBootstrapToFilterOptions } from "../../lib/services/task-list-edit-bootstrap"
 import type { FilterOptions } from "../../lib/services/filters"
+import { useTasksUI } from "../../store/tasks-ui"
+import { useCurrentUserStore } from "../../store/current-user"
+import { buildFilterSearchParams } from "../../lib/tasks-filter-url"
 
 interface TaskFiltersProps {
   isOpen: boolean
@@ -21,6 +25,19 @@ interface TaskFiltersProps {
   activeFilters: TaskFilters
   filterOptions?: FilterOptions // Optional prop to avoid network calls
   noWrapper?: boolean // If true, don't render SlidePanel wrapper
+  /** When true, hide the Project filter control (e.g. when already scoped to a project). */
+  hideProjectFilter?: boolean
+  /**
+   * Canonical commit: same pipeline as pills. When provided, Apply/Clear call this instead of
+   * onApplyFilters + syncFiltersToUrl. Must update URL (router.replace) + store (setFilters)
+   * so task_group_tasks_filtered / task_group_meta_paged_filtered refetch.
+   * If plannerVisibility is passed, caller must write it into the URL in the same replace
+   * so we avoid a second replace (syncPlannerToUrl) overwriting filter params.
+   */
+  commitFilters?: (
+    newFilters: TaskFilters,
+    plannerVisibility?: { showTasks: boolean; showSuggestions: boolean }
+  ) => void
 }
 
 export interface TaskFilters {
@@ -42,71 +59,150 @@ interface FilterOption {
   color?: string
 }
 
-export function TaskFilters({ isOpen, onClose, onApplyFilters, activeFilters, filterOptions, noWrapper = false }: TaskFiltersProps) {
+export function TaskFilters({ isOpen, onClose, onApplyFilters, activeFilters, filterOptions, noWrapper = false, hideProjectFilter = false, commitFilters }: TaskFiltersProps) {
   const [filters, setFilters] = useState<TaskFilters>(activeFilters)
   const router = useRouter()
+  const pathname = usePathname()
   const params = useSearchParams()
+  const supabase = createClientComponentClient()
+  const [accessToken, setAccessToken] = useState<string | null>(null)
+  const currentUserId = useCurrentUserStore((state) => state.publicUserId)
+
+  useEffect(() => {
+    void supabase.auth.getSession().then(({ data }) => {
+      setAccessToken(data?.session?.access_token ?? null)
+    })
+  }, [supabase])
+  const plannerVisibility = useTasksUI((s) => s.plannerVisibility)
+  const setPlannerVisibility = useTasksUI((s) => s.setPlannerVisibility)
+  const [contentVisibility, setContentVisibility] = useState<{ showTasks: boolean; showSuggestions: boolean }>(
+    plannerVisibility,
+  )
 
   // Fetch filter options only when panel is open and no valid filterOptions prop provided
   const hasValidFilterOptions = filterOptions && 
     filterOptions.statuses && filterOptions.statuses.length > 0 &&
     filterOptions.projects && filterOptions.projects.length > 0
   const shouldFetchOptions = isOpen && !hasValidFilterOptions
-  const { data: fetchedOptions, isLoading: isOptionsLoading } = useFilterOptions({ enabled: shouldFetchOptions })
-  
+  const { data: listEditBootstrapRaw, isLoading: isOptionsLoading } = useTaskListEditBootstrap(accessToken, {
+    enabled: shouldFetchOptions && !!accessToken,
+  })
+  const fetchedOptions = useMemo(
+    () => (listEditBootstrapRaw ? taskListEditBootstrapToFilterOptions(listEditBootstrapRaw) : undefined),
+    [listEditBootstrapRaw]
+  )
+
   // Use provided filterOptions or fallback to fetched options
   const options = filterOptions || fetchedOptions
-  
-  // Debug log
-  console.log('[TaskFilters] isOpen:', isOpen, 'hasValidFilterOptions:', hasValidFilterOptions, 'shouldFetchOptions:', shouldFetchOptions, 'options keys:', options ? Object.keys(options) : 'none')
 
-  // Helper: update URL params when filters change
-  const syncFiltersToUrl = (newFilters: TaskFilters) => {
-    const newParams = new URLSearchParams(params.toString())
-    Object.entries(newFilters).forEach(([key, value]) => {
-      if (Array.isArray(value)) {
-        if (value.length > 0) newParams.set(key, value.join(','))
-        else newParams.delete(key)
-      } else if (typeof value === 'object' && value !== null) {
-        const { from, to } = value as { from?: Date; to?: Date }
-        if (from) newParams.set(`${key}From`, from instanceof Date ? from.toISOString() : from)
-        else newParams.delete(`${key}From`)
-        if (to) newParams.set(`${key}To`, to instanceof Date ? to.toISOString() : to)
-        else newParams.delete(`${key}To`)
-      }
-    })
-    router.replace(`?${newParams.toString()}`)
-  }
-
-  // Sync local state with activeFilters prop
+  // Sync local draft with canonical state when pane opens (activeFilters = URL/store)
   useEffect(() => {
     if (isOpen) {
       setFilters(activeFilters)
+      setContentVisibility(plannerVisibility)
     }
-  }, [isOpen, activeFilters])
+  }, [isOpen, activeFilters, plannerVisibility])
+
+  const syncPlannerToUrl = (next: { showTasks: boolean; showSuggestions: boolean }) => {
+    const newParams = new URLSearchParams(params.toString())
+    if (next.showTasks && next.showSuggestions) {
+      newParams.delete('showTasks')
+      newParams.delete('showSuggestions')
+    } else if (next.showTasks && !next.showSuggestions) {
+      newParams.delete('showTasks')
+      newParams.set('showSuggestions', 'false')
+    } else if (!next.showTasks && next.showSuggestions) {
+      newParams.set('showTasks', 'false')
+      newParams.delete('showSuggestions')
+    } else {
+      newParams.delete('showTasks')
+      newParams.delete('showSuggestions')
+    }
+    router.replace(`${pathname}?${newParams.toString()}`, { scroll: false })
+  }
+
+  const emptyFilters: TaskFilters = {
+    assignedTo: [],
+    status: [],
+    deliveryDate: {},
+    publicationDate: {},
+    project: [],
+    contentType: [],
+    productionType: [],
+    language: [],
+    channels: [],
+    overdueStatus: []
+  }
+
+  const applyQuickFilter = (kind: "due_today" | "assigned_to_me" | "delivery_overdue" | "publication_overdue") => {
+    const today = new Date()
+    const startOfToday = new Date(today.getFullYear(), today.getMonth(), today.getDate())
+    const endOfToday = new Date(today.getFullYear(), today.getMonth(), today.getDate() + 1)
+    const nextFilters: TaskFilters = {
+      ...emptyFilters,
+      assignedTo:
+        kind === "assigned_to_me" || kind === "due_today"
+          ? currentUserId != null
+            ? [String(currentUserId)]
+            : []
+          : [],
+      deliveryDate:
+        kind === "due_today"
+          ? {
+              from: startOfToday,
+              to: endOfToday,
+            }
+          : {},
+      overdueStatus:
+        kind === "delivery_overdue"
+          ? ["delivery_overdue"]
+          : kind === "publication_overdue"
+          ? ["publication_overdue"]
+          : [],
+    }
+    setFilters(nextFilters)
+    if (commitFilters) {
+      commitFilters(nextFilters, contentVisibility)
+      setPlannerVisibility(contentVisibility)
+      onClose()
+    } else {
+      onApplyFilters(nextFilters, nextFilters)
+      setPlannerVisibility(contentVisibility)
+      onClose()
+    }
+  }
+
+  const writeFiltersToUrlAndStoreLegacy = (newFilters: TaskFilters) => {
+    const newParams = buildFilterSearchParams(new URLSearchParams(params.toString()), newFilters)
+    router.replace(`${pathname}?${newParams.toString()}`, { scroll: false })
+  }
 
   const handleApplyFilters = () => {
-    // No need for complex mapping anymore - status names are used directly
-    onApplyFilters(filters, filters)
-    syncFiltersToUrl(filters)
+    if (commitFilters) {
+      commitFilters(filters, contentVisibility)
+      setPlannerVisibility(contentVisibility)
+      onClose()
+    } else {
+      onApplyFilters(filters, filters)
+      writeFiltersToUrlAndStoreLegacy(filters)
+      setPlannerVisibility(contentVisibility)
+      syncPlannerToUrl(contentVisibility)
+    }
   }
 
   const handleClearFilters = () => {
-    const empty: TaskFilters = {
-      assignedTo: [],
-      status: [],
-      deliveryDate: {},
-      publicationDate: {},
-      project: [],
-      contentType: [],
-      productionType: [],
-      language: [],
-      channels: [],
-      overdueStatus: []
+    setFilters(emptyFilters)
+    setContentVisibility({ showTasks: true, showSuggestions: true })
+    if (commitFilters) {
+      commitFilters(emptyFilters, { showTasks: true, showSuggestions: true })
+      setPlannerVisibility({ showTasks: true, showSuggestions: true })
+      onClose()
+    } else {
+      onApplyFilters(emptyFilters, emptyFilters)
+      writeFiltersToUrlAndStoreLegacy(emptyFilters)
+      setPlannerVisibility({ showTasks: true, showSuggestions: true })
+      syncPlannerToUrl({ showTasks: true, showSuggestions: true })
     }
-    setFilters(empty)
-    onApplyFilters(empty, empty)
-    syncFiltersToUrl(empty)
   }
 
   if (!isOpen) return null
@@ -116,6 +212,60 @@ export function TaskFilters({ isOpen, onClose, onApplyFilters, activeFilters, fi
       {/* Content */}
       <ScrollArea className="flex-1 p-4">
         <div className="space-y-6">
+          <div className="space-y-2">
+            <div className="flex flex-wrap gap-2">
+              <button
+                type="button"
+                onClick={() => applyQuickFilter("due_today")}
+                className="rounded-full bg-gray-100 px-3 py-1 text-xs font-medium text-gray-700 hover:bg-gray-200"
+              >
+                Due today
+              </button>
+              <button
+                type="button"
+                onClick={() => applyQuickFilter("assigned_to_me")}
+                className="rounded-full bg-gray-100 px-3 py-1 text-xs font-medium text-gray-700 hover:bg-gray-200"
+              >
+                Assigned to me
+              </button>
+              <button
+                type="button"
+                onClick={() => applyQuickFilter("delivery_overdue")}
+                className="rounded-full bg-gray-100 px-3 py-1 text-xs font-medium text-gray-700 hover:bg-gray-200"
+              >
+                Delivery overdue
+              </button>
+              <button
+                type="button"
+                onClick={() => applyQuickFilter("publication_overdue")}
+                className="rounded-full bg-gray-100 px-3 py-1 text-xs font-medium text-gray-700 hover:bg-gray-200"
+              >
+                Publication overdue
+              </button>
+            </div>
+          </div>
+
+          {/* Assigned To */}
+          <div className="space-y-2">
+            <label className="text-sm font-medium">Content</label>
+            <MultiSelect
+              options={[
+                { id: 'tasks', label: 'Tasks' },
+                { id: 'suggestions', label: 'Suggestions' },
+              ]}
+              value={[
+                ...(contentVisibility.showTasks ? ['tasks'] : []),
+                ...(contentVisibility.showSuggestions ? ['suggestions'] : []),
+              ]}
+              onChange={(vals) =>
+                setContentVisibility({
+                  showTasks: vals.includes('tasks'),
+                  showSuggestions: vals.includes('suggestions'),
+                })
+              }
+            />
+          </div>
+
           {/* Assigned To */}
           <div className="space-y-2">
             <label className="text-sm font-medium">Assigned To</label>
@@ -131,9 +281,10 @@ export function TaskFilters({ isOpen, onClose, onApplyFilters, activeFilters, fi
             <label className="text-sm font-medium">Status</label>
             <MultiSelect
               options={(options?.statuses || []).map(s => ({ 
-                id: s.value, // Use status name as id since that's what we filter by
+                id: s.value,
                 label: s.label, 
-                color: s.color 
+                color: s.color,
+                visualCategory: 'status' as const,
               }))}
               value={filters.status}
               onChange={vals => setFilters(f => ({ ...f, status: vals }))}
@@ -158,15 +309,23 @@ export function TaskFilters({ isOpen, onClose, onApplyFilters, activeFilters, fi
             />
           </div>
 
-          {/* Project */}
-          <div className="space-y-2">
-            <label className="text-sm font-medium">Project</label>
-            <MultiSelect
-              options={(options?.projects || []).map(p => ({ id: p.value, label: p.label }))}
-              value={filters.project}
-              onChange={vals => setFilters(f => ({ ...f, project: vals }))}
-            />
-          </div>
+          {/* Project - hidden when hideProjectFilter (e.g. project-scoped workspace) */}
+          {!hideProjectFilter && (
+            <div className="space-y-2">
+              <label className="text-sm font-medium">Project</label>
+              <MultiSelect
+                options={(options?.projects || []).map(p => ({
+                  id: p.value,
+                  label: p.label,
+                  color: p.color,
+                  logo: p.logo,
+                  visualCategory: 'project' as const,
+                }))}
+                value={filters.project}
+                onChange={vals => setFilters(f => ({ ...f, project: vals }))}
+              />
+            </div>
+          )}
 
           {/* Content Type */}
           <div className="space-y-2">

@@ -4,6 +4,11 @@ import React from "react"
 import type { AiScope, AiThread } from "./types"
 import { useCreateThread, useThreads } from "./hooks"
 
+function getThreadDisplayTitle(title: string | null | undefined): string {
+  const normalized = (title ?? "").trim()
+  return normalized.length > 0 ? normalized : "New chat"
+}
+
 interface ThreadListProps {
   activeId?: string | null
   onSelect: (thread: AiThread) => void
@@ -37,7 +42,7 @@ export function ThreadList({ activeId, onSelect, initialScope = 'global', projec
         {isLoading && <div className="p-3 text-sm text-muted-foreground">Loading…</div>}
         {!isLoading && threads.map(t => (
           <button key={t.id} onClick={() => onSelect(t)} className={`w-full text-left px-3 py-2 hover:bg-accent ${activeId === t.id ? 'bg-accent' : ''}`}>
-            <div className="text-sm font-medium truncate">{t.title || 'Untitled'}</div>
+            <div className="text-sm font-medium truncate">{getThreadDisplayTitle(t.title)}</div>
             <div className="text-xs text-muted-foreground capitalize">{t.scope}</div>
           </button>
         ))}

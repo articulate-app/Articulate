@@ -1,6 +1,7 @@
 "use client"
 
 import React, { useState, useCallback, useMemo } from 'react'
+import { createPortal } from 'react-dom'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { useSearchParams, useRouter, usePathname } from 'next/navigation'
 import { Button } from '../ui/button'
@@ -15,6 +16,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '.
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuSeparator, DropdownMenuTrigger } from '../ui/dropdown-menu'
 import { Plus, Star, Trash2, GripVertical, ChevronDown, ChevronRight, ChevronLeft, RotateCcw, Upload, FileText, Link as LinkIcon, Search, Loader2, X, MoreHorizontal } from 'lucide-react'
 import { ImportReviewModal, type ImportedBriefingData, type OutlineItemResolution } from './ImportReviewModal'
+import { AddComponentButton } from '../task/AddComponentButton'
 import { DialogDescription } from '../ui/dialog'
 import { ComponentDetailsPane } from './component-details-pane'
 import {
@@ -52,7 +54,6 @@ import {
   fetchProjectBriefingComponents,
   addProjectBriefingType,
   removeProjectBriefingType,
-  reorderProjectBriefingTypes,
   setDefaultBriefingType,
   useGlobalTemplateForProjectBriefing,
   addGlobalComponentToBriefing,
@@ -60,7 +61,6 @@ import {
   updateBriefingComponent,
   removeBriefingComponent,
   reorderBriefingComponents,
-  fetchProjectComponents,
   updateProjectBriefingMeta,
   createCustomBriefing,
   createProjectComponent,
@@ -68,6 +68,86 @@ import {
   bulkAddProjectComponentsFromOutline,
 } from '../../lib/services/project-briefings'
 import { createClientComponentClient } from '@supabase/auth-helpers-nextjs'
+import { invokeEdgeFunctionFetch } from '../../lib/edge-functions'
+import {
+  useGlobalContentTypesQuery,
+  useProjectChannelsResolvedQuery,
+  useProjectContentTypeSettingsQuery,
+} from '../../hooks/use-project-shared-queries'
+
+const POSITION_SENTINEL_MAX_INT = 2147483647
+
+function toValidComponentPosition(position: unknown): number | null {
+  if (typeof position !== 'number') return null
+  if (!Number.isFinite(position) || !Number.isInteger(position)) return null
+  if (position <= 0) return null
+  // Ignore legacy "append-to-end" sentinel to avoid max-int overflow on +1.
+  if (position >= POSITION_SENTINEL_MAX_INT) return null
+  return position
+}
+
+function getNextAppendPosition(rows: Array<{ position?: number | null }>): number {
+  let maxPosition = 0
+  for (const row of rows) {
+    const validPosition = toValidComponentPosition(row.position)
+    if (validPosition != null) {
+      maxPosition = Math.max(maxPosition, validPosition)
+    }
+  }
+  return maxPosition + 1
+}
+
+function parseNumberListParam(value: string | null): number[] {
+  if (!value) return []
+  return Array.from(
+    new Set(
+      value
+        .split(',')
+        .map((part) => Number(part.trim()))
+        .filter((num) => Number.isFinite(num))
+    )
+  )
+}
+
+function areNumberArraysEqual(a: number[], b: number[]): boolean {
+  if (a.length !== b.length) return false
+  for (let index = 0; index < a.length; index++) {
+    if (a[index] !== b[index]) return false
+  }
+  return true
+}
+
+type BriefingAssignmentAggregate = {
+  contentTypeIds: Set<number>
+  channelIds: Set<number>
+  pairs: Set<string>
+}
+
+function buildBriefingAppliesToSummary(
+  briefingTypeId: number,
+  assignmentsByBriefingType: Map<number, BriefingAssignmentAggregate>,
+  contentTypeTitleById: Map<number, string>,
+  channelNameById: Map<number, string>
+): string {
+  const aggregate = assignmentsByBriefingType.get(briefingTypeId)
+  if (!aggregate || aggregate.pairs.size === 0) return 'No scope'
+
+  const parts: string[] = []
+  let count = 0
+  for (const key of Array.from(aggregate.pairs)) {
+    if (count >= 3) break
+    const [ctRaw, chRaw] = key.split(':')
+    const ctId = Number(ctRaw)
+    const chId = Number(chRaw)
+    const ctTitle = contentTypeTitleById.get(ctId) ?? `Type ${ctId}`
+    const chName = channelNameById.get(chId) ?? `Channel ${chId}`
+    parts.push(`${ctTitle} · ${chName}`)
+    count++
+  }
+  const extra =
+    aggregate.pairs.size > parts.length ? ` +${aggregate.pairs.size - parts.length}` : ''
+  return parts.join('; ') + extra
+}
 
 function BriefingDescriptionEditor({
   briefingTypeId,
@@ -142,6 +222,18 @@ interface ExpandableBriefingsListProps {
   projectId: number
   briefingTypes: ProjectBriefingType[]
   onRefresh: () => void
+  /** Portal target so the briefing overlay covers the full project middle pane (tabs + content). */
+  briefingOverlayContainer?: HTMLElement | null
+  /** When set, render the Briefings section title row (add control is placed below the list). */
+  renderBriefingsTitleRow?: () => React.ReactNode
+}
+
+const BRIEFINGS_TAB_QUERY_DEFAULTS = {
+  staleTime: 5 * 60 * 1000,
+  gcTime: 30 * 60 * 1000,
+  refetchOnMount: false as const,
+  refetchOnWindowFocus: false as const,
+  refetchOnReconnect: false as const,
 }
 
 interface SortableBriefingItemProps {
@@ -172,14 +264,17 @@ interface SortableBriefingItemProps {
   availableComponents?: PcctbcAvailableComponentRow[]
   projectId?: number
   appliesToContentTypes?: Array<{ id: number; title: string }>
-  appliesToChannelsByCt?: Map<number, Array<{ id: number; name: string }>>
+  appliesToChannelsByCt?: Map<number, Array<{ id: number; name: string; isDefault: boolean }>>
   isAppliesToLoading?: boolean
   onRemoveAppliesTo?: (contentTypeId: number, channelId: number, contentTypeTitle: string, channelName: string) => void
+  onSetAppliesToDefault?: (contentTypeId: number, channelId: number) => Promise<void>
   assignmentContentTypeOptions?: Array<{ id: number; title: string }>
   assignmentChannelOptions?: Array<{ id: number; name: string }>
   onAddAppliesTo?: (contentTypeId: number, channelId: number) => Promise<void>
   onRemoveAppliesToContentType?: (contentTypeId: number, contentTypeTitle: string) => void
   onRequestDeleteProjectComponent?: (args: { componentId: number; componentTitle: string }) => void
+  listLayout?: 'card' | 'compact-card'
+  appliesToSummary?: string
 }
 
 interface PcctbcAvailableComponentRow {
@@ -426,7 +521,7 @@ function SortableComponentItem({
 }
 
 type BriefingItemContentProps = SortableBriefingItemProps & {
-  containerRef?: (node: HTMLDivElement | null) => void
+  containerRef?: (node: HTMLElement | null) => void
   containerStyle?: React.CSSProperties
   dragHandleProps?: {
     attributes: any
@@ -465,6 +560,7 @@ function BriefingItemContent({
   appliesToChannelsByCt,
   isAppliesToLoading,
   onRemoveAppliesTo,
+  onSetAppliesToDefault,
   assignmentContentTypeOptions = [],
   assignmentChannelOptions = [],
   onAddAppliesTo,
@@ -474,6 +570,8 @@ function BriefingItemContent({
   containerStyle,
   dragHandleProps,
   showDragHandle = !isSingleView,
+  listLayout = 'card',
+  appliesToSummary = '—',
 }: BriefingItemContentProps) {
   const [isEditingTitle, setIsEditingTitle] = useState(false)
   const [isEditingDescription, setIsEditingDescription] = useState(false)
@@ -497,6 +595,7 @@ function BriefingItemContent({
   const [otherBriefingsSelection, setOtherBriefingsSelection] = useState<number[]>([])
   const [bulkTargetComponent, setBulkTargetComponent] = useState<null | { id: number; source: 'project' | 'global'; title: string; description: string | null }>(null)
   const [isBulkAdding, setIsBulkAdding] = useState(false)
+  const [settingDefaultAppliesToKey, setSettingDefaultAppliesToKey] = useState<string | null>(null)
   const supabase = createClientComponentClient()
   const queryClient = useQueryClient()
   const searchParams = useSearchParams()
@@ -529,6 +628,8 @@ function BriefingItemContent({
       return new Set((data || []).map((c: any) => c.id))
     },
     enabled: !!selectedChannelId,
+    ...BRIEFINGS_TAB_QUERY_DEFAULTS,
+    placeholderData: (previousData) => previousData,
   })
 
   const handleAddAppliesTo = useCallback(async () => {
@@ -576,8 +677,7 @@ function BriefingItemContent({
       if (!created?.id) throw new Error('Failed to create component')
 
       // Add it immediately to the selected briefing scope (same approach as "Add" from available list).
-      const lastPosition =
-        components.length > 0 ? Math.max(...components.map((c) => c.position ?? 0)) + 1 : 1
+      const lastPosition = getNextAppendPosition(components)
 
       const { error: addErr } = await supabase.rpc('pcctbc_add_project', {
         p_project_id: projectId,
@@ -634,9 +734,7 @@ function BriefingItemContent({
       const rpcName = args.source === 'project' ? 'pcctbc_add_project' : 'pcctbc_add_global'
       const paramName = args.source === 'project' ? 'p_project_component_id' : 'p_briefing_component_id'
 
-      const lastPosition = components.length > 0
-        ? Math.max(...components.map((c) => c.position ?? 0)) + 1
-        : 1
+      const lastPosition = getNextAppendPosition(components)
 
       const rpcParams: any = {
         p_project_id: projectId,
@@ -809,9 +907,9 @@ function BriefingItemContent({
 
         ;(existingAll || []).forEach((r: any) => {
           const key = `${r.content_type_id}:${r.channel_id}`
-          const pos = Number(r.position ?? 0)
-          if (Number.isFinite(pos)) {
-            maxPosByPair.set(key, Math.max(maxPosByPair.get(key) ?? 0, pos))
+          const validPosition = toValidComponentPosition(r.position)
+          if (validPosition != null) {
+            maxPosByPair.set(key, Math.max(maxPosByPair.get(key) ?? 0, validPosition))
           }
           if (r[col] === bulkTargetComponent.id) {
             existingPairsForComponent.add(key)
@@ -883,6 +981,20 @@ function BriefingItemContent({
     const existing = new Set((appliesToChannelsByCt?.get(ctId) || []).map((c) => c.id))
     return assignmentChannelOptions.filter((c) => !existing.has(c.id))
   }, [assignmentChannelOptions, appliesToChannelsByCt, contentTypeForAddChannel])
+
+  const handleSetDefaultForAppliesTo = useCallback(
+    async (contentTypeId: number, channelId: number) => {
+      if (!onSetAppliesToDefault) return
+      const key = `${contentTypeId}:${channelId}`
+      setSettingDefaultAppliesToKey(key)
+      try {
+        await onSetAppliesToDefault(contentTypeId, channelId)
+      } finally {
+        setSettingDefaultAppliesToKey(null)
+      }
+    },
+    [onSetAppliesToDefault]
+  )
 
   const handleConfirmAddNewContentTypes = useCallback(async () => {
     if (!onAddAppliesTo) return
@@ -1032,9 +1144,7 @@ function BriefingItemContent({
         const paramName = isProject ? 'p_project_component_id' : 'p_briefing_component_id'
 
         // Calculate last position (max position + 1, or 1 if no components)
-        const lastPosition = components.length > 0
-          ? Math.max(...components.map(c => c.position ?? 0)) + 1
-          : 1
+        const lastPosition = getNextAppendPosition(components)
 
         const rpcParams: any = {
           p_project_id: projectId,
@@ -1265,6 +1375,114 @@ function BriefingItemContent({
     [selectedContentTypeId, selectedChannelId, projectId, briefing.briefing_type_id, supabase, queryClient, onComponentUpdate]
   )
 
+  const useCompactCard = listLayout === 'compact-card' && !isSingleView && !isExpanded
+
+  if (useCompactCard) {
+    return (
+      <div
+        ref={containerRef}
+        style={containerStyle}
+        className={[
+          'rounded-md border border-gray-200 bg-white px-3 py-2 text-xs transition-colors hover:bg-gray-50',
+          isSelected ? 'border-gray-300 ring-1 ring-gray-900/10' : '',
+        ].join(' ')}
+      >
+        <div className="flex items-start gap-2">
+          <button
+            type="button"
+            className="min-w-0 flex-1 text-left"
+            onClick={onToggle}
+          >
+            <div className="flex min-w-0 flex-wrap items-center gap-x-2 gap-y-0.5">
+              {isEditingTitle ? (
+                <Input
+                  value={localTitle}
+                  onChange={(e) => setLocalTitle(e.target.value)}
+                  onBlur={handleTitleBlur}
+                  onKeyDown={(e) => {
+                    if (e.key === 'Enter') {
+                      handleTitleBlur()
+                    } else if (e.key === 'Escape') {
+                      setLocalTitle(briefing.display_title)
+                      setIsEditingTitle(false)
+                    }
+                  }}
+                  className="h-7 max-w-full border border-blue-500 text-sm font-medium focus:ring-2 focus:ring-blue-500"
+                  autoFocus
+                  onClick={(e) => e.stopPropagation()}
+                />
+              ) : (
+                <span
+                  className="truncate text-sm font-medium text-gray-800"
+                  onClick={(e) => {
+                    e.stopPropagation()
+                    setIsEditingTitle(true)
+                  }}
+                  title="Click to edit title"
+                  role="heading"
+                  aria-level={3}
+                >
+                  {briefing.display_title}
+                </span>
+              )}
+              {briefing.is_default ? (
+                <span className="shrink-0 rounded bg-blue-50 px-1.5 py-0.5 text-[10px] font-medium text-blue-700">
+                  Default
+                </span>
+              ) : null}
+            </div>
+          </button>
+          <div className="shrink-0 pt-0.5" onClick={(e) => e.stopPropagation()}>
+            <DropdownMenu modal={false}>
+              <DropdownMenuTrigger asChild>
+                <button
+                  type="button"
+                  className="inline-flex rounded p-1 text-gray-500 hover:bg-gray-200/60"
+                  title="More actions"
+                >
+                  <MoreHorizontal className="h-4 w-4" />
+                </button>
+              </DropdownMenuTrigger>
+              <DropdownMenuContent align="end">
+                <DropdownMenuItem
+                  onSelect={() => {
+                    requestAnimationFrame(() => onSetDefault())
+                  }}
+                >
+                  {briefing.is_default ? 'Default briefing' : 'Make default'}
+                </DropdownMenuItem>
+                <DropdownMenuSeparator />
+                <DropdownMenuItem
+                  onSelect={() => {
+                    requestAnimationFrame(() => onImportBriefing())
+                  }}
+                >
+                  Import from File/Link
+                </DropdownMenuItem>
+                <DropdownMenuItem
+                  onSelect={() => {
+                    requestAnimationFrame(() => onResetTemplate())
+                  }}
+                >
+                  Reset Template
+                </DropdownMenuItem>
+                <DropdownMenuSeparator />
+                <DropdownMenuItem
+                  className="text-red-600 focus:text-red-600"
+                  onSelect={() => {
+                    requestAnimationFrame(() => onRemove())
+                  }}
+                >
+                  Delete briefing
+                </DropdownMenuItem>
+              </DropdownMenuContent>
+            </DropdownMenu>
+          </div>
+        </div>
+      </div>
+    )
+  }
+
   return (
     <div
       ref={containerRef}
@@ -1459,6 +1677,31 @@ function BriefingItemContent({
                                 title="Select content type + channel"
                               >
                                 {ch.name}
+                                {ch.isDefault ? (
+                                  <span className="rounded-full bg-blue-100 px-2 py-0.5 text-[10px] font-medium text-blue-700">
+                                    Default
+                                  </span>
+                                ) : onSetAppliesToDefault ? (
+                                  <button
+                                    type="button"
+                                    className="inline-flex items-center rounded-full border border-gray-300 bg-white px-2 py-0.5 text-[10px] font-medium text-gray-600 hover:bg-gray-50"
+                                    title="Set as default for this content type + channel"
+                                    onClick={(e) => {
+                                      e.stopPropagation()
+                                      void handleSetDefaultForAppliesTo(ct.id, ch.id)
+                                    }}
+                                    disabled={settingDefaultAppliesToKey === `${ct.id}:${ch.id}`}
+                                  >
+                                    {settingDefaultAppliesToKey === `${ct.id}:${ch.id}` ? (
+                                      <Loader2 className="h-3 w-3 animate-spin" />
+                                    ) : (
+                                      <>
+                                        <Star className="mr-1 h-3 w-3" />
+                                        Set default
+                                      </>
+                                    )}
+                                  </button>
+                                ) : null}
                                 <button
                                   type="button"
                                   className="text-gray-300 hover:text-red-200"
@@ -1925,7 +2168,8 @@ function BriefingItemContent({
                     No results. Try clearing your search or changing the type filter.
                   </div>
                 ) : (
-                  <div className="space-y-2">
+                  <div className="max-h-[32rem] min-h-0 overflow-y-auto pr-1">
+                    <div className="space-y-2">
                     {sortedComponentsToShow.map((availComp) => {
                           const isAdding = addingComponentId === availComp.key
                           const origin =
@@ -2042,28 +2286,11 @@ function BriefingItemContent({
                             </div>
                           )
                     })}
+                    </div>
                   </div>
                 )}
               </div>
             )}
-
-            {/* Danger zone */}
-            <div className="mt-10 border-t border-gray-200 pt-6">
-              <div className="flex items-center justify-between gap-3">
-                <div>
-                  <div className="text-sm font-medium text-gray-900">Delete briefing</div>
-                  <div className="text-xs text-gray-500 mt-1">Removes this briefing type from the project.</div>
-                </div>
-                <Button
-                  size="sm"
-                  variant="outline"
-                  className="text-red-600 border-red-200 hover:bg-red-50"
-                  onClick={onRemove}
-                >
-                  Delete
-                </Button>
-              </div>
-            </div>
           </div>
         </div>
       )}
@@ -2097,6 +2324,8 @@ export function ExpandableBriefingsList({
   projectId,
   briefingTypes,
   onRefresh,
+  briefingOverlayContainer = null,
+  renderBriefingsTitleRow,
 }: ExpandableBriefingsListProps) {
   const queryClient = useQueryClient()
   const supabase = createClientComponentClient()
@@ -2115,7 +2344,8 @@ export function ExpandableBriefingsList({
   const [isImportDialogOpen, setIsImportDialogOpen] = useState(false)
   const [importUrl, setImportUrl] = useState('')
   const [importFile, setImportFile] = useState<File | null>(null)
-  const [importMethod, setImportMethod] = useState<'file' | 'url'>('file')
+  const [importText, setImportText] = useState('')
+  const [importMethod, setImportMethod] = useState<'file' | 'url' | 'text'>('file')
   const [isDragActive, setIsDragActive] = useState(false)
   const [isImporting, setIsImporting] = useState(false)
   const [importedBriefingData, setImportedBriefingData] = useState<ImportedBriefingData | null>(null)
@@ -2125,17 +2355,30 @@ export function ExpandableBriefingsList({
   const fileInputRef = React.useRef<HTMLInputElement>(null)
   const [isResetConfirmationOpen, setIsResetConfirmationOpen] = useState(false)
   const [resetBriefingTypeId, setResetBriefingTypeId] = useState<number | null>(null)
-  const [isScopeDialogOpen, setIsScopeDialogOpen] = useState(false)
-  const [scopeBriefingTypeId, setScopeBriefingTypeId] = useState<number | null>(null)
-  const [scopeRequiredBriefingTypeId, setScopeRequiredBriefingTypeId] = useState<number | null>(null)
-  const [scopeContentTypeIds, setScopeContentTypeIds] = useState<number[]>([])
-  const [scopeChannelIds, setScopeChannelIds] = useState<number[]>([])
-  const [isSavingScope, setIsSavingScope] = useState(false)
+  const [newBriefingScopeContentTypeIds, setNewBriefingScopeContentTypeIds] = useState<number[]>([])
+  const [newBriefingScopeChannelIds, setNewBriefingScopeChannelIds] = useState<number[]>([])
+  const [addLibraryScopeContentTypeIds, setAddLibraryScopeContentTypeIds] = useState<number[]>([])
+  const [addLibraryScopeChannelIds, setAddLibraryScopeChannelIds] = useState<number[]>([])
+  const [isSubmittingNewBriefing, setIsSubmittingNewBriefing] = useState(false)
+  const [isSubmittingAddLibrary, setIsSubmittingAddLibrary] = useState(false)
+  const [listFilterContentTypeIds, setListFilterContentTypeIds] = useState<number[]>([])
+  const [listFilterChannelIds, setListFilterChannelIds] = useState<number[]>([])
 
   // Keep "briefingTypeId" in the URL as the source of truth for the right pane state.
   React.useEffect(() => {
     const urlBriefingTypeId = searchParams.get('briefingTypeId')
     setSingleBriefingView(urlBriefingTypeId ? Number(urlBriefingTypeId) : null)
+  }, [searchParams])
+
+  React.useEffect(() => {
+    const nextContentTypeIds = parseNumberListParam(searchParams.get('briefingContentTypeIds'))
+    const nextChannelIds = parseNumberListParam(searchParams.get('briefingChannelIds'))
+    setListFilterContentTypeIds((current) =>
+      areNumberArraysEqual(current, nextContentTypeIds) ? current : nextContentTypeIds
+    )
+    setListFilterChannelIds((current) =>
+      areNumberArraysEqual(current, nextChannelIds) ? current : nextChannelIds
+    )
   }, [searchParams])
 
   const componentKey = searchParams.get('component')
@@ -2151,7 +2394,7 @@ export function ExpandableBriefingsList({
     params.delete('briefingTypeId')
     params.delete('contentTypeId')
     params.delete('channelId')
-    router.replace(`${pathname}?${params.toString()}`)
+    router.replace(`${pathname}?${params.toString()}`, { scroll: false })
   }, [searchParams, router, pathname])
 
   // ESC to close (matches details-pane behavior)
@@ -2172,173 +2415,305 @@ export function ExpandableBriefingsList({
       if (error) throw error
       return data || []
     },
+    ...BRIEFINGS_TAB_QUERY_DEFAULTS,
+    placeholderData: (previousData) => previousData,
   })
+
+  // Shared project/global refs (prefetched at page level) used to avoid ID->details waterfalls.
+  const { data: projectContentTypeSettingsData = [] } = useProjectContentTypeSettingsQuery(projectId)
+  const { data: globalContentTypesData = [] } = useGlobalContentTypesQuery()
+  const { data: projectChannelsResolvedData = [] } = useProjectChannelsResolvedQuery(projectId)
+
+  const contentTypeTitleById = useMemo(() => {
+    const byId = new Map<number, string>()
+    ;(globalContentTypesData || []).forEach((contentType: any) => {
+      if (!contentType?.id || !contentType?.title) return
+      byId.set(Number(contentType.id), String(contentType.title))
+    })
+    return byId
+  }, [globalContentTypesData])
+
+  const projectContentTypeIds = useMemo(() => {
+    return Array.from(
+      new Set(
+        (projectContentTypeSettingsData || [])
+          .map((row: any) => Number(row.content_type_id))
+          .filter((id) => Number.isFinite(id))
+      )
+    )
+  }, [projectContentTypeSettingsData])
 
   // Scope picker options (project-scoped only)
-  const { data: scopeContentTypeOptions = [] } = useQuery({
-    queryKey: ['projBriefings:scopeContentTypes', projectId],
-    queryFn: async () => {
-      // Avoid fragile `!inner` joins; fetch ids first then fetch titles (matches working pattern in LibraryTab).
-      const { data: rows, error } = await supabase
-        .from('project_content_type_settings')
-        .select('content_type_id')
-        .eq('project_id', projectId)
+  const scopeContentTypeOptions = useMemo(
+    () =>
+      projectContentTypeIds
+        .map((id) => ({ id: String(id), label: contentTypeTitleById.get(id) ?? `Content type ${id}` }))
+        .sort((a, b) => a.label.localeCompare(b.label)),
+    [contentTypeTitleById, projectContentTypeIds]
+  )
 
-      if (error) throw error
+  const assignmentContentTypeOptions = useMemo(
+    () =>
+      projectContentTypeIds
+        .map((id) => ({ id, title: contentTypeTitleById.get(id) ?? `Content type ${id}` }))
+        .sort((a, b) => a.title.localeCompare(b.title)),
+    [contentTypeTitleById, projectContentTypeIds]
+  )
 
-      const ids = Array.from(new Set((rows || []).map((r: any) => r.content_type_id).filter(Boolean)))
-      if (!ids.length) return []
+  const projectChannelRows = useMemo(() => {
+    const byId = new Map<number, { id: number; name: string; position: number }>()
+    ;(projectChannelsResolvedData || []).forEach((row: any) => {
+      const id = Number(row.channel_id)
+      const name = String(row.name || '')
+      if (!Number.isFinite(id) || !name) return
+      const position = Number.isFinite(Number(row.position)) ? Number(row.position) : 9999
+      if (!byId.has(id)) {
+        byId.set(id, { id, name, position })
+      }
+    })
+    return Array.from(byId.values()).sort((a, b) => (a.position === b.position ? a.name.localeCompare(b.name) : a.position - b.position))
+  }, [projectChannelsResolvedData])
 
-      const { data: types, error: typesError } = await supabase
-        .from('content_types')
-        .select('id, title')
-        .in('id', ids)
-      if (typesError) throw typesError
+  const scopeChannelOptions = useMemo(
+    () => projectChannelRows.map((channel) => ({ id: String(channel.id), label: channel.name })),
+    [projectChannelRows]
+  )
 
-      return (types || [])
-        .map((ct: any) => ({ id: String(ct.id), label: ct.title as string }))
-        .sort((a, b) => a.label.localeCompare(b.label))
-    },
-  })
+  const assignmentChannelOptions = useMemo(
+    () => projectChannelRows.map((channel) => ({ id: channel.id, name: channel.name })),
+    [projectChannelRows]
+  )
 
-  const { data: scopeChannelOptions = [] } = useQuery({
-    queryKey: ['projBriefings:scopeChannels', projectId],
-    queryFn: async () => {
-      const { data: rows, error } = await supabase
-        .from('project_channels')
-        .select('channel_id')
-        .eq('project_id', projectId)
-
-      if (error) throw error
-
-      const ids = Array.from(new Set((rows || []).map((r: any) => r.channel_id).filter(Boolean)))
-      if (!ids.length) return []
-
-      const { data: chans, error: chansError } = await supabase
-        .from('channels')
-        .select('id, name')
-        .in('id', ids)
-      if (chansError) throw chansError
-
-      return (chans || [])
-        .map((ch: any) => ({ id: String(ch.id), label: ch.name as string }))
-        .sort((a, b) => a.label.localeCompare(b.label))
-    },
-  })
-
-  const handleSaveScope = useCallback(async () => {
-    if (!scopeBriefingTypeId) return
-    if (scopeContentTypeIds.length === 0 || scopeChannelIds.length === 0) {
-      toast({
-        title: 'Scope required',
-        description: 'Select at least one content type and one channel.',
-        variant: 'destructive',
-      })
-      return
+  const channelNameById = useMemo(() => {
+    const map = new Map<number, string>()
+    for (const row of projectChannelRows) {
+      map.set(row.id, row.name)
     }
+    return map
+  }, [projectChannelRows])
 
-    setIsSavingScope(true)
-    try {
+  const { data: briefingAssignments = [] } = useQuery({
+    queryKey: ['projBriefings:assignments', projectId],
+    queryFn: async () => {
+      const { data, error } = await supabase
+        .from('project_ct_channel_briefings')
+        .select('briefing_type_id, content_type_id, channel_id')
+        .eq('project_id', projectId)
+      if (error) throw error
+      return (data || []) as Array<{
+        briefing_type_id: number
+        content_type_id: number
+        channel_id: number
+      }>
+    },
+    ...BRIEFINGS_TAB_QUERY_DEFAULTS,
+    placeholderData: (previousData) => previousData,
+  })
+
+  const assignmentsByBriefingType = useMemo(() => {
+    const byBriefingType = new Map<number, BriefingAssignmentAggregate>()
+    for (const row of briefingAssignments) {
+      const briefingTypeId = Number(row.briefing_type_id)
+      const contentTypeId = Number(row.content_type_id)
+      const channelId = Number(row.channel_id)
+      if (!Number.isFinite(briefingTypeId) || !Number.isFinite(contentTypeId) || !Number.isFinite(channelId)) {
+        continue
+      }
+      const existing = byBriefingType.get(briefingTypeId) ?? {
+        contentTypeIds: new Set<number>(),
+        channelIds: new Set<number>(),
+        pairs: new Set<string>(),
+      }
+      existing.contentTypeIds.add(contentTypeId)
+      existing.channelIds.add(channelId)
+      existing.pairs.add(`${contentTypeId}:${channelId}`)
+      byBriefingType.set(briefingTypeId, existing)
+    }
+    return byBriefingType
+  }, [briefingAssignments])
+
+  const filteredBriefings = useMemo(() => {
+    const hasContentTypeFilter = listFilterContentTypeIds.length > 0
+    const hasChannelFilter = listFilterChannelIds.length > 0
+    if (!hasContentTypeFilter && !hasChannelFilter) return briefingTypes
+
+    const selectedContentTypeIds = new Set(listFilterContentTypeIds)
+    const selectedChannelIds = new Set(listFilterChannelIds)
+
+    return briefingTypes.filter((briefing) => {
+      const assignment = assignmentsByBriefingType.get(briefing.briefing_type_id)
+      if (!assignment) return false
+      if (hasContentTypeFilter && hasChannelFilter) {
+        for (const contentTypeId of Array.from(selectedContentTypeIds)) {
+          for (const channelId of Array.from(selectedChannelIds)) {
+            if (assignment.pairs.has(`${contentTypeId}:${channelId}`)) return true
+          }
+        }
+        return false
+      }
+      if (hasContentTypeFilter) {
+        for (const contentTypeId of Array.from(selectedContentTypeIds)) {
+          if (assignment.contentTypeIds.has(contentTypeId)) return true
+        }
+        return false
+      }
+      for (const channelId of Array.from(selectedChannelIds)) {
+        if (assignment.channelIds.has(channelId)) return true
+      }
+      return false
+    })
+  }, [briefingTypes, assignmentsByBriefingType, listFilterContentTypeIds, listFilterChannelIds])
+
+  const setListFiltersInUrl = useCallback(
+    (next: { contentTypeIds?: number[]; channelIds?: number[] }) => {
+      const params = new URLSearchParams(searchParams.toString())
+      const nextContentTypeIds = next.contentTypeIds ?? listFilterContentTypeIds
+      const nextChannelIds = next.channelIds ?? listFilterChannelIds
+
+      if (nextContentTypeIds.length) {
+        params.set('briefingContentTypeIds', nextContentTypeIds.join(','))
+      } else {
+        params.delete('briefingContentTypeIds')
+      }
+
+      if (nextChannelIds.length) {
+        params.set('briefingChannelIds', nextChannelIds.join(','))
+      } else {
+        params.delete('briefingChannelIds')
+      }
+
+      router.replace(`${pathname}?${params.toString()}`, { scroll: false })
+    },
+    [listFilterContentTypeIds, listFilterChannelIds, pathname, router, searchParams]
+  )
+
+  const updateListFilters = useCallback(
+    (next: { contentTypeIds?: number[]; channelIds?: number[] }) => {
+      const nextContentTypeIds = next.contentTypeIds ?? listFilterContentTypeIds
+      const nextChannelIds = next.channelIds ?? listFilterChannelIds
+
+      // Optimistic local update for immediate UI feedback in MultiSelect checkmarks.
+      setListFilterContentTypeIds(nextContentTypeIds)
+      setListFilterChannelIds(nextChannelIds)
+
+      // Keep URL as source of truth for refresh/share/navigation.
+      setListFiltersInUrl(next)
+    },
+    [listFilterContentTypeIds, listFilterChannelIds, setListFiltersInUrl]
+  )
+
+  const commitBriefingScopeAssignments = useCallback(
+    async (briefingTypeId: number, scopeCtIds: number[], scopeChIds: number[]) => {
+      if (scopeCtIds.length === 0 || scopeChIds.length === 0) {
+        throw new Error('Scope required')
+      }
+
       const pairs: Array<{ ct: number; ch: number }> = []
-      for (const ct of scopeContentTypeIds) {
-        for (const ch of scopeChannelIds) {
+      for (const ct of scopeCtIds) {
+        for (const ch of scopeChIds) {
           pairs.push({ ct, ch })
         }
       }
 
       await Promise.all(
         pairs.map(({ ct, ch }) =>
-          supabase.rpc('pcctb_set', {
+          supabase.rpc('pcctb_add', {
             p_project_id: projectId,
             p_content_type_id: ct,
             p_channel_id: ch,
-            p_briefing_type_id: scopeBriefingTypeId,
+            p_briefing_type_id: briefingTypeId,
           })
         )
       )
 
-      toast({ title: 'Success', description: 'Briefing scope saved' })
+      await Promise.all(
+        pairs.flatMap(({ ct, ch }) => [
+          queryClient.invalidateQueries({
+            queryKey: ['projBriefings:components', projectId, briefingTypeId, ct, ch],
+          }),
+          queryClient.invalidateQueries({
+            queryKey: ['availableComponents', projectId, briefingTypeId, ct, ch],
+          }),
+        ])
+      )
 
       queryClient.invalidateQueries({
-        queryKey: ['projBriefings:appliesTo', projectId, scopeBriefingTypeId],
+        queryKey: ['projBriefings:appliesTo', projectId, briefingTypeId],
       })
 
-      // Mark as completed so closing the dialog won't trigger rollback.
-      setScopeRequiredBriefingTypeId(null)
-      setIsScopeDialogOpen(false)
-      setScopeContentTypeIds([])
-      setScopeChannelIds([])
-      const createdId = scopeBriefingTypeId
-      setScopeBriefingTypeId(null)
-
-      // Open right pane on this briefing and preselect first pair in URL
       const params = new URLSearchParams(searchParams.toString())
-      params.set('briefingTypeId', createdId.toString())
-      params.set('contentTypeId', String(scopeContentTypeIds[0]))
-      params.set('channelId', String(scopeChannelIds[0]))
+      params.set('briefingTypeId', briefingTypeId.toString())
+      params.set('contentTypeId', String(scopeCtIds[0]))
+      params.set('channelId', String(scopeChIds[0]))
       router.replace(`${pathname}?${params.toString()}`)
-    } catch (err: any) {
-      console.error('Failed to save scope:', err)
-      toast({ title: 'Error', description: err.message || 'Failed to save scope', variant: 'destructive' })
-    } finally {
-      setIsSavingScope(false)
-    }
-  }, [scopeBriefingTypeId, scopeContentTypeIds, scopeChannelIds, supabase, projectId, queryClient, searchParams, router, pathname])
 
-  const rollbackScopeIfRequired = useCallback(
-    async (briefingTypeId: number) => {
-      try {
-        // If the pane is currently open for this briefing, close it.
-        const urlBriefingTypeId = searchParams.get('briefingTypeId')
-        if (urlBriefingTypeId && Number(urlBriefingTypeId) === briefingTypeId) {
-          closeRightPane()
-        }
-
-        const { error } = await removeProjectBriefingType(projectId, briefingTypeId)
-        if (error) throw error
-
-        queryClient.invalidateQueries({ queryKey: ['projBriefings:list', projectId] })
-        onRefresh()
-        toast({ title: 'Cancelled', description: 'Briefing removed (scope was not set).' })
-      } catch (err: any) {
-        console.error('Failed to rollback briefing without scope:', err)
-        toast({
-          title: 'Error',
-          description: err?.message || 'Failed to rollback briefing without scope',
-          variant: 'destructive',
-        })
-      }
+      setExpandedBriefings((prev) => new Set([...Array.from(prev), briefingTypeId]))
     },
-    [closeRightPane, onRefresh, projectId, queryClient, searchParams]
+    [supabase, projectId, queryClient, searchParams, router, pathname]
   )
-
-  // (Legacy Add Components modal removed) - available components are now surfaced inline via the RPC-backed list in the right pane.
-
-  const sensors = useSensors(
-    useSensor(PointerSensor),
-    useSensor(KeyboardSensor, {
-      coordinateGetter: sortableKeyboardCoordinates,
-    })
-  )
-
-
-  const toggleBriefing = useCallback((briefingTypeId: number) => {
-    setExpandedBriefings(prev => {
-      const next = new Set(prev)
-      if (next.has(briefingTypeId)) {
-        next.delete(briefingTypeId)
-      } else {
-        next.add(briefingTypeId)
-      }
-      return next
-    })
-  }, [])
 
   const handleAddBriefingTypes = useCallback(async () => {
     if (selectedTypes.length === 0) return
 
+    const isSingleAdd = selectedTypes.length === 1
+    if (isSingleAdd) {
+      if (addLibraryScopeContentTypeIds.length === 0 || addLibraryScopeChannelIds.length === 0) {
+        toast({
+          title: 'Scope required',
+          description: 'Select at least one content type and one channel.',
+          variant: 'destructive',
+        })
+        return
+      }
+    }
+
+    setIsSubmittingAddLibrary(true)
     try {
-      const promises = selectedTypes.map(typeId =>
+      if (isSingleAdd) {
+        const typeId = selectedTypes[0]
+        const { error: addError } = await addProjectBriefingType(projectId, typeId, false, null)
+        if (addError) throw addError
+
+        queryClient.invalidateQueries({ queryKey: ['projBriefings:list', projectId] })
+        queryClient.invalidateQueries({ queryKey: ['projBriefings:available', projectId] })
+        onRefresh()
+
+        try {
+          await commitBriefingScopeAssignments(
+            typeId,
+            addLibraryScopeContentTypeIds,
+            addLibraryScopeChannelIds
+          )
+        } catch (scopeErr: any) {
+          console.error('Failed to save scope after library add:', scopeErr)
+          const { error: rmError } = await removeProjectBriefingType(projectId, typeId)
+          if (rmError) {
+            console.error('Failed to roll back briefing after scope error:', rmError)
+          }
+          queryClient.invalidateQueries({ queryKey: ['projBriefings:list', projectId] })
+          queryClient.invalidateQueries({ queryKey: ['projBriefings:available', projectId] })
+          onRefresh()
+          toast({
+            title: 'Error',
+            description: scopeErr?.message || 'Failed to save briefing scope',
+            variant: 'destructive',
+          })
+          return
+        }
+
+        toast({
+          title: 'Success',
+          description: 'Added 1 briefing type(s)',
+        })
+
+        setAddDialogOpen(false)
+        setSelectedTypes([])
+        setAddLibraryScopeContentTypeIds([])
+        setAddLibraryScopeChannelIds([])
+        return
+      }
+
+      const promises = selectedTypes.map((typeId) =>
         addProjectBriefingType(projectId, typeId, false, null)
       )
 
@@ -2351,27 +2726,29 @@ export function ExpandableBriefingsList({
 
       setAddDialogOpen(false)
       setSelectedTypes([])
+      setAddLibraryScopeContentTypeIds([])
+      setAddLibraryScopeChannelIds([])
       queryClient.invalidateQueries({ queryKey: ['projBriefings:list', projectId] })
+      queryClient.invalidateQueries({ queryKey: ['projBriefings:available', projectId] })
       onRefresh()
-
-      // Prompt scope for single add (per briefing type)
-      if (selectedTypes.length === 1) {
-        const newId = selectedTypes[0]
-        setScopeBriefingTypeId(newId)
-        setScopeRequiredBriefingTypeId(newId)
-        setIsScopeDialogOpen(true)
-        const params = new URLSearchParams(searchParams.toString())
-        params.set('briefingTypeId', newId.toString())
-        router.replace(`${pathname}?${params.toString()}`)
-      }
     } catch (error: any) {
       toast({
         title: 'Error',
         description: error.message || 'Failed to add briefing types',
         variant: 'destructive',
       })
+    } finally {
+      setIsSubmittingAddLibrary(false)
     }
-  }, [projectId, selectedTypes, queryClient, onRefresh, searchParams, router, pathname])
+  }, [
+    selectedTypes,
+    projectId,
+    addLibraryScopeContentTypeIds,
+    addLibraryScopeChannelIds,
+    queryClient,
+    onRefresh,
+    commitBriefingScopeAssignments,
+  ])
 
   const handleCreateNewBriefing = useCallback(async () => {
     if (!newBriefingTitle.trim()) {
@@ -2383,6 +2760,16 @@ export function ExpandableBriefingsList({
       return
     }
 
+    if (newBriefingScopeContentTypeIds.length === 0 || newBriefingScopeChannelIds.length === 0) {
+      toast({
+        title: 'Scope required',
+        description: 'Select at least one content type and one channel.',
+        variant: 'destructive',
+      })
+      return
+    }
+
+    setIsSubmittingNewBriefing(true)
     try {
       const { data: newBriefing, error } = await createCustomBriefing(
         projectId,
@@ -2392,6 +2779,37 @@ export function ExpandableBriefingsList({
 
       if (error) throw error
 
+      if (!newBriefing) {
+        throw new Error('Failed to create briefing')
+      }
+
+      queryClient.invalidateQueries({ queryKey: ['projBriefings:list', projectId] })
+      queryClient.invalidateQueries({ queryKey: ['projBriefings:available', projectId] })
+      onRefresh()
+
+      try {
+        await commitBriefingScopeAssignments(
+          newBriefing.briefing_type_id,
+          newBriefingScopeContentTypeIds,
+          newBriefingScopeChannelIds
+        )
+      } catch (scopeErr: any) {
+        console.error('Failed to save scope after create:', scopeErr)
+        const { error: rmError } = await removeProjectBriefingType(projectId, newBriefing.briefing_type_id)
+        if (rmError) {
+          console.error('Failed to roll back briefing after scope error:', rmError)
+        }
+        queryClient.invalidateQueries({ queryKey: ['projBriefings:list', projectId] })
+        queryClient.invalidateQueries({ queryKey: ['projBriefings:available', projectId] })
+        onRefresh()
+        toast({
+          title: 'Error',
+          description: scopeErr?.message || 'Failed to save briefing scope',
+          variant: 'destructive',
+        })
+        return
+      }
+
       toast({
         title: 'Success',
         description: 'Briefing created',
@@ -2400,27 +2818,27 @@ export function ExpandableBriefingsList({
       setIsNewBriefingDialogOpen(false)
       setNewBriefingTitle('')
       setNewBriefingDescription('')
-      queryClient.invalidateQueries({ queryKey: ['projBriefings:list', projectId] })
-      onRefresh()
-
-      // Auto-select and expand the new briefing
-      if (newBriefing) {
-        setExpandedBriefings(prev => new Set([...Array.from(prev), newBriefing.briefing_type_id]))
-        setScopeBriefingTypeId(newBriefing.briefing_type_id)
-        setScopeRequiredBriefingTypeId(newBriefing.briefing_type_id)
-        setIsScopeDialogOpen(true)
-        const params = new URLSearchParams(searchParams.toString())
-        params.set('briefingTypeId', newBriefing.briefing_type_id.toString())
-        router.replace(`${pathname}?${params.toString()}`)
-      }
+      setNewBriefingScopeContentTypeIds([])
+      setNewBriefingScopeChannelIds([])
     } catch (error: any) {
       toast({
         title: 'Error',
         description: error.message || 'Failed to create briefing',
         variant: 'destructive',
       })
+    } finally {
+      setIsSubmittingNewBriefing(false)
     }
-  }, [projectId, newBriefingTitle, newBriefingDescription, queryClient, onRefresh, searchParams, router, pathname])
+  }, [
+    projectId,
+    newBriefingTitle,
+    newBriefingDescription,
+    newBriefingScopeContentTypeIds,
+    newBriefingScopeChannelIds,
+    queryClient,
+    onRefresh,
+    commitBriefingScopeAssignments,
+  ])
 
   const [isRemoveConfirmationOpen, setIsRemoveConfirmationOpen] = useState(false)
   const [removeBriefingTypeId, setRemoveBriefingTypeId] = useState<number | null>(null)
@@ -2521,46 +2939,6 @@ export function ExpandableBriefingsList({
       }
     },
     [projectId, queryClient, onRefresh]
-  )
-
-  const handleDragEnd = useCallback(
-    async (event: DragEndEvent) => {
-      const { active, over } = event
-
-      if (!over || active.id === over.id) return
-
-      const oldIndex = briefingTypes.findIndex(bt => bt.briefing_type_id === active.id)
-      const newIndex = briefingTypes.findIndex(bt => bt.briefing_type_id === over.id)
-
-      if (oldIndex === -1 || newIndex === -1) return
-
-      const reordered = arrayMove(briefingTypes, oldIndex, newIndex)
-      const order = reordered.map((bt, idx) => ({
-        briefing_type_id: bt.briefing_type_id,
-        position: idx + 1,
-      }))
-
-      // Optimistic update
-      queryClient.setQueryData(['projBriefings:list', projectId], reordered)
-
-      try {
-        const { error } = await reorderProjectBriefingTypes(projectId, order)
-        if (error) throw error
-
-        // Refetch to ensure sync with server
-        queryClient.invalidateQueries({ queryKey: ['projBriefings:list', projectId] })
-        onRefresh()
-      } catch (error: any) {
-        // Revert on error
-        queryClient.setQueryData(['projBriefings:list', projectId], briefingTypes)
-        toast({
-          title: 'Error',
-          description: error.message || 'Failed to reorder briefings',
-          variant: 'destructive',
-        })
-      }
-    },
-    [briefingTypes, projectId, queryClient, onRefresh]
   )
 
   const handleComponentUpdate = useCallback(
@@ -2716,13 +3094,17 @@ export function ExpandableBriefingsList({
       return
     }
 
+    if (importMethod === 'text' && !importText.trim()) {
+      toast({
+        title: 'Error',
+        description: 'Please paste text to import',
+        variant: 'destructive',
+      })
+      return
+    }
+
     try {
       setIsImporting(true)
-
-      const { data: { session } } = await supabase.auth.getSession()
-      if (!session?.access_token) {
-        throw new Error('No access token available')
-      }
 
       const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL
       if (!supabaseUrl) {
@@ -2756,43 +3138,105 @@ export function ExpandableBriefingsList({
         setBriefingComponents((briefingComponentsData.data || []) as Array<{ component_id: number; effective_title: string; source: 'global' | 'project' }>)
       }
 
-      let response: Response
+      const callParseBriefingStructure = async (params: {
+        supabaseUrl: string
+        importMethod: 'file' | 'text' | 'url'
+        body: FormData | string
+        fileMeta?: { name: string; type: string; size: number }
+      }) => {
+        const endpoint = `${params.supabaseUrl}/functions/v1/parse_briefing_structure`
+        console.log('[parse_briefing_structure] request', {
+          endpoint,
+          importMethod: params.importMethod,
+          fileName: params.fileMeta?.name ?? null,
+          fileType: params.fileMeta?.type ?? null,
+          fileSize: params.fileMeta?.size ?? null,
+        })
+
+        const headers: Record<string, string> = {}
+        if (typeof params.body === 'string') headers['Content-Type'] = 'application/json'
+
+        let response: Response
+        try {
+          response = await invokeEdgeFunctionFetch({
+            supabase,
+            url: endpoint,
+            debugLabel: "parse_briefing_structure",
+            init: {
+              method: 'POST',
+              body: params.body,
+            },
+            headers,
+          })
+        } catch (fetchError: any) {
+          console.error('[parse_briefing_structure] fetch threw before response', {
+            endpoint,
+            importMethod: params.importMethod,
+            error: fetchError,
+            name: fetchError?.name,
+            message: fetchError?.message,
+            stack: fetchError?.stack,
+            cause: fetchError?.cause,
+          })
+          throw fetchError
+        }
+
+        const responseText = await response.text()
+        let payload: any = null
+        try {
+          payload = responseText ? JSON.parse(responseText) : null
+        } catch {
+          payload = responseText ? { raw: responseText } : null
+        }
+
+        console.log('[parse_briefing_structure] response', {
+          endpoint,
+          importMethod: params.importMethod,
+          status: response.status,
+          ok: response.ok,
+          body: payload,
+        })
+
+        if (!response.ok) {
+          const detail = payload?.error || payload?.message || payload?.raw || `status ${response.status}`
+          throw new Error(`parse_briefing_structure failed (${response.status}): ${detail}`)
+        }
+        return payload
+      }
+
+      let result: any
 
       if (importMethod === 'file' && importFile) {
-        // File upload using FormData
+        if (!(importFile instanceof File)) {
+          throw new Error(`Invalid upload payload: expected File object, got ${Object.prototype.toString.call(importFile)}`)
+        }
         const form = new FormData()
-        form.append('project_id', projectId.toString())
+        form.append('project_id', String(projectId))
         form.append('file', importFile)
-
-        response = await fetch(`${supabaseUrl}/functions/v1/parse_briefing_structure`, {
-          method: 'POST',
-          headers: {
-            'Authorization': `Bearer ${session.access_token}`,
-            // Do not set Content-Type - browser sets it automatically with boundary
-          },
+        result = await callParseBriefingStructure({
+          supabaseUrl,
+          importMethod: 'file',
           body: form,
+          fileMeta: { name: importFile.name, type: importFile.type, size: importFile.size },
         })
       } else {
         // URL/text using JSON
-        response = await fetch(`${supabaseUrl}/functions/v1/parse_briefing_structure`, {
-          method: 'POST',
-          headers: {
-            'Authorization': `Bearer ${session.access_token}`,
-            'Content-Type': 'application/json',
-          },
-          body: JSON.stringify({
-            project_id: projectId,
-            source_url: importUrl.trim(),
-          }),
+        const payload: Record<string, unknown> = {
+          project_id: projectId,
+        }
+        if (importMethod === 'url') {
+          payload.source_url = importUrl.trim()
+        }
+        if (importMethod === 'text') {
+          payload.file_text = importText.trim()
+        }
+
+        result = await callParseBriefingStructure({
+          supabaseUrl,
+          importMethod: importMethod === 'url' ? 'url' : 'text',
+          body: JSON.stringify(payload),
         })
       }
-
-      if (!response.ok) {
-        const errorText = await response.text()
-        throw new Error(`Import failed: ${response.status} ${errorText}`)
-      }
-
-      const result = await response.json()
       
       if (result.error) {
         throw new Error(result.error)
@@ -2803,11 +3247,20 @@ export function ExpandableBriefingsList({
         setIsReviewModalOpen(true)
         setIsImportDialogOpen(false)
         setImportUrl('')
+        setImportText('')
         setImportFile(null)
       } else {
         throw new Error('Invalid response format')
       }
     } catch (error: any) {
+      console.error('[project-briefings] handleImportBriefing failed', {
+        importMethod,
+        error,
+        name: error?.name,
+        message: error?.message,
+        stack: error?.stack,
+        cause: error?.cause,
+      })
       toast({
         title: 'Error',
         description: error.message || 'Failed to import briefing',
@@ -2816,7 +3269,7 @@ export function ExpandableBriefingsList({
     } finally {
       setIsImporting(false)
     }
-  }, [importMethod, importFile, importUrl, projectId, supabase])
+  }, [importMethod, importFile, importText, importUrl, projectId, supabase])
 
   const handleFileDrop = useCallback((e: React.DragEvent<HTMLDivElement>) => {
     e.preventDefault()
@@ -2834,51 +3287,70 @@ export function ExpandableBriefingsList({
     }
   }, [])
 
+  const openBriefingInPane = useCallback(
+    (briefingTypeId: number) => {
+      const params = new URLSearchParams(
+        typeof window !== 'undefined' ? window.location.search : searchParams.toString()
+      )
+      params.set('briefingTypeId', String(briefingTypeId))
+      router.replace(`${pathname}?${params.toString()}`, { scroll: false })
+    },
+    [pathname, router, searchParams]
+  )
+
   const options =
     availableTypes?.map(t => ({
       id: String(t.id),
       label: t.title,
     })) || []
 
-  return (
-    <div className="space-y-8">
-      <div>
-        <div className="flex items-center justify-between mb-4">
-          <h2 className="text-lg font-semibold text-gray-900">Briefing Types</h2>
-          <div className="flex gap-2">
-            {/* Use non-modal dropdown here to avoid pointer-events/focus-lock conflicts when opening a Dialog from a menu item */}
-            <DropdownMenu modal={false}>
-              <DropdownMenuTrigger asChild>
-                <Button
-                  size="sm"
-                  variant="outline"
-                  className="gap-2 bg-white text-black hover:bg-gray-50 border-gray-300"
-                >
-                  <Plus className="w-4 h-4" />
-                  Add briefing
-                </Button>
-              </DropdownMenuTrigger>
-              <DropdownMenuContent align="end">
-                <DropdownMenuItem
-                  onSelect={() => {
-                    // Let the menu fully close before opening the Dialog
-                    requestAnimationFrame(() => setIsNewBriefingDialogOpen(true))
-                  }}
-                >
-                  New briefing
-                </DropdownMenuItem>
-                <DropdownMenuItem
-                  onSelect={() => {
-                    requestAnimationFrame(() => setAddDialogOpen(true))
-                  }}
-                >
-                  Add from library
-                </DropdownMenuItem>
-              </DropdownMenuContent>
-            </DropdownMenu>
+  const rootClassName = [
+    'space-y-3',
+    !briefingOverlayContainer ? 'relative min-h-[min(70vh,36rem)]' : '',
+  ]
+    .filter(Boolean)
+    .join(' ')
 
-            {/* Keep existing dialogs/calls intact; open them programmatically from the dropdown. */}
-            <Dialog open={isNewBriefingDialogOpen} onOpenChange={setIsNewBriefingDialogOpen}>
+  const addBriefingControl = (
+    <DropdownMenu modal={false}>
+      <DropdownMenuTrigger asChild>
+        <AddComponentButton label="Add briefing" />
+      </DropdownMenuTrigger>
+      <DropdownMenuContent align="center" className="w-[min(92vw,16rem)]">
+        <DropdownMenuItem
+          onSelect={() => {
+            requestAnimationFrame(() => setIsNewBriefingDialogOpen(true))
+          }}
+        >
+          New briefing
+        </DropdownMenuItem>
+        <DropdownMenuItem
+          onSelect={() => {
+            requestAnimationFrame(() => setAddDialogOpen(true))
+          }}
+        >
+          Add from library
+        </DropdownMenuItem>
+      </DropdownMenuContent>
+    </DropdownMenu>
+  )
+
+  return (
+    <div className={rootClassName}>
+      {renderBriefingsTitleRow ? renderBriefingsTitleRow() : null}
+
+            <Dialog
+              open={isNewBriefingDialogOpen}
+              onOpenChange={(open) => {
+                setIsNewBriefingDialogOpen(open)
+                if (!open) {
+                  setNewBriefingTitle('')
+                  setNewBriefingDescription('')
+                  setNewBriefingScopeContentTypeIds([])
+                  setNewBriefingScopeChannelIds([])
+                }
+              }}
+            >
               <DialogContent>
                 <DialogHeader>
                   <DialogTitle>Create New Briefing</DialogTitle>
@@ -2903,367 +3375,365 @@ export function ExpandableBriefingsList({
                       rows={3}
                     />
                   </div>
+                  <div>
+                    <Label className="mb-2 block">Content Types</Label>
+                    <MultiSelect
+                      options={scopeContentTypeOptions}
+                      value={newBriefingScopeContentTypeIds.map(String)}
+                      onChange={(values) => setNewBriefingScopeContentTypeIds(values.map(Number))}
+                      placeholder="Select content types..."
+                    />
+                  </div>
+                  <div>
+                    <Label className="mb-2 block">Channels</Label>
+                    <MultiSelect
+                      options={scopeChannelOptions}
+                      value={newBriefingScopeChannelIds.map(String)}
+                      onChange={(values) => setNewBriefingScopeChannelIds(values.map(Number))}
+                      placeholder="Select channels..."
+                    />
+                  </div>
+                  <p className="text-xs text-gray-500">
+                    We’ll assign this briefing to every selected Content Type × Channel combination.
+                  </p>
                 </div>
                 <DialogFooter>
-                  <Button variant="outline" onClick={() => setIsNewBriefingDialogOpen(false)}>
+                  <Button
+                    variant="outline"
+                    onClick={() => setIsNewBriefingDialogOpen(false)}
+                    disabled={isSubmittingNewBriefing}
+                  >
                     Cancel
                   </Button>
-                  <Button onClick={handleCreateNewBriefing} disabled={!newBriefingTitle.trim()}>
-                    Create
+                  <Button
+                    onClick={handleCreateNewBriefing}
+                    disabled={
+                      !newBriefingTitle.trim() ||
+                      newBriefingScopeContentTypeIds.length === 0 ||
+                      newBriefingScopeChannelIds.length === 0 ||
+                      isSubmittingNewBriefing
+                    }
+                  >
+                    {isSubmittingNewBriefing ? 'Creating…' : 'Create'}
                   </Button>
                 </DialogFooter>
               </DialogContent>
             </Dialog>
 
-            <Dialog open={isAddDialogOpen} onOpenChange={setAddDialogOpen}>
+            <Dialog
+              open={isAddDialogOpen}
+              onOpenChange={(open) => {
+                setAddDialogOpen(open)
+                if (!open) {
+                  setSelectedTypes([])
+                  setAddLibraryScopeContentTypeIds([])
+                  setAddLibraryScopeChannelIds([])
+                }
+              }}
+            >
               <DialogContent>
                 <DialogHeader>
                   <DialogTitle>Add Briefing Types</DialogTitle>
                 </DialogHeader>
-                <div className="py-4">
+                <div className="py-4 space-y-4">
                   {isLoadingAvailable ? (
                     <div className="text-sm text-gray-500">Loading...</div>
                   ) : options.length === 0 ? (
                     <div className="text-sm text-gray-500">All briefing types have been added</div>
                   ) : (
-                    <MultiSelect
-                      options={options}
-                      value={selectedTypes.map(String)}
-                      onChange={(values) => setSelectedTypes(values.map(Number))}
-                      placeholder="Select briefing types..."
-                    />
+                    <>
+                      <MultiSelect
+                        options={options}
+                        value={selectedTypes.map(String)}
+                        onChange={(values) => {
+                          const next = values.map(Number).filter((id) => Number.isFinite(id))
+                          setSelectedTypes(next)
+                          if (next.length !== 1) {
+                            setAddLibraryScopeContentTypeIds([])
+                            setAddLibraryScopeChannelIds([])
+                          }
+                        }}
+                        placeholder="Select briefing types..."
+                      />
+                      {selectedTypes.length === 1 ? (
+                        <>
+                          <div>
+                            <Label className="mb-2 block">Content Types</Label>
+                            <MultiSelect
+                              options={scopeContentTypeOptions}
+                              value={addLibraryScopeContentTypeIds.map(String)}
+                              onChange={(values) =>
+                                setAddLibraryScopeContentTypeIds(values.map(Number))
+                              }
+                              placeholder="Select content types..."
+                            />
+                          </div>
+                          <div>
+                            <Label className="mb-2 block">Channels</Label>
+                            <MultiSelect
+                              options={scopeChannelOptions}
+                              value={addLibraryScopeChannelIds.map(String)}
+                              onChange={(values) =>
+                                setAddLibraryScopeChannelIds(values.map(Number))
+                              }
+                              placeholder="Select channels..."
+                            />
+                          </div>
+                          <p className="text-xs text-gray-500">
+                            We’ll assign this briefing to every selected Content Type × Channel combination.
+                          </p>
+                        </>
+                      ) : selectedTypes.length > 1 ? (
+                        <p className="text-xs text-gray-500">
+                          Adding multiple types at once skips per-briefing scope. Add one at a time to set
+                          where each applies.
+                        </p>
+                      ) : null}
+                    </>
                   )}
                 </div>
                 <DialogFooter>
-                  <Button variant="outline" onClick={() => setAddDialogOpen(false)}>
+                  <Button
+                    variant="outline"
+                    onClick={() => setAddDialogOpen(false)}
+                    disabled={isSubmittingAddLibrary}
+                  >
                     Cancel
                   </Button>
-                  <Button onClick={handleAddBriefingTypes} disabled={selectedTypes.length === 0}>
-                    Add Selected
+                  <Button
+                    onClick={handleAddBriefingTypes}
+                    disabled={
+                      selectedTypes.length === 0 ||
+                      isSubmittingAddLibrary ||
+                      (selectedTypes.length === 1 &&
+                        (addLibraryScopeContentTypeIds.length === 0 ||
+                          addLibraryScopeChannelIds.length === 0))
+                    }
+                  >
+                    {isSubmittingAddLibrary ? 'Adding…' : 'Add Selected'}
                   </Button>
                 </DialogFooter>
               </DialogContent>
             </Dialog>
-          </div>
-      </div>
-
-      {/* Briefing Scope Dialog (CT × Channel assignments) */}
-      <Dialog
-        open={isScopeDialogOpen}
-        onOpenChange={(open) => {
-          setIsScopeDialogOpen(open)
-          if (!open) {
-            const requiredId = scopeRequiredBriefingTypeId
-            if (requiredId) {
-              setScopeRequiredBriefingTypeId(null)
-              setScopeBriefingTypeId(null)
-              setScopeContentTypeIds([])
-              setScopeChannelIds([])
-              // Rollback (async) so we don't block UI thread.
-              void rollbackScopeIfRequired(requiredId)
-              return
-            }
-            setScopeBriefingTypeId(null)
-            setScopeContentTypeIds([])
-            setScopeChannelIds([])
-            setIsSavingScope(false)
-          }
-        }}
-      >
-        <DialogContent className="max-w-xl">
-          <DialogHeader>
-            <DialogTitle>Choose where this briefing applies</DialogTitle>
-          </DialogHeader>
-
-          <div className="py-4 space-y-4">
-            <div>
-              <Label className="mb-2 block">Content Types</Label>
-              <MultiSelect
-                options={scopeContentTypeOptions}
-                value={scopeContentTypeIds.map(String)}
-                onChange={(values) => setScopeContentTypeIds(values.map(Number))}
-                placeholder="Select content types..."
-              />
-            </div>
-            <div>
-              <Label className="mb-2 block">Channels</Label>
-              <MultiSelect
-                options={scopeChannelOptions}
-                value={scopeChannelIds.map(String)}
-                onChange={(values) => setScopeChannelIds(values.map(Number))}
-                placeholder="Select channels..."
-              />
-            </div>
-            <p className="text-xs text-gray-500">
-              We’ll assign this briefing to every selected Content Type × Channel combination.
-            </p>
-          </div>
-
-          <DialogFooter>
-            <Button
-              variant="outline"
-              onClick={() => {
-                const requiredId = scopeRequiredBriefingTypeId
-                setIsScopeDialogOpen(false)
-                if (requiredId) {
-                  setScopeRequiredBriefingTypeId(null)
-                  setScopeBriefingTypeId(null)
-                  setScopeContentTypeIds([])
-                  setScopeChannelIds([])
-                  void rollbackScopeIfRequired(requiredId)
-                }
-              }}
-              disabled={isSavingScope}
-            >
-              Cancel
-            </Button>
-            <Button
-              onClick={handleSaveScope}
-              disabled={isSavingScope || scopeContentTypeIds.length === 0 || scopeChannelIds.length === 0}
-            >
-              {isSavingScope ? 'Saving…' : 'Save scope'}
-            </Button>
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
 
       {briefingTypes.length === 0 ? (
-        <div className="flex flex-col items-center justify-center h-full text-center py-12">
-          <p className="text-gray-500 mb-4">No briefing types added yet</p>
-          <Button size="sm" onClick={() => setAddDialogOpen(true)}>
-            <Plus className="w-4 h-4 mr-2" />
-            Add Briefing Type
-          </Button>
+        <div className="py-8 text-center text-sm text-gray-500">
+          No briefing types added yet
         </div>
       ) : (
-        <div>
-
-          <DndContext
-            sensors={sensors}
-            collisionDetection={closestCenter}
-            onDragEnd={handleDragEnd}
-          >
-            <SortableContext
-              items={briefingTypes.map(bt => bt.briefing_type_id)}
-              strategy={verticalListSortingStrategy}
-            >
-              <div className="space-y-3">
-                {briefingTypes.map(briefing => (
-                  <BriefingComponents
-                    key={briefing.briefing_type_id}
-                    briefing={briefing}
-                    projectId={projectId}
-                    isExpanded={false}
-                    isSingleView={false}
-                    isSelected={briefing.briefing_type_id === singleBriefingView}
-                    allBriefings={briefingTypes}
-                    onToggle={() => {
-                      const params = new URLSearchParams(searchParams.toString())
-                      params.set('briefingTypeId', briefing.briefing_type_id.toString())
-                      // Keep any existing filter params if present; don't clear contentTypeId/channelId.
-                      router.replace(`${pathname}?${params.toString()}`)
-                    }}
-                      onSetDefault={() => handleSetDefault(briefing.briefing_type_id)}
-                      onRemove={() => handleOpenRemoveConfirmation(briefing.briefing_type_id)}
-                      onUpdateMeta={(customTitle, customDescription) =>
-                        handleUpdateMeta(briefing.briefing_type_id, customTitle, customDescription)
-                      }
-                      onComponentUpdate={(componentId, source, updates) =>
-                        handleComponentUpdate(briefing.briefing_type_id, componentId, source, updates)
-                      }
-                      onComponentRemove={(componentId, source) =>
-                        handleComponentRemove(briefing.briefing_type_id, componentId, source)
-                      }
-                      onComponentReorder={(order) =>
-                        handleComponentReorder(briefing.briefing_type_id, order)
-                      }
-                      onAddComponent={() => {}}
-                      onImportBriefing={() => {
-                        setActiveBriefingTypeId(briefing.briefing_type_id)
-                        setIsImportDialogOpen(true)
-                      }}
-                      onResetTemplate={() => handleOpenResetConfirmation(briefing.briefing_type_id)}
-                  />
-                ))}
-              </div>
-            </SortableContext>
-          </DndContext>
+        <div className="space-y-2">
+          {briefingTypes.map((briefing) => (
+            <BriefingComponents
+              key={briefing.briefing_type_id}
+              briefing={briefing}
+              projectId={projectId}
+              isExpanded={false}
+              isSingleView={false}
+              isSelected={briefing.briefing_type_id === singleBriefingView}
+              allBriefings={briefingTypes}
+              disableBriefingSort={true}
+              listLayout="compact-card"
+              onToggle={() => openBriefingInPane(briefing.briefing_type_id)}
+              onSetDefault={() => handleSetDefault(briefing.briefing_type_id)}
+              onRemove={() => handleOpenRemoveConfirmation(briefing.briefing_type_id)}
+              onUpdateMeta={(customTitle, customDescription) =>
+                handleUpdateMeta(briefing.briefing_type_id, customTitle, customDescription)
+              }
+              onComponentUpdate={(componentId, source, updates) =>
+                handleComponentUpdate(briefing.briefing_type_id, componentId, source, updates)
+              }
+              onComponentRemove={(componentId, source) =>
+                handleComponentRemove(briefing.briefing_type_id, componentId, source)
+              }
+              onComponentReorder={(order) => handleComponentReorder(briefing.briefing_type_id, order)}
+              onAddComponent={() => {}}
+              onImportBriefing={() => {
+                setActiveBriefingTypeId(briefing.briefing_type_id)
+                setIsImportDialogOpen(true)
+              }}
+              onResetTemplate={() => handleOpenResetConfirmation(briefing.briefing_type_id)}
+            />
+          ))}
         </div>
       )}
 
-      {/* Right Pane: Briefing details (no overlay; left side remains interactive) */}
+      {addBriefingControl}
+
       {singleBriefingView ? (
-        <div
-          className={[
-            'fixed inset-y-0 right-0 z-40 flex w-full border-l border-gray-200 bg-white shadow-xl',
-            componentKey ? 'max-w-[1080px]' : 'max-w-[560px]',
-          ].join(' ')}
-          style={{ pointerEvents: 'auto' }}
-        >
-          {/* Pane 2: Briefing details */}
-          <div className="flex h-full w-full max-w-[560px] flex-col border-r border-gray-200">
-            {(() => {
-              const selectedBriefing =
-                briefingTypes.find((b) => b.briefing_type_id === singleBriefingView) ?? null
+        (() => {
+          const overlayShellClassName = briefingOverlayContainer
+            ? 'absolute inset-0 z-40 flex min-h-0 flex-col overflow-hidden bg-white shadow-[0_0_0_1px_rgba(0,0,0,0.06)]'
+            : 'absolute inset-0 z-30 flex min-h-0 flex-col overflow-hidden rounded-lg border border-gray-200 bg-white shadow-lg'
 
-              return (
-                <>
-                  <div className="flex h-16 flex-shrink-0 items-center justify-between border-b bg-white px-4 shadow-sm">
-                    <div className="min-w-0">
-                      <div className="text-sm text-gray-500">Briefing</div>
-                      <div className="truncate text-base font-semibold text-gray-900">
-                        {selectedBriefing?.display_title || 'Briefing'}
-                      </div>
-                    </div>
-                    <div className="flex items-center gap-1">
-                      <DropdownMenu modal={false}>
-                        <DropdownMenuTrigger asChild>
-                          <button
+          const node = (
+            <div className={overlayShellClassName} style={{ pointerEvents: 'auto' }}>
+              <div className="flex min-h-0 flex-1 flex-row">
+                <div className="flex h-full min-w-0 flex-1 flex-col border-r border-gray-200">
+                  {(() => {
+                    const selectedBriefing =
+                      briefingTypes.find((b) => b.briefing_type_id === singleBriefingView) ?? null
+
+                    return (
+                      <>
+                        <div className="flex h-16 flex-shrink-0 items-center gap-2 border-b bg-white px-2 shadow-sm">
+                          <Button
                             type="button"
-                            className="h-8 w-8 inline-flex items-center justify-center rounded hover:bg-gray-100 text-gray-600"
-                            title="More"
-                            aria-label="More"
+                            variant="ghost"
+                            size="icon"
+                            className="h-9 w-9 shrink-0"
+                            onClick={closeRightPane}
+                            aria-label="Back"
+                            title="Back"
                           >
-                            <MoreHorizontal className="h-4 w-4" />
-                          </button>
-                        </DropdownMenuTrigger>
-                        <DropdownMenuContent align="end">
-                          <DropdownMenuItem
-                            onSelect={() => {
-                              if (!selectedBriefing) return
-                              requestAnimationFrame(() => handleSetDefault(selectedBriefing.briefing_type_id))
-                            }}
-                          >
-                            {selectedBriefing?.is_default ? 'Default briefing' : 'Make default'}
-                          </DropdownMenuItem>
-                          <DropdownMenuSeparator />
-                          <DropdownMenuItem
-                            onSelect={() => {
-                              if (!selectedBriefing) return
-                              requestAnimationFrame(() => {
-                                setActiveBriefingTypeId(selectedBriefing.briefing_type_id)
-                                setIsImportDialogOpen(true)
-                              })
-                            }}
-                          >
-                            Import from File/Link
-                          </DropdownMenuItem>
-                          <DropdownMenuItem
-                            onSelect={() => {
-                              if (!selectedBriefing) return
-                              requestAnimationFrame(() => handleOpenResetConfirmation(selectedBriefing.briefing_type_id))
-                            }}
-                          >
-                            Reset Template
-                          </DropdownMenuItem>
-                          <DropdownMenuSeparator />
-                          <DropdownMenuItem
-                            className="text-red-600 focus:text-red-600"
-                            onSelect={() => {
-                              if (!selectedBriefing) return
-                              requestAnimationFrame(() => handleOpenRemoveConfirmation(selectedBriefing.briefing_type_id))
-                            }}
-                          >
-                            Delete briefing
-                          </DropdownMenuItem>
-                        </DropdownMenuContent>
-                      </DropdownMenu>
+                            <ChevronLeft className="h-5 w-5" />
+                          </Button>
+                          <div className="min-w-0 flex-1 pr-2">
+                            <div className="truncate text-base font-semibold text-gray-900">
+                              {selectedBriefing?.display_title || 'Briefing'}
+                            </div>
+                          </div>
+                          <div className="flex shrink-0 items-center gap-1">
+                            <DropdownMenu modal={false}>
+                              <DropdownMenuTrigger asChild>
+                                <button
+                                  type="button"
+                                  className="h-8 w-8 inline-flex items-center justify-center rounded hover:bg-gray-100 text-gray-600"
+                                  title="More"
+                                  aria-label="More"
+                                >
+                                  <MoreHorizontal className="h-4 w-4" />
+                                </button>
+                              </DropdownMenuTrigger>
+                              <DropdownMenuContent align="end">
+                                <DropdownMenuItem
+                                  onSelect={() => {
+                                    if (!selectedBriefing) return
+                                    requestAnimationFrame(() => handleSetDefault(selectedBriefing.briefing_type_id))
+                                  }}
+                                >
+                                  {selectedBriefing?.is_default ? 'Default briefing' : 'Make default'}
+                                </DropdownMenuItem>
+                                <DropdownMenuSeparator />
+                                <DropdownMenuItem
+                                  onSelect={() => {
+                                    if (!selectedBriefing) return
+                                    requestAnimationFrame(() => {
+                                      setActiveBriefingTypeId(selectedBriefing.briefing_type_id)
+                                      setIsImportDialogOpen(true)
+                                    })
+                                  }}
+                                >
+                                  Import from File/Link
+                                </DropdownMenuItem>
+                                <DropdownMenuItem
+                                  onSelect={() => {
+                                    if (!selectedBriefing) return
+                                    requestAnimationFrame(() => handleOpenResetConfirmation(selectedBriefing.briefing_type_id))
+                                  }}
+                                >
+                                  Reset Template
+                                </DropdownMenuItem>
+                                <DropdownMenuSeparator />
+                                <DropdownMenuItem
+                                  className="text-red-600 focus:text-red-600"
+                                  onSelect={() => {
+                                    if (!selectedBriefing) return
+                                    requestAnimationFrame(() => handleOpenRemoveConfirmation(selectedBriefing.briefing_type_id))
+                                  }}
+                                >
+                                  Delete briefing
+                                </DropdownMenuItem>
+                              </DropdownMenuContent>
+                            </DropdownMenu>
+                          </div>
+                        </div>
 
+                        <div className="flex-1 overflow-auto">
+                          {selectedBriefing ? (
+                            <>
+                              <div className="px-4 pt-4">
+                                <BriefingDescriptionEditor
+                                  briefingTypeId={selectedBriefing.briefing_type_id}
+                                  initialDescription={selectedBriefing.display_description || ''}
+                                  titleForMeta={selectedBriefing.display_title || 'Briefing'}
+                                  onSave={(next) =>
+                                    handleUpdateMeta(
+                                      selectedBriefing.briefing_type_id,
+                                      selectedBriefing.display_title,
+                                      next || null
+                                    )
+                                  }
+                                />
+                              </div>
+                              <BriefingComponents
+                                key={`pane-${selectedBriefing.briefing_type_id}`}
+                                briefing={selectedBriefing}
+                                projectId={projectId}
+                                isExpanded={true}
+                                isSingleView={true}
+                                disableBriefingSort={true}
+                                allBriefings={briefingTypes}
+                                onToggle={() => {}}
+                                onSetDefault={() => handleSetDefault(selectedBriefing.briefing_type_id)}
+                                onRemove={() => handleOpenRemoveConfirmation(selectedBriefing.briefing_type_id)}
+                                onUpdateMeta={(customTitle, customDescription) =>
+                                  handleUpdateMeta(selectedBriefing.briefing_type_id, customTitle, customDescription)
+                                }
+                                onComponentUpdate={(componentId, source, updates) =>
+                                  handleComponentUpdate(selectedBriefing.briefing_type_id, componentId, source, updates)
+                                }
+                                onComponentRemove={(componentId, source) =>
+                                  handleComponentRemove(selectedBriefing.briefing_type_id, componentId, source)
+                                }
+                                onComponentReorder={(order) =>
+                                  handleComponentReorder(selectedBriefing.briefing_type_id, order)
+                                }
+                                onAddComponent={() => {}}
+                                onImportBriefing={() => {
+                                  setActiveBriefingTypeId(selectedBriefing.briefing_type_id)
+                                  setIsImportDialogOpen(true)
+                                }}
+                                onResetTemplate={() => handleOpenResetConfirmation(selectedBriefing.briefing_type_id)}
+                              />
+                            </>
+                          ) : (
+                            <div className="p-4 text-sm text-gray-500">This briefing type could not be loaded.</div>
+                          )}
+                        </div>
+                      </>
+                    )
+                  })()}
+                </div>
+
+                {componentKey ? (
+                  <div className="hidden h-full w-[520px] max-w-[92vw] shrink-0 flex-col bg-white md:flex">
+                    <div className="flex h-16 flex-shrink-0 items-center justify-between border-b bg-white px-4 shadow-sm">
+                      <div className="min-w-0">
+                        <div className="text-sm text-gray-500">Component</div>
+                        <div className="truncate text-base font-semibold text-gray-900">{componentKey}</div>
+                      </div>
                       <Button
                         variant="ghost"
                         size="sm"
                         className="h-8 w-8 p-0"
-                        onClick={closeRightPane}
-                        aria-label="Close"
+                        onClick={closeComponentPane}
+                        aria-label="Close component"
                         title="Close"
                       >
                         <X className="h-4 w-4" />
                       </Button>
                     </div>
+                    <div className="flex-1 overflow-auto p-4">
+                      <ComponentDetailsPane projectId={projectId} componentKey={componentKey} onClose={closeComponentPane} />
+                    </div>
                   </div>
-
-                  <div className="flex-1 overflow-auto">
-                    {selectedBriefing ? (
-                      <>
-                        <div className="px-4 pt-4">
-                          <BriefingDescriptionEditor
-                            briefingTypeId={selectedBriefing.briefing_type_id}
-                            initialDescription={selectedBriefing.display_description || ''}
-                            titleForMeta={selectedBriefing.display_title || 'Briefing'}
-                            onSave={(next) =>
-                              handleUpdateMeta(
-                                selectedBriefing.briefing_type_id,
-                                selectedBriefing.display_title,
-                                next || null
-                              )
-                            }
-                          />
-                        </div>
-                        <BriefingComponents
-                          key={`pane-${selectedBriefing.briefing_type_id}`}
-                          briefing={selectedBriefing}
-                          projectId={projectId}
-                          isExpanded={true}
-                          isSingleView={true}
-                          disableBriefingSort={true}
-                          allBriefings={briefingTypes}
-                          onToggle={() => {}}
-                          onSetDefault={() => handleSetDefault(selectedBriefing.briefing_type_id)}
-                          onRemove={() => handleOpenRemoveConfirmation(selectedBriefing.briefing_type_id)}
-                          onUpdateMeta={(customTitle, customDescription) =>
-                            handleUpdateMeta(selectedBriefing.briefing_type_id, customTitle, customDescription)
-                          }
-                          onComponentUpdate={(componentId, source, updates) =>
-                            handleComponentUpdate(selectedBriefing.briefing_type_id, componentId, source, updates)
-                          }
-                          onComponentRemove={(componentId, source) =>
-                            handleComponentRemove(selectedBriefing.briefing_type_id, componentId, source)
-                          }
-                          onComponentReorder={(order) =>
-                            handleComponentReorder(selectedBriefing.briefing_type_id, order)
-                          }
-                          onAddComponent={() => {}}
-                          onImportBriefing={() => {
-                            setActiveBriefingTypeId(selectedBriefing.briefing_type_id)
-                            setIsImportDialogOpen(true)
-                          }}
-                          onResetTemplate={() => handleOpenResetConfirmation(selectedBriefing.briefing_type_id)}
-                        />
-                      </>
-                    ) : (
-                      <div className="p-4 text-sm text-gray-500">This briefing type could not be loaded.</div>
-                    )}
-                  </div>
-                </>
-              )
-            })()}
-          </div>
-
-          {/* Pane 3: Component details */}
-          {componentKey ? (
-            <div className="hidden h-full w-[520px] max-w-[92vw] flex-col bg-white md:flex">
-              <div className="flex h-16 flex-shrink-0 items-center justify-between border-b bg-white px-4 shadow-sm">
-                <div className="min-w-0">
-                  <div className="text-sm text-gray-500">Component</div>
-                  <div className="truncate text-base font-semibold text-gray-900">{componentKey}</div>
-                </div>
-                <Button
-                  variant="ghost"
-                  size="sm"
-                  className="h-8 w-8 p-0"
-                  onClick={closeComponentPane}
-                  aria-label="Close component"
-                  title="Close"
-                >
-                  <X className="h-4 w-4" />
-                </Button>
-              </div>
-              <div className="flex-1 overflow-auto p-4">
-                <ComponentDetailsPane projectId={projectId} componentKey={componentKey} onClose={closeComponentPane} />
+                ) : null}
               </div>
             </div>
-          ) : null}
-        </div>
+          )
+
+          return briefingOverlayContainer ? createPortal(node, briefingOverlayContainer) : node
+        })()
       ) : null}
 
       {/* Remove Briefing Confirmation Dialog */}
@@ -3291,6 +3761,7 @@ export function ExpandableBriefingsList({
         setIsImportDialogOpen(open)
         if (!open) {
           setImportUrl('')
+          setImportText('')
           setImportFile(null)
           setImportMethod('file')
         }
@@ -3323,6 +3794,17 @@ export function ExpandableBriefingsList({
                 }`}
               >
                 Enter URL
+              </button>
+              <button
+                type="button"
+                onClick={() => setImportMethod('text')}
+                className={`px-4 py-2 text-sm font-medium border-b-2 transition-colors ${
+                  importMethod === 'text'
+                    ? 'border-black text-black'
+                    : 'border-transparent text-gray-500 hover:text-gray-700'
+                }`}
+              >
+                Paste Text
               </button>
             </div>
 
@@ -3403,6 +3885,20 @@ export function ExpandableBriefingsList({
               </div>
             )}
 
+            {/* Direct Text Section */}
+            {importMethod === 'text' && (
+              <div>
+                <Label htmlFor="import-text">Paste briefing text</Label>
+                <Textarea
+                  id="import-text"
+                  value={importText}
+                  onChange={(e) => setImportText(e.target.value)}
+                  placeholder="Paste the briefing content, structure, or requirements here..."
+                  className="mt-2 min-h-[180px]"
+                />
+              </div>
+            )}
+
             {isImporting && (
               <div className="flex items-center gap-2 text-sm text-gray-600">
                 <Loader2 className="w-4 h-4 animate-spin" />
@@ -3414,6 +3910,7 @@ export function ExpandableBriefingsList({
             <Button variant="outline" onClick={() => {
               setIsImportDialogOpen(false)
               setImportUrl('')
+              setImportText('')
               setImportFile(null)
               setImportMethod('file')
             }}>
@@ -3424,6 +3921,7 @@ export function ExpandableBriefingsList({
               disabled={
                 (importMethod === 'file' && !importFile) ||
                 (importMethod === 'url' && !importUrl.trim()) ||
+                (importMethod === 'text' && !importText.trim()) ||
                 isImporting
               }
             >
@@ -3574,6 +4072,9 @@ export function ExpandableBriefingsList({
                   queryKey: ['projBriefings:components', projectId, briefingTypeId] 
                 })
                 queryClient.invalidateQueries({ 
+                  queryKey: ['projBriefings:library:index', projectId] 
+                })
+                queryClient.invalidateQueries({ 
                   queryKey: ['projBriefings:library', projectId] 
                 })
                 onRefresh()
@@ -3614,7 +4115,6 @@ export function ExpandableBriefingsList({
           </DialogFooter>
         </DialogContent>
       </Dialog>
-      </div>
     </div>
   )
 }
@@ -3628,6 +4128,8 @@ function BriefingComponents({
   isSelected = false,
   allBriefings = [],
   disableBriefingSort = false,
+  listLayout = 'card',
+  appliesToSummary,
   onToggle,
   onSetDefault,
   onRemove,
@@ -3643,6 +4145,8 @@ function BriefingComponents({
   isSelected?: boolean
   allBriefings?: ProjectBriefingType[]
   disableBriefingSort?: boolean
+  listLayout?: 'card' | 'compact-card'
+  appliesToSummary?: string
   briefing: ProjectBriefingType
   projectId: number
   isExpanded: boolean
@@ -3691,6 +4195,13 @@ function BriefingComponents({
     return Number.isFinite(n) ? n : null
   })
 
+  const getLatestSearchParams = useCallback(() => {
+    if (typeof window !== 'undefined') {
+      return new URLSearchParams(window.location.search)
+    }
+    return new URLSearchParams(searchParams.toString())
+  }, [searchParams])
+
   // Applies-to: rows in project_ct_channel_briefings scoped by briefing type
   const { data: appliesToRows, isLoading: isLoadingAppliesTo } = useQuery({
     queryKey: ['projBriefings:appliesTo', projectId, briefing.briefing_type_id],
@@ -3700,6 +4211,7 @@ function BriefingComponents({
         .select(`
           content_type_id,
           channel_id,
+          is_default,
           content_types!inner(id, title),
           channels!inner(id, name)
         `)
@@ -3710,7 +4222,9 @@ function BriefingComponents({
       return (data || []) as any[]
     },
     enabled: isExpanded,
-    staleTime: 10_000,
+    ...BRIEFINGS_TAB_QUERY_DEFAULTS,
+    staleTime: 60_000,
+    placeholderData: (previousData) => previousData,
   })
 
   const appliesToContentTypes = useMemo(() => {
@@ -3724,14 +4238,20 @@ function BriefingComponents({
   }, [appliesToRows])
 
   const appliesToChannelsByCt = useMemo(() => {
-    const map = new Map<number, Array<{ id: number; name: string }>>()
+    const map = new Map<number, Array<{ id: number; name: string; isDefault: boolean }>>()
     ;(appliesToRows || []).forEach((row: any) => {
       const ctId = row.content_type_id as number
       const chId = row.channel_id as number
       const chName = row.channels?.name as string | undefined
+      const isDefault = Boolean(row.is_default)
       if (!chName) return
       const list = map.get(ctId) || []
-      if (!list.some((c) => c.id === chId)) list.push({ id: chId, name: chName })
+      const existingIndex = list.findIndex((c) => c.id === chId)
+      if (existingIndex === -1) {
+        list.push({ id: chId, name: chName, isDefault })
+      } else if (isDefault) {
+        list[existingIndex] = { ...list[existingIndex], isDefault: true }
+      }
       map.set(ctId, list)
     })
     // Sort channel pills by name for readability (not affecting task ordering)
@@ -3749,29 +4269,39 @@ function BriefingComponents({
         actionLabel: 'Remove',
         actionClassName: 'bg-red-600 hover:bg-red-700',
         onConfirm: async () => {
-          const { error } = await supabase
-            .from('project_ct_channel_briefings')
-            .delete()
-            .eq('project_id', projectId)
-            .eq('content_type_id', contentTypeId)
-            .eq('channel_id', channelId)
-            .eq('briefing_type_id', briefing.briefing_type_id)
+          const { error } = await supabase.rpc('pcctb_remove', {
+            p_project_id: projectId,
+            p_content_type_id: contentTypeId,
+            p_channel_id: channelId,
+            p_briefing_type_id: briefing.briefing_type_id,
+          })
 
           if (error) throw error
 
           toast({ title: 'Removed', description: 'Briefing detached from channel/content type' })
-          queryClient.invalidateQueries({
-            queryKey: ['projBriefings:appliesTo', projectId, briefing.briefing_type_id],
-          })
+          await Promise.all([
+            queryClient.invalidateQueries({
+              queryKey: ['projBriefings:appliesTo', projectId, briefing.briefing_type_id],
+            }),
+            queryClient.invalidateQueries({ queryKey: ['projBriefings:appliesTo', projectId] }),
+            queryClient.invalidateQueries({ queryKey: ['projBriefings:assignments', projectId] }),
+            queryClient.invalidateQueries({ queryKey: ['proj:ctch:default', projectId] }),
+            queryClient.invalidateQueries({
+              queryKey: ['projBriefings:components', projectId, briefing.briefing_type_id, contentTypeId, channelId],
+            }),
+            queryClient.invalidateQueries({
+              queryKey: ['availableComponents', projectId, briefing.briefing_type_id, contentTypeId, channelId],
+            }),
+          ])
 
           // If we removed the currently selected pair, reset selection and URL
           if (selectedContentTypeId === contentTypeId && selectedChannelId === channelId) {
             setSelectedChannelId(null)
             setSelectedContentTypeId(null)
-            const params = new URLSearchParams(searchParams.toString())
+            const params = getLatestSearchParams()
             params.delete('contentTypeId')
             params.delete('channelId')
-            router.replace(`${pathname}?${params.toString()}`)
+            router.replace(`${pathname}?${params.toString()}`, { scroll: false })
           }
         },
       })
@@ -3783,7 +4313,7 @@ function BriefingComponents({
       briefing.briefing_type_id,
       selectedContentTypeId,
       selectedChannelId,
-      searchParams,
+      getLatestSearchParams,
       router,
       pathname,
     ]
@@ -3797,27 +4327,45 @@ function BriefingComponents({
         actionLabel: 'Remove',
         actionClassName: 'bg-red-600 hover:bg-red-700',
         onConfirm: async () => {
-          const { error } = await supabase
-            .from('project_ct_channel_briefings')
-            .delete()
-            .eq('project_id', projectId)
-            .eq('briefing_type_id', briefing.briefing_type_id)
-            .eq('content_type_id', contentTypeId)
-
-          if (error) throw error
+          const channelsForContentType = appliesToChannelsByCt.get(contentTypeId) || []
+          const removals = await Promise.all(
+            channelsForContentType.map((channel) =>
+              supabase.rpc('pcctb_remove', {
+                p_project_id: projectId,
+                p_content_type_id: contentTypeId,
+                p_channel_id: channel.id,
+                p_briefing_type_id: briefing.briefing_type_id,
+              })
+            )
+          )
+          const removeError = removals.find((result) => result.error)?.error
+          if (removeError) throw removeError
 
           toast({ title: 'Removed', description: 'Content type detached from this briefing' })
-          queryClient.invalidateQueries({
-            queryKey: ['projBriefings:appliesTo', projectId, briefing.briefing_type_id],
-          })
+          await Promise.all([
+            queryClient.invalidateQueries({
+              queryKey: ['projBriefings:appliesTo', projectId, briefing.briefing_type_id],
+            }),
+            queryClient.invalidateQueries({ queryKey: ['projBriefings:appliesTo', projectId] }),
+            queryClient.invalidateQueries({ queryKey: ['projBriefings:assignments', projectId] }),
+            queryClient.invalidateQueries({ queryKey: ['proj:ctch:default', projectId] }),
+            ...channelsForContentType.flatMap((channel) => [
+              queryClient.invalidateQueries({
+                queryKey: ['projBriefings:components', projectId, briefing.briefing_type_id, contentTypeId, channel.id],
+              }),
+              queryClient.invalidateQueries({
+                queryKey: ['availableComponents', projectId, briefing.briefing_type_id, contentTypeId, channel.id],
+              }),
+            ]),
+          ])
 
           if (selectedContentTypeId === contentTypeId) {
             setSelectedChannelId(null)
             setSelectedContentTypeId(null)
-            const params = new URLSearchParams(searchParams.toString())
+            const params = getLatestSearchParams()
             params.delete('contentTypeId')
             params.delete('channelId')
-            router.replace(`${pathname}?${params.toString()}`)
+            router.replace(`${pathname}?${params.toString()}`, { scroll: false })
           }
         },
       })
@@ -3828,7 +4376,8 @@ function BriefingComponents({
       projectId,
       briefing.briefing_type_id,
       selectedContentTypeId,
-      searchParams,
+      appliesToChannelsByCt,
+      getLatestSearchParams,
       router,
       pathname,
     ]
@@ -3842,7 +4391,8 @@ function BriefingComponents({
       })
       if (error) throw error
 
-      // Update project_briefing_components (modal list)
+      // Refresh Project Components list and open briefing pane lists
+      queryClient.invalidateQueries({ queryKey: ['projBriefings:library:index', projectId] })
       queryClient.invalidateQueries({ queryKey: ['projBriefings:library', projectId] })
       // Refresh open briefing pane lists (if open)
       queryClient.invalidateQueries({ queryKey: ['projBriefings:components', projectId] })
@@ -3861,6 +4411,7 @@ function BriefingComponents({
       if (error) throw error
 
       // Refresh both the briefing lists and any component libraries/indexes that depend on usage.
+      queryClient.invalidateQueries({ queryKey: ['projBriefings:library:index', projectId] })
       queryClient.invalidateQueries({ queryKey: ['projBriefings:library', projectId] })
       queryClient.invalidateQueries({ queryKey: ['projBriefings:components', projectId] })
       queryClient.invalidateQueries({ queryKey: ['allowedGlobalComponents'] })
@@ -3907,15 +4458,15 @@ function BriefingComponents({
     setSelectedChannelId(null)
     
     // Update URL
-    const params = new URLSearchParams(searchParams.toString())
+    const params = getLatestSearchParams()
     if (contentTypeId) {
       params.set('contentTypeId', contentTypeId.toString())
     } else {
       params.delete('contentTypeId')
     }
     params.delete('channelId') // Clear channel when changing content type
-    router.replace(`${pathname}?${params.toString()}`)
-  }, [searchParams, router, pathname])
+    router.replace(`${pathname}?${params.toString()}`, { scroll: false })
+  }, [getLatestSearchParams, router, pathname])
   
   // Default selection: prefer URL params, else first applies-to content type
   React.useEffect(() => {
@@ -3930,10 +4481,10 @@ function BriefingComponents({
     const next = valid ?? appliesToContentTypes[0].id
 
     setSelectedContentTypeId(next)
-    const params = new URLSearchParams(searchParams.toString())
+    const params = getLatestSearchParams()
     params.set('contentTypeId', next.toString())
-    router.replace(`${pathname}?${params.toString()}`)
-  }, [isExpanded, appliesToContentTypes, selectedContentTypeId, searchParams, router, pathname])
+    router.replace(`${pathname}?${params.toString()}`, { scroll: false })
+  }, [isExpanded, appliesToContentTypes, selectedContentTypeId, getLatestSearchParams, router, pathname])
   
   // Fetch channels filtered by selected content type
   const channels = useMemo(() => {
@@ -3946,14 +4497,14 @@ function BriefingComponents({
     setSelectedChannelId(channelId)
     
     // Update URL
-    const params = new URLSearchParams(searchParams.toString())
+    const params = getLatestSearchParams()
     if (channelId) {
       params.set('channelId', channelId.toString())
     } else {
       params.delete('channelId')
     }
-    router.replace(`${pathname}?${params.toString()}`)
-  }, [searchParams, router, pathname])
+    router.replace(`${pathname}?${params.toString()}`, { scroll: false })
+  }, [getLatestSearchParams, router, pathname])
   
   // Auto-select channel: prefer URL param if valid, else first available
   React.useEffect(() => {
@@ -3967,10 +4518,10 @@ function BriefingComponents({
     const next = valid ?? channels[0].id
 
     setSelectedChannelId(next)
-    const params = new URLSearchParams(searchParams.toString())
+    const params = getLatestSearchParams()
     params.set('channelId', next.toString())
-    router.replace(`${pathname}?${params.toString()}`)
-  }, [selectedContentTypeId, channels, selectedChannelId, searchParams, router, pathname])
+    router.replace(`${pathname}?${params.toString()}`, { scroll: false })
+  }, [selectedContentTypeId, channels, selectedChannelId, getLatestSearchParams, router, pathname])
 
   // Fetch components - either template components or channel-specific components
   const { data: components } = useQuery({
@@ -3993,7 +4544,8 @@ function BriefingComponents({
           project_component_id,
           position,
           custom_title,
-          custom_description
+          custom_description,
+          briefing_components(id, title, description)
         `)
         .eq('project_id', projectId)
         .eq('content_type_id', selectedContentTypeId)
@@ -4004,40 +4556,20 @@ function BriefingComponents({
       if (channelError && channelError.code !== 'PGRST116') throw channelError
 
       if (channelData && channelData.length > 0) {
-        // Fetch briefing_components for the IDs we found
-        const briefingComponentIds = channelData
-          .map((d: any) => d.briefing_component_id)
-          .filter((id: any): id is number => id !== null)
-        
-        let briefingComponentsMap = new Map<number, { title: string; description: string | null }>()
-        
-        if (briefingComponentIds.length > 0) {
-          const { data: briefingComps, error: bcError } = await supabase
-            .from('briefing_components')
-            .select('id, title, description')
-            .in('id', briefingComponentIds)
-          
-          if (!bcError && briefingComps) {
-            briefingComps.forEach((bc: any) => {
-              briefingComponentsMap.set(bc.id, { title: bc.title, description: bc.description })
-            })
-          }
-        }
-
         // Map to same format as template components
         return (channelData || []).map((pctcbc: any) => {
-          const briefingInfo = pctcbc.briefing_component_id 
-            ? briefingComponentsMap.get(pctcbc.briefing_component_id)
-            : null
+          const joinedBriefing = Array.isArray(pctcbc.briefing_components)
+            ? pctcbc.briefing_components[0]
+            : pctcbc.briefing_components
           
           return {
             project_id: projectId,
             briefing_type_id: briefing.briefing_type_id,
             component_id: pctcbc.briefing_component_id || pctcbc.project_component_id,
-            component_title: pctcbc.custom_title || briefingInfo?.title || 'Custom Component',
-            component_description: pctcbc.custom_description || briefingInfo?.description || null,
-            effective_title: pctcbc.custom_title || briefingInfo?.title || 'Custom Component',
-            effective_description: pctcbc.custom_description || briefingInfo?.description || null,
+            component_title: pctcbc.custom_title || joinedBriefing?.title || 'Custom Component',
+            component_description: pctcbc.custom_description || joinedBriefing?.description || null,
+            effective_title: pctcbc.custom_title || joinedBriefing?.title || 'Custom Component',
+            effective_description: pctcbc.custom_description || joinedBriefing?.description || null,
             source: pctcbc.project_component_id ? 'project' as const : 'global' as const,
             position: pctcbc.position,
             channel_record_id: pctcbc.id // UUID from project_ct_channel_briefing_components
@@ -4050,6 +4582,8 @@ function BriefingComponents({
       return []
     },
     enabled: isExpanded,
+    ...BRIEFINGS_TAB_QUERY_DEFAULTS,
+    placeholderData: (previousData) => previousData,
   })
 
   // Fetch "Available to add" from the backend RPC (scoped to the selected content type + channel).
@@ -4067,40 +4601,66 @@ function BriefingComponents({
       return (data || []) as PcctbcAvailableComponentRow[]
     },
     enabled: isExpanded && !!selectedContentTypeId && !!selectedChannelId,
+    ...BRIEFINGS_TAB_QUERY_DEFAULTS,
+    placeholderData: (previousData) => previousData,
   })
 
-  // Add applies-to options
-  const { data: assignmentContentTypeOptions = [] } = useQuery({
-    queryKey: ['projBriefings:assignmentContentTypes', projectId],
-    queryFn: async () => {
-      const { data, error } = await supabase
-        .from('project_content_type_settings')
-        .select('content_type_id, content_types!inner(id, title)')
-        .eq('project_id', projectId)
+  // Add applies-to options derived from shared cached refs (avoid ID -> details waterfalls on cold path).
+  const { data: assignmentProjectContentTypeSettings = [] } = useProjectContentTypeSettingsQuery(projectId)
+  const { data: assignmentGlobalContentTypes = [] } = useGlobalContentTypesQuery()
+  const { data: assignmentProjectChannelsResolved = [] } = useProjectChannelsResolvedQuery(projectId)
 
-      if (error) throw error
-      return (data || [])
-        .map((row: any) => ({ id: row.content_type_id as number, title: row.content_types.title as string }))
-        .sort((a, b) => a.title.localeCompare(b.title))
+  const assignmentContentTypeTitleById = useMemo(() => {
+    const byId = new Map<number, string>()
+    ;(assignmentGlobalContentTypes || []).forEach((row: any) => {
+      const id = Number(row?.id)
+      const title = String(row?.title || '')
+      if (!Number.isFinite(id) || !title) return
+      byId.set(id, title)
+    })
+    return byId
+  }, [assignmentGlobalContentTypes])
+
+  const assignmentContentTypeOptions = useMemo(() => {
+    const ids = Array.from(
+      new Set(
+        (assignmentProjectContentTypeSettings || [])
+          .map((row: any) => Number(row?.content_type_id))
+          .filter((id) => Number.isFinite(id))
+      )
+    )
+    return ids
+      .map((id) => ({ id, title: assignmentContentTypeTitleById.get(id) ?? `Content type ${id}` }))
+      .sort((a, b) => a.title.localeCompare(b.title))
+  }, [assignmentContentTypeTitleById, assignmentProjectContentTypeSettings])
+
+  const assignmentChannelOptions = useMemo(() => {
+    const byId = new Map<number, { id: number; name: string; position: number }>()
+    ;(assignmentProjectChannelsResolved || []).forEach((row: any) => {
+      const id = Number(row?.channel_id)
+      const name = String(row?.name || '')
+      if (!Number.isFinite(id) || !name) return
+      const position = Number.isFinite(Number(row?.position)) ? Number(row.position) : 9999
+      if (!byId.has(id)) byId.set(id, { id, name, position })
+    })
+    return Array.from(byId.values())
+      .sort((a, b) => (a.position === b.position ? a.name.localeCompare(b.name) : a.position - b.position))
+      .map((row) => ({ id: row.id, name: row.name }))
+  }, [assignmentProjectChannelsResolved])
+
+  const refreshScopedComponentLists = useCallback(
+    async (contentTypeId: number, channelId: number) => {
+      await Promise.all([
+        queryClient.invalidateQueries({
+          queryKey: ['projBriefings:components', projectId, briefing.briefing_type_id, contentTypeId, channelId],
+        }),
+        queryClient.invalidateQueries({
+          queryKey: ['availableComponents', projectId, briefing.briefing_type_id, contentTypeId, channelId],
+        }),
+      ])
     },
-    enabled: isExpanded,
-  })
-
-  const { data: assignmentChannelOptions = [] } = useQuery({
-    queryKey: ['projBriefings:assignmentChannels', projectId],
-    queryFn: async () => {
-      const { data, error } = await supabase
-        .from('project_channels')
-        .select('channel_id, channels!inner(id, name)')
-        .eq('project_id', projectId)
-
-      if (error) throw error
-      return (data || [])
-        .map((row: any) => ({ id: row.channel_id as number, name: row.channels.name as string }))
-        .sort((a, b) => a.name.localeCompare(b.name))
-    },
-    enabled: isExpanded,
-  })
+    [queryClient, projectId, briefing.briefing_type_id]
+  )
 
   const handleAddAppliesTo = useCallback(
     async (contentTypeId: number, channelId: number) => {
@@ -4111,7 +4671,7 @@ function BriefingComponents({
         throw new Error('Invalid content type or channel selection')
       }
 
-      const { error } = await supabase.rpc('pcctb_set', {
+      const { error } = await supabase.rpc('pcctb_add', {
         p_project_id: projectId,
         p_content_type_id: contentTypeId,
         p_channel_id: channelId,
@@ -4125,13 +4685,15 @@ function BriefingComponents({
       queryClient.invalidateQueries({
         queryKey: ['projBriefings:appliesTo', projectId, briefing.briefing_type_id],
       })
+      queryClient.invalidateQueries({ queryKey: ['proj:ctch:default', projectId] })
+      await refreshScopedComponentLists(contentTypeId, channelId)
 
       setSelectedContentTypeId(contentTypeId)
       setSelectedChannelId(channelId)
-      const params = new URLSearchParams(searchParams.toString())
+      const params = getLatestSearchParams()
       params.set('contentTypeId', contentTypeId.toString())
       params.set('channelId', channelId.toString())
-      router.replace(`${pathname}?${params.toString()}`)
+      router.replace(`${pathname}?${params.toString()}`, { scroll: false })
     },
     [
       assignmentContentTypeOptions,
@@ -4140,10 +4702,39 @@ function BriefingComponents({
       projectId,
       briefing.briefing_type_id,
       queryClient,
-      searchParams,
+      refreshScopedComponentLists,
+      getLatestSearchParams,
       router,
       pathname,
     ]
+  )
+
+  const handleSetAppliesToDefault = useCallback(
+    async (contentTypeId: number, channelId: number) => {
+      try {
+        const { error } = await supabase.rpc('pcctb_set_default', {
+          p_project_id: projectId,
+          p_content_type_id: contentTypeId,
+          p_channel_id: channelId,
+          p_briefing_type_id: briefing.briefing_type_id,
+        })
+        if (error) throw error
+
+        toast({ title: 'Success', description: 'Default briefing updated' })
+        await Promise.all([
+          queryClient.invalidateQueries({ queryKey: ['projBriefings:appliesTo', projectId] }),
+          queryClient.invalidateQueries({ queryKey: ['proj:ctch:default', projectId] }),
+          refreshScopedComponentLists(contentTypeId, channelId),
+        ])
+      } catch (error: any) {
+        toast({
+          title: 'Error',
+          description: error?.message || 'Failed to update default briefing',
+          variant: 'destructive',
+        })
+      }
+    },
+    [supabase, projectId, briefing.briefing_type_id, queryClient, refreshScopedComponentLists]
   )
 
   const Item = disableBriefingSort ? BriefingItemContent : SortableBriefingItem
@@ -4179,12 +4770,15 @@ function BriefingComponents({
         appliesToChannelsByCt={appliesToChannelsByCt}
         isAppliesToLoading={isLoadingAppliesTo}
         onRemoveAppliesTo={removeAppliesTo}
+        onSetAppliesToDefault={handleSetAppliesToDefault}
         onRemoveAppliesToContentType={removeAppliesToContentType}
         assignmentContentTypeOptions={assignmentContentTypeOptions}
         assignmentChannelOptions={assignmentChannelOptions}
         onAddAppliesTo={handleAddAppliesTo}
         onRequestDeleteProjectComponent={requestDeleteProjectComponent}
         onRequestDeleteGlobalComponentFromProject={requestDeleteGlobalComponentFromProject}
+        listLayout={listLayout}
+        appliesToSummary={appliesToSummary}
       />
 
       <AlertDialog

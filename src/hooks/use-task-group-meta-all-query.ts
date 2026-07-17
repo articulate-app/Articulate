@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { createClientComponentClient } from '@supabase/auth-helpers-nextjs';
 import type { TaskListRow } from '@/lib/types/task-list-view';
 import { computeGroupKeyForTask, lookupGroupKeyForTaskId } from '@/hooks/use-task-group-tasks-query';
+import { getDefaultGroupOrderForGroupBy } from '@/lib/tasks-grouping-url';
 
 type GroupOrder = 'asc' | 'desc';
 
@@ -135,8 +136,7 @@ export function computeGroupLabelForTask(row: TaskListRow, groupBy: string | nul
 
 function effectiveGroupOrderFor(groupBy: string | null, groupOrder?: GroupOrder): GroupOrder {
   if (groupOrder) return groupOrder;
-  if (groupBy === 'delivery_date' || groupBy === 'publication_date') return 'desc';
-  return 'asc';
+  return getDefaultGroupOrderForGroupBy(groupBy ?? '');
 }
 
 function isSpecialGroupKey(key: string): boolean {

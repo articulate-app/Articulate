@@ -18,13 +18,15 @@ interface FrequentFilterPillsProps {
   className?: string
   /** When true, always render Project and Status pills (with placeholders when loading) to avoid layout shift. */
   reserveSpaceWhenLoading?: boolean
+  /** When true, hide the Project pill (e.g. when already scoped to a project). */
+  hideProjectPills?: boolean
 }
 
 /**
  * FrequentFilterPills - Quick filter buttons for Project and Status
  * Styled exactly like GroupingDropdown pills
  */
-export function FrequentFilterPills({ editFields, className, reserveSpaceWhenLoading = true }: FrequentFilterPillsProps) {
+export function FrequentFilterPills({ editFields, className, reserveSpaceWhenLoading = true, hideProjectPills = false }: FrequentFilterPillsProps) {
   const router = useRouter()
   const params = useSearchParams()
   const pathname = usePathname()
@@ -102,7 +104,7 @@ export function FrequentFilterPills({ editFields, className, reserveSpaceWhenLoa
     router.replace(`${pathname}?${newParams.toString()}`, { scroll: false })
   }
 
-  const hasProjectOptions = projectOptions.length > 0
+  const hasProjectOptions = !hideProjectPills && projectOptions.length > 0
   const hasStatusOptions = statusOptions.length > 0
   const showReserved = reserveSpaceWhenLoading && (!hasProjectOptions || !hasStatusOptions)
 
@@ -118,7 +120,8 @@ export function FrequentFilterPills({ editFields, className, reserveSpaceWhenLoa
   return (
     <>
       <span className="mx-2 text-gray-400 flex-shrink-0">|</span>
-      {hasProjectOptions ? (
+      {/* In project scope (hideProjectPills): do not render Project pill or placeholder at all */}
+      {!hideProjectPills && (hasProjectOptions ? (
         <Popover open={projectPopoverOpen} onOpenChange={(open) => {
           setProjectPopoverOpen(open)
           if (!open) setProjectSearch('') // Clear search when closing
@@ -183,7 +186,7 @@ export function FrequentFilterPills({ editFields, className, reserveSpaceWhenLoa
           Project
           <ChevronDown className="w-4 h-4 ml-1" />
         </span>
-      ) : null}
+      ) : null)}
       {hasStatusOptions ? (
         <Popover open={statusPopoverOpen} onOpenChange={(open) => {
           setStatusPopoverOpen(open)

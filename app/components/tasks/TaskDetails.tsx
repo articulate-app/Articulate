@@ -1,41 +1,50 @@
 "use client"
 
-import { Tabs, TabsContent, TabsList, TabsTrigger } from "../ui/tabs"
 import { cn } from "@/lib/utils"
 import { useEffect, useState, useRef, useCallback, useMemo, Dispatch, SetStateAction } from "react"
 import { Thread } from '../../types/task'
 import { Button } from "../ui/button"
-import { Trash2, Copy, Wand2, Upload, Image as ImageIcon, X, ChevronLeft, ChevronsLeft, Maximize2, Minimize2, ChevronRight, PanelRight, ExternalLink, Bot, MoreHorizontal, Plus, Loader2, Check } from "lucide-react"
-import { AiPane } from "../../../features/ai-chat/AiPane"
+import { Trash2, Copy, Upload, Image as ImageIcon, X, ChevronLeft, ChevronsLeft, Maximize2, Minimize2, ChevronRight, ChevronDown, PanelRight, ExternalLink, Bot, MoreHorizontal, Plus, Loader2, Check, Star, MessageCircle, RefreshCw, Share2, Download, ClipboardCopy, History } from "lucide-react"
 import { RichTextEditor } from "../ui/rich-text-editor"
+import {
+  COMPONENT_OUTPUT_EDITOR_CLASS,
+  COMPONENT_OUTPUT_FONT_SIZE_PX,
+} from "../../../features/tasks/components/component-output-body-shared"
 import { createClientComponentClient } from "@supabase/auth-helpers-nextjs"
-import { ThreadedRealtimeChat } from "../threaded-realtime-chat"
-import { getFilterOptions } from "../../lib/services/filters"
+import type { AiActiveFieldContext } from "../../../features/ai-chat/active-field-context"
 import dynamic from "next/dynamic"
 import { Popover, PopoverTrigger, PopoverContent } from "../ui/popover"
 import { Button as UIButton } from "../ui/button"
 // import { getUsersForProject } from '../../lib/services/users'
-import { ThreadSwitcherPopover } from "../comments-section/thread-switcher-popover"
-import { ThreadParticipantsInline } from "../comments-section/thread-participants-inline"
 import { AddCommentInput } from "../comments-section/add-comment-input"
 import { getTaskById } from '../../../lib/services/tasks'
 import type { Task as BaseTask, ReviewData } from '../../lib/types/tasks'
 import { updateItemInStore } from '../../../hooks/use-infinite-query'
-import { useQuery, useQueryClient } from '@tanstack/react-query'
+import { useQuery, useQueryClient, type QueryClient } from '@tanstack/react-query'
 import { flushSync } from 'react-dom'
-import { Dropzone } from '../dropzone'
+import { Dropzone, type DropzoneHandle } from '../dropzone'
 import { useTaskAttachmentsUpload } from '../../hooks/use-task-attachments-upload'
 import { useTaskWatchers } from '../../hooks/use-task-watchers'
+import {
+  normalizeBootstrapRelatedIdeas,
+  type TaskBootstrapTaskWatcher,
+} from '@/lib/types/task-details-bootstrap'
 import { AddTaskForm } from './AddTaskForm'
 import { Dialog, DialogContent, DialogTitle, DialogTrigger, DialogFooter } from '../ui/dialog'
 import { MultiSelect } from '../ui/multi-select'
 import { toast } from '../ui/use-toast'
-import { removeTaskFromAllStores, updateTaskInAllStores, updateTaskInCaches, normalizeTask } from './task-cache-utils'
+import {
+  removeTaskFromAllStores,
+  removeTaskIdFromTasksQueryArrays,
+  updateTaskInAllStores,
+  updateTaskInCaches,
+  normalizeTask,
+} from './task-cache-utils'
 import { ShareButton } from '../ui/share-button'
 import { useRouter, useSearchParams, usePathname } from 'next/navigation';
 import { ParentTaskSelect } from './ParentTaskSelect';
 import debounce from 'lodash.debounce';
-import { StickyAddCommentInput } from "../comments-section/sticky-add-comment-input"
+import { TaskCommentsListPart, TaskCommentsInputPart, TaskCommentsFooterPart } from "../comments-section/task-comments-panel"
 import { useTaskEditFields } from '../../hooks/use-task-edit-fields';
 import { useTypesenseInfiniteQuery } from '../../hooks/use-typesense-infinite-query';
 import { getTypesenseUpdater, removeTaskFromTypesenseStore } from '../../store/typesense-tasks';
@@ -44,14 +53,29 @@ import { useMobileDetection } from '../../hooks/use-mobile-detection';
 import { TaskReviewSummary } from './TaskReviewSummary';
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from '../ui/dropdown-menu'
 import { TaskContentTab } from '../../../features/tasks/components/TaskContentTab'
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '../ui/select'
+import { IconTooltip } from '../ui/icon-tooltip'
 import { UserAvatar } from "@/components/UserAvatar";
 import { ProjectBadge } from "@/components/ProjectBadge";
 import { Command, CommandEmpty, CommandGroup, CommandInput, CommandItem, CommandList } from "../ui/command"
 import { getImageUrl } from "../../lib/public-media"
 import { flushPendingEdits } from "../../lib/task-suggestions/pending-edits"
 import { usePlannerOptimisticTasks } from "../../store/planner-optimistic-tasks"
+import { useTaskComposerStore } from "../../store/task-composer-store"
+import { submitTaskReview } from "./review-submit"
+import { useTasksScope } from "../../contexts/tasks-scope-context"
+import { buildCenterPaneSelectionSearchParams, type CenterPaneEntity } from "../../lib/center-pane-selection-url"
+import { shallowReplaceSearchParams } from "../../lib/tasks-shallow-nav"
+import { buildGenericTaskPrompt } from "../../../features/ai-chat/ai-utils"
+import { TASK_PANE_HEADER_ROW_CLASS, TASK_PANE_HEADER_SHELL_CLASS } from "./pane-header-tokens"
+import { Tabs, TabsList, TabsTrigger } from "../ui/tabs"
+import { TaskOverviewPreviews } from "./task-overview-previews"
 
 const EMPTY_ARR: any[] = []
+const NONE_OPTION = "__none__"
+const TASK_TABS = ["overview", "attachments", "content", "activity", "reviews", "comments"] as const
+
+type TaskTab = (typeof TASK_TABS)[number]
 
 interface TaskDetailsProps {
   isCollapsed: boolean
@@ -73,7 +97,7 @@ interface TaskDetailsProps {
   onRestore?: () => void
   onTaskUpdate?: (updatedFields: Partial<Task>) => void
   onAddSubtask?: (parentTaskId: number, projectId: number) => void
-  onDuplicateTask?: (initialValues: any) => void
+  onDuplicateTask?: (initialValues: any, options?: { onSuccess?: (task: any) => void | Promise<void> }) => void
   attachments?: any[]
   threadId?: number | null
   mentions?: any[]
@@ -90,6 +114,13 @@ interface TaskDetailsProps {
    * so changing tabs doesn't trigger unrelated page rerenders.
    */
   disableUrlSync?: boolean
+  isBootstrapLoaded?: boolean
+  onActiveFieldContextChange?: (context: AiActiveFieldContext) => void
+  onAiPaneOpenChange?: (isOpen: boolean) => void
+  /** Shown when drilling into a task from another entity (e.g. user detail stack); clears task selection only. */
+  onDetailStackBack?: () => void
+  /** Mobile-only: renders a back chevron in the header so the embedding shell does not need its own header. */
+  onMobileBack?: () => void
 }
 
 const TaskActivityTimeline = dynamic(() => import("../task-activity/task-activity-timeline").then(m => m.TaskActivityTimeline), { ssr: false })
@@ -126,12 +157,203 @@ type Task = Omit<BaseTask, 'id' | 'assigned_to_id' | 'project_id_int' | 'content
   is_publication_overdue?: boolean;
 };
 
+type TaskActiveFieldContext = AiActiveFieldContext
+
+type TaskRelatedIdeaRow = {
+  id: string
+  task_id: number
+  project_id: number | null
+  title: string | null
+  description: string | null
+  content_type_id: number | null
+  status: string
+}
+
 // Helper to attach abortSignal if available
 function withAbortSignal(query: any, signal: AbortSignal) {
   if (query && typeof query.abortSignal === 'function') {
     return query.abortSignal(signal);
   }
   return query;
+}
+
+// Canonical editable source fields. These are the ONLY fields ever persisted to
+// the tasks table via autosave. Everything else (denormalized display fields,
+// computed columns like is_overdue/search_vector, and channel_names) is derived
+// by DB triggers, so the client must never send it. Using an allowlist keeps the
+// PATCH payload minimal and avoids trigger-heavy work that can cause timeouts.
+const TASK_EDITABLE_SOURCE_FIELDS = new Set<string>([
+  'title',
+  'notes',
+  'briefing',
+  'project_id_int',
+  'assigned_to_id',
+  'delivery_date',
+  'publication_date',
+  'project_status_id',
+  'content_type_id',
+  'production_type_id',
+  'language_id',
+]);
+
+// Denormalized/computed fields recomputed by DB triggers. Never sent from the
+// client. Kept for documentation and defensive reference.
+const TASK_DISPLAY_ONLY_FIELDS = new Set<string>([
+  'project_name',
+  'project_color',
+  'project_logo',
+  'assigned_to_name',
+  'assigned_to_photo',
+  'project_status_name',
+  'project_status_color',
+  'content_type_title',
+  'production_type_title',
+  'language_code',
+  'is_overdue',
+  'is_publication_overdue',
+  'search_vector',
+  'channel_names',
+]);
+
+// Longer idle debounce so a real editing session (open a dropdown, choose an
+// option, move to the next field) coalesces into a SINGLE PATCH. The timer is
+// reset on every field change and only flushes once the user goes idle.
+const TASK_AUTOSAVE_DEBOUNCE_MS = 1500;
+
+// Keep ONLY canonical editable source fields (allowlist) and drop undefined
+// values. Display/computed fields are derived by the DB trigger from the ids.
+function buildCanonicalTaskPatch(fields: Record<string, any>): Record<string, any> {
+  const canonical: Record<string, any> = {};
+  for (const [key, value] of Object.entries(fields)) {
+    if (!TASK_EDITABLE_SOURCE_FIELDS.has(key)) continue;
+    if (value === undefined) continue;
+    canonical[key] = value;
+  }
+  return canonical;
+}
+
+// --- Module-level task autosave queue ----------------------------------------
+// The queue lives at MODULE scope (not component state) so it survives
+// TaskDetails remounts that can happen between field edits — e.g. optimistic
+// cache updates, tab/channel changes, or URL param changes that re-key the pane.
+// This is what guarantees sequential edits coalesce into one PATCH regardless of
+// re-renders/remounts. Keyed by task id.
+type TaskAutosaveEntry = {
+  pending: Record<string, any>;
+  needsListInvalidation: boolean;
+  timer: ReturnType<typeof setTimeout> | null;
+  inFlight: boolean;
+  supabase: any;
+  queryClient: QueryClient;
+};
+
+const taskAutosaveQueue = new Map<string, TaskAutosaveEntry>();
+
+async function runTaskAutosaveLoop(taskId: string): Promise<void> {
+  const entry = taskAutosaveQueue.get(taskId);
+  if (!entry || entry.inFlight) return;
+  if (Object.keys(entry.pending).length === 0) return;
+
+  const queryClient = entry.queryClient;
+  entry.inFlight = true;
+  let sawError = false;
+  let listInvalidationNeeded = false;
+  try {
+    // Drain the queue: edits that arrive while a save is in flight are queued
+    // and sent as a follow-up patch on the next loop iteration.
+    while (Object.keys(entry.pending).length > 0) {
+      const payload = entry.pending;
+      listInvalidationNeeded = listInvalidationNeeded || entry.needsListInvalidation;
+      entry.pending = {};
+      entry.needsListInvalidation = false;
+      try {
+        // Return minimal — no `.select('*')`. Optimistic cache already applied.
+        const { error } = await entry.supabase
+          .from('tasks')
+          .update(payload)
+          .eq('id', taskId);
+        if (error) throw error;
+      } catch (err) {
+        sawError = true;
+        toast({
+          title: 'Failed to save changes',
+          description: (err as Error)?.message || 'An error occurred while saving.',
+          variant: 'destructive',
+        });
+      }
+    }
+  } finally {
+    entry.inFlight = false;
+  }
+
+  if (!sawError && queryClient) {
+    // Refetch once, after the batch settles (not after every field change).
+    queryClient.invalidateQueries({ queryKey: ['task', String(taskId)] });
+    if (listInvalidationNeeded) {
+      queryClient.invalidateQueries({ queryKey: ['tasks'] });
+      queryClient.invalidateQueries({ queryKey: ['kanban-bootstrap'] });
+    }
+  }
+}
+
+function enqueueTaskPatch(
+  taskId: string,
+  canonicalFields: Record<string, any>,
+  requiresListInvalidation: boolean,
+  deps: { supabase: any; queryClient: QueryClient }
+): void {
+  if (Object.keys(canonicalFields).length === 0) return;
+  let entry = taskAutosaveQueue.get(taskId);
+  if (!entry) {
+    entry = {
+      pending: {},
+      needsListInvalidation: false,
+      timer: null,
+      inFlight: false,
+      supabase: deps.supabase,
+      queryClient: deps.queryClient,
+    };
+    taskAutosaveQueue.set(taskId, entry);
+  }
+  // Always refresh to the latest client instances for the in-flight flush.
+  entry.supabase = deps.supabase;
+  entry.queryClient = deps.queryClient;
+  Object.assign(entry.pending, canonicalFields);
+  if (requiresListInvalidation) entry.needsListInvalidation = true;
+  // Reset the idle debounce on every field change.
+  if (entry.timer) clearTimeout(entry.timer);
+  entry.timer = setTimeout(() => {
+    const current = taskAutosaveQueue.get(taskId);
+    if (current) current.timer = null;
+    void runTaskAutosaveLoop(taskId);
+  }, TASK_AUTOSAVE_DEBOUNCE_MS);
+}
+
+// Flush a specific task's pending patch immediately (best-effort). Used on hard
+// page unload. Normal in-app navigation relies on the debounce timer, which
+// keeps running because the queue lives at module scope.
+function flushTaskAutosave(taskId: string): void {
+  const entry = taskAutosaveQueue.get(taskId);
+  if (!entry) return;
+  if (entry.timer) {
+    clearTimeout(entry.timer);
+    entry.timer = null;
+  }
+  if (Object.keys(entry.pending).length > 0) {
+    void runTaskAutosaveLoop(taskId);
+  }
+}
+
+function flushAllTaskAutosaves(): void {
+  taskAutosaveQueue.forEach((_entry, taskId) => flushTaskAutosave(taskId));
+}
+
+// Register a single global handler so pending edits are flushed on page unload
+// (hard navigation / tab close). Bound once per window.
+if (typeof window !== 'undefined' && !(window as any).__taskAutosaveUnloadBound) {
+  (window as any).__taskAutosaveUnloadBound = true;
+  window.addEventListener('pagehide', flushAllTaskAutosaves);
+  window.addEventListener('beforeunload', flushAllTaskAutosaves);
 }
 
 // Helper to update nested fields for optimistic updates
@@ -189,11 +411,16 @@ export function TaskDetails({
   onOptimisticUpdate,
   pathname: customPathname,
   disableUrlSync = false,
+  isBootstrapLoaded = true,
+  onActiveFieldContextChange,
+  onAiPaneOpenChange,
+  onDetailStackBack,
+  onMobileBack,
 }: TaskDetailsProps) {
   const isMobile = useMobileDetection();
   const isSuggestionMode = mode === 'suggestion' || (selectedTask as any)?.kind === 'suggestion'
-  // Allow edits in suggestion mode; the first meaningful edit will implicitly approve the suggestion.
-  const canEdit = !!selectedTask
+  // Keep suggestion mode on the same overview layout; heavy controls are still selectively gated below.
+  const canEdit = !!selectedTask && !isSuggestionMode
   
   console.log('TaskDetails props:', { selectedTask, attachments });
   console.log('DEBUG: selectedTask', selectedTask);
@@ -206,43 +433,189 @@ export function TaskDetails({
   const isLoading = !selectedTask;
   const task = selectedTask ? normalizeTask(selectedTask) : undefined;
   console.log('TaskDetails task:', task);
+  const taskBuildInstructions = useMemo(() => {
+    if (!task) return ""
+    return buildGenericTaskPrompt({
+      projectTitle: task.project_name || null,
+      contentTypeTitle: task.content_type_title || null,
+      taskTitle: task.title,
+      taskNotes: task.notes || null,
+      taskBriefing: task.briefing || null,
+      languageCode: task.language_code || null,
+    })
+  }, [
+    task?.project_name,
+    task?.content_type_title,
+    task?.title,
+    task?.notes,
+    task?.briefing,
+    task?.language_code,
+  ])
 
   // Derived media URLs (storage path -> public URL) for rendering.
-  const projectLogoUrl = useMemo(() => getImageUrl((task as any)?.project?.logo), [(task as any)?.project?.logo])
-  const assignedUserPhotoUrl = useMemo(() => getImageUrl((task as any)?.assigned_user?.photo), [(task as any)?.assigned_user?.photo])
+  const projectLogoUrl = useMemo(
+    () => getImageUrl((task as any)?.project?.logo ?? (task as any)?.project_logo ?? null),
+    [(task as any)?.project?.logo, (task as any)?.project_logo],
+  )
+  const assignedUserPhotoUrl = useMemo(
+    () => getImageUrl((task as any)?.assigned_user?.photo ?? (task as any)?.assigned_to_photo ?? null),
+    [(task as any)?.assigned_user?.photo, (task as any)?.assigned_to_photo],
+  )
 
   const taskIdNum = isSuggestionMode
     ? undefined
     : (task ? (typeof task.id === 'number' ? task.id : Number(task.id)) : undefined);
+
+  /** Prefer non-empty merged task payload, then explicit `attachments` prop (some callers put files only on bootstrap root). */
+  const displayAttachments = useMemo(() => {
+    const fromTask = (selectedTask as { attachments?: unknown } | null)?.attachments
+    const fromProp = attachments
+    const a = Array.isArray(fromTask) ? fromTask : null
+    const b = Array.isArray(fromProp) ? fromProp : null
+    if (a && a.length > 0) return a
+    if (b && b.length > 0) return b
+    if (a) return a
+    if (b) return b
+    return []
+  }, [selectedTask, attachments])
+
   const contextOnClose = onClose;
   const router = useRouter();
   const queryClient = useQueryClient();
   const supabase = createClientComponentClient(); // <-- Move here for all usages
   const upsertOptimisticPlannerTask = usePlannerOptimisticTasks((s) => s.upsert)
+  const openComposer = useTaskComposerStore((s) => s.openComposer)
   const searchParams = useSearchParams();
   const actualPathname = usePathname();
-  const pathname = customPathname || actualPathname || '/tasks';
+  const { basePath, preserveQueryKeys } = useTasksScope();
+  const pathname = customPathname || actualPathname || basePath;
+  const commentThreadIdFromUrl = searchParams.get("commentThreadId");
+  const tasksBasePath = basePath;
+  const [currentUserId, setCurrentUserId] = useState<number | null>(null);
+
+  useEffect(() => {
+    async function fetchCurrentUserId() {
+      const { data: authData } = await supabase.auth.getUser();
+      const authUserId = authData?.user?.id;
+      if (!authUserId) return;
+      const { data: userRows } = await supabase
+        .from('users')
+        .select('id')
+        .eq('auth_user_id', authUserId)
+        .maybeSingle();
+      if (userRows?.id) setCurrentUserId(userRows.id);
+    }
+    fetchCurrentUserId();
+  }, []);
+
+  const mergePreserveParams = useCallback((params: URLSearchParams) => {
+    const next = new URLSearchParams(params.toString());
+    if (preserveQueryKeys) {
+      Object.entries(preserveQueryKeys).forEach(([k, v]) => next.set(k, v));
+    }
+    return next;
+  }, [preserveQueryKeys]);
+
+  /**
+   * Open a related entity (project/user) in the center pane while preserving the
+   * 3-pane layout + right AI pane + list/group/filter params. Clears any stale
+   * center/detail/stack selection so no old task detail remains underneath.
+   */
+  const openCenterEntity = useCallback(
+    (entity: CenterPaneEntity, id: string | number) => {
+      if (id == null || String(id).trim().length === 0) return;
+      const base = new URLSearchParams(
+        typeof window !== "undefined" ? window.location.search : searchParams.toString(),
+      );
+      const next = buildCenterPaneSelectionSearchParams({ currentSearchParams: base, entity, id });
+      // Drop stacked-detail params so the previous center object is fully replaced.
+      next.delete("stackTaskId");
+      next.delete("stackUserId");
+      next.delete("stackTeamId");
+      shallowReplaceSearchParams(pathname, next, "task-header-entity-open");
+    },
+    [pathname, searchParams],
+  );
+  const canLoadFollowups = isSuggestionMode || isBootstrapLoaded
+  const tabFromUrlRaw = searchParams.get("taskTab") ?? searchParams.get("detailsTab")
+  const initialTaskTab: TaskTab =
+    tabFromUrlRaw === "details"
+      ? "overview"
+      : TASK_TABS.includes(tabFromUrlRaw as TaskTab)
+      ? (tabFromUrlRaw as TaskTab)
+      : "overview"
+  const [localTaskTab, setLocalTaskTab] = useState<TaskTab>(initialTaskTab)
+  const visibleTaskTabs: readonly TaskTab[] = isSuggestionMode ? (["overview"] as const) : TASK_TABS
+  const urlTaskTab = visibleTaskTabs.includes(initialTaskTab) ? initialTaskTab : "overview"
+  const activeTaskTab = visibleTaskTabs.includes(localTaskTab) ? localTaskTab : "overview"
+  const isCommentsTabActive = activeTaskTab === "comments"
+
+  const setTaskTab = useCallback(
+    (nextTab: TaskTab) => {
+      const normalizedTab = visibleTaskTabs.includes(nextTab) ? nextTab : "overview"
+      setLocalTaskTab((prev) => (prev === normalizedTab ? prev : normalizedTab))
+      if (disableUrlSync) {
+        return
+      }
+      const currentParams = new URLSearchParams(
+        typeof window !== "undefined" ? window.location.search : searchParams.toString()
+      )
+      const nextParams = new URLSearchParams(currentParams.toString())
+      const centerTaskId = nextParams.get("centerTaskId")
+      const rightTaskId = nextParams.get("rightTaskId")
+      if (centerTaskId && rightTaskId) {
+        nextParams.delete("rightTaskId")
+      } else if (!centerTaskId && rightTaskId) {
+        nextParams.set("centerTaskId", rightTaskId)
+        nextParams.delete("rightTaskId")
+      }
+      nextParams.set("taskTab", normalizedTab)
+      if (normalizedTab === "content") {
+        nextParams.delete("focusOutputs")
+      }
+      nextParams.delete("detailsTab")
+      const current = currentParams.toString()
+      const next = nextParams.toString()
+      if (current === next) return
+      const nextUrl = next ? `${pathname}?${next}` : pathname
+      if (typeof window !== "undefined") {
+        window.history.replaceState({}, "", nextUrl)
+      }
+    },
+    [disableUrlSync, pathname, searchParams, visibleTaskTabs]
+  )
+
+  useEffect(() => {
+    setLocalTaskTab((prev) => (prev === urlTaskTab ? prev : urlTaskTab))
+  }, [urlTaskTab])
+
+  const [isTabsHovered, setIsTabsHovered] = useState(false)
+  const tabsScrollRef = useRef<HTMLDivElement | null>(null)
+  const [isContentSectionExpanded, setIsContentSectionExpanded] = useState(false);
   
-  // Get active tab from URL or default to 'details'
-  const urlActiveTab = searchParams.get('detailsTab') || 'details';
-  const [localActiveTab, setLocalActiveTab] = useState('details');
-  const activeTab = disableUrlSync ? localActiveTab : urlActiveTab;
+  const rawTaskWatchersBootstrap = (selectedTask as { task_watchers?: TaskBootstrapTaskWatcher[] } | null)
+    ?.task_watchers
+  const rawEligibleTaskWatchersBootstrap = (
+    selectedTask as { eligible_task_watchers?: TaskBootstrapTaskWatcher[] } | null
+  )?.eligible_task_watchers
 
   const {
     watchers: taskWatchers,
     eligible: eligibleTaskWatchers,
     isWatchersLoading: isTaskWatchersLoading,
-    isEligibleLoading: isEligibleTaskWatchersLoading,
     isMutating: isTaskWatchersMutating,
     watchersError: taskWatchersError,
-    eligibleError: eligibleTaskWatchersError,
     mutationError: taskWatchersMutationError,
     addWatchers,
     removeWatcher,
-    loadEligible: loadEligibleTaskWatchers,
-  } = useTaskWatchers(taskIdNum);
+  } = useTaskWatchers(taskIdNum, {
+    seedFromBootstrap: !isSuggestionMode && !!taskIdNum,
+    initialTaskWatchers: rawTaskWatchersBootstrap,
+    initialEligibleTaskWatchers: rawEligibleTaskWatchersBootstrap,
+  });
   const [isAddWatcherOpen, setIsAddWatcherOpen] = useState(false);
-  const [selectedWatcherUserIdsToAdd, setSelectedWatcherUserIdsToAdd] = useState<number[]>([]);
+  const [isRefreshingRelatedIdeas, setIsRefreshingRelatedIdeas] = useState(false);
+  const [ideaActionById, setIdeaActionById] = useState<Record<string, "accepted" | "dismissed" | null>>({});
   
   // Handle AI build state from URL
   useEffect(() => {
@@ -254,7 +627,11 @@ export function TaskDetails({
   // Use threads, mentions, and thread_watchers from props (Edge Function response)
   // Map the Edge Function response to the UI structure for the first thread
   const firstThreadId = selectedTask ? (selectedTask as any)['thread_id'] : undefined;
-  const firstThreadMentions = selectedTask && Array.isArray(selectedTask.mentions) ? selectedTask.mentions : [];
+  // Use a stable empty-array fallback (EMPTY_ARR) instead of a fresh `[]` literal: this value feeds
+  // the dependency array of the "reset thread state when task changes" effect below. In suggestion
+  // mode `selectedTask.mentions` is undefined, so a new `[]` every render would re-run that effect
+  // and re-set state on every render -> "Maximum update depth exceeded".
+  const firstThreadMentions = selectedTask && Array.isArray(selectedTask.mentions) ? selectedTask.mentions : EMPTY_ARR;
   const firstThreadWatchers = selectedTask && Array.isArray((selectedTask as any)['watchers']) ? (selectedTask as any)['watchers'] : [];
   
   // Extract parent task data from the selectedTask if available
@@ -280,12 +657,9 @@ export function TaskDetails({
   // Debug log for selectedTask.thread_id
   console.log('DEBUG: selectedTask.thread_id', (selectedTask as any)?.thread_id);
 
-  // Set selectedThreadId as soon as selectedTask.thread_id is available
-  useEffect(() => {
-    if ((selectedTask as any)?.thread_id) {
-      setSelectedThreadId((selectedTask as any).thread_id);
-    }
-  }, [(selectedTask as any)?.thread_id]);
+  const [allTaskMentions, setAllTaskMentions] = useState<any[]>(firstThreadMentions)
+  const [commentsStatusFilter, setCommentsStatusFilter] = useState<"all" | "open" | "resolved">("all")
+  const [isThreadView, setIsThreadView] = useState(false)
   
   // Add useEffect to reset all thread-related state when task changes
   useEffect(() => {
@@ -299,56 +673,227 @@ export function TaskDetails({
     setRemovedParticipants([]);
     setIsAddingThread(false);
     
+    // Default comments panel mode is all-thread/all-mentions.
+    setIsThreadView(false)
+    setSelectedThreadId(null);
+    setCommentsStatusFilter("all");
+    setAllTaskMentions(firstThreadMentions);
     if (taskThreadId) {
-      // Task has an existing thread - initialize threadsList with that thread
-      setSelectedThreadId(taskThreadId);
-      // Create a minimal thread object for the threadsList
-      const firstThread = {
+      const seededFirstThread = {
         id: taskThreadId,
         title: 'Thread',
         created_at: new Date().toISOString(),
         thread_watchers: Array.isArray(watchers) ? watchers.map((w: any) => ({
           watcher_id: w.watcher_id,
           users: w.users
-        })) : []
+        })) : [],
+        mention_count: firstThreadMentions.length,
+        latest_activity_at: firstThreadMentions[firstThreadMentions.length - 1]?.created_at ?? new Date().toISOString(),
+        is_resolved: false,
+        thread_type: "general",
       };
-      setThreadsList([firstThread]);
+      setThreadsList([seededFirstThread]);
     } else {
-      // Task has no thread - reset to empty state
-      setSelectedThreadId(null);
       setThreadsList([]);
     }
-  }, [selectedTask?.id, (selectedTask as any)?.thread_id, watchers]);
+  }, [selectedTask?.id, (selectedTask as any)?.thread_id, watchers, firstThreadMentions]);
 
   const [threadsList, setThreadsList] = useState<any[]>([]);
   const [isThreadListLoading, setIsThreadListLoading] = useState(false);
   const [threadListError, setThreadListError] = useState<string | null>(null);
-  const [isEditingProject, setIsEditingProject] = useState(false)
-  const [isEditingContentType, setIsEditingContentType] = useState(false)
-  const [isEditingProductionType, setIsEditingProductionType] = useState(false)
-  const [isEditingLanguage, setIsEditingLanguage] = useState(false)
+  const threadHistoryLoadedTaskIdRef = useRef<number | null>(null);
+  const threadHistoryInFlightRef = useRef(false);
+  const [projectSearchQuery, setProjectSearchQuery] = useState("")
   const [isDeleteDialogOpen, setIsDeleteDialogOpen] = useState(false)
   const [isDeleting, setIsDeleting] = useState(false)
-  const [isAiOpen, setIsAiOpen] = useState(false)
+  const [resolvingThreadIds, setResolvingThreadIds] = useState<Set<number>>(new Set())
   const [isAiBuildOpen, setIsAiBuildOpen] = useState(false)
+  const [canCopyAllChannelContent, setCanCopyAllChannelContent] = useState(false)
+  const [copyExportDiagnostics, setCopyExportDiagnostics] = useState({
+    channelId: null as number | null,
+    componentCount: 0,
+    copyableComponentCount: 0,
+  })
+  const [pendingOutputAnchor, setPendingOutputAnchor] = useState<{
+    taskComponentOutputId: string
+    attachmentId: string | null
+    anchorType: "image_point"
+    anchorX: number
+    anchorY: number
+    anchorData?: unknown
+  } | null>(null)
+  const [commentsComposerFocusToken, setCommentsComposerFocusToken] = useState(0)
+  const taskDetailsLayoutRef = useRef<HTMLDivElement | null>(null)
   const [activeChannelId, setActiveChannelId] = useState<number | null>(null)
 
-  // Inline edit states
+  useEffect(() => {
+    setActiveChannelId(null)
+  }, [task?.id])
+
+  useEffect(() => {
+    console.log("[task-details-copy-debug-version]", "2026-06-24-copy-debug-v1")
+  }, [])
+
+  useEffect(() => {
+    const onExportActionsState = (event: Event) => {
+      const customEvent = event as CustomEvent<{
+        taskId?: number
+        canCopyAllChannelContent?: boolean
+        channelId?: number | null
+        componentCount?: number
+        copyableComponentCount?: number
+      }>
+      if (customEvent.detail?.taskId !== taskIdNum) return
+      setCanCopyAllChannelContent(!!customEvent.detail?.canCopyAllChannelContent)
+      setCopyExportDiagnostics({
+        channelId: customEvent.detail?.channelId ?? null,
+        componentCount: customEvent.detail?.componentCount ?? 0,
+        copyableComponentCount: customEvent.detail?.copyableComponentCount ?? 0,
+      })
+    }
+    window.addEventListener("task-details:export-actions-state", onExportActionsState as EventListener)
+    return () => {
+      window.removeEventListener("task-details:export-actions-state", onExportActionsState as EventListener)
+    }
+  }, [taskIdNum])
+
+  useEffect(() => {
+    if (!taskIdNum) return
+    console.log("[copy-content-render-header]", {
+      taskId: taskIdNum,
+      channelId: activeChannelId ?? copyExportDiagnostics.channelId,
+      hasComponents: copyExportDiagnostics.componentCount,
+      hasRenderableOutputs: copyExportDiagnostics.copyableComponentCount,
+      canCopyAllChannelContent,
+    })
+  }, [
+    taskIdNum,
+    activeChannelId,
+    copyExportDiagnostics,
+    canCopyAllChannelContent,
+  ])
+
+  useEffect(() => {
+    if (!commentThreadIdFromUrl) return
+    const parsedThreadId = Number(commentThreadIdFromUrl)
+    if (!Number.isFinite(parsedThreadId)) return
+    setTaskTab("comments")
+    setIsThreadView(true)
+    setIsAddingThread(false)
+    setSelectedThreadId((prev) => (prev === parsedThreadId ? prev : parsedThreadId))
+  }, [commentThreadIdFromUrl, setTaskTab])
+
+  const replaceCommentThreadInUrl = useCallback((threadId: number | null) => {
+    const nextParams = new URLSearchParams(searchParams.toString())
+    if (threadId != null && Number.isFinite(threadId)) {
+      nextParams.set("commentsView", "thread")
+      nextParams.set("commentThreadId", String(threadId))
+    } else {
+      nextParams.delete("commentsView")
+      nextParams.delete("commentThreadId")
+    }
+    const nextSearch = nextParams.toString()
+    const currentSearch = searchParams.toString()
+    if (nextSearch === currentSearch) return
+    router.replace(nextSearch ? `${pathname}?${nextSearch}` : pathname, { scroll: false })
+  }, [pathname, router, searchParams])
+
+  const openCommentThreadView = useCallback((threadId: number) => {
+    if (!Number.isFinite(threadId)) return
+    setIsThreadView(true)
+    setIsAddingThread(false)
+    setSelectedThreadId(threadId)
+    replaceCommentThreadInUrl(threadId)
+  }, [replaceCommentThreadInUrl])
+
+  const showAllCommentThreadsView = useCallback(() => {
+    setIsThreadView(false)
+    setIsAddingThread(false)
+    replaceCommentThreadInUrl(null)
+  }, [replaceCommentThreadInUrl])
+
+  useEffect(() => {
+    const handleOpenComments = (event: Event) => {
+      const customEvent = event as CustomEvent<{
+        taskId?: number | null
+        threadId?: number | null
+        focusComposer?: boolean
+        mode?: "compose" | "view"
+        anchor?: {
+          type?: "image_point"
+          task_component_output_id?: string
+          attachment_id?: string | null
+          anchor_x?: number | null
+          anchor_y?: number | null
+          anchor_data?: unknown
+        } | null
+      }>
+      const targetTaskId = Number(customEvent.detail?.taskId)
+      const currentTaskId = Number(selectedTask?.id)
+      if (Number.isFinite(targetTaskId) && Number.isFinite(currentTaskId) && targetTaskId !== currentTaskId) return
+      const incomingThreadId = Number(customEvent.detail?.threadId)
+      setTaskTab("comments")
+      const anchor = customEvent.detail?.anchor
+      if (anchor?.type === "image_point" && typeof anchor.task_component_output_id === "string") {
+        const anchorX = Number(anchor.anchor_x)
+        const anchorY = Number(anchor.anchor_y)
+        const clampedX = Number.isFinite(anchorX) ? Math.max(0, Math.min(1, anchorX)) : 0.5
+        const clampedY = Number.isFinite(anchorY) ? Math.max(0, Math.min(1, anchorY)) : 0.5
+        const nextAnchor = {
+          taskComponentOutputId: anchor.task_component_output_id,
+          attachmentId: typeof anchor.attachment_id === "string" ? anchor.attachment_id : null,
+          anchorType: "image_point" as const,
+          anchorX: clampedX,
+          anchorY: clampedY,
+          anchorData: anchor.anchor_data ?? null,
+        }
+        setPendingOutputAnchor(nextAnchor)
+        const layout = (typeof window !== "undefined" && window.innerWidth >= 1200) ? "right" : "bottom"
+        console.log("[comments pane] open for image anchor", {
+          layout,
+          pendingAnchor: nextAnchor,
+          focusComposer: Boolean(customEvent.detail?.focusComposer),
+        })
+      }
+      if (!(anchor?.type === "image_point")) {
+        setPendingOutputAnchor(null)
+      }
+      if (customEvent.detail?.focusComposer) {
+        setCommentsComposerFocusToken((prev) => prev + 1)
+      }
+      if (Number.isFinite(incomingThreadId)) {
+        openCommentThreadView(incomingThreadId)
+      } else {
+        showAllCommentThreadsView()
+      }
+    }
+
+    window.addEventListener("task-details:open-comments", handleOpenComments as EventListener)
+    return () => {
+      window.removeEventListener("task-details:open-comments", handleOpenComments as EventListener)
+    }
+  }, [openCommentThreadView, selectedTask?.id, showAllCommentThreadsView, setTaskTab])
+
+  useEffect(() => {
+    if (!isCommentsTabActive || !task) return
+    const placement = (typeof window !== "undefined" && window.innerWidth >= 1200) ? "right" : "bottom"
+    console.log("[comments tab] mounted", {
+      paneId: "task-comments-tab",
+      placement,
+      taskId: task.id,
+    })
+  }, [isCommentsTabActive, task])
+
+  // Inline edit states (title and meta only; dropdowns/date are always interactive when canEdit)
   const [isEditingTitle, setIsEditingTitle] = useState(false)
-  const [isEditingStatus, setIsEditingStatus] = useState(false)
-  const [isEditingDueDate, setIsEditingDueDate] = useState(false)
   const [isEditingMetaTitle, setIsEditingMetaTitle] = useState(false)
   const [isEditingMetaDescription, setIsEditingMetaDescription] = useState(false)
   const [isEditingKeyword, setIsEditingKeyword] = useState(false)
-
-  // Add missing state for publication date inline edit
-  const [isEditingPublicationDate, setIsEditingPublicationDate] = useState(false)
 
   const titleInputRef = useRef<HTMLTextAreaElement>(null)
 
   // Use currentUser prop for chat
   const currentUserName = currentUser?.user_metadata?.full_name || currentUser?.email || '';
-  const currentUserAvatar = currentUser?.user_metadata?.avatar_url || '';
   const currentUserEmail = currentUser?.email || '';
 
   // Remove local user state and effect
@@ -412,12 +957,85 @@ export function TaskDetails({
     }
   };
 
-  const [isEditingAssignee, setIsEditingAssignee] = useState(false)
-
   // Pending participants for new thread (if no threads exist)
   const [pendingParticipants, setPendingParticipants] = useState<any[]>([]);
   const [removedParticipants, setRemovedParticipants] = useState<any[]>([]);
   const [isAddingThread, setIsAddingThread] = useState(false);
+
+  useEffect(() => {
+    if (isAddingThread || isThreadView) return
+    if (typeof selectedThreadId === "number" && Number.isFinite(selectedThreadId)) return
+    const mostRecentThreadId = (threadsList ?? [])
+      .map((thread: any) => ({
+        id: Number(thread?.id),
+        ts: new Date(thread?.latest_activity_at ?? thread?.created_at ?? 0).getTime(),
+      }))
+      .filter((row: any) => Number.isFinite(row.id))
+      .sort((a: any, b: any) => b.ts - a.ts)?.[0]?.id
+    if (Number.isFinite(mostRecentThreadId)) {
+      setSelectedThreadId(mostRecentThreadId)
+    }
+  }, [isAddingThread, isThreadView, selectedThreadId, threadsList])
+
+  useEffect(() => {
+    onActiveFieldContextChange?.({
+      fieldType: "task",
+      label: task?.title?.trim() || "Task",
+      entityId: task?.id ?? null,
+      instructions: taskBuildInstructions || null,
+    })
+  }, [task?.id, taskBuildInstructions, onActiveFieldContextChange])
+
+  const setTaskFieldContext = useCallback((next: TaskActiveFieldContext) => {
+    onActiveFieldContextChange?.({
+      fieldType: next.fieldType || "task",
+      label: next.label || "Task",
+      entityId: next.entityId ?? null,
+      componentId: next.componentId ?? null,
+      instructions: next.instructions ?? null,
+      taskId: next.taskId ?? null,
+      channelId: next.channelId ?? null,
+      taskComponentId: next.taskComponentId ?? null,
+      taskComponentOutputId: next.taskComponentOutputId ?? null,
+      componentTitle: next.componentTitle ?? null,
+      taskTitle: next.taskTitle ?? null,
+      channelName: next.channelName ?? null,
+      selectedContextType: next.selectedContextType ?? null,
+      componentSelectionSource: next.componentSelectionSource ?? null,
+    })
+  }, [onActiveFieldContextChange])
+
+  const handleTaskDetailsFocusCapture = useCallback((event: React.FocusEvent<HTMLDivElement>) => {
+    const target = event.target as HTMLElement | null
+    if (!target) return
+
+    const explicitContextNode = target.closest<HTMLElement>("[data-ai-field-type]")
+    if (explicitContextNode) {
+      setTaskFieldContext({
+        fieldType: explicitContextNode.dataset.aiFieldType || "task",
+        label: explicitContextNode.dataset.aiFieldLabel || "Task",
+        entityId: explicitContextNode.dataset.aiEntityId || null,
+        componentId: explicitContextNode.dataset.aiComponentId || null,
+        instructions: explicitContextNode.dataset.aiInstructions || null,
+      })
+      return
+    }
+
+    const isEditable =
+      target.tagName === "INPUT" ||
+      target.tagName === "TEXTAREA" ||
+      target.isContentEditable ||
+      !!target.closest(".ql-editor")
+
+    if (!isEditable) return
+
+    setTaskFieldContext({
+      fieldType: "task",
+      label: task?.title?.trim() || "Task",
+      entityId: task?.id ?? null,
+      instructions: taskBuildInstructions || null,
+    })
+  }, [setTaskFieldContext, task?.id, task?.title, taskBuildInstructions])
   
   // Track optimistic assigned user for immediate filtering updates
   const [optimisticAssignedUserId, setOptimisticAssignedUserId] = useState<string | null>(null);
@@ -449,14 +1067,6 @@ export function TaskDetails({
   const [pendingDueDate, setPendingDueDate] = useState<string | null>(null);
   const [pendingPublicationDate, setPendingPublicationDate] = useState<string | null>(null);
 
-  // Fetch project users when entering assignee edit mode if not loaded or project changed
-  const handleEditAssignee = () => {
-    if (!task || !task.project_id_int || String(task.project_id_int) === 'unknown') return;
-    setIsEditingAssignee(true);
-  };
-
- 
-
   // Optimistic Project Change
   const handleProjectChange = (e: React.ChangeEvent<HTMLSelectElement>) => {
     const projectId = e.target.value;
@@ -474,7 +1084,6 @@ export function TaskDetails({
     
     // Patch both foreign key and denormalized fields, including project_color
     handleFieldChange('project_id_int', projectId || undefined, { project_name: projectName, project_color: projectColor });
-    setIsEditingProject(false);
   };
 
   // Optimistic Assignee Change
@@ -494,7 +1103,6 @@ export function TaskDetails({
     setOptimisticAssignedUserId(assigneeId || null);
     setOptimisticAssignedUserName(selectedName);
     
-    setTimeout(() => setIsEditingAssignee(false), 0);
     handleFieldChange('assigned_to_id', assigneeId || '', { assigned_to_name: selectedName });
     if (onTaskUpdate) {
       onTaskUpdate({ assigned_to_id: assigneeId, assigned_to_name: selectedName });
@@ -512,7 +1120,6 @@ export function TaskDetails({
     setOptimisticContentTypeTitle(contentTypeTitle || null);
     
     handleFieldChange('content_type_id', contentTypeId || '', { content_type_title: contentTypeTitle });
-    setIsEditingContentType(false);
   };
 
   // Optimistic Production Type Change
@@ -526,7 +1133,6 @@ export function TaskDetails({
     setOptimisticProductionTypeTitle(productionTypeTitle || null);
     
     handleFieldChange('production_type_id', productionTypeId || '', { production_type_title: productionTypeTitle });
-    setIsEditingProductionType(false);
   };
 
   // Optimistic Language Change
@@ -540,7 +1146,6 @@ export function TaskDetails({
     setOptimisticLanguageCode(languageCode || null);
     
     handleFieldChange('language_id', languageId || '', { language_code: languageCode });
-    setIsEditingLanguage(false);
   };
 
   // Optimistic Status Change
@@ -556,7 +1161,6 @@ export function TaskDetails({
     setOptimisticStatusColor(statusColor || null);
     
     handleFieldChange('project_status_id', statusId || '', { project_status_name: statusName, project_status_color: statusColor });
-    setIsEditingStatus(false);
   };
 
   // Add state for channel search
@@ -580,7 +1184,6 @@ export function TaskDetails({
       handleFieldChange('delivery_date', pendingDueDate);
       setPendingDueDate(null);
     }
-    setIsEditingDueDate(false);
   };
   
   const handlePublicationDateBlur = () => {
@@ -588,7 +1191,6 @@ export function TaskDetails({
       handleFieldChange('publication_date', pendingPublicationDate);
       setPendingPublicationDate(null);
     }
-    setIsEditingPublicationDate(false);
   };
   
   const handleDueDateKeyDown = (e: React.KeyboardEvent) => {
@@ -597,7 +1199,6 @@ export function TaskDetails({
         handleFieldChange('delivery_date', pendingDueDate);
         setPendingDueDate(null);
       }
-      setIsEditingDueDate(false);
     }
   };
   
@@ -607,7 +1208,6 @@ export function TaskDetails({
         handleFieldChange('publication_date', pendingPublicationDate);
         setPendingPublicationDate(null);
       }
-      setIsEditingPublicationDate(false);
     }
   };
 
@@ -638,33 +1238,128 @@ export function TaskDetails({
 
   // Add global drag-and-drop state
   const [isDraggingOver, setIsDraggingOver] = useState(false)
-  const taskDetailsRef = useRef<HTMLDivElement>(null)
+  const [isAddingReview, setIsAddingReview] = useState(false)
+  const taskDetailsRef = useRef<HTMLDivElement | null>(null)
+  const dropzoneRef = useRef<DropzoneHandle>(null)
+  const dueDateInputRef = useRef<HTMLInputElement>(null)
+  const publicationDateInputRef = useRef<HTMLInputElement>(null)
   const commentInputRef = useRef<HTMLDivElement>(null)
+  const [briefingEditorHeight, setBriefingEditorHeight] = useState(220)
+  const briefingResizeStartYRef = useRef(0)
+  const briefingResizeStartHeightRef = useRef(220)
+  const [hasMountedSuggestionBriefingEditor, setHasMountedSuggestionBriefingEditor] = useState(false)
+  const [hasMountedSuggestionControls, setHasMountedSuggestionControls] = useState(false)
+  const setTaskDetailsContainerRef = useCallback((node: HTMLDivElement | null) => {
+    taskDetailsRef.current = node
+    taskDetailsLayoutRef.current = node
+  }, [])
 
-  // Refactor attachments upload logic: only use attachments prop for display, and useTaskAttachmentsUpload for upload/delete only
+  useEffect(() => {
+    if (!isSuggestionMode) {
+      setHasMountedSuggestionBriefingEditor(false)
+      setHasMountedSuggestionControls(false)
+      return
+    }
+    const raf = window.requestAnimationFrame(() => {
+      setHasMountedSuggestionBriefingEditor(true)
+      setHasMountedSuggestionControls(true)
+    })
+    return () => {
+      window.cancelAnimationFrame(raf)
+    }
+  }, [isSuggestionMode])
+
+  useEffect(() => {
+    setIsContentSectionExpanded(false)
+  }, [task?.id])
+
+  useEffect(() => {
+    if (activeTaskTab !== "content") {
+      setIsContentSectionExpanded(false)
+    }
+  }, [activeTaskTab])
+
+  // Task query key for cache updates (must match useTaskDetails in TasksLayout)
+  const taskQueryKey =
+    task && accessToken && !isSuggestionMode
+      ? (['task', String(task.id), accessToken] as const)
+      : null;
+
+  const onAttachmentUploadSuccess = useCallback(
+    (newAttachments: { id: string; file_name: string; file_path: string; uploaded_at: string; uploaded_by: string | null; mime_type: string | null; size: number | null }[], recordId: string | number) => {
+      if (!taskQueryKey || !queryClient) return;
+      queryClient.setQueryData(taskQueryKey, (old: unknown) => {
+        if (!old || typeof old !== 'object') return old;
+        const o = old as { attachments?: unknown[] };
+        const prev = o.attachments ?? [];
+        return { ...o, attachments: [...prev, ...newAttachments] };
+      });
+    },
+    [taskQueryKey, queryClient]
+  );
+
+  const onAttachmentDeleteSuccess = useCallback(
+    (attachmentId: string, recordId: string | number) => {
+      if (!taskQueryKey || !queryClient) return;
+      queryClient.setQueryData(taskQueryKey, (old: unknown) => {
+        if (!old || typeof old !== 'object') return old;
+        const o = old as { attachments?: { id: string }[] };
+        const prev = o.attachments ?? [];
+        return { ...o, attachments: prev.filter((a) => a.id !== attachmentId) };
+      });
+    },
+    [taskQueryKey, queryClient]
+  );
+
+  // Attachments: seed from task-details-bootstrap (no initial `attachments` table read); upload/delete still refetches as needed.
   const attachmentsUpload = useTaskAttachmentsUpload({
     tableName: 'tasks',
     recordId: selectedTask?.id ?? '',
     bucketName: 'attachments',
+    onUploadSuccess: taskQueryKey ? onAttachmentUploadSuccess : undefined,
+    onDeleteSuccess: taskQueryKey ? onAttachmentDeleteSuccess : undefined,
+    seedFromBootstrap: !isSuggestionMode && !!taskIdNum,
+    bootstrapAttachments: displayAttachments,
+    enabled: !isSuggestionMode && activeTaskTab === "attachments",
   });
 
   // Drag event handlers
   useEffect(() => {
+    const isOutputEditorTarget = (target: EventTarget | null): boolean => {
+      if (!target) return false
+      if (target instanceof Element) return !!target.closest('[data-output-editor="true"]')
+      if (target instanceof Node) return !!target.parentElement?.closest('[data-output-editor="true"]')
+      return false
+    }
+
+    const routeCommentFileDrop = (files: FileList) => {
+      const fileInput = document.getElementById('add-comment-file') as HTMLInputElement | null
+      if (!fileInput || files.length === 0) return false
+      const dt = new DataTransfer()
+      dt.items.add(files[0])
+      fileInput.files = dt.files
+      fileInput.dispatchEvent(new Event('change', { bubbles: true }))
+      return true
+    }
+
     const handleDragOver = (e: DragEvent) => {
-      // If dragging over comment input, ignore
-      if (commentInputRef.current && commentInputRef.current.contains(e.target as Node)) return
+      if (isOutputEditorTarget(e.target)) return
       e.preventDefault()
       setIsDraggingOver(true)
     }
     const handleDragLeave = (e: DragEvent) => {
-      if (commentInputRef.current && commentInputRef.current.contains(e.target as Node)) return
+      if (isOutputEditorTarget(e.target)) return
       setIsDraggingOver(false)
     }
     const handleDrop = async (e: DragEvent) => {
-      if (commentInputRef.current && commentInputRef.current.contains(e.target as Node)) return
+      if (isOutputEditorTarget(e.target)) return
       e.preventDefault()
       setIsDraggingOver(false)
       if (e.dataTransfer?.files && e.dataTransfer.files.length > 0 && task) {
+        if (commentInputRef.current && commentInputRef.current.contains(e.target as Node)) {
+          if (routeCommentFileDrop(e.dataTransfer.files)) return
+        }
+        if (activeTaskTab !== "attachments") return
         await attachmentsUpload.uploadFiles(e.dataTransfer.files)
       }
     }
@@ -681,7 +1376,62 @@ export function TaskDetails({
         node.removeEventListener('drop', handleDrop)
       }
     }
-  }, [task])
+  }, [activeTaskTab, task, attachmentsUpload])
+
+  useEffect(() => {
+    const el = tabsScrollRef.current
+    if (!el) return
+    const onWheel = (e: WheelEvent) => {
+      if (!isTabsHovered) return
+      if (el.scrollWidth <= el.clientWidth) return
+      let deltaX = e.deltaX
+      let deltaY = e.deltaY
+      if (e.deltaMode === WheelEvent.DOM_DELTA_LINE) {
+        deltaX *= 16
+        deltaY *= 16
+      } else if (e.deltaMode === WheelEvent.DOM_DELTA_PAGE) {
+        deltaX *= el.clientWidth
+        deltaY *= el.clientHeight
+      }
+      const delta = e.shiftKey ? deltaY : Math.abs(deltaX) > Math.abs(deltaY) ? deltaX : deltaY
+      if (delta === 0) return
+      e.preventDefault()
+      el.scrollLeft += delta
+    }
+    el.addEventListener("wheel", onWheel, { passive: false, capture: true })
+    return () => el.removeEventListener("wheel", onWheel, true)
+  }, [isTabsHovered])
+
+  useEffect(() => {
+    const currentTaskId = task?.id ? Number(task.id) : null
+    return () => {
+      if (!currentTaskId) return
+      queryClient.cancelQueries({ queryKey: ['taskComponents', currentTaskId] })
+      queryClient.cancelQueries({ queryKey: ['taskAvailableComponents', currentTaskId] })
+      // Do not cancel ['task', id, accessToken]: that query is owned by TasksLayout / project tab.
+      // Canceling it on TaskDetails unmount aborts task-details-bootstrap during router transitions / RSC.
+    }
+  }, [task?.id, accessToken, queryClient])
+
+  const handleBriefingResizeMouseDown = useCallback((e: React.MouseEvent<HTMLDivElement>) => {
+    e.preventDefault()
+    briefingResizeStartYRef.current = e.clientY
+    briefingResizeStartHeightRef.current = briefingEditorHeight
+
+    const onMouseMove = (moveEvent: MouseEvent) => {
+      const delta = moveEvent.clientY - briefingResizeStartYRef.current
+      const next = Math.max(160, Math.min(520, briefingResizeStartHeightRef.current + delta))
+      setBriefingEditorHeight(next)
+    }
+
+    const onMouseUp = () => {
+      window.removeEventListener('mousemove', onMouseMove)
+      window.removeEventListener('mouseup', onMouseUp)
+    }
+
+    window.addEventListener('mousemove', onMouseMove)
+    window.addEventListener('mouseup', onMouseUp)
+  }, [briefingEditorHeight])
 
   // Navigate to parent task
   const handleBackToParent = async () => {
@@ -704,9 +1454,9 @@ export function TaskDetails({
       onTaskUpdate(immediateTaskData);
       
       // Update URL immediately
-      const newParams = new URLSearchParams(searchParams.toString());
+      const newParams = mergePreserveParams(new URLSearchParams(searchParams.toString()));
       newParams.set('id', task.parent_task_id_int.toString());
-      router.replace(`/tasks?${newParams.toString()}`, { scroll: false });
+      router.replace(`${tasksBasePath}?${newParams.toString()}`, { scroll: false });
     }
     
     // Then fetch the full parent task data in the background
@@ -763,7 +1513,7 @@ export function TaskDetails({
   };
 
   // Only show parent task field for subtasks or regular tasks (not for parent tasks)
-  const showParentField = !!task && (task.parent_task_id_int || String(task.content_type_id) !== '39');
+  const showParentField = !isSuggestionMode && !!task && (task.parent_task_id_int || String(task.content_type_id) !== '39');
 
   // Add Subtask handler for regular tasks
   const handleAddSubtaskForRegular = () => {
@@ -771,52 +1521,45 @@ export function TaskDetails({
     router.push(`/tasks/${task.id}/add-subtask`);
   };
 
-  // Handle AI Build toggle - Generic Build with AI
-  const handleAiBuildToggle = async () => {
-    if (!task || !taskIdNum) return;
-
+  const handleQuickFiveStarReview = useCallback(async () => {
+    if (!taskIdNum) return
     try {
-      // Step 1: Ensure thread exists and build the prompt
-      const { ensureTaskThread, buildGenericTaskPrompt } = await import('../../../features/ai-chat/ai-utils');
-      const threadId = await ensureTaskThread(taskIdNum);
-
-      // Step 2: Build the prompt
-      const initialMsg = buildGenericTaskPrompt({
-        projectTitle: task.project_name || null,
-        contentTypeTitle: task.content_type_title || null,
-        taskTitle: task.title,
-        taskNotes: task.notes || null,
-        taskBriefing: task.briefing || null,
-        languageCode: task.language_code || null,
-      });
-
-      // Step 3: Open chat drawer and prefill input
-      const currentParams = new URLSearchParams(searchParams.toString());
-      currentParams.set('middleView', 'ai-build');
-      currentParams.set('aiThreadId', threadId);
-      currentParams.set('chatPreFill', encodeURIComponent(initialMsg));
-      currentParams.set('chatAutoRun', 'false'); // Generic build uses auto_run: false
-      const newUrl = currentParams.toString() ? `?${currentParams.toString()}` : '';
-      router.replace(`/tasks${newUrl}`, { scroll: false });
-    } catch (error) {
-      console.error('Failed to open Build with AI:', error);
+      const { error } = await submitTaskReview(supabase, {
+        task_id: taskIdNum,
+        review_title: null,
+        score_seo: 5,
+        score_relevance: 5,
+        score_grammar: 5,
+        score_delays: 5,
+        positive_feedback: null,
+        negative_feedback: null,
+      })
+      if (error) throw error
       toast({
-        title: 'Error',
-        description: 'Failed to open AI chat. Please try again.',
+        title: 'Review added',
+        description: '5-star review submitted.',
+      })
+      queryClient.invalidateQueries({ queryKey: ['task', String(task?.id), accessToken] })
+      queryClient.invalidateQueries({ queryKey: ['task', String(task?.id)] })
+    } catch (error: any) {
+      toast({
+        title: 'Failed to add review',
+        description: error?.message || 'Could not submit 5-star review.',
         variant: 'destructive',
-      });
+      })
     }
-  };
+  }, [taskIdNum, supabase, queryClient, task?.id, accessToken])
 
   // Handle Build with AI from content type editor
   const handleBuildWithAI = (contentTypeTitle: string, taskId: number) => {
     // Set AI build state and pass content type context
     const currentParams = new URLSearchParams(searchParams.toString());
-    currentParams.set('middleView', 'ai-build');
+    currentParams.set('taskAiOpen', 'true');
     currentParams.set('aiContentType', contentTypeTitle);
     currentParams.set('aiTaskId', taskId.toString());
-    const newUrl = currentParams.toString() ? `?${currentParams.toString()}` : '';
-    router.replace(`/tasks${newUrl}`, { scroll: false });
+    const merged = mergePreserveParams(currentParams);
+    const newUrl = merged.toString() ? `?${merged.toString()}` : '';
+    router.replace(`${tasksBasePath}${newUrl}`, { scroll: false });
   };
 
   // Called when subtask form is cancelled (no subtask created)
@@ -945,28 +1688,7 @@ export function TaskDetails({
     }
     
     // Optimistically remove from all React Query caches
-    queryClient.setQueryData(['tasks'], (old: any) => {
-      if (!old) return old;
-      if (Array.isArray(old)) {
-        return old.filter((x: any) => String(x.id) !== taskIdStr);
-      }
-      return old;
-    });
-    
-    // Remove from all calendar caches
-    const allQueries = queryClient.getQueryCache().getAll();
-    for (const q of allQueries) {
-      const queryKey = q.queryKey;
-      if (!Array.isArray(queryKey) || queryKey[0] !== 'tasks') continue;
-      
-      const oldData = q.state.data;
-      if (Array.isArray(oldData)) {
-        const newData = oldData.filter((x: any) => String(x.id) !== taskIdStr);
-        if (newData.length !== oldData.length) {
-          q.setData([...newData]);
-        }
-      }
-    }
+    removeTaskIdFromTasksQueryArrays(queryClient, taskIdStr);
     
     // Remove from Kanban caches
     const kanbanQueries = queryClient.getQueryCache().findAll({ queryKey: ['kanban-bootstrap'] });
@@ -1036,11 +1758,6 @@ export function TaskDetails({
         title: 'Task deleted',
         description: 'The task has been successfully deleted.',
       });
-      
-      // Invalidate queries to ensure consistency
-      queryClient.invalidateQueries({ queryKey: ['tasks'] });
-      queryClient.invalidateQueries({ queryKey: ['subtasks'] });
-      queryClient.invalidateQueries({ queryKey: ['kanban-bootstrap'] });
       
     } catch (err: any) {
       console.error('Failed to delete task:', err);
@@ -1119,7 +1836,6 @@ export function TaskDetails({
     return watcher?.user_id ?? null;
   }, [projectWatchers, currentAuthUserId]);
 
-  const [isActivityOpen, setIsActivityOpen] = useState(false);
   const [replyTo, setReplyTo] = useState<{ id: number; author?: string; preview: string } | null>(null)
 
   // Add state for key visual attachment
@@ -1147,6 +1863,21 @@ export function TaskDetails({
 
 
 
+  // --- Task detail autosave wiring ----------------------------------------
+  // The autosave queue itself lives at module scope (see top of file) so it
+  // survives remounts between field edits. This ref only exposes the latest
+  // supabase/queryClient instances to the module-level queue.
+  const autosaveDepsRef = useRef({ supabase, queryClient });
+  autosaveDepsRef.current = { supabase, queryClient };
+
+  // Local wrapper: enqueue a canonical patch into the shared module-level queue.
+  const enqueueTaskPatchLocal = useCallback(
+    (taskId: string, canonicalFields: Record<string, any>, requiresListInvalidation: boolean) => {
+      enqueueTaskPatch(taskId, canonicalFields, requiresListInvalidation, autosaveDepsRef.current);
+    },
+    []
+  );
+
   // Define handleFieldChange before any usage
   // Only these fields should trigger list/kanban/calendar refetches:
   const FIELDS_THAT_REQUIRE_LIST_INVALIDATION = [
@@ -1167,7 +1898,9 @@ export function TaskDetails({
       const taskId = await ensureSuggestionApproved(String(field))
       if (!taskId) return
       try {
-        const updatePayload: any = { [field]: value, ...extraFields }
+        // Only persist canonical source fields; the DB trigger recomputes the
+        // denormalized display fields (titles, names, colors, overdue flags).
+        const updatePayload: any = buildCanonicalTaskPatch({ [field]: value, ...extraFields })
         const { data, error } = await supabase
           .from('tasks')
           .update(updatePayload)
@@ -1209,40 +1942,22 @@ export function TaskDetails({
       };
     }
     
-    if (FIELDS_THAT_REQUIRE_LIST_INVALIDATION.includes(field)) {
+    const requiresListInvalidation = FIELDS_THAT_REQUIRE_LIST_INVALIDATION.includes(field);
+    if (requiresListInvalidation) {
+      // Optimistic UI: apply the full change (including denormalized display
+      // fields) to local caches so the details/list update instantly.
       let updatedFields = { ...task, [field]: value, ...extraFields, ...overdueFields };
       updatedFields = applyNestedOptimisticFields(task, updatedFields);
-      updateTaskInCaches(queryClient, updatedFields); // Optimistic update
-      console.log('[TaskDetails] Calling Typesense updater with:', updatedFields);
+      updateTaskInCaches(queryClient, updatedFields);
       getTypesenseUpdater()?.(updatedFields);
       if (onTaskUpdate) onTaskUpdate({ ...updatedFields });
     }
-    try {
-      const updatePayload: any = { [field]: value, ...extraFields, ...overdueFields };
-      const { data, error } = await supabase
-        .from('tasks')
-        .update(updatePayload)
-        .eq('id', task.id)
-        .select()
-        .single();
-      if (error) throw error;
-      // Use the returned row to update the cache (authoritative)
-      if (data) updateTaskInCaches(queryClient, data);
-      queryClient.invalidateQueries({ queryKey: ['task', String(task.id)] });
-      // Only invalidate the list/kanban/calendar for specific fields
-      if (FIELDS_THAT_REQUIRE_LIST_INVALIDATION.includes(field)) {
-        setTimeout(() => {
-          queryClient.invalidateQueries({ queryKey: ['tasks'] });
-          queryClient.invalidateQueries({ queryKey: ['kanban-bootstrap'] });
-        }, 500);
-      }
-    } catch (err) {
-      toast({
-        title: 'Failed to save changes',
-        description: (err as Error)?.message || 'An error occurred while saving.',
-        variant: 'destructive',
-      });
-    }
+
+    // Persist canonical source fields only, batched into a single debounced
+    // PATCH per task. Denormalized display fields (titles/names/colors/overdue)
+    // are recomputed by the DB trigger, so they are stripped from the payload.
+    const canonicalPatch = buildCanonicalTaskPatch({ [field]: value, ...extraFields, ...overdueFields });
+    enqueueTaskPatchLocal(String(task.id), canonicalPatch, requiresListInvalidation);
   };
 
   // Add this after imports
@@ -1256,15 +1971,72 @@ export function TaskDetails({
       .toUpperCase();
   }
 
-  // allMentions: all mentions from Edge Function (initial load) or from thread history fetch (if you fetch mentions for all threads)
-  const allMentions = firstThreadMentions;
-
-  const filteredMentions = typeof selectedThreadId === 'number'
-    ? allMentions.filter((m: any) => m.thread_id === selectedThreadId)
-    : [];
-  console.log('DEBUG: selectedThreadId', selectedThreadId, 'filteredMentions', filteredMentions);
+  // Canonical task-level mentions for the global comments panel.
+  const allMentions = allTaskMentions;
 
   const { data: editFields, isLoading: isEditFieldsLoading, error: editFieldsError } = useTaskEditFields(accessToken);
+  const allContentTypes = useMemo(() => editFields?.content_types ?? [], [editFields?.content_types])
+  const contentTypeLabelById = useMemo(() => {
+    const entries = allContentTypes.map((ct) => [String(ct.id), ct.title] as const)
+    return new Map(entries)
+  }, [allContentTypes])
+
+  const relatedIdeasQueryKey = useMemo(() => ['task-related-ideas', String(taskIdNum ?? '')], [taskIdNum])
+
+  const bootstrapRelatedIdeasRaw = (selectedTask as { related_ideas?: unknown } | null)?.related_ideas
+  const bootstrapRelatedIdeasProposed = useMemo((): TaskRelatedIdeaRow[] | null => {
+    if (!Array.isArray(bootstrapRelatedIdeasRaw)) return null
+    return normalizeBootstrapRelatedIdeas(bootstrapRelatedIdeasRaw).filter((r) => r.status === 'proposed')
+  }, [bootstrapRelatedIdeasRaw, selectedTask?.id])
+
+  const fetchRelatedIdeasProposed = useCallback(async (): Promise<TaskRelatedIdeaRow[]> => {
+    if (!taskIdNum) return []
+    const { data, error } = await supabase
+      .from("task_related_ideas")
+      .select("id, task_id, project_id, title, description, content_type_id, status")
+      .eq("task_id", taskIdNum)
+      .eq("status", "proposed")
+      .order("created_at", { ascending: false })
+    if (error) throw error
+    return (data ?? []) as TaskRelatedIdeaRow[]
+  }, [supabase, taskIdNum])
+
+  const relatedIdeasSeededFromBootstrap = Array.isArray(bootstrapRelatedIdeasRaw)
+  const {
+    data: relatedIdeas = [],
+    isLoading: isFetchedRelatedIdeasLoading,
+    isFetching: isFetchedRelatedIdeasFetching,
+  } = useQuery<TaskRelatedIdeaRow[]>({
+    queryKey: relatedIdeasQueryKey,
+    enabled: false,
+    queryFn: fetchRelatedIdeasProposed,
+    initialData: bootstrapRelatedIdeasProposed ?? undefined,
+    staleTime: relatedIdeasSeededFromBootstrap ? 1000 * 60 * 60 : Number.POSITIVE_INFINITY,
+    refetchOnMount: false,
+  })
+
+  useEffect(() => {
+    if (!taskIdNum || isSuggestionMode) return
+    if (bootstrapRelatedIdeasProposed == null) return
+    queryClient.setQueryData<TaskRelatedIdeaRow[]>(relatedIdeasQueryKey, bootstrapRelatedIdeasProposed)
+  }, [
+    bootstrapRelatedIdeasProposed,
+    taskIdNum,
+    isSuggestionMode,
+    relatedIdeasQueryKey,
+    queryClient,
+  ])
+
+  const isRelatedIdeasLoading =
+    !isSuggestionMode && !!taskIdNum && isFetchedRelatedIdeasLoading
+  const isRelatedIdeasFetching = !isSuggestionMode && !!taskIdNum && isFetchedRelatedIdeasFetching
+
+  const refetchRelatedIdeas = useCallback(async () => {
+    return await queryClient.fetchQuery({
+      queryKey: relatedIdeasQueryKey,
+      queryFn: fetchRelatedIdeasProposed,
+    })
+  }, [fetchRelatedIdeasProposed, queryClient, relatedIdeasQueryKey])
 
   // Reset optimistic states when task changes
   useEffect(() => {
@@ -1347,18 +2119,161 @@ export function TaskDetails({
     });
   }, [editFields?.channels, currentProjectId]);
 
+  const handleRefreshRelatedIdeas = useCallback(async () => {
+    if (!taskIdNum || isRefreshingRelatedIdeas) return
+    setIsRefreshingRelatedIdeas(true)
+    try {
+      const { error } = await supabase.functions.invoke("ai-task-related-ideas-run", {
+        body: {
+          task_id: taskIdNum,
+          force: true,
+          trigger_source: "manual_refresh",
+        },
+      })
+      if (error) throw error
+      await refetchRelatedIdeas()
+      toast({ title: "Related ideas refreshed" })
+    } catch (err: any) {
+      toast({
+        title: "Failed to refresh ideas",
+        description: err?.message || "Could not refresh related ideas.",
+        variant: "destructive",
+      })
+    } finally {
+      setIsRefreshingRelatedIdeas(false)
+    }
+  }, [taskIdNum, isRefreshingRelatedIdeas, supabase, refetchRelatedIdeas])
+
+  const handleSetRelatedIdeaStatus = useCallback(
+    async (ideaId: string, nextStatus: "accepted" | "dismissed") => {
+      if (!ideaId || !taskIdNum) return
+      if (!currentUserId) {
+        toast({
+          title: "Missing user",
+          description: "Could not determine current user id.",
+          variant: "destructive",
+        })
+        return
+      }
+
+      const previousRows = queryClient.getQueryData<TaskRelatedIdeaRow[]>(relatedIdeasQueryKey) ?? []
+      setIdeaActionById((prev) => ({ ...prev, [ideaId]: nextStatus }))
+      queryClient.setQueryData<TaskRelatedIdeaRow[]>(
+        relatedIdeasQueryKey,
+        previousRows.filter((row) => row.id !== ideaId),
+      )
+
+      try {
+        const { data, error } = await supabase.rpc("set_task_related_idea_status", {
+          p_idea_id: ideaId,
+          p_status: nextStatus,
+          p_user_id: currentUserId,
+        })
+        if (error) throw error
+        const payload = data as any
+        if (payload && typeof payload === "object" && payload.ok === false) {
+          throw new Error(typeof payload.message === "string" ? payload.message : "Status update failed")
+        }
+        toast({ title: nextStatus === "accepted" ? "Idea accepted" : "Idea dismissed" })
+      } catch (err: any) {
+        queryClient.setQueryData<TaskRelatedIdeaRow[]>(relatedIdeasQueryKey, previousRows)
+        toast({
+          title: `Failed to ${nextStatus === "accepted" ? "accept" : "dismiss"} idea`,
+          description: err?.message || "Update failed",
+          variant: "destructive",
+        })
+      } finally {
+        setIdeaActionById((prev) => ({ ...prev, [ideaId]: null }))
+      }
+    },
+    [taskIdNum, currentUserId, queryClient, relatedIdeasQueryKey, supabase],
+  )
+
+  const handleAcceptRelatedIdea = useCallback(
+    (idea: TaskRelatedIdeaRow) => {
+      if (!task) return
+
+      const composerInitialValues = {
+        title: idea.title || "",
+        briefing: idea.description || "",
+        content_type_id: idea.content_type_id != null ? String(idea.content_type_id) : "",
+        project_id_int: task.project_id_int != null ? String(task.project_id_int) : "",
+        language_id: task.language_id || "",
+        production_type_id: task.production_type_id || "",
+        onSuccess: async (newTask: any) => {
+          const createdTaskIdRaw = newTask?.id
+          const createdTaskIdNum = Number(createdTaskIdRaw)
+          if (!Number.isFinite(createdTaskIdNum)) {
+            toast({
+              title: "Task created, but idea was not linked",
+              description: "Could not resolve the new task id to accept this idea.",
+              variant: "destructive",
+            })
+            return
+          }
+          if (!currentUserId) {
+            toast({
+              title: "Task created, but idea was not accepted",
+              description: "Could not determine current user id.",
+              variant: "destructive",
+            })
+            return
+          }
+
+          setIdeaActionById((prev) => ({ ...prev, [idea.id]: "accepted" }))
+          try {
+            const { data, error } = await supabase.rpc("set_task_related_idea_status", {
+              p_idea_id: idea.id,
+              p_status: "accepted",
+              p_user_id: currentUserId,
+            })
+            if (error) throw error
+            const payload = data as any
+            if (payload && typeof payload === "object" && payload.ok === false) {
+              throw new Error(typeof payload.message === "string" ? payload.message : "Status update failed")
+            }
+
+            const { error: updateIdeaError } = await supabase
+              .from("task_related_ideas")
+              .update({ accepted_task_id: createdTaskIdNum })
+              .eq("id", idea.id)
+            if (updateIdeaError) throw updateIdeaError
+
+            await refetchRelatedIdeas()
+            toast({ title: "Idea accepted" })
+          } catch (err: any) {
+            toast({
+              title: "Task created, but failed to accept idea",
+              description: err?.message || "Could not update related idea status.",
+              variant: "destructive",
+            })
+          } finally {
+            setIdeaActionById((prev) => ({ ...prev, [idea.id]: null }))
+          }
+        },
+      }
+      openComposer(composerInitialValues)
+    },
+    [task, currentUserId, supabase, refetchRelatedIdeas, openComposer],
+  )
+
+  useEffect(() => {
+    threadHistoryLoadedTaskIdRef.current = null;
+    threadHistoryInFlightRef.current = false;
+  }, [selectedTask?.id]);
+
   // --- Thread history state and fetch logic ---
-  // Remove all local thread fetching logic and state
-  // const [threadsList, setThreadsList] = useState<any[]>([]);
-  // const [isThreadListLoading, setIsThreadListLoading] = useState(false);
-  // const [threadListError, setThreadListError] = useState<string | null>(null);
-  const handleViewThreadHistory = async () => {
+  const handleViewThreadHistory = useCallback(async (options?: { force?: boolean }) => {
+    const taskId = Number(task?.id);
+    if (!Number.isFinite(taskId)) return;
+    if (threadHistoryInFlightRef.current) return;
+    if (!options?.force && threadHistoryLoadedTaskIdRef.current === taskId) return;
+
+    threadHistoryInFlightRef.current = true;
     setIsThreadListLoading(true);
     setThreadListError(null);
     try {
-      const { data, error } = await supabase
-        .from('threads')
-        .select(`
+      const baseSelect = `
           id,
           title,
           created_at,
@@ -1370,24 +2285,164 @@ export function TaskDetails({
               photo
             )
           )
-        `)
-        .eq('task_id', task.id)
-        .order('created_at', { ascending: true });
+        `
+      const enrichedSelect = `
+          id,
+          title,
+          created_at,
+          updated_at,
+          resolved_at,
+          object_type,
+          task_component_output_id,
+          thread_watchers (
+            watcher_id,
+            users!thread_watchers_watcher_id_fkey (
+              id,
+              full_name,
+              photo
+            )
+          )
+        `
+      let data: any[] | null = null
+      let error: any = null
+
+      const enrichedQuery = await supabase
+        .from('threads')
+        .select(enrichedSelect)
+        .eq('task_id', taskId)
+        .order('created_at', { ascending: false });
+
+      data = enrichedQuery.data as any[] | null
+      error = enrichedQuery.error
+
+      if (error) {
+        const fallbackQuery = await supabase
+          .from('threads')
+          .select(baseSelect)
+          .eq('task_id', taskId)
+          .order('created_at', { ascending: false })
+        data = fallbackQuery.data as any[] | null
+        error = fallbackQuery.error
+      }
+
       if (error) throw error;
-      // No mapping needed, just filter out null users
+
       const threadsWithUsers = (data || []).map((thread: any) => ({
         ...thread,
         thread_watchers: Array.isArray(thread.thread_watchers)
           ? thread.thread_watchers.filter((tw: any) => !!tw.users)
           : [],
       }));
-      setThreadsList(threadsWithUsers);
+
+      const threadIds = threadsWithUsers
+        .map((thread: any) => Number(thread.id))
+        .filter((id: number) => Number.isFinite(id))
+
+      let mentionsRows: any[] = []
+      if (threadIds.length > 0) {
+        const { data: mentionsData, error: mentionsError } = await supabase
+          .from("mentions")
+          .select("id, thread_id, comment, attachment, created_at, created_by, reply_to_id, users:created_by(id, full_name, email, photo)")
+          .in("thread_id", threadIds)
+          .order("created_at", { ascending: true })
+        if (mentionsError) throw mentionsError
+        mentionsRows = mentionsData ?? []
+      }
+
+      setAllTaskMentions(mentionsRows)
+
+      const mentionsByThread = new Map<number, any[]>()
+      for (const mention of mentionsRows) {
+        const threadId = Number(mention?.thread_id)
+        if (!Number.isFinite(threadId)) continue
+        const current = mentionsByThread.get(threadId) ?? []
+        current.push(mention)
+        mentionsByThread.set(threadId, current)
+      }
+
+      const threadsWithMeta = threadsWithUsers.map((thread: any) => {
+        const threadId = Number(thread.id)
+        const threadMentions = Number.isFinite(threadId) ? (mentionsByThread.get(threadId) ?? []) : []
+        const latestMention = threadMentions.length > 0 ? threadMentions[threadMentions.length - 1] : null
+        const mentionCount = threadMentions.length
+        const latestActivityAt =
+          latestMention?.created_at
+          ?? thread.updated_at
+          ?? thread.created_at
+          ?? null
+        const isResolved = !!thread.resolved_at
+        const threadType =
+          thread.object_type
+          ?? (thread.task_component_output_id ? "output_comment" : "general")
+        return {
+          ...thread,
+          mention_count: mentionCount,
+          latest_activity_at: latestActivityAt,
+          latest_preview: latestMention?.comment ?? thread.title ?? "Thread",
+          is_resolved: isResolved,
+          thread_type: threadType,
+          related_component_label: thread.task_component_output_id
+            ? `Output ${String(thread.task_component_output_id).slice(0, 8)}`
+            : null,
+        }
+      }).sort((a: any, b: any) => {
+        const aTs = new Date(a.latest_activity_at ?? a.created_at ?? 0).getTime()
+        const bTs = new Date(b.latest_activity_at ?? b.created_at ?? 0).getTime()
+        return bTs - aTs
+      })
+
+      const outputIdsForThreads = Array.from(
+        new Set(
+          threadsWithMeta
+            .map((thread: any) => (typeof thread.task_component_output_id === "string" ? thread.task_component_output_id : null))
+            .filter((value): value is string => typeof value === "string" && value.length > 0)
+        )
+      )
+      if (outputIdsForThreads.length > 0) {
+        const { data: outputThreadRows } = await supabase.rpc("get_output_comment_threads_batch", {
+          p_output_ids: outputIdsForThreads,
+        })
+        const targetByThreadId = new Map<number, any>()
+        for (const row of (outputThreadRows ?? []) as any[]) {
+          const threadId = Number(row?.thread_id ?? row?.id)
+          if (!Number.isFinite(threadId)) continue
+          targetByThreadId.set(threadId, {
+            thread_type: row?.thread_type ?? null,
+            resolved_at: row?.resolved_at ?? null,
+            attachment_id: typeof row?.attachment_id === "string" ? row.attachment_id : null,
+            anchor_type: row?.anchor_type ?? null,
+            anchor_start: Number.isFinite(Number(row?.anchor_start)) ? Number(row.anchor_start) : null,
+            anchor_end: Number.isFinite(Number(row?.anchor_end)) ? Number(row.anchor_end) : null,
+            anchor_quote: row?.anchor_quote ?? null,
+            anchor_x: Number.isFinite(Number(row?.anchor_x)) ? Number(row.anchor_x) : null,
+            anchor_y: Number.isFinite(Number(row?.anchor_y)) ? Number(row.anchor_y) : null,
+            anchor_width: Number.isFinite(Number(row?.anchor_width)) ? Number(row.anchor_width) : null,
+            anchor_height: Number.isFinite(Number(row?.anchor_height)) ? Number(row.anchor_height) : null,
+            anchor_time_start: Number.isFinite(Number(row?.anchor_time_start)) ? Number(row.anchor_time_start) : null,
+            anchor_time_end: Number.isFinite(Number(row?.anchor_time_end)) ? Number(row.anchor_time_end) : null,
+            anchor_data: row?.anchor_data ?? null,
+          })
+        }
+        for (const thread of threadsWithMeta) {
+          const threadId = Number(thread.id)
+          const target = targetByThreadId.get(threadId)
+          if (!target) continue
+          Object.assign(thread, target)
+          thread.is_resolved = !!(target.resolved_at ?? thread.resolved_at ?? thread.is_resolved)
+        }
+      }
+
+      if (Number(task?.id) !== taskId) return
+
+      setThreadsList(threadsWithMeta);
+      threadHistoryLoadedTaskIdRef.current = taskId;
     } catch (err: any) {
       setThreadListError(err.message || 'Failed to load threads');
     } finally {
+      threadHistoryInFlightRef.current = false;
       setIsThreadListLoading(false);
     }
-  };
+  }, [task?.id, supabase]);
 
   // --- Thread/Participants/Mentions wiring ---
   // threadsList: array of all threads (initially just the first thread, then all after thread history is loaded)
@@ -1412,13 +2467,53 @@ export function TaskDetails({
     return [];
   }, [filteredWatchers, project_watchers]);
 
-  // Get participants for the selected thread (array of user objects)
+  const currentUserPhotoUrl = useMemo(() => {
+    const authMeta = currentUser?.user_metadata
+    const authPhoto = authMeta?.avatar_url || authMeta?.photo || null
+    if (authPhoto) {
+      const resolved = getImageUrl(String(authPhoto))
+      if (resolved) return resolved
+      if (String(authPhoto).startsWith("http")) return String(authPhoto)
+    }
+    const projectUser = (allProjectUsers || []).find(
+      (u: any) =>
+        Number(u.id) === Number(currentUserId)
+        || (currentPublicUserId != null && Number(u.id) === Number(currentPublicUserId)),
+    )
+    if (projectUser?.photo) {
+      const resolved = getImageUrl(projectUser.photo)
+      if (resolved) return resolved
+    }
+    const watcher = (project_watchers || []).find(
+      (pw: any) =>
+        Number(pw.user_id) === Number(currentUserId)
+        || (currentPublicUserId != null && Number(pw.user_id) === Number(currentPublicUserId)),
+    )
+    if (watcher?.users?.photo) {
+      const resolved = getImageUrl(watcher.users.photo)
+      if (resolved) return resolved
+    }
+    return null
+  }, [currentUser, allProjectUsers, currentUserId, currentPublicUserId, project_watchers])
+
+  // Get participants for the selected thread (array of user objects), enriched with photo from project users on initial load
   const selectedThread = threadsList.find(t => t.id === selectedThreadId);
+  const projectWatchersForPhoto = project_watchers || [];
   let participants: any[] = [];
   if (selectedThread && Array.isArray(selectedThread.thread_watchers)) {
     const userMap = Object.fromEntries((allProjectUsers || []).map((u: any) => [u.id, u]));
     participants = selectedThread.thread_watchers
-      .map((tw: any) => tw.users || userMap[tw.watcher_id])
+      .map((tw: any) => {
+        const u = tw.users || userMap[tw.watcher_id];
+        if (!u) return null;
+        const fromProject = (allProjectUsers || []).find(
+          (pu: any) => Number(pu.id) === Number(u.id) || (pu.auth_user_id && u.auth_user_id && String(pu.auth_user_id) === String(u.auth_user_id))
+        );
+        // Fallback photo from project_watchers prop when allProjectUsers not yet loaded (initial task load)
+        const photoFromWatchers = projectWatchersForPhoto.find((pw: any) => Number(pw.user_id) === Number(u.id))?.users?.photo;
+        const photo = u.photo ?? fromProject?.photo ?? photoFromWatchers ?? null;
+        return { ...fromProject, ...u, photo };
+      })
       .filter(Boolean);
   }
 
@@ -1435,12 +2530,6 @@ export function TaskDetails({
     }
     return map;
   }, [allMentions]);
-
-  // For currentUserId, use the public user id if available
-  // (Assume you have currentUserId from props or context)
-
-
-
 
   // Add this handler inside TaskDetails if not present
   const handleDeleteThread = async (threadId: number) => {
@@ -1467,6 +2556,49 @@ export function TaskDetails({
       });
     }
   };
+  const handleToggleThreadResolved = useCallback(async (thread: any) => {
+    const threadId = Number(thread?.id)
+    if (!Number.isFinite(threadId)) return
+    const threadType = String(thread?.thread_type ?? thread?.object_type ?? "")
+    if (threadType !== "output_comment") return
+    const nextResolvedAt = thread?.is_resolved || thread?.resolved_at ? null : new Date().toISOString()
+    setResolvingThreadIds((prev) => {
+      const next = new Set(prev)
+      next.add(threadId)
+      return next
+    })
+    const previousThreads = threadsList
+    setThreadsList((prev) =>
+      prev.map((item) =>
+        Number(item?.id) === threadId
+          ? { ...item, resolved_at: nextResolvedAt, is_resolved: !!nextResolvedAt }
+          : item
+      )
+    )
+    try {
+      const { error } = await supabase
+        .from("threads")
+        .update({
+          resolved_at: nextResolvedAt,
+          resolved_by: nextResolvedAt ? currentPublicUserId : null,
+        })
+        .eq("id", threadId)
+      if (error) throw error
+    } catch (error: any) {
+      setThreadsList(previousThreads)
+      toast({
+        title: "Failed to update thread",
+        description: error?.message || "Could not update resolved state.",
+        variant: "destructive",
+      })
+    } finally {
+      setResolvingThreadIds((prev) => {
+        const next = new Set(prev)
+        next.delete(threadId)
+        return next
+      })
+    }
+  }, [threadsList, supabase, currentPublicUserId])
 
   // Add state for delete thread dialog
   const [showDeleteThreadDialog, setShowDeleteThreadDialog] = useState(false);
@@ -1549,22 +2681,156 @@ export function TaskDetails({
     }
   };
 
-  // Fetch the current user's public user id from the users table using the session's auth_user_id
-  const [currentUserId, setCurrentUserId] = useState<number | null>(null);
-  useEffect(() => {
-    async function fetchCurrentUserId() {
-      const { data: authData } = await supabase.auth.getUser();
-      const authUserId = authData?.user?.id;
-      if (!authUserId) return;
-      const { data: userRows } = await supabase
-        .from('users')
-        .select('id')
-        .eq('auth_user_id', authUserId)
-        .maybeSingle();
-      if (userRows?.id) setCurrentUserId(userRows.id);
+  const handleNavigateToThread = useCallback((thread: any) => {
+    if (!thread) return
+    const outputId = typeof thread?.task_component_output_id === "string" ? thread.task_component_output_id : null
+    if (!outputId) return
+    const threadId = Number(thread?.id)
+    const anchorType = typeof thread?.anchor_type === "string" ? thread.anchor_type : null
+    const attachmentId = typeof thread?.attachment_id === "string" ? thread.attachment_id : null
+    const anchorStart = Number.isFinite(Number(thread?.anchor_start)) ? Number(thread.anchor_start) : null
+    const anchorEnd = Number.isFinite(Number(thread?.anchor_end)) ? Number(thread.anchor_end) : null
+    const anchorX = Number.isFinite(Number(thread?.anchor_x)) ? Number(thread.anchor_x) : null
+    const anchorY = Number.isFinite(Number(thread?.anchor_y)) ? Number(thread.anchor_y) : null
+    const anchorQuote = typeof thread?.anchor_quote === "string" ? thread.anchor_quote : null
+    window.dispatchEvent(
+      new CustomEvent("task-details:navigate-comment-thread", {
+        detail: {
+          taskId: taskIdNum,
+          threadId: Number.isFinite(threadId) ? threadId : null,
+          outputId,
+          attachmentId,
+          anchorType,
+          anchorStart,
+          anchorEnd,
+          anchorX,
+          anchorY,
+          anchorQuote,
+        },
+      })
+    )
+    if (taskIdNum) {
+      window.dispatchEvent(
+        new CustomEvent("task-details:focus-outputs", {
+          detail: {
+            taskId: taskIdNum,
+            outputId,
+          },
+        })
+      )
     }
-    fetchCurrentUserId();
-  }, []);
+    setTaskTab("content")
+  }, [setTaskTab, taskIdNum])
+
+  // Shared props for comments panel (in-pane or modal/drawer). Single source for list/input/footer parts.
+  const commentsPanelProps = useMemo(
+    () =>
+      task && !isSuggestionMode
+        ? {
+            taskIdNum,
+            task,
+            isSuggestionMode,
+            currentUserId,
+            isThreadView,
+            openThreadView: openCommentThreadView,
+            showAllThreadsView: showAllCommentThreadsView,
+            selectedThreadId,
+            setSelectedThreadId,
+            isAddingThread,
+            setIsAddingThread,
+            threadsList,
+            allMentions,
+            commentsStatusFilter,
+            setCommentsStatusFilter,
+            latestMentions,
+            participants,
+            project_watchers: project_watchers ?? [],
+            allProjectUsers: allProjectUsers ?? [],
+            refetchSelectedThread,
+            handleViewThreadHistory,
+            onThreadNavigate: handleNavigateToThread,
+            onToggleThreadResolved: handleToggleThreadResolved,
+            isThreadResolving: (threadId: number) => resolvingThreadIds.has(Number(threadId)),
+            isThreadListLoading,
+            pendingParticipants,
+            setPendingParticipants,
+            removedParticipants,
+            setRemovedParticipants,
+            replyTo,
+            setReplyTo,
+            onClearReply: () => setReplyTo(null),
+            handleDeleteThread,
+            handleAddThread,
+            showDeleteThreadDialog,
+            setShowDeleteThreadDialog,
+            isDeleting,
+            currentUserName,
+            currentUserAvatar: currentUserPhotoUrl ?? '',
+            currentUserEmail,
+            currentPublicUserId,
+            pendingOutputAnchor,
+            onConsumePendingOutputAnchor: () => setPendingOutputAnchor(null),
+            composerFocusToken: commentsComposerFocusToken,
+          }
+        : null,
+    [
+      task,
+      isSuggestionMode,
+      taskIdNum,
+      currentUserId,
+      isThreadView,
+      selectedThreadId,
+      openCommentThreadView,
+      showAllCommentThreadsView,
+      isAddingThread,
+      threadsList,
+      allMentions,
+      commentsStatusFilter,
+      latestMentions,
+      participants,
+      project_watchers,
+      allProjectUsers,
+      isThreadListLoading,
+      handleNavigateToThread,
+      handleToggleThreadResolved,
+      resolvingThreadIds,
+      pendingParticipants,
+      removedParticipants,
+      replyTo,
+      showDeleteThreadDialog,
+      isDeleting,
+      currentUserName,
+      currentUserPhotoUrl,
+      currentUserEmail,
+      currentPublicUserId,
+      pendingOutputAnchor,
+      commentsComposerFocusToken,
+      handleViewThreadHistory,
+    ]
+  );
+
+  const handleOpenTaskCommentsPanel = useCallback((threadId?: number | null) => {
+    setTaskTab("comments")
+    void handleViewThreadHistory()
+    if (typeof threadId === "number" && Number.isFinite(threadId)) {
+      openCommentThreadView(threadId)
+      return
+    }
+    showAllCommentThreadsView()
+  }, [handleViewThreadHistory, openCommentThreadView, showAllCommentThreadsView, setTaskTab])
+
+  const handleToggleTaskCommentsPanel = useCallback(() => {
+    if (isCommentsTabActive) {
+      setTaskTab("overview")
+      return
+    }
+    handleOpenTaskCommentsPanel(null)
+  }, [isCommentsTabActive, handleOpenTaskCommentsPanel, setTaskTab])
+
+  useEffect(() => {
+    if (!isCommentsTabActive || !selectedTask || isSuggestionMode) return
+    void handleViewThreadHistory()
+  }, [isCommentsTabActive, selectedTask?.id, isSuggestionMode, handleViewThreadHistory])
 
   const ENABLE_EMBED_REFRESH_ON_DECISION = true
   const [isApprovingSuggestion, setIsApprovingSuggestion] = useState(false)
@@ -1686,6 +2952,14 @@ export function TaskDetails({
 
       removeSuggestionFromPlannerCaches(suggestionIdNum)
       upsertOptimisticPlannerTask(nextTask)
+      void queryClient.invalidateQueries({
+        predicate: (q) => Array.isArray(q.queryKey) && q.queryKey[0] === 'task-suggestions',
+      })
+      void queryClient.invalidateQueries({
+        predicate: (q) =>
+          Array.isArray(q.queryKey) &&
+          (q.queryKey[0] === 'task-group-meta-paged' || q.queryKey[0] === 'task-group-tasks'),
+      })
       toast({ title: opts?.reason ? "Suggestion approved — now a task" : "Task created" })
 
       // Switch the right pane to the newly created task.
@@ -1762,6 +3036,9 @@ export function TaskDetails({
       }
 
       removeSuggestionFromPlannerCaches(suggestionIdNum)
+      void queryClient.invalidateQueries({
+        predicate: (q) => Array.isArray(q.queryKey) && q.queryKey[0] === 'task-suggestions',
+      })
       toast({ title: "Suggestion dismissed" })
       onClose()
 
@@ -1794,7 +3071,7 @@ export function TaskDetails({
   const [notes, setNotes] = useState(task?.notes ?? '');
 
   // Keep local state in sync with task changes
-  useEffect(() => { setTitle(task?.title ?? ''); }, [task?.title]);
+  useEffect(() => { if (!isEditingTitle) setTitle(task?.title ?? ''); }, [task?.title, isEditingTitle]);
   useEffect(() => { setCopyPost(task?.copy_post ?? ''); }, [task?.copy_post]);
   useEffect(() => { setBriefing(task?.briefing ?? ''); }, [task?.briefing]);
   useEffect(() => { setNotes(task?.notes ?? ''); }, [task?.notes]);
@@ -1809,6 +3086,9 @@ export function TaskDetails({
   const currentProjectName = useMemo(() => {
     return optimisticProjectName !== null ? optimisticProjectName : task?.project_name;
   }, [optimisticProjectName, task?.project_name]);
+  const currentProjectColor = useMemo(() => {
+    return optimisticProjectColor !== null ? optimisticProjectColor : task?.project_color;
+  }, [optimisticProjectColor, task?.project_color]);
 
   // Helper functions for optimistic dates
   const currentDueDate = useMemo(() => {
@@ -1864,7 +3144,8 @@ export function TaskDetails({
   const assigneeOptions = useMemo(
     () => filteredWatchers.map(w => ({
       value: String(w.user_id),
-      label: w.users.full_name
+      label: w.users.full_name,
+      photo: w.users.photo || null,
     })),
     [filteredWatchers]
   );
@@ -1880,10 +3161,76 @@ export function TaskDetails({
     () => filteredLanguages.map(l => ({ value: String(l.id), label: l.long_name })),
     [filteredLanguages]
   );
+  const projectOptions = useMemo(() => {
+    const activeProjects = (editFields?.projects ?? [])
+      .filter((opt: any) => opt.active === undefined || opt.active === true)
+      .map((opt: any) => ({
+        value: String(opt.id),
+        label: opt.name,
+        logo: opt.logo ?? opt.logo_url ?? null,
+      }))
+    if (currentProjectId && !activeProjects.some((opt) => String(opt.value) === String(currentProjectId))) {
+      activeProjects.unshift({
+        value: String(currentProjectId),
+        label: currentProjectName || `Project #${currentProjectId}`,
+        logo: (task as any)?.project?.logo ?? null,
+      })
+    }
+    return activeProjects
+  }, [editFields?.projects, currentProjectId, currentProjectName, task]);
+  const currentProjectOption = useMemo(
+    () => projectOptions.find((opt) => String(opt.value) === String(currentProjectId ?? '')) ?? null,
+    [projectOptions, currentProjectId]
+  )
+  const filteredProjectOptions = useMemo(() => {
+    const q = projectSearchQuery.trim().toLowerCase()
+    if (!q) return projectOptions
+    return projectOptions.filter((opt) => String(opt.label || "").toLowerCase().includes(q))
+  }, [projectOptions, projectSearchQuery])
   const channelOptions = useMemo(
     () => filteredChannels.map(c => ({ value: String(c.id), label: c.name })),
     [filteredChannels]
   );
+  const selectedTaskWatcherIds = useMemo(
+    () => new Set(taskWatchers.map((w) => w.watcher_user_id)),
+    [taskWatchers]
+  )
+  const watcherDropdownOptions = useMemo(() => {
+    const byId = new Map<number, { watcher_user_id: number; full_name: string | null; photo: string | null }>()
+    for (const w of taskWatchers) {
+      byId.set(w.watcher_user_id, w)
+    }
+    for (const w of eligibleTaskWatchers) {
+      if (!byId.has(w.watcher_user_id)) byId.set(w.watcher_user_id, w)
+    }
+    const options = Array.from(byId.values())
+    return options.sort((a, b) => {
+      const aSelected = selectedTaskWatcherIds.has(a.watcher_user_id) ? 0 : 1
+      const bSelected = selectedTaskWatcherIds.has(b.watcher_user_id) ? 0 : 1
+      if (aSelected !== bSelected) return aSelected - bSelected
+      return (a.full_name || '').localeCompare(b.full_name || '')
+    })
+  }, [taskWatchers, eligibleTaskWatchers, selectedTaskWatcherIds])
+
+  const handleToggleTaskWatcher = useCallback(
+    async (watcherUserId: number) => {
+      if (isTaskWatchersMutating || !taskIdNum) return
+      if (selectedTaskWatcherIds.has(watcherUserId)) {
+        await removeWatcher(watcherUserId)
+      } else {
+        await addWatchers([watcherUserId])
+      }
+    },
+    [isTaskWatchersMutating, taskIdNum, selectedTaskWatcherIds, removeWatcher, addWatchers],
+  )
+
+  const handleOpenWatcherProfile = useCallback(
+    (watcherUserId: number) => {
+      setIsAddWatcherOpen(false)
+      openCenterEntity("user", watcherUserId)
+    },
+    [openCenterEntity],
+  )
 
   // Add Typesense updater
   const typesenseQuery = useTypesenseInfiniteQuery({ q: '', pageSize: 25, enabled: false });
@@ -1920,28 +3267,21 @@ export function TaskDetails({
     return { isOverdue, isPublicationOverdue };
   }
 
-  // Helper function to format date based on current year
+  // Friendly date labels: "Jul 16" (current year) / "Jul 16, 2025" (other years)
   function formatDateWithYear(dateString: string | null | undefined): string {
     if (!dateString) return "—";
     try {
       const date = new Date(dateString);
-      const now = new Date();
-      const currentYear = now.getFullYear();
-      const dateYear = date.getFullYear();
-      
-      if (dateYear === currentYear) {
-        // Current year: dd/mmm format (e.g., "18/jul", "9/jul")
-        const day = date.getDate().toString().padStart(2, '0');
-        const month = date.toLocaleDateString('en-US', { month: 'short' }).toLowerCase();
-        return `${day}/${month}`;
-      } else {
-        // Previous years: dd/mm/yyyy format
-        return date.toLocaleDateString('en-US', {
-          day: '2-digit',
-          month: '2-digit',
-          year: 'numeric'
-        });
+      if (Number.isNaN(date.getTime())) return "—";
+      const currentYear = new Date().getFullYear();
+      if (date.getFullYear() === currentYear) {
+        return date.toLocaleDateString("en-US", { month: "short", day: "numeric" });
       }
+      return date.toLocaleDateString("en-US", {
+        month: "short",
+        day: "numeric",
+        year: "numeric",
+      });
     } catch (error) {
       console.error('Error formatting date:', error);
       return "Invalid date";
@@ -1973,30 +3313,330 @@ export function TaskDetails({
       onDuplicateTask(initialValues);
     }
   };
+  const tabTriggerClassName =
+    "-mb-px rounded-none border-b-0 data-[state=active]:bg-transparent data-[state=active]:shadow-[inset_0_-2px_0_0_#111827]"
 
   return (
     <>
-    <div ref={taskDetailsRef} className="h-full flex flex-col relative">
-      <div className="p-4 bg-white sticky top-0 z-10">
+    <div
+        ref={setTaskDetailsContainerRef}
+        onFocusCapture={handleTaskDetailsFocusCapture}
+        className={cn(
+          'relative flex h-full flex-col overflow-x-hidden transition-colors duration-150',
+          isDraggingOver && 'bg-gray-100/80'
+        )}
+      >
+      <div className="flex min-h-0 flex-1 flex-col">
+        <section className="flex min-h-0 flex-1 flex-col overflow-hidden">
+      <div className={cn(TASK_PANE_HEADER_SHELL_CLASS, "border-b-0")}>
         {/* Header: title and actions */}
-        <div className="flex items-center justify-between mb-2">
+        <div className={TASK_PANE_HEADER_ROW_CLASS}>
+          {onDetailStackBack ? (
+            <Button
+              type="button"
+              variant="ghost"
+              size="sm"
+              className="h-8 w-8 shrink-0 p-0 text-gray-600 hover:bg-gray-100 hover:text-gray-900"
+              onClick={onDetailStackBack}
+              aria-label="Back to profile"
+              title="Back to profile"
+            >
+              <ChevronLeft className="h-5 w-5" />
+            </Button>
+          ) : isMobile && onMobileBack ? (
+            <Button
+              type="button"
+              variant="ghost"
+              size="sm"
+              className="h-8 w-8 shrink-0 p-0 text-gray-600 hover:bg-gray-100 hover:text-gray-900"
+              onClick={onMobileBack}
+              aria-label="Go back"
+              title="Go back"
+            >
+              <ChevronLeft className="h-5 w-5" />
+            </Button>
+          ) : null}
           {/* Task Title */}
-          <div className="flex-1 min-w-0 mr-4">
-            <h1 className="text-lg font-semibold text-gray-900 truncate">
+          <div className="mr-4 min-w-0 flex-1">
+            <h1 className="truncate text-base font-semibold text-gray-900">
               {isLoading ? "Loading..." : (task?.title || "Untitled Task")}
             </h1>
+            <div className="mt-1 flex flex-nowrap items-center gap-2 text-xs text-gray-500">
+              {(() => {
+                const projectName = task?.project?.name ?? currentProjectName ?? "No project"
+                const projectVisual = projectLogoUrl ? (
+                  <img src={projectLogoUrl} alt="" className="h-4 w-4 shrink-0 rounded-sm object-cover" />
+                ) : (
+                  <span
+                    className="h-2 w-2 shrink-0 rounded-full bg-gray-300"
+                    style={currentProjectColor ? { backgroundColor: currentProjectColor } : undefined}
+                  />
+                )
+                if (!isSuggestionMode && currentProjectId != null) {
+                  return (
+                    <button
+                      type="button"
+                      onClick={() => openCenterEntity("project", currentProjectId)}
+                      className="flex min-w-0 items-center gap-2 rounded transition-colors hover:text-gray-700 hover:underline"
+                      title={`Open ${projectName}`}
+                    >
+                      {projectVisual}
+                      <span className="truncate">{projectName}</span>
+                    </button>
+                  )
+                }
+                return (
+                  <>
+                    {projectVisual}
+                    <span className="truncate">{projectName}</span>
+                  </>
+                )
+              })()}
+              {!isSuggestionMode ? (
+                <>
+                  <span className="shrink-0 text-gray-300" aria-hidden>·</span>
+                  {canEdit ? (
+                    <span className="inline-flex h-5 max-w-[12rem] shrink-0 items-center">
+                      <Select
+                        value={isLoading ? NONE_OPTION : (currentStatusId || NONE_OPTION)}
+                        onValueChange={
+                          isLoading
+                            ? undefined
+                            : (value) =>
+                                handleStatusChange({
+                                  target: { value: value === NONE_OPTION ? "" : value },
+                                } as React.ChangeEvent<HTMLSelectElement>)
+                        }
+                      >
+                        <SelectTrigger
+                          hideDropdownIcon
+                          className="!flex h-5 w-fit max-w-[12rem] shrink-0 flex-row flex-nowrap items-center gap-0 overflow-hidden whitespace-nowrap border-0 bg-transparent p-0 shadow-none focus:ring-0 focus:ring-offset-0 [&>span]:line-clamp-none [&>span]:inline-flex [&>span]:max-w-full [&>span]:items-center [&>span]:overflow-hidden [&>span]:whitespace-nowrap"
+                          aria-label="Change task status"
+                        >
+                          {currentStatusName ? (
+                            <span
+                              className="inline-flex h-5 max-w-[12rem] items-center gap-0.5 overflow-hidden whitespace-nowrap rounded-full px-2 text-[10px] font-medium leading-none"
+                              style={{
+                                backgroundColor: currentStatusColor || "#e5e7eb",
+                                color: currentStatusColor ? "#fff" : "#374151",
+                              }}
+                            >
+                              <span className="min-w-0 truncate">{currentStatusName}</span>
+                              <ChevronDown className="h-3 w-3 shrink-0 opacity-90" aria-hidden />
+                            </span>
+                          ) : (
+                            <span className="inline-flex h-5 items-center gap-0.5 whitespace-nowrap rounded-full bg-gray-100 px-2 text-[10px] font-medium leading-none text-gray-600">
+                              <span className="min-w-0 truncate">
+                                {isEditFieldsLoading
+                                  ? "Loading..."
+                                  : editFieldsError
+                                    ? "Error"
+                                    : "Status"}
+                              </span>
+                              <ChevronDown className="h-3 w-3 shrink-0 opacity-70" aria-hidden />
+                            </span>
+                          )}
+                        </SelectTrigger>
+                        <SelectContent className="w-[min(90vw,16rem)] max-w-full">
+                          <SelectItem value={NONE_OPTION}>Select status</SelectItem>
+                          {statusOptions.map((opt) => (
+                            <SelectItem key={String(opt.value)} value={String(opt.value)}>
+                              <span
+                                className="inline-flex items-center rounded-full px-2 py-0.5 text-xs font-medium"
+                                style={{
+                                  backgroundColor: opt.color || "#e5e7eb",
+                                  color: opt.color ? "#fff" : "#374151",
+                                }}
+                              >
+                                {opt.label}
+                              </span>
+                            </SelectItem>
+                          ))}
+                        </SelectContent>
+                      </Select>
+                    </span>
+                  ) : currentStatusName ? (
+                    <span
+                      className="inline-flex h-5 max-w-[12rem] shrink-0 items-center overflow-hidden whitespace-nowrap rounded-full px-2 text-[10px] font-medium leading-none"
+                      style={{
+                        backgroundColor: currentStatusColor || "#e5e7eb",
+                        color: currentStatusColor ? "#fff" : "#374151",
+                      }}
+                      title={currentStatusName}
+                    >
+                      <span className="min-w-0 truncate">{currentStatusName}</span>
+                    </span>
+                  ) : (
+                    <span className="shrink-0 text-[10px] text-gray-400">No status</span>
+                  )}
+                </>
+              ) : null}
+              {!isSuggestionMode ? (
+                <Popover
+                  open={isAddWatcherOpen}
+                  onOpenChange={(open) => {
+                    setIsAddWatcherOpen(open);
+                  }}
+                >
+                  <PopoverTrigger asChild>
+                    <button
+                      type="button"
+                      className="ml-1 inline-flex max-w-[140px] items-center gap-1 overflow-hidden rounded-full border border-gray-200 bg-white px-1.5 py-0.5"
+                      title="Manage watchers"
+                      aria-label="Manage watchers"
+                    >
+                      <div className="flex items-center -space-x-1">
+                        {taskWatchers.slice(0, 3).map((u) => (
+                          <UserAvatar
+                            key={u.watcher_user_id}
+                            name={u.full_name ?? `User #${u.watcher_user_id}`}
+                            photoUrl={getImageUrl(u.photo)}
+                            size="xs"
+                            className="h-5 w-5 min-h-5 min-w-5"
+                          />
+                        ))}
+                      </div>
+                      {taskWatchers.length > 3 ? (
+                        <span className="text-[10px] text-gray-500">+{taskWatchers.length - 3}</span>
+                      ) : null}
+                    </button>
+                  </PopoverTrigger>
+                  <PopoverContent className="w-[min(90vw,20rem)] p-0" align="start">
+                    <Command>
+                      <CommandInput
+                        placeholder="Search project users…"
+                        disabled={isTaskWatchersMutating}
+                      />
+                      <CommandList className="max-h-[260px]">
+                        <CommandEmpty>
+                          No users found
+                        </CommandEmpty>
+                        <CommandGroup>
+                          {watcherDropdownOptions.map((u) => {
+                            const isWatcher = selectedTaskWatcherIds.has(u.watcher_user_id)
+                            const displayName = u.full_name ?? `User #${u.watcher_user_id}`
+                            return (
+                              <CommandItem
+                                key={u.watcher_user_id}
+                                value={`${u.full_name ?? ""} ${u.watcher_user_id}`}
+                                className={cn(
+                                  "group cursor-pointer",
+                                  isTaskWatchersMutating && "pointer-events-none opacity-50",
+                                )}
+                                onSelect={() => {
+                                  void handleToggleTaskWatcher(u.watcher_user_id)
+                                }}
+                              >
+                                <div className="flex w-full min-w-0 items-center gap-2">
+                                  <UserAvatar
+                                    name={displayName}
+                                    photoUrl={getImageUrl(u.photo)}
+                                    size="xs"
+                                  />
+                                  <span className="min-w-0 flex-1 truncate" title={displayName}>
+                                    {displayName}
+                                  </span>
+                                  <button
+                                    type="button"
+                                    title={`Open ${displayName}`}
+                                    aria-label={`Open ${displayName}`}
+                                    className="inline-flex h-6 w-6 shrink-0 items-center justify-center rounded text-gray-400 opacity-0 transition-opacity hover:bg-gray-100 hover:text-gray-700 group-hover:opacity-100"
+                                    onClick={(e) => {
+                                      e.preventDefault()
+                                      e.stopPropagation()
+                                      handleOpenWatcherProfile(u.watcher_user_id)
+                                    }}
+                                    onPointerDown={(e) => e.stopPropagation()}
+                                  >
+                                    <ExternalLink className="h-3.5 w-3.5" />
+                                  </button>
+                                  <span
+                                    className={cn(
+                                      "shrink-0 text-[10px] font-medium",
+                                      isWatcher ? "text-gray-700" : "text-gray-400",
+                                    )}
+                                  >
+                                    {isWatcher ? "Watching" : "Add"}
+                                  </span>
+                                </div>
+                              </CommandItem>
+                            )
+                          })}
+                        </CommandGroup>
+                      </CommandList>
+                    </Command>
+                  </PopoverContent>
+                </Popover>
+              ) : null}
+            </div>
           </div>
           
           {/* Actions - right aligned */}
           <div className="flex items-center gap-2">
+            {!isSuggestionMode && task && commentsPanelProps && (
+              <IconTooltip label={isCommentsTabActive ? "On comments tab" : "Open comments"}>
+                <button
+                  type="button"
+                  className={cn(
+                    "inline-flex items-center justify-center h-8 w-8 rounded transition focus:outline-none focus:ring-2 focus:ring-blue-400",
+                    isCommentsTabActive
+                      ? "bg-blue-50 text-blue-600 hover:bg-blue-100"
+                      : "text-gray-500 hover:bg-gray-100"
+                  )}
+                  aria-label={isCommentsTabActive ? "On comments tab" : "Open comments"}
+                  aria-pressed={isCommentsTabActive}
+                  onClick={handleToggleTaskCommentsPanel}
+                >
+                  <MessageCircle className="w-4 h-4" />
+                </button>
+              </IconTooltip>
+            )}
+            {!isSuggestionMode && taskIdNum ? (
+              <>
+                <IconTooltip label="Copy all content">
+                  <button
+                    type="button"
+                    className={cn(
+                      "inline-flex items-center justify-center h-8 w-8 rounded transition focus:outline-none focus:ring-2 focus:ring-blue-400",
+                      canCopyAllChannelContent
+                        ? "text-gray-500 hover:bg-gray-100"
+                        : "text-gray-300 cursor-not-allowed",
+                    )}
+                    aria-label="Copy all content"
+                    disabled={!canCopyAllChannelContent}
+                    onClick={() => {
+                      if (!canCopyAllChannelContent) return
+                      setTaskTab("content")
+                      window.dispatchEvent(new CustomEvent("task-details:copy-outputs", { detail: { taskId: taskIdNum } }))
+                    }}
+                  >
+                    <ClipboardCopy className="w-4 h-4" />
+                  </button>
+                </IconTooltip>
+                <IconTooltip label="Download">
+                  <button
+                    type="button"
+                    className="inline-flex items-center justify-center h-8 w-8 rounded text-gray-500 hover:bg-gray-100 transition focus:outline-none focus:ring-2 focus:ring-blue-400"
+                    aria-label="Download"
+                    onClick={() => {
+                      setTaskTab("content")
+                      window.dispatchEvent(new CustomEvent("task-details:download-outputs", { detail: { taskId: taskIdNum } }))
+                    }}
+                  >
+                    <Download className="w-4 h-4" />
+                  </button>
+                </IconTooltip>
+              </>
+            ) : null}
             {/* Actions dropdown menu */}
-            <DropdownMenu>
-              <DropdownMenuTrigger asChild>
-                <Button variant="ghost" size="sm" className="h-8 w-8 p-0">
-                  <MoreHorizontal className="h-4 w-4" />
-                </Button>
-              </DropdownMenuTrigger>
-              <DropdownMenuContent align="end">
+            {!isSuggestionMode ? (
+              <DropdownMenu>
+                <DropdownMenuTrigger asChild>
+                  <Button variant="ghost" size="sm" className="h-8 w-8 p-0">
+                    <MoreHorizontal className="h-4 w-4" />
+                  </Button>
+                </DropdownMenuTrigger>
+                <DropdownMenuContent align="end">
                 {/* Add subtask - only for regular tasks (not main or subtask) */}
                 {!isLoading && task && task.content_type_id !== '39' && !task.parent_task_id_int && (
                   <DropdownMenuItem onClick={handleAddSubtaskForRegular}>
@@ -2010,6 +3650,47 @@ export function TaskDetails({
                   Duplicate Task
                   </DropdownMenuItem>
                 )}
+                {!isSuggestionMode && taskIdNum ? (
+                  <DropdownMenuItem
+                    onClick={() => {
+                      setTaskTab("content")
+                      window.dispatchEvent(new CustomEvent("task-details:focus-outputs", { detail: { taskId: taskIdNum } }))
+                    }}
+                  >
+                    <Maximize2 className="w-4 h-4 mr-2" />
+                    Focus outputs
+                  </DropdownMenuItem>
+                ) : null}
+                {!isSuggestionMode && taskIdNum ? (
+                  <DropdownMenuItem
+                    onClick={() => {
+                      if (activeTaskTab !== "content" && activeTaskTab !== "overview") {
+                        setTaskTab("content")
+                      }
+                      window.setTimeout(() => {
+                        window.dispatchEvent(
+                          new CustomEvent("task-details:open-content-history", {
+                            detail: { taskId: taskIdNum },
+                          }),
+                        )
+                      }, 0)
+                    }}
+                  >
+                    <History className="w-4 h-4 mr-2" />
+                    Content history
+                  </DropdownMenuItem>
+                ) : null}
+                {!isSuggestionMode && taskIdNum ? (
+                  <DropdownMenuItem
+                    onClick={() => {
+                      setTaskTab("content")
+                      window.dispatchEvent(new CustomEvent("task-details:download-outputs", { detail: { taskId: taskIdNum } }))
+                    }}
+                  >
+                    <Download className="w-4 h-4 mr-2" />
+                    Download
+                  </DropdownMenuItem>
+                ) : null}
                 <DropdownMenuItem onClick={() => {
                   if (typeof window !== 'undefined') {
                     navigator.clipboard.writeText(window.location.href);
@@ -2019,23 +3700,24 @@ export function TaskDetails({
                     });
                   }
                 }}>
-                  <Copy className="w-4 h-4 mr-2" />
+                  <Share2 className="w-4 h-4 mr-2" />
                   Copy Link
                 </DropdownMenuItem>
-                {!isSuggestionMode && (
-                  <DropdownMenuItem onClick={handleAiBuildToggle}>
-                  <Wand2 className="w-4 h-4 mr-2" />
-                  Build with AI
+                {!isSuggestionMode && taskIdNum ? (
+                  <DropdownMenuItem onClick={handleQuickFiveStarReview}>
+                    <Star className="w-4 h-4 mr-2" />
+                    Quick 5-star review
                   </DropdownMenuItem>
-                )}
+                ) : null}
                 {!isSuggestionMode && (
                   <DropdownMenuItem onClick={() => setIsDeleteDialogOpen(true)} className="text-red-600">
                   <Trash2 className="w-4 h-4 mr-2" />
                   Delete Task
                   </DropdownMenuItem>
                 )}
-              </DropdownMenuContent>
-            </DropdownMenu>
+                </DropdownMenuContent>
+              </DropdownMenu>
+            ) : null}
 
             {/* Suggestion actions are shown in a pinned bottom bar (see below) */}
             
@@ -2066,60 +3748,77 @@ export function TaskDetails({
           </div>
         </div>
 
-        {isSuggestionMode && (
-          <div className="rounded-md border border-amber-200 bg-amber-50 px-3 py-2 text-amber-950">
-            <div className="text-sm font-semibold">🤖 AI-generated suggestion — review before approval</div>
-          </div>
-        )}
       </div>
-      {/* Main content with tabs */}
-      <div className="flex-1 flex flex-col overflow-hidden relative">
-        <Tabs 
-          value={activeTab} 
-          onValueChange={(value) => {
-            if (disableUrlSync) {
-              setLocalActiveTab(value);
-              return;
-            }
-            const newParams = new URLSearchParams(searchParams.toString());
-            newParams.set('detailsTab', value);
-            router.replace(`${pathname}?${newParams.toString()}`, { scroll: false });
-          }}
-          className="flex-1 min-h-0 flex flex-col"
+      {/* Suggestions only ever have the single Overview tab, so the tab bar is pure noise there — hide
+          it and render the overview content directly. Normal tasks keep the full tab system. */}
+      {!isSuggestionMode && (
+      <Tabs
+        value={activeTaskTab}
+        onValueChange={(value) => setTaskTab(value as TaskTab)}
+        className="flex-none"
+      >
+        <div
+          ref={tabsScrollRef}
+          className="ai-chat-tabs-scroll min-h-0 min-w-0 overflow-x-auto overflow-y-visible border-b border-gray-200"
+          onMouseEnter={() => setIsTabsHovered(true)}
+          onMouseLeave={() => setIsTabsHovered(false)}
         >
-          <TabsList className="grid w-full grid-cols-3 bg-transparent border-b border-gray-200 p-0 h-auto">
-            <TabsTrigger 
-              value="details" 
-              className="px-4 py-2 text-sm font-medium text-gray-600 hover:text-gray-900 data-[state=active]:text-gray-900 data-[state=active]:border-b-2 data-[state=active]:border-blue-500 bg-transparent border-b-2 border-transparent rounded-none"
-            >
-              Details
+          <TabsList className="h-auto flex-nowrap justify-start rounded-none border-t-0 bg-transparent p-0 px-4 whitespace-nowrap">
+            <TabsTrigger value="overview" className={tabTriggerClassName}>
+              Overview
             </TabsTrigger>
-            <TabsTrigger 
-              value="content" 
-              className="px-4 py-2 text-sm font-medium text-gray-600 hover:text-gray-900 data-[state=active]:text-gray-900 data-[state=active]:border-b-2 data-[state=active]:border-blue-500 bg-transparent border-b-2 border-transparent rounded-none"
-            >
-              Content
-            </TabsTrigger>
-            <TabsTrigger 
-              value="reviews" 
-              className="px-4 py-2 text-sm font-medium text-gray-600 hover:text-gray-900 data-[state=active]:text-gray-900 data-[state=active]:border-b-2 data-[state=active]:border-blue-500 bg-transparent border-b-2 border-transparent rounded-none"
-            >
-              Reviews
-            </TabsTrigger>
+            {!isSuggestionMode ? (
+              <>
+                <TabsTrigger value="attachments" className={tabTriggerClassName}>
+                  Attachments
+                </TabsTrigger>
+                <TabsTrigger value="content" className={tabTriggerClassName}>
+                  Content
+                </TabsTrigger>
+                <TabsTrigger value="activity" className={tabTriggerClassName}>
+                  Activity
+                </TabsTrigger>
+                <TabsTrigger value="reviews" className={tabTriggerClassName}>
+                  Reviews
+                </TabsTrigger>
+                <TabsTrigger value="comments" className={tabTriggerClassName}>
+                  Comments
+                </TabsTrigger>
+              </>
+            ) : null}
           </TabsList>
-          
-          <TabsContent value="details" className="flex-1 min-h-0 overflow-auto">
-            <div className="p-4 pb-0">
+        </div>
+      </Tabs>
+      )}
+      {/* Main content (task-details body). The comments pane is a sibling <aside> below, so this
+          column and the comments column share the same parent height via the top-level flex split. */}
+      <div className="relative flex min-h-0 flex-1 flex-col overflow-hidden">
+            <div className="flex-1 min-h-0 overflow-auto overflow-x-hidden">
+          {activeTaskTab === "overview" && (
+          <section className="p-4 pb-0">
               {/* Banner is rendered in the header for suggestion mode */}
-          <div className="grid grid-cols-[max-content_1fr] gap-x-4 gap-y-2 items-start">
+          {!isSuggestionMode && (
+            <h3 className="text-base font-medium text-gray-900 mb-3">Overview</h3>
+          )}
+          <div className="grid grid-cols-[max-content_minmax(0,1fr)] gap-x-6 gap-y-2 items-start">
             {/* Task Title */}
-            <label className="text-sm font-medium text-gray-400 self-center justify-self-start text-left" htmlFor="task-title">Title</label>
+            <label className="text-sm font-normal text-gray-400 self-center justify-self-start text-left" htmlFor="task-title">Title</label>
             {isEditingTitle && canEdit ? (
               <textarea
                 ref={titleInputRef}
                 id="task-title"
+                data-ai-field-type="task_title"
+                data-ai-field-label="Title"
                 value={title}
                 onChange={e => setTitle(e.target.value)}
+                onFocus={() =>
+                  setTaskFieldContext({
+                    fieldType: "task_title",
+                    label: `${task?.title?.trim() || "Task"} - Title`,
+                    entityId: task?.id ?? null,
+                    instructions: taskBuildInstructions || null,
+                  })
+                }
                 onBlur={() => {
                   if (title !== task?.title) handleFieldChange('title', title);
                   setIsEditingTitle(false);
@@ -2133,371 +3832,313 @@ export function TaskDetails({
                     setIsEditingTitle(false);
                   }
                 }}
-                className="w-full px-3 py-2 border rounded-md focus:outline-none focus:ring-2 focus:ring-gray-200 resize-none"
+                className="w-full px-3 py-2 border border-gray-200 rounded-md focus:outline-none focus:ring-2 focus:ring-gray-200 text-sm font-normal leading-normal resize-none min-h-[40px]"
                 rows={1}
                 autoFocus
                 disabled={isLoading}
               />
             ) : (
               <div
-                className="w-full px-3 py-2 rounded-md cursor-pointer hover:bg-gray-50 min-h-[40px] flex items-center"
+                className="w-full px-3 py-2 rounded-md border border-gray-200 cursor-pointer hover:border-gray-300 min-h-[40px] flex items-center min-w-0 overflow-hidden"
                 tabIndex={0}
-                onClick={!canEdit ? undefined : () => setIsEditingTitle(true)}
+                onClick={!canEdit ? undefined : (e) => {
+                  const selection = window.getSelection()
+                  if (selection && !selection.isCollapsed && selection.toString().trim().length > 0) return
+                  setIsEditingTitle(true)
+                }}
                 onKeyDown={!canEdit ? undefined : (e => { if (e.key === 'Enter') setIsEditingTitle(true) })}
                 aria-label="Edit title"
                 title={title || ''}
                 style={isLoading ? { pointerEvents: 'none', opacity: 0.5 } : {}}
               >
-                <span className="text-lg font-semibold text-gray-900">{title || <span className="text-gray-400">Click to set title</span>}</span>
+                <span className="text-sm font-normal text-gray-900 truncate block min-w-0 whitespace-nowrap select-text">{title || <span className="text-gray-400">Click to set title</span>}</span>
               </div>
             )}
             {/* Project */}
-            <label className="text-sm font-medium text-gray-400 self-center justify-self-start text-left" htmlFor="task-project">Project</label>
-            {isEditingProject && canEdit ? (
-              <select
-                id="task-project"
-                value={isLoading ? '' : String(currentProjectId || '')}
-                onChange={isLoading ? undefined : handleProjectChange}
-                onBlur={isLoading ? undefined : (() => setIsEditingProject(false))}
-                className="w-full px-3 py-2 border rounded-md focus:outline-none focus:ring-2 focus:ring-gray-200"
-                disabled={isLoading}
+            <label className="text-sm font-normal text-gray-400 self-center justify-self-start text-left" htmlFor="task-project">Project</label>
+            {isSuggestionMode ? (
+              hasMountedSuggestionControls ? (
+                <Select
+                  value={isLoading ? NONE_OPTION : (String(currentProjectId || '') || NONE_OPTION)}
+                  onValueChange={
+                    isLoading || isApprovingSuggestion || isDismissingSuggestion
+                      ? undefined
+                      : (value) => handleProjectChange({ target: { value: value === NONE_OPTION ? '' : value } } as React.ChangeEvent<HTMLSelectElement>)
+                  }
+                  onOpenChange={(open) => { if (open) setProjectSearchQuery("") }}
+                >
+                  <SelectTrigger className="h-10 min-h-10 w-full min-w-0 border-gray-200 rounded-md text-sm leading-none">
+                    <div className="flex min-w-0 items-center gap-2">
+                      {currentProjectOption?.logo ? (
+                        <img
+                          src={getImageUrl(currentProjectOption.logo || undefined) || undefined}
+                          alt=""
+                          className="h-4 w-4 shrink-0 rounded-sm object-cover"
+                        />
+                      ) : (
+                        <span className="h-2 w-2 shrink-0 rounded-full bg-gray-300" />
+                      )}
+                      <span className="truncate">
+                        {currentProjectOption?.label || "Select project"}
+                      </span>
+                    </div>
+                  </SelectTrigger>
+                  <SelectContent className="w-[min(90vw,28rem)] max-w-full">
+                    <div className="px-2 pb-2 pt-1">
+                      <input
+                        type="text"
+                        value={projectSearchQuery}
+                        onChange={(e) => setProjectSearchQuery(e.target.value)}
+                        placeholder="Search projects..."
+                        className="h-8 w-full rounded border border-gray-200 px-2 text-xs"
+                      />
+                    </div>
+                    <SelectItem value={NONE_OPTION}>Select project</SelectItem>
+                    {filteredProjectOptions.map((opt) => (
+                      <SelectItem key={String(opt.value)} value={String(opt.value)}>
+                        <div className="flex items-center gap-2">
+                          {opt.logo ? (
+                            <img src={getImageUrl(opt.logo || undefined) || undefined} alt="" className="h-4 w-4 rounded-sm object-cover" />
+                          ) : (
+                            <span className="h-2 w-2 rounded-full bg-gray-300" />
+                          )}
+                          <span className="truncate">{opt.label}</span>
+                        </div>
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              ) : (
+                <div className="h-10 min-h-10 w-full rounded-md border border-gray-200 bg-white" />
+              )
+            ) : canEdit ? (
+              <Select
+                value={isLoading ? NONE_OPTION : (String(currentProjectId || '') || NONE_OPTION)}
+                onValueChange={isLoading ? undefined : (value) => handleProjectChange({ target: { value: value === NONE_OPTION ? '' : value } } as React.ChangeEvent<HTMLSelectElement>)}
+                onOpenChange={(open) => { if (open) setProjectSearchQuery("") }}
               >
-                <option value="">Select project</option>
-                {editFields?.projects && !editFields.projects.some((opt: any) => String(opt.id) === String(currentProjectId)) && currentProjectId && (
-                  <option value={String(currentProjectId)} disabled>
-                    {currentProjectName || `Project #${currentProjectId}`}
-                  </option>
-                )}
-                {editFields?.projects
-                  ?.filter((opt: any) => opt.active === undefined || opt.active === true)
-                  .map((opt: any) => (
-                    <option key={String(opt.id)} value={String(opt.id)}>{opt.name}</option>
+                <SelectTrigger className="h-10 min-h-10 w-full min-w-0 border-gray-200 rounded-md text-sm leading-none">
+                  <div className="flex min-w-0 items-center gap-2">
+                    {currentProjectOption?.logo ? (
+                      <img
+                        src={getImageUrl(currentProjectOption.logo || undefined) || undefined}
+                        alt=""
+                        className="h-4 w-4 shrink-0 rounded-sm object-cover"
+                      />
+                    ) : (
+                      <span className="h-2 w-2 shrink-0 rounded-full bg-gray-300" />
+                    )}
+                    <span className="truncate">
+                      {currentProjectOption?.label || "Select project"}
+                    </span>
+                  </div>
+                </SelectTrigger>
+                <SelectContent className="w-[min(90vw,28rem)] max-w-full">
+                  <div className="px-2 pb-2 pt-1">
+                    <input
+                      type="text"
+                      value={projectSearchQuery}
+                      onChange={(e) => setProjectSearchQuery(e.target.value)}
+                      placeholder="Search projects..."
+                      className="h-8 w-full rounded border border-gray-200 px-2 text-xs"
+                    />
+                  </div>
+                  <SelectItem value={NONE_OPTION}>Select project</SelectItem>
+                  {filteredProjectOptions.map((opt) => (
+                    <SelectItem key={String(opt.value)} value={String(opt.value)}>
+                      <div className="flex items-center gap-2">
+                        {opt.logo ? (
+                          <img src={getImageUrl(opt.logo || undefined) || undefined} alt="" className="h-4 w-4 rounded-sm object-cover" />
+                        ) : (
+                          <span className="h-2 w-2 rounded-full bg-gray-300" />
+                        )}
+                        <span className="truncate">{opt.label}</span>
+                      </div>
+                    </SelectItem>
                   ))}
-              </select>
+                </SelectContent>
+              </Select>
             ) : (
-              <div
-                className="w-full px-3 py-2 rounded-md cursor-pointer hover:bg-gray-50 truncate"
-                tabIndex={0}
-                onClick={!canEdit ? undefined : () => setIsEditingProject(true)}
-                onKeyDown={!canEdit ? undefined : (e => { if (e.key === 'Enter') setIsEditingProject(true) })}
-                aria-label="Edit project"
-                title={currentProjectName || ''}
-                style={isLoading ? { pointerEvents: 'none', opacity: 0.5 } : {}}
-              >
+              <div className="w-full h-10 px-3 py-2 rounded-md border border-gray-200 truncate text-sm font-normal text-gray-900 min-w-0" title={currentProjectName || ''}>
                 {task?.project || currentProjectName ? (
                   <ProjectBadge
                     name={task?.project?.name ?? currentProjectName}
                     logoUrl={projectLogoUrl}
                     color={task?.project?.color ?? task?.project_color ?? undefined}
-                    size="md"
+                    size="sm"
                   />
                 ) : (
-                  <span className="text-gray-400">Click to set project</span>
+                  <span className="text-gray-400">—</span>
                 )}
               </div>
             )}
             {/* Assigned to (with avatar) */}
-            <label className="text-sm font-medium text-gray-400 self-center justify-self-start text-left" htmlFor="task-assignee">Assigned to</label>
-            {isEditingAssignee && canEdit ? (
-              <select
-                id="task-assignee"
-                value={isLoading ? '' : filteredUserId || ''}
-                onChange={isLoading ? undefined : handleAssigneeChange}
-                onBlur={isLoading ? undefined : (() => setIsEditingAssignee(false))}
-                className="w-full px-3 py-2 border rounded-md focus:outline-none focus:ring-2 focus:ring-gray-200"
-                disabled={isLoading}
+            <label className="text-sm font-normal text-gray-400 self-center justify-self-start text-left" htmlFor="task-assignee">Assigned to</label>
+            {isSuggestionMode ? (
+              hasMountedSuggestionControls ? (
+                <Select
+                  value={isLoading ? NONE_OPTION : (filteredUserId || NONE_OPTION)}
+                  onValueChange={
+                    isLoading || isApprovingSuggestion || isDismissingSuggestion
+                      ? undefined
+                      : (value) => handleAssigneeChange({ target: { value: value === NONE_OPTION ? '' : value } } as React.ChangeEvent<HTMLSelectElement>)
+                  }
+                >
+                  <SelectTrigger className="h-10 min-h-10 w-full min-w-0 border-gray-200 rounded-md text-sm leading-none">
+                    <SelectValue placeholder="Select assignee" />
+                  </SelectTrigger>
+                  <SelectContent className="w-[min(90vw,24rem)] max-w-full">
+                    <SelectItem value={NONE_OPTION}>Select assignee</SelectItem>
+                    {assigneeOptions.map((opt) => (
+                      <SelectItem key={String(opt.value)} value={String(opt.value)}>
+                        <div className="flex items-center gap-2">
+                          <UserAvatar
+                            name={opt.label}
+                            photoUrl={getImageUrl(opt.photo)}
+                            size="xs"
+                          />
+                          <span className="truncate">{opt.label}</span>
+                        </div>
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              ) : (
+                <div className="h-10 min-h-10 w-full rounded-md border border-gray-200 bg-white" />
+              )
+            ) : canEdit ? (
+              <Select
+                value={isLoading ? NONE_OPTION : (filteredUserId || NONE_OPTION)}
+                onValueChange={isLoading ? undefined : (value) => handleAssigneeChange({ target: { value: value === NONE_OPTION ? '' : value } } as React.ChangeEvent<HTMLSelectElement>)}
               >
-                <option value="">Select assignee</option>
-                {assigneeOptions.map(opt => (
-                  <option key={opt.value} value={opt.value}>{opt.label}</option>
-                ))}
-              </select>
+                <SelectTrigger className="h-10 min-h-10 w-full min-w-0 border-gray-200 rounded-md text-sm leading-none">
+                  <SelectValue placeholder="Select assignee" />
+                </SelectTrigger>
+                <SelectContent className="w-[min(90vw,24rem)] max-w-full">
+                  <SelectItem value={NONE_OPTION}>Select assignee</SelectItem>
+                  {assigneeOptions.map((opt) => (
+                    <SelectItem key={String(opt.value)} value={String(opt.value)}>
+                      <div className="flex items-center gap-2">
+                        <UserAvatar
+                          name={opt.label}
+                          photoUrl={getImageUrl(opt.photo)}
+                          size="xs"
+                        />
+                        <span className="truncate">{opt.label}</span>
+                      </div>
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
             ) : (
-              <div
-                className="w-full px-3 py-2 rounded-md cursor-pointer hover:bg-gray-50 truncate flex items-center gap-2"
-                tabIndex={0}
-                onClick={!canEdit ? undefined : handleEditAssignee}
-                onKeyDown={!canEdit ? undefined : (e => { if (e.key === 'Enter') handleEditAssignee() })}
-                aria-label="Edit assignee"
-                title={currentAssignedUserName || ''}
-                style={isLoading ? { pointerEvents: 'none', opacity: 0.5 } : {}}
-              >
+              <div className="w-full h-10 px-3 py-2 rounded-md border border-gray-200 truncate flex items-center gap-2 text-sm font-normal text-gray-900 min-w-0" title={currentAssignedUserName || ''}>
                 {currentAssignedUserName ? (
                   <>
-                    <UserAvatar
-                      name={currentAssignedUserName}
-                      photoUrl={assignedUserPhotoUrl}
-                      size="md"
-                    />
-                    <span>{currentAssignedUserName}</span>
+                    <UserAvatar name={currentAssignedUserName} photoUrl={assignedUserPhotoUrl} size="xs" />
+                    <span className="truncate text-sm font-normal text-gray-900">{currentAssignedUserName}</span>
                   </>
                 ) : (
-                  <span className="text-gray-400">Click to set assignee</span>
+                  <span className="text-gray-400">—</span>
                 )}
               </div>
             )}
-            {/* Task Watchers */}
-            <label className="text-sm font-medium text-gray-400 self-start justify-self-start text-left pt-2">Watchers</label>
-            <div className="w-full px-3 py-2 rounded-md border border-transparent">
-              {isSuggestionMode ? (
-                <div className="text-sm text-gray-400">—</div>
-              ) : (
-                <>
-              {/* Active watchers for this task (is_deleted=false). Only project watchers can be task watchers (enforced by RPC). */}
-              {isLoading || isTaskWatchersLoading ? (
-                <div className="text-sm text-gray-500 flex items-center gap-2">
-                  <Loader2 className="h-4 w-4 animate-spin" />
-                  Loading watchers…
-                </div>
-              ) : taskWatchers.length === 0 ? (
-                <div className="text-sm text-gray-400">No watchers yet</div>
-              ) : (
-                <div className="flex flex-col gap-2">
-                  {taskWatchers.map((w) => (
-                    <div key={w.watcher_user_id} className="flex items-center justify-between gap-2">
-                      <div className="flex items-center gap-2 min-w-0">
-                        <UserAvatar
-                          name={w.full_name ?? `User #${w.watcher_user_id}`}
-                          photoUrl={getImageUrl(w.photo)}
-                          size="sm"
-                        />
-                        <span className="truncate text-sm text-gray-900">
-                          {w.full_name ?? `User #${w.watcher_user_id}`}
-                        </span>
-                      </div>
-                      <Button
-                        type="button"
-                        variant="ghost"
-                        size="sm"
-                        className="h-7 w-7 p-0"
-                        aria-label={`Remove watcher ${w.full_name ?? w.watcher_user_id}`}
-                        title="Remove watcher"
-                        onClick={() => removeWatcher(w.watcher_user_id)}
-                        disabled={isTaskWatchersMutating}
-                      >
-                        <X className="h-4 w-4" />
-                      </Button>
-                    </div>
-                  ))}
-                </div>
-              )}
-
-              {(taskWatchersError || taskWatchersMutationError) && (
-                <div className="mt-2 text-xs text-red-600">
-                  {taskWatchersError || taskWatchersMutationError}
-                </div>
-              )}
-
-              <div className="mt-2 flex items-center gap-2">
-                <Popover
-                  open={isAddWatcherOpen}
-                  onOpenChange={(open) => {
-                    setIsAddWatcherOpen(open);
-                    if (open) {
-                      setSelectedWatcherUserIdsToAdd([]);
-                      loadEligibleTaskWatchers();
-                    }
-                  }}
-                >
-                  <PopoverTrigger asChild>
-                    <Button
-                      type="button"
-                      variant="outline"
-                      size="sm"
-                      disabled={isLoading || !taskIdNum || isTaskWatchersMutating}
-                      aria-label="Add watcher"
-                      title="Add watcher"
-                    >
-                      Add watchers
-                    </Button>
-                  </PopoverTrigger>
-                  <PopoverContent className="w-80 p-0" align="start">
-                    <Command>
-                      <CommandInput
-                        placeholder={
-                          isEligibleTaskWatchersLoading
-                            ? "Loading eligible users…"
-                            : "Search eligible users…"
-                        }
-                        disabled={isEligibleTaskWatchersLoading || isTaskWatchersMutating}
-                      />
-                      <CommandList className="max-h-[260px]">
-                        <CommandEmpty>
-                          {eligibleTaskWatchersError
-                            ? "Failed to load eligible users."
-                            : isEligibleTaskWatchersLoading
-                            ? "Loading…"
-                            : "No eligible users"}
-                        </CommandEmpty>
-                        <CommandGroup>
-                          {eligibleTaskWatchers.map((u) => (
-                            <CommandItem
-                              key={u.watcher_user_id}
-                              value={`${u.full_name ?? ""} ${u.watcher_user_id}`}
-                              className={isTaskWatchersMutating ? "pointer-events-none opacity-50" : ""}
-                              onSelect={(_value) => {
-                                if (isTaskWatchersMutating) return;
-                                setSelectedWatcherUserIdsToAdd((prev) => {
-                                  const id = u.watcher_user_id;
-                                  return prev.includes(id) ? prev.filter((x) => x !== id) : [...prev, id];
-                                });
-                              }}
-                            >
-                              <div className="flex items-center gap-2 min-w-0 w-full">
-                                <div className="flex h-4 w-4 items-center justify-center">
-                                  <Check
-                                    className={cn(
-                                      "h-4 w-4",
-                                      selectedWatcherUserIdsToAdd.includes(u.watcher_user_id)
-                                        ? "opacity-100"
-                                        : "opacity-0"
-                                    )}
-                                  />
-                                </div>
-                                <UserAvatar
-                                  name={u.full_name ?? `User #${u.watcher_user_id}`}
-                                  photoUrl={getImageUrl(u.photo)}
-                                  size="sm"
-                                />
-                                <span className="truncate">{u.full_name ?? `User #${u.watcher_user_id}`}</span>
-                              </div>
-                            </CommandItem>
-                          ))}
-                        </CommandGroup>
-                      </CommandList>
-                      <div className="border-t p-2 flex items-center justify-between gap-2">
-                        <div className="text-xs text-gray-500">
-                          {selectedWatcherUserIdsToAdd.length > 0
-                            ? `${selectedWatcherUserIdsToAdd.length} selected`
-                            : "Select users to add"}
-                        </div>
-                        <Button
-                          type="button"
-                          size="sm"
-                          disabled={
-                            isTaskWatchersMutating ||
-                            selectedWatcherUserIdsToAdd.length === 0 ||
-                            !taskIdNum
-                          }
-                          onClick={async () => {
-                            if (!taskIdNum || selectedWatcherUserIdsToAdd.length === 0) return;
-                            await addWatchers(selectedWatcherUserIdsToAdd);
-                            setSelectedWatcherUserIdsToAdd([]);
-                            setIsAddWatcherOpen(false);
-                          }}
-                        >
-                          {isTaskWatchersMutating ? "Adding…" : "Add"}
-                        </Button>
-                      </div>
-                    </Command>
-                  </PopoverContent>
-                </Popover>
-                {(isEligibleTaskWatchersLoading || isTaskWatchersMutating) && (
-                  <Loader2 className="h-4 w-4 animate-spin text-gray-500" />
-                )}
+            {/* Due date */}
+            <label className="text-sm font-normal text-gray-400 self-center justify-self-start text-left" htmlFor="task-due-date">Due date</label>
+            {canEdit || isSuggestionMode ? (
+              <div className="relative w-full min-h-[40px] px-3 py-2 rounded-md border border-gray-200 flex items-center text-sm font-normal text-gray-900 min-w-0">
+                <span className={`pointer-events-none truncate ${task?.is_overdue ? "text-red-600 font-medium" : ""}`}>
+                  {currentDueDate ? formatDateWithYear(currentDueDate) : <span className="text-gray-400">Set due date</span>}
+                </span>
+                <input
+                  ref={dueDateInputRef}
+                  id="task-due-date"
+                  type="date"
+                  value={isLoading ? '' : currentDueDate ?? ''}
+                  onChange={isLoading ? undefined : handleDueDateChange}
+                  onBlur={isLoading ? undefined : handleDueDateBlur}
+                  onKeyDown={isLoading ? undefined : (e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); dueDateInputRef.current?.showPicker?.(); } handleDueDateKeyDown(e); }}
+                  onClick={isLoading ? undefined : () => dueDateInputRef.current?.showPicker?.()}
+                  className="absolute inset-0 h-full w-full opacity-0 cursor-pointer z-[1]"
+                  disabled={isLoading || isApprovingSuggestion || isDismissingSuggestion}
+                  aria-label="Due date"
+                />
               </div>
-              {eligibleTaskWatchersError && (
-                <div className="mt-2 text-xs text-red-600">{eligibleTaskWatchersError}</div>
-              )}
-                </>
-              )}
-            </div>
-            {/* Due Date */}
-            <label className="text-sm font-medium text-gray-400 self-center justify-self-start text-left" htmlFor="task-due-date">Due Date</label>
-            {isEditingDueDate && canEdit ? (
-              <input
-                id="task-due-date"
-                type="date"
-                value={isLoading ? '' : currentDueDate ?? ''}
-                onChange={isLoading ? undefined : handleDueDateChange}
-                onBlur={isLoading ? undefined : handleDueDateBlur}
-                onKeyDown={isLoading ? undefined : handleDueDateKeyDown}
-                className="w-full px-3 py-2 border rounded-md focus:outline-none focus:ring-2 focus:ring-gray-200"
-                autoFocus
-                disabled={isLoading}
-              />
             ) : (
-              <div
-                className="w-full px-3 py-2 rounded-md cursor-pointer hover:bg-gray-50 truncate"
-                tabIndex={0}
-                onClick={!canEdit ? undefined : (() => setIsEditingDueDate(true))}
-                onKeyDown={!canEdit ? undefined : (e => { if (e.key === 'Enter') setIsEditingDueDate(true) })}
-                aria-label="Edit due date"
-                title={formatDateWithYear(currentDueDate)}
-                style={isLoading ? { pointerEvents: 'none', opacity: 0.5 } : {}}
-              >
-                <div className="flex items-center gap-2">
-                  <span className={task?.is_overdue ? "text-red-600 font-medium" : ""}>
-                    {currentDueDate ? formatDateWithYear(currentDueDate) : <span className="text-gray-400">Click to set due date</span>}
-                  </span>
-                  {task?.is_overdue && (
-                    <span className="text-xs text-red-600 font-medium">(delivery overdue)</span>
-                  )}
-                </div>
+              <div className="w-full min-h-[40px] px-3 py-2 rounded-md border border-gray-200 truncate text-sm font-normal text-gray-900 min-w-0" title={currentDueDate ? formatDateWithYear(currentDueDate) : ''}>
+                <span className={task?.is_overdue ? "text-red-600 font-medium" : ""}>
+                  {currentDueDate ? formatDateWithYear(currentDueDate) : <span className="text-gray-400">—</span>}
+                </span>
               </div>
             )}
-            {/* Publication Date (as editable date) */}
-            <label className="text-sm font-medium text-gray-400 self-center justify-self-start text-left" htmlFor="task-publication-date">Publication Date</label>
-            {isEditingPublicationDate && canEdit ? (
-              <input
-                id="task-publication-date"
-                type="date"
-                value={isLoading ? '' : currentPublicationDate ?? ''}
-                onChange={isLoading ? undefined : handlePublicationDateChange}
-                onBlur={isLoading ? undefined : handlePublicationDateBlur}
-                onKeyDown={isLoading ? undefined : handlePublicationDateKeyDown}
-                className="w-full px-3 py-2 border rounded-md focus:outline-none focus:ring-2 focus:ring-gray-200"
-                autoFocus
-                disabled={isLoading}
-              />
+            {/* Publish date */}
+            <label className="text-sm font-normal text-gray-400 self-center justify-self-start text-left" htmlFor="task-publication-date">Publish date</label>
+            {canEdit ? (
+              <div className="relative w-full min-h-[40px] px-3 py-2 rounded-md border border-gray-200 flex items-center text-sm font-normal text-gray-900 min-w-0">
+                <span className={`pointer-events-none truncate ${task?.is_publication_overdue ? "text-red-600 font-medium" : ""}`}>
+                  {currentPublicationDate ? formatDateWithYear(currentPublicationDate) : <span className="text-gray-400">Set publish date</span>}
+                </span>
+                <input
+                  ref={publicationDateInputRef}
+                  id="task-publication-date"
+                  type="date"
+                  value={isLoading ? '' : currentPublicationDate ?? ''}
+                  onChange={isLoading ? undefined : handlePublicationDateChange}
+                  onBlur={isLoading ? undefined : handlePublicationDateBlur}
+                  onKeyDown={isLoading ? undefined : (e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); publicationDateInputRef.current?.showPicker?.(); } handlePublicationDateKeyDown(e); }}
+                  onClick={isLoading ? undefined : () => publicationDateInputRef.current?.showPicker?.()}
+                  className="absolute inset-0 h-full w-full opacity-0 cursor-pointer z-[1]"
+                  disabled={isLoading}
+                  aria-label="Publication date"
+                />
+              </div>
             ) : (
-              <div
-                className="w-full px-3 py-2 rounded-md cursor-pointer hover:bg-gray-50 truncate"
-                tabIndex={0}
-                onClick={!canEdit ? undefined : (() => setIsEditingPublicationDate(true))}
-                onKeyDown={!canEdit ? undefined : (e => { if (e.key === 'Enter') setIsEditingPublicationDate(true) })}
-                aria-label="Edit publication date"
-                title={formatDateWithYear(currentPublicationDate)}
-                style={isLoading ? { pointerEvents: 'none', opacity: 0.5 } : {}}
-              >
-                <div className="flex items-center gap-2">
-                  <span className={task?.is_publication_overdue ? "text-red-600 font-medium" : ""}>
-                    {currentPublicationDate ? formatDateWithYear(currentPublicationDate) : <span className="text-gray-400">Click to set publication date</span>}
-                  </span>
-                  {task?.is_publication_overdue && (
-                    <span className="text-xs text-red-600 font-medium">(publication overdue)</span>
-                  )}
-                </div>
+              <div className="w-full min-h-[40px] px-3 py-2 rounded-md border border-gray-200 truncate text-sm font-normal text-gray-900 min-w-0" title={currentPublicationDate ? formatDateWithYear(currentPublicationDate) : ''}>
+                <span className={task?.is_publication_overdue ? "text-red-600 font-medium" : ""}>
+                  {currentPublicationDate ? formatDateWithYear(currentPublicationDate) : <span className="text-gray-400">—</span>}
+                </span>
               </div>
             )}
             {/* Status (as pill) */}
-            <label className="text-sm font-medium text-gray-400 self-center justify-self-start text-left" htmlFor="task-status">Status</label>
-            {isEditingStatus && canEdit ? (
-              <select
-                id="task-status"
-                value={isLoading ? '' : currentStatusId || ''}
-                onChange={isLoading ? undefined : handleStatusChange}
-                onBlur={isLoading ? undefined : (() => setIsEditingStatus(false))}
-                className="w-full px-3 py-2 border rounded-md focus:outline-none focus:ring-2 focus:ring-gray-200"
-                disabled={isLoading || isEditFieldsLoading}
+            <label className="text-sm font-normal text-gray-400 self-center justify-self-start text-left" htmlFor="task-status">Status</label>
+            {canEdit ? (
+              <Select
+                value={isLoading ? NONE_OPTION : (currentStatusId || NONE_OPTION)}
+                onValueChange={isLoading ? undefined : (value) => handleStatusChange({ target: { value: value === NONE_OPTION ? '' : value } } as React.ChangeEvent<HTMLSelectElement>)}
               >
-                <option value="">Select status</option>
-                {isEditFieldsLoading && <option disabled>Loading...</option>}
-                {editFieldsError && <option disabled>Error loading statuses</option>}
-                {statusOptions.map(opt => (
-                  <option key={opt.value} value={opt.value}>{opt.label}</option>
-                ))}
-              </select>
+                <SelectTrigger className="h-10 min-h-10 w-full min-w-0 border-gray-200 rounded-md text-sm leading-none">
+                  {currentStatusName ? (
+                    <span
+                      className="inline-flex items-center px-3 py-1 rounded-full text-xs font-medium truncate max-w-full"
+                      style={{
+                        backgroundColor: currentStatusColor || '#e5e7eb',
+                        color: currentStatusColor ? '#fff' : '#374151',
+                      }}
+                    >
+                      {currentStatusName}
+                    </span>
+                  ) : (
+                    <SelectValue placeholder={isEditFieldsLoading ? 'Loading...' : editFieldsError ? 'Error loading statuses' : 'Select status'} />
+                  )}
+                </SelectTrigger>
+                <SelectContent className="w-[min(90vw,24rem)] max-w-full">
+                  <SelectItem value={NONE_OPTION}>Select status</SelectItem>
+                  {statusOptions.map((opt) => (
+                    <SelectItem key={String(opt.value)} value={String(opt.value)}>
+                      <span
+                        className="inline-flex items-center px-3 py-1 rounded-full text-xs font-medium"
+                        style={{
+                          backgroundColor: opt.color || '#e5e7eb',
+                          color: opt.color ? '#fff' : '#374151',
+                        }}
+                      >
+                        {opt.label}
+                      </span>
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
             ) : (
-              <div
-                className="w-full px-3 py-2 rounded-md cursor-pointer hover:bg-gray-50 truncate"
-                tabIndex={0}
-                onClick={!canEdit ? undefined : (() => setIsEditingStatus(true))}
-                onKeyDown={!canEdit ? undefined : (e => { if (e.key === 'Enter') setIsEditingStatus(true) })}
-                aria-label="Edit status"
-                title={currentStatusName || ''}
-                style={isLoading ? { pointerEvents: 'none', opacity: 0.5 } : {}}
-              >
+              <div className="w-full h-10 px-3 py-2 rounded-md border border-gray-200 truncate text-sm font-normal text-gray-900 min-w-0" title={currentStatusName || ''}>
                 {currentStatusName ? (
                   <span
                     className="inline-block px-3 py-1 rounded-full text-xs font-medium"
@@ -2508,165 +4149,162 @@ export function TaskDetails({
                   >
                     {currentStatusName}
                   </span>
-                ) : <span className="text-gray-400">{isSuggestionMode ? '—' : 'Click to set status'}</span>}
+                ) : <span className="text-gray-400">—</span>}
               </div>
             )}
             {/* Content Type */}
-            <label className="text-sm font-medium text-gray-400 self-center justify-self-start text-left" htmlFor="task-content-type">Content Type</label>
-            {isEditingContentType && canEdit ? (
-              <select
-                id="task-content-type"
-                value={isLoading ? '' : currentContentTypeId || ''}
-                onChange={isLoading ? undefined : handleContentTypeChange}
-                onBlur={isLoading ? undefined : (() => setIsEditingContentType(false))}
-                className="w-full px-3 py-2 border rounded-md focus:outline-none focus:ring-2 focus:ring-gray-200"
-                disabled={isLoading}
+            <label className="text-sm font-normal text-gray-400 self-center justify-self-start text-left" htmlFor="task-content-type">Content Type</label>
+            {isSuggestionMode ? (
+              hasMountedSuggestionControls ? (
+                <Select
+                  value={isLoading ? NONE_OPTION : (currentContentTypeId || NONE_OPTION)}
+                  onValueChange={
+                    isLoading || isApprovingSuggestion || isDismissingSuggestion
+                      ? undefined
+                      : (value) => handleContentTypeChange({ target: { value: value === NONE_OPTION ? '' : value } } as React.ChangeEvent<HTMLSelectElement>)
+                  }
+                >
+                  <SelectTrigger className="h-10 min-h-10 w-full min-w-0 border-gray-200 rounded-md text-sm leading-none">
+                    <SelectValue placeholder="Select content type" />
+                  </SelectTrigger>
+                  <SelectContent className="w-[min(90vw,24rem)] max-w-full">
+                    <SelectItem value={NONE_OPTION}>Select content type</SelectItem>
+                    {contentTypeOptions.map((opt) => (
+                      <SelectItem key={String(opt.value)} value={String(opt.value)}>
+                        {opt.label}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              ) : (
+                <div className="h-10 min-h-10 w-full rounded-md border border-gray-200 bg-white" />
+              )
+            ) : canEdit ? (
+              <Select
+                value={isLoading ? NONE_OPTION : (currentContentTypeId || NONE_OPTION)}
+                onValueChange={isLoading ? undefined : (value) => handleContentTypeChange({ target: { value: value === NONE_OPTION ? '' : value } } as React.ChangeEvent<HTMLSelectElement>)}
               >
-                <option value="">Select content type</option>
-                {contentTypeOptions.map(opt => (
-                  <option key={opt.value} value={opt.value}>{opt.label}</option>
-                ))}
-              </select>
+                <SelectTrigger className="h-10 min-h-10 w-full min-w-0 border-gray-200 rounded-md text-sm leading-none">
+                  <SelectValue placeholder="Select content type" />
+                </SelectTrigger>
+                <SelectContent className="w-[min(90vw,24rem)] max-w-full">
+                  <SelectItem value={NONE_OPTION}>Select content type</SelectItem>
+                  {contentTypeOptions.map((opt) => (
+                    <SelectItem key={String(opt.value)} value={String(opt.value)}>
+                      {opt.label}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
             ) : (
-              <div
-                className="w-full px-3 py-2 rounded-md cursor-pointer hover:bg-gray-50 truncate"
-                tabIndex={0}
-                onClick={!canEdit ? undefined : (() => setIsEditingContentType(true))}
-                onKeyDown={!canEdit ? undefined : (e => { if (e.key === 'Enter') setIsEditingContentType(true) })}
-                aria-label="Edit content type"
-                title={currentContentTypeTitle || ''}
-                style={isLoading ? { pointerEvents: 'none', opacity: 0.5 } : {}}
-              >
-                {currentContentTypeTitle || (
-                  <span className="text-gray-400">{isSuggestionMode ? '—' : 'Click to set content type'}</span>
-                )}
+              <div className="w-full h-10 px-3 py-2 rounded-md border border-gray-200 truncate text-sm font-normal text-gray-900 min-w-0" title={currentContentTypeTitle || ''}>
+                {currentContentTypeTitle || <span className="text-gray-400">—</span>}
               </div>
             )}
 
             {/* Production Type */}
-            <label className="text-sm font-medium text-gray-400 self-center justify-self-start text-left" htmlFor="task-production-type">Production Type</label>
-            {isEditingProductionType && canEdit ? (
-              <select
-                id="task-production-type"
-                value={currentProductionTypeId || ''}
-                onChange={handleProductionTypeChange}
-                onBlur={() => setIsEditingProductionType(false)}
-                className="w-full px-3 py-2 border rounded-md focus:outline-none focus:ring-2 focus:ring-gray-200"
+            <label className="text-sm font-normal text-gray-400 self-center justify-self-start text-left" htmlFor="task-production-type">Production Type</label>
+            {isSuggestionMode ? (
+              hasMountedSuggestionControls ? (
+                <Select
+                  value={currentProductionTypeId || NONE_OPTION}
+                  onValueChange={
+                    isLoading || isApprovingSuggestion || isDismissingSuggestion
+                      ? undefined
+                      : (value) => handleProductionTypeChange({ target: { value: value === NONE_OPTION ? '' : value } } as React.ChangeEvent<HTMLSelectElement>)
+                  }
+                >
+                  <SelectTrigger className="h-10 min-h-10 w-full min-w-0 border-gray-200 rounded-md text-sm leading-none">
+                    <SelectValue placeholder="Select production type" />
+                  </SelectTrigger>
+                  <SelectContent className="w-[min(90vw,24rem)] max-w-full">
+                    <SelectItem value={NONE_OPTION}>Select production type</SelectItem>
+                    {productionTypeOptions.map((opt) => (
+                      <SelectItem key={String(opt.value)} value={String(opt.value)}>
+                        {opt.label}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              ) : (
+                <div className="h-10 min-h-10 w-full rounded-md border border-gray-200 bg-white" />
+              )
+            ) : canEdit ? (
+              <Select
+                value={currentProductionTypeId || NONE_OPTION}
+                onValueChange={(value) => handleProductionTypeChange({ target: { value: value === NONE_OPTION ? '' : value } } as React.ChangeEvent<HTMLSelectElement>)}
               >
-                <option value="">Select production type</option>
-                {productionTypeOptions.map(opt => (
-                  <option key={opt.value} value={opt.value}>{opt.label}</option>
-                ))}
-              </select>
+                <SelectTrigger className="h-10 min-h-10 w-full min-w-0 border-gray-200 rounded-md text-sm leading-none">
+                  <SelectValue placeholder="Select production type" />
+                </SelectTrigger>
+                <SelectContent className="w-[min(90vw,24rem)] max-w-full">
+                  <SelectItem value={NONE_OPTION}>Select production type</SelectItem>
+                  {productionTypeOptions.map((opt) => (
+                    <SelectItem key={String(opt.value)} value={String(opt.value)}>
+                      {opt.label}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
             ) : (
-              <div
-                className="w-full px-3 py-2 rounded-md cursor-pointer hover:bg-gray-50 truncate"
-                tabIndex={0}
-                onClick={!canEdit ? undefined : () => setIsEditingProductionType(true)}
-                onKeyDown={!canEdit ? undefined : (e => { if (e.key === 'Enter') setIsEditingProductionType(true) })}
-                aria-label="Edit production type"
-                title={currentProductionTypeTitle || ''}
-              >
-                {currentProductionTypeTitle || (
-                  <span className="text-gray-400">{isSuggestionMode ? '—' : 'Click to set production type'}</span>
-                )}
+              <div className="w-full h-10 px-3 py-2 rounded-md border border-gray-200 truncate text-sm font-normal text-gray-900 min-w-0" title={currentProductionTypeTitle || ''}>
+                {currentProductionTypeTitle || <span className="text-gray-400">—</span>}
               </div>
             )}
             {/* Language */}
-            <label className="text-sm font-medium text-gray-400 self-center justify-self-start text-left" htmlFor="task-language">Language</label>
-            {isEditingLanguage && canEdit ? (
-              <select
-                id="task-language"
-                value={currentLanguageId || ''}
-                onChange={handleLanguageChange}
-                onBlur={() => setIsEditingLanguage(false)}
-                className="w-full px-3 py-2 border rounded-md focus:outline-none focus:ring-2 focus:ring-gray-200"
+            <label className="text-sm font-normal text-gray-400 self-center justify-self-start text-left" htmlFor="task-language">Language</label>
+            {isSuggestionMode ? (
+              hasMountedSuggestionControls ? (
+                <Select
+                  value={currentLanguageId || NONE_OPTION}
+                  onValueChange={
+                    isLoading || isApprovingSuggestion || isDismissingSuggestion
+                      ? undefined
+                      : (value) => handleLanguageChange({ target: { value: value === NONE_OPTION ? '' : value } } as React.ChangeEvent<HTMLSelectElement>)
+                  }
+                >
+                  <SelectTrigger className="h-10 min-h-10 w-full min-w-0 border-gray-200 rounded-md text-sm leading-none">
+                    <SelectValue placeholder="Select language" />
+                  </SelectTrigger>
+                  <SelectContent className="w-[min(90vw,24rem)] max-w-full">
+                    <SelectItem value={NONE_OPTION}>Select language</SelectItem>
+                    {languageOptions.map((opt) => (
+                      <SelectItem key={String(opt.value)} value={String(opt.value)}>
+                        {opt.label}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              ) : (
+                <div className="h-10 min-h-10 w-full rounded-md border border-gray-200 bg-white" />
+              )
+            ) : canEdit ? (
+              <Select
+                value={currentLanguageId || NONE_OPTION}
+                onValueChange={(value) => handleLanguageChange({ target: { value: value === NONE_OPTION ? '' : value } } as React.ChangeEvent<HTMLSelectElement>)}
               >
-                <option value="">Select language</option>
-                {languageOptions.map(opt => (
-                  <option key={opt.value} value={opt.value}>{opt.label}</option>
-                ))}
-              </select>
+                <SelectTrigger className="h-10 min-h-10 w-full min-w-0 border-gray-200 rounded-md text-sm leading-none">
+                  <SelectValue placeholder="Select language" />
+                </SelectTrigger>
+                <SelectContent className="w-[min(90vw,24rem)] max-w-full">
+                  <SelectItem value={NONE_OPTION}>Select language</SelectItem>
+                  {languageOptions.map((opt) => (
+                    <SelectItem key={String(opt.value)} value={String(opt.value)}>
+                      {opt.label}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
             ) : (
-              <div
-                className="w-full px-3 py-2 rounded-md cursor-pointer hover:bg-gray-50 truncate"
-                tabIndex={0}
-                onClick={!canEdit ? undefined : () => setIsEditingLanguage(true)}
-                onKeyDown={!canEdit ? undefined : (e => { if (e.key === 'Enter') setIsEditingLanguage(true) })}
-                aria-label="Edit language"
-                title={currentLanguageCode || ''}
-              >
-                {currentLanguageCode || (
-                  <span className="text-gray-400">{isSuggestionMode ? '—' : 'Click to set language'}</span>
-                )}
+              <div className="w-full h-10 px-3 py-2 rounded-md border border-gray-200 truncate text-sm font-normal text-gray-900 min-w-0" title={currentLanguageCode || ''}>
+                {currentLanguageCode || <span className="text-gray-400">—</span>}
               </div>
             )}
 
-            {/* Channels (editable pill UI) */}
-            <label className="text-sm font-medium text-gray-400 self-center justify-self-start text-left">Channels</label>
-            <div className="w-full px-3 py-2 flex flex-wrap gap-2 min-h-[40px] items-center overflow-x-auto">
-              {optimisticChannels.length > 0 ? (
-                optimisticChannels.map((channel, idx) => {
-                  // Find channel id by name
-                  const channelObj = editFields?.channels?.find((c: any) => c.label === channel);
-                  return (
-                    <span key={channel} className="inline-flex items-center bg-blue-100 text-blue-800 text-xs px-2 py-1 rounded mr-1 mb-1 truncate max-w-[120px]">
-                    {channel}
-                      {channelObj && (
-                        <button
-                          type="button"
-                          className="ml-1 text-blue-800 hover:text-red-600 focus:outline-none"
-                          onClick={() => handleRemoveChannel(channel)}
-                          aria-label="Remove channel"
-                          disabled={isSuggestionMode}
-                        >×</button>
-                      )}
-                  </span>
-                  );
-                })
-              ) : (
-                <span className="text-gray-400 ml-0">No channels</span>
-              )}
-              {!isSuggestionMode && (
-              <Popover>
-                <PopoverTrigger asChild>
-                  <Button size="icon" variant="outline" className="w-7 h-7 rounded-full flex items-center justify-center text-xl border border-gray-300 text-gray-900 bg-white shadow" aria-label="Add channel" title="Add channel">+</Button>
-                </PopoverTrigger>
-                <PopoverContent className="w-56 p-2">
-                  <input
-                    type="text"
-                    className="w-full border rounded px-2 py-1 text-xs mb-2"
-                    placeholder="Search channels..."
-                    onChange={e => setChannelSearch(e.target.value)}
-                    value={channelSearch}
-                    autoFocus
-                  />
-                  <div className="max-h-40 overflow-y-auto">
-                    {channelOptions
-                      ?.filter((c: any) => typeof c.label === 'string' && c.label.toLowerCase().includes(channelSearch.toLowerCase()) && !optimisticChannels.includes(c.label))
-                      .slice(0, 8)
-                      .map((c: any) => (
-                        <div
-                          key={c.value}
-                          className="flex items-center gap-2 px-2 py-1 hover:bg-accent cursor-pointer text-xs rounded"
-                          onClick={() => handleAddChannel(c.label)}
-                          title={`Add ${c.label}`}
-                        >
-                          <span>{c.label}</span>
-                        </div>
-                      ))}
-                    {channelOptions && channelOptions.filter((c: any) => typeof c.label === 'string' && c.label.toLowerCase().includes(channelSearch.toLowerCase()) && !optimisticChannels.includes(c.label)).length === 0 && (
-                      <div className="text-xs text-muted-foreground px-2 py-1">No channels found</div>
-                    )}
-                  </div>
-                </PopoverContent>
-              </Popover>
-              )}
-            </div>
             {showParentField && (
               <>
-                <label className="text-sm font-medium text-gray-400 self-center justify-self-start text-left">Parent Task</label>
-                <div className="w-full flex items-center gap-2">
+                <label className="text-sm font-normal text-gray-400 self-center justify-self-start text-left">Parent Task</label>
+                <div className="w-full min-w-0 flex items-center gap-2">
                   <div className="flex-1 min-w-0">
                     <ParentTaskSelect
                       currentParentId={task.parent_task_id_int ? String(task.parent_task_id_int) : null}
@@ -2690,11 +4328,64 @@ export function TaskDetails({
                 </div>
               </>
             )}
+
+            {/* Briefing (rich text) - last in overview; label above, value below */}
+            <div className="col-span-2 space-y-1">
+              <label className="text-sm font-normal text-gray-400 block text-left">Briefing</label>
+              <div className="relative min-h-[120px] w-full min-w-0 overflow-hidden rounded-md border border-gray-200 bg-white">
+                {isSuggestionMode && !hasMountedSuggestionBriefingEditor ? (
+                  <div className="min-h-[120px] w-full bg-white" />
+                ) : (
+                  <RichTextEditor
+                    value={briefing}
+                    onChange={value => setBriefing(value)}
+                    onFocus={
+                      isSuggestionMode
+                        ? undefined
+                        : () =>
+                            setTaskFieldContext({
+                              fieldType: "briefing",
+                              label: `${task?.title?.trim() || "Task"} - Briefing`,
+                              entityId: task?.id ?? null,
+                              instructions: typeof briefing === "string" ? briefing : null,
+                            })
+                    }
+                    onBlur={
+                      isSuggestionMode
+                        ? undefined
+                        : () => {
+                            if (briefing !== task?.briefing) handleFieldChange('briefing', briefing);
+                          }
+                    }
+                    readOnly={false}
+                    toolbarId="ql-toolbar-rich-briefing"
+                    toolbarVariant="compact"
+                    toolbarVisibility={isSuggestionMode ? "hidden" : "always"}
+                    showBubbleToolbar={!isSuggestionMode}
+                    flatSurface
+                    fontSize={COMPONENT_OUTPUT_FONT_SIZE_PX}
+                    editorWrapperClassName={COMPONENT_OUTPUT_EDITOR_CLASS}
+                    height={briefingEditorHeight}
+                  />
+                )}
+                <div
+                  onMouseDown={handleBriefingResizeMouseDown}
+                  className="absolute bottom-0 right-0 z-10 flex h-5 w-5 cursor-nwse-resize items-center justify-center rounded-tl transition-colors hover:bg-gray-100"
+                  style={{ cursor: 'nwse-resize' }}
+                  title="Drag to resize"
+                >
+                  <svg width="12" height="12" viewBox="0 0 12 12" fill="none" className="text-gray-400" aria-hidden>
+                    <path d="M0 12 L12 0" stroke="currentColor" strokeWidth="1.2" strokeLinecap="round" />
+                    <path d="M4 12 L12 4" stroke="currentColor" strokeWidth="1.2" strokeLinecap="round" />
+                  </svg>
+                </div>
+              </div>
+            </div>
           </div>
           {/* Subtasks section (full width, only once) */}
           {task && String(task.content_type_id) === '39' && (
             <div className="mt-6">
-              <label className="text-sm font-medium text-gray-400 text-left mb-1 block">Subtasks</label>
+              <label className="text-sm font-normal text-gray-400 text-left mb-1 block">Subtasks</label>
               {subtasks.length === 0 ? (
                 <div className="text-gray-400 text-sm">No subtasks</div>
               ) : (
@@ -2706,9 +4397,9 @@ export function TaskDetails({
                         const { name: statusName, color: statusColor } = getSubtaskStatus(st.project_statuses);
                         return (
                           <tr key={st.id} className="group border-b last:border-b-0 hover:bg-gray-50 cursor-pointer" onClick={() => {
-                            const paramsStr = searchParams.toString();
-                            const url = paramsStr ? `/tasks/${st.id}?${paramsStr}` : `/tasks/${st.id}`;
-                            router.push(url);
+                            const p = mergePreserveParams(new URLSearchParams(searchParams.toString()));
+                            p.set('id', String(st.id));
+                            router.push(`${pathname}?${p.toString()}`, { scroll: false });
                           }}>
                             {/* Task name (truncated) */}
                             <td className="py-2 pl-2 pr-2 min-w-[120px]">
@@ -2754,16 +4445,73 @@ export function TaskDetails({
                 </Button>
               </div>
             </div>
+            )}
+          </section>
           )}
-          {/* Attachments section (full width) */}
-          <div className="mt-6">
-            <label className="text-sm font-medium text-gray-400 text-left mb-1 block">Attachments</label>
+
+          {activeTaskTab === "overview" && !isSuggestionMode && taskIdNum && commentsPanelProps ? (
+            <TaskOverviewPreviews
+              taskId={taskIdNum}
+              projectId={task?.project_id_int || undefined}
+              contentTypeId={task?.content_type_id ? Number(task.content_type_id) : undefined}
+              languageId={task?.language_id ? Number(task.language_id) : undefined}
+              taskTitle={task?.title || undefined}
+              contentTypeTitle={task?.content_type_title || undefined}
+              taskMetaTitle={task?.meta_title || undefined}
+              taskMetaDescription={task?.meta_description || undefined}
+              taskKeyword={task?.keyword || undefined}
+              taskSlug={(task as any)?.slug || undefined}
+              projectLogoUrl={projectLogoUrl}
+              taskSourceUrls={(task as any)?.source_urls ?? null}
+              taskBuildInstructions={taskBuildInstructions}
+              canLoad={canLoadFollowups}
+              bootstrapTaskChannels={(selectedTask as { task_channels?: unknown } | null)?.task_channels}
+              bootstrapAttachments={displayAttachments}
+              reviewData={selectedTask?.review_data}
+              preferredChannelId={activeChannelId}
+              onChannelChange={setActiveChannelId}
+              onActiveFieldChange={setTaskFieldContext}
+              onNavigateTab={setTaskTab}
+              commentsPanelProps={commentsPanelProps}
+              accessToken={accessToken}
+              relatedIdeas={relatedIdeas}
+              isRelatedIdeasLoading={isRelatedIdeasLoading || isRelatedIdeasFetching}
+              isRelatedIdeasRefreshing={isRefreshingRelatedIdeas}
+              ideaActionById={ideaActionById}
+              contentTypeLabelById={contentTypeLabelById}
+              onDismissRelatedIdea={(ideaId) => void handleSetRelatedIdeaStatus(ideaId, "dismissed")}
+              onAcceptRelatedIdea={(idea) => handleAcceptRelatedIdea(idea as TaskRelatedIdeaRow)}
+              onRefreshRelatedIdeas={() => void handleRefreshRelatedIdeas()}
+            />
+          ) : null}
+
+          {/* Attachments section */}
+          {!isSuggestionMode && activeTaskTab === "attachments" && (
+          <section className="p-4 pb-0 min-h-0">
+            <div className="flex items-center gap-2 mb-3">
+              <h3 className="text-base font-medium text-gray-900">Attachments</h3>
+              {task && !isSuggestionMode && (
+                <button
+                  type="button"
+                  className="inline-flex h-7 w-7 items-center justify-center rounded text-gray-500 hover:bg-gray-100 hover:text-gray-700"
+                  onClick={() => dropzoneRef.current?.openFilePicker()}
+                  title="Add attachment"
+                  aria-label="Add attachment"
+                >
+                  +
+                </button>
+              )}
+            </div>
             {/* Key Visual Preview */}
-            {keyVisualId && attachments.length > 0 && attachments.find(a => a.id === keyVisualId) && (
+            {keyVisualId && displayAttachments.length > 0 && displayAttachments.find(a => a.id === keyVisualId) && (
               <div className="mb-2">
                 <div className="text-xs text-muted-foreground mb-1">Key Visual</div>
                 <img
-                  src={attachments.find(a => a.id === keyVisualId)?.url || ''}
+                  src={
+                    attachmentsUpload.signedUrls[keyVisualId] ||
+                    (displayAttachments.find((a) => a.id === keyVisualId) as { url?: string } | undefined)?.url ||
+                    ''
+                  }
                   alt="Key Visual"
                   className="max-w-xs rounded shadow"
                   style={{ maxHeight: '180px' }}
@@ -2772,10 +4520,12 @@ export function TaskDetails({
             )}
             {task && !isSuggestionMode && (
               <Dropzone
+                ref={dropzoneRef}
+                minimal
                 tableName="tasks"
                 recordId={task.id}
                 bucketName="attachments"
-                attachments={attachments}
+                attachments={displayAttachments as any}
                 signedUrls={attachmentsUpload.signedUrls}
                 isUploading={attachmentsUpload.isUploading}
                 uploadError={attachmentsUpload.uploadError}
@@ -2796,261 +4546,139 @@ export function TaskDetails({
                 )}
               />
             )}
-          </div>
-          {/* Copy Post section (rich text, always editable) */}
-          <div className="mt-6">
-            <label className="text-sm font-medium text-gray-400 text-left mb-1 block">Copy Post</label>
-            <RichTextEditor
-              value={copyPost}
-              onChange={value => setCopyPost(value)}
-              onBlur={() => {
-                if (copyPost !== task?.copy_post) handleFieldChange('copy_post', copyPost);
-              }}
-              readOnly={false}
-              toolbarId="ql-toolbar-rich-copy-post"
-            />
-          </div>
-          {/* Briefing section (rich text, always editable) */}
-          <div className="mt-6">
-            <label className="text-sm font-medium text-gray-400 text-left mb-1 block">Briefing</label>
-            <RichTextEditor
-              value={briefing}
-              onChange={value => setBriefing(value)}
-              onBlur={() => {
-                if (briefing !== task?.briefing) handleFieldChange('briefing', briefing);
-              }}
-              readOnly={false}
-              toolbarId="ql-toolbar-rich-briefing"
-            />
-          </div>
-          
-          {/* Notes section (rich text, always editable) */}
-          <div className="mt-6">
-            <label className="text-sm font-medium text-gray-400 text-left mb-1 block">Notes</label>
-            <RichTextEditor
-              value={notes}
-              onChange={value => setNotes(value)}
-              onBlur={() => {
-                if (notes !== task?.notes) handleFieldChange('notes', notes);
-              }}
-              readOnly={false}
-              toolbarId="ql-toolbar-rich-notes"
-            />
-          </div>
-          {/* Activity section (collapsible) */}
-          <div className="mt-6">
-            <button
-              className="flex items-center w-full text-left text-sm font-medium text-gray-400 mb-1 focus:outline-none"
-              onClick={isSuggestionMode ? undefined : () => setIsActivityOpen((open) => !open)}
-              aria-expanded={isActivityOpen}
-              aria-controls="activity-panel"
-              type="button"
-            >
-              <ChevronRight className={`transition-transform mr-2 ${isActivityOpen ? 'rotate-90' : ''}`} />
-              Activity
-            </button>
-            {isActivityOpen && (
-              <div id="activity-panel">
-                <TaskActivityTimeline taskId={Number(task.id)} />
-              </div>
-            )}
-          </div>
-          {/* Chat history (now flows with the rest of the content) */}
-          {!isSuggestionMode && (
-            <div className="mt-6">
-              <label className="text-sm font-medium text-gray-400 text-left mb-1 block">Comments</label>
-              {/* Thread history dropdown, always visible, initially with only the first thread */}
-              
-              {selectedThreadId && currentUserId !== null && (
-                <ThreadedRealtimeChat
-                  key={String(selectedThreadId)}
-                  threadId={selectedThreadId}
-                  currentUserId={currentUserId}
-                  currentUserName={currentUserName || undefined}
-                  currentUserAvatar={currentUserAvatar || undefined}
-                  currentUserEmail={currentUserEmail}
-                  currentPublicUserId={currentPublicUserId}
-                  hideInput={true}
-                  onReplySelected={(payload) => {
-                    // Show reply banner in the sticky composer (not in the message list)
-                    setReplyTo(payload)
-                    // Best-effort: keep the user's focus near the composer
-                    requestAnimationFrame(() => {
-                      const el = document.querySelector('.ql-editor')
-                      if (el instanceof HTMLElement) el.focus()
-                    })
-                  }}
-                  initialMessages={
-                    Array.isArray(allMentions) && selectedThreadId
-                      ? allMentions.filter(m => m.thread_id === selectedThreadId)
-                      : []
-                  }
-                />
-              )}
-            </div>
+          </section>
+
           )}
-            </div>
-          </TabsContent>
-          
-          <TabsContent value="content" className="flex-1 min-h-0 overflow-auto">
-            <div className="p-4 pb-0">
-              {/* Content Tab - Channels, Briefing, Components, SEO */}
-              {!isSuggestionMode && taskIdNum && (
-                <TaskContentTab
-                  taskId={taskIdNum}
-                  projectId={task?.project_id_int || undefined}
-                  contentTypeId={task?.content_type_id ? Number(task.content_type_id) : undefined}
-                  languageId={task?.language_id ? Number(task.language_id) : undefined}
-                  onChannelChange={setActiveChannelId}
-                />
-              )}
-              {isSuggestionMode ? (
-                <div className="text-sm text-gray-500">
-                  No content details for suggestions yet.
-                </div>
-              ) : null}
-            </div>
-          </TabsContent>
-          
-          <TabsContent value="reviews" className="flex-1 min-h-0 overflow-auto">
-            <div className="p-4 pb-0">
-              {/* Reviews section */}
-              <TaskReviewSummary 
-                reviewData={selectedTask?.review_data}
-                taskId={taskIdNum}
-                onReviewsChanged={() => {
-                  // Refetch task details to update the review summary
-                  queryClient.invalidateQueries({ queryKey: ['task', String(task?.id), accessToken] });
-                }}
-              />
-            </div>
-          </TabsContent>
-        </Tabs>
-        
-        {/* Chat input docked at the bottom (no overlap with tab scroll areas) */}
-        {task && !isSuggestionMode && (
-          <div className="shrink-0 bg-white border-t z-30 flex flex-col" style={{ boxShadow: '0 -2px 8px rgba(0,0,0,0.03)' }}>
-            {/* Pending participant row if no threads */}
-            
-            {/* Chat input only (sticky) */}
-            <StickyAddCommentInput
-              taskId={taskIdNum}
-              onCommentAdded={() => {}}
-              pendingParticipants={pendingParticipants}
-              setPendingParticipants={setPendingParticipants}
-              removedParticipants={removedParticipants}
-              setRemovedParticipants={setRemovedParticipants}
-              activeThreadId={isAddingThread ? null : selectedThreadId}
-              threads={threadsList}
-              latestMentions={latestMentions}
-              handleDeleteThread={handleDeleteThread}
-              replyTo={replyTo}
-              onClearReply={() => setReplyTo(null)}
-            />
-            {/* Thread selector, participants, new thread (compact row) */}
-            <div className="border-t bg-white px-2 py-1 flex items-center gap-2">
-              {/* Thread history button (leftmost) */}
-              <ThreadSwitcherPopover
-                taskId={taskIdNum}
-                threads={threadsList}
-                activeThreadId={selectedThreadId}
-                onSelectThread={id => {
-                  setSelectedThreadId(id);
-                  setIsAddingThread(false);
-                }}
-                onOpenChange={(open: boolean) => {
-                  if (open && threadsList.length === 1 && !isThreadListLoading) {
-                    handleViewThreadHistory();
-                  }
-                }}
-              />
-              {/* Avatars/participants: always in the same place, flex-1 */}
-              <div className="flex-1 overflow-hidden">
-                {isAddingThread || !(selectedTask as any)?.thread_id ? (
-                  <ThreadParticipantsInline
-                    pendingMode
-                    pendingParticipants={pendingParticipants}
-                    setPendingParticipants={setPendingParticipants}
-                    removedParticipants={removedParticipants}
-                    setRemovedParticipants={setRemovedParticipants}
-                    participants={Array.isArray(project_watchers) ? project_watchers.map((pw: any) => pw.users).filter(Boolean) : []}
-                    allProjectUsers={allProjectUsers}
-                    currentUserId={currentUserId}
-                    projectId={Number(task?.project_id_int) || 0}
-                  />
-                ) : (
-                  typeof selectedThreadId === 'number' && (
-                    <ThreadParticipantsInline 
-                      threadId={selectedThreadId}
-                      projectId={Number(task?.project_id_int) || 0}
-                      allowRemove={true}
-                      key={selectedThreadId}
-                      participants={participants}
-                      allProjectUsers={allProjectUsers}
-                      currentUserId={currentUserId}
-                      onParticipantsChanged={refetchSelectedThread}
+
+          {!isSuggestionMode && activeTaskTab === "content" ? (
+            <section className={cn("p-4 pb-0 min-h-0", isContentSectionExpanded && "min-h-full h-full flex flex-col pt-0")}>
+                {/* Content Tab renders "Content" title + channel pills + rest */}
+                {taskIdNum && canLoadFollowups && (
+                  <div className={cn("min-h-0", isContentSectionExpanded && "flex-1 min-h-0")}>
+                    <TaskContentTab
+                      taskId={taskIdNum}
+                      projectId={task?.project_id_int || undefined}
+                      contentTypeId={task?.content_type_id ? Number(task.content_type_id) : undefined}
+                      languageId={task?.language_id ? Number(task.language_id) : undefined}
+                      taskTitle={task?.title || undefined}
+                      contentTypeTitle={task?.content_type_title || undefined}
+                      taskMetaTitle={task?.meta_title || undefined}
+                      taskMetaDescription={task?.meta_description || undefined}
+                      taskKeyword={task?.keyword || undefined}
+                      taskSlug={(task as any)?.slug || undefined}
+                      projectLogoUrl={projectLogoUrl}
+                      taskSourceUrls={(task as any)?.source_urls ?? null}
+                      canLoad={canLoadFollowups}
+                      onChannelChange={setActiveChannelId}
+                      onActiveFieldChange={setTaskFieldContext}
+                      taskBuildInstructions={taskBuildInstructions}
+                      isSectionExpanded={isContentSectionExpanded}
+                      onToggleSectionExpand={() => setIsContentSectionExpanded((prev) => !prev)}
+                      skipInitialTaskChannelsFetch={!!taskIdNum}
+                      bootstrapTaskChannels={(selectedTask as { task_channels?: unknown } | null)?.task_channels}
+                      accessToken={accessToken}
+                      preferredChannelId={activeChannelId}
                     />
-                  )
+                  </div>
+                )}
+            </section>
+          ) : null}
+
+          {!isSuggestionMode && activeTaskTab === "reviews" && (
+          <section className="p-4 pb-0">
+              <div className="flex items-center gap-2 mb-3">
+                <h3 className="text-base font-medium text-gray-900">Reviews</h3>
+                {selectedTask?.review_data?.review_count != null && (
+                  <span className="text-sm text-gray-500">({selectedTask.review_data.review_count})</span>
+                )}
+                {taskIdNum && !isSuggestionMode && (
+                  <button
+                    type="button"
+                    className="inline-flex h-7 w-7 items-center justify-center rounded text-gray-500 hover:bg-gray-100 hover:text-gray-700"
+                    onClick={() => setIsAddingReview(true)}
+                    title="Add review"
+                    aria-label="Add review"
+                  >
+                    +
+                  </button>
                 )}
               </div>
-              {/* Delete thread icon (with confirmation dialog) */}
-              {selectedThreadId && (
-                <>
-                  <Button
-                    type="button"
-                    size="icon"
-                    variant="ghost"
-                    className="ml-1 shrink-0 text-destructive"
-                    aria-label="Delete thread"
-                    title="Delete thread"
-                    onClick={() => setShowDeleteThreadDialog(true)}
-                  >
-                    <Trash2 className="w-4 h-4" />
-                  </Button>
-                  <Dialog open={showDeleteThreadDialog} onOpenChange={setShowDeleteThreadDialog}>
-                    <DialogContent>
-                      <DialogTitle>Delete Thread</DialogTitle>
-                      <div className="py-2">Are you sure you want to delete this thread? This cannot be undone.</div>
-                      <DialogFooter>
-                        <Button variant="outline" onClick={() => setShowDeleteThreadDialog(false)} disabled={isDeleting}>Cancel</Button>
-                        <Button variant="destructive" onClick={() => { handleDeleteThread(selectedThreadId); setShowDeleteThreadDialog(false); }} disabled={isDeleting}>
-                          {isDeleting ? 'Deleting...' : 'Delete'}
-                        </Button>
-                      </DialogFooter>
-                    </DialogContent>
-                  </Dialog>
-                </>
-              )}
-              {/* Add thread button: always at the end, never moves */}
-              <Button
-                type="button"
-                size="icon"
-                variant="ghost"
-                className="ml-1 shrink-0"
-                aria-label="Add new thread"
-                title="Add new thread"
-                onClick={handleAddThread}
-              >
-                +
-              </Button>
-            </div>
-          </div>
-        )}
+              {activeTaskTab === "reviews" ? (
+                <TaskReviewSummary 
+                  reviewData={selectedTask?.review_data}
+                  taskId={taskIdNum}
+                  autoOpenAllReviews={activeTaskTab === "reviews"}
+                  showAddForm={isAddingReview}
+                  onCloseAddForm={() => setIsAddingReview(false)}
+                  onReviewsChanged={() => {
+                    queryClient.invalidateQueries({ queryKey: ['task', String(task?.id), accessToken] });
+                  }}
+                />
+              ) : null}
+          </section>
+          )}
+
+          {!isSuggestionMode && activeTaskTab === "activity" ? (
+            <section
+              className={cn("p-4 pb-0", isContentSectionExpanded && "hidden")}
+            >
+                <h3 className="text-base font-medium text-gray-900 mb-3">Activity</h3>
+                {task ? (
+                  <TaskActivityTimeline taskId={Number(task.id)} />
+                ) : null}
+            </section>
+          ) : null}
+
+          {!isSuggestionMode && activeTaskTab === "comments" && commentsPanelProps ? (
+            <section className="flex min-h-0 flex-1 flex-col p-4 pb-0">
+              <h3 className="mb-3 text-base font-medium text-gray-900">Comments</h3>
+              <div className="flex min-h-0 flex-1 flex-col gap-2">
+                <div className="min-h-0 flex-1 overflow-y-auto">
+                  <TaskCommentsListPart {...commentsPanelProps} focusOnly />
+                </div>
+                <div
+                  ref={commentInputRef}
+                  data-ai-field-type="comment_input"
+                  data-ai-field-label="Comment"
+                  onFocusCapture={() =>
+                    setTaskFieldContext({
+                      fieldType: "comment_input",
+                      label: `${task?.title?.trim() || "Task"} - Comment`,
+                      entityId: task?.id ?? null,
+                      instructions: null,
+                    })
+                  }
+                >
+                  <TaskCommentsInputPart
+                    {...commentsPanelProps}
+                    onCommentAdded={() => {
+                      void handleViewThreadHistory({ force: true })
+                    }}
+                  />
+                </div>
+                <TaskCommentsFooterPart {...commentsPanelProps} />
+              </div>
+            </section>
+          ) : null}
+
+        </div>
 
         {/* Suggestion actions pinned at the bottom */}
-        {isSuggestionMode && suggestionStatus === 'pending' && (
+        {isSuggestionMode && suggestionStatus === 'pending' ? (
           <div className="sticky bottom-0 left-0 right-0 z-30 border-t bg-white p-3">
-            <div className="flex items-center justify-end gap-2">
+            <div className="flex w-full items-center gap-2">
               <Button
                 type="button"
                 variant="outline"
+                className="h-9 flex-1"
                 disabled={isApprovingSuggestion || isDismissingSuggestion}
                 onClick={() => void handleDismissSuggestion()}
               >
-                {isDismissingSuggestion ? 'Dismissing…' : 'Dismiss'}
+                {isDismissingSuggestion ? 'Dismissing…' : 'Disapprove'}
               </Button>
               <Button
                 type="button"
+                className="h-9 flex-1"
                 disabled={isApprovingSuggestion || isDismissingSuggestion}
                 onClick={() => void handleApproveSuggestion()}
               >
@@ -3058,8 +4686,11 @@ export function TaskDetails({
               </Button>
             </div>
           </div>
-        )}
-      </div>
+        ) : null}
+          </div>
+        </section>
+        </div>
+
       {/* Delete Confirmation Dialog */}
       <Dialog open={isDeleteDialogOpen} onOpenChange={setIsDeleteDialogOpen}>
         <DialogContent>
@@ -3077,14 +4708,6 @@ export function TaskDetails({
 
       
     </div>
-    <AiPane 
-      isOpen={isAiOpen} 
-      onClose={() => setIsAiOpen(false)} 
-      initialScope="task" 
-      taskId={taskIdNum}
-      contentTypeTitle={searchParams.get('aiContentType') || undefined}
-      activeChannelId={activeChannelId}
-    />
     </>
   )
 } 

@@ -9,9 +9,15 @@ export interface SlidePanelProps {
   onClose: () => void
   children: React.ReactNode
   className?: string
+  /** Optional class for the content wrapper (e.g. flex flex-col for pinned footer layout). */
+  contentClassName?: string
   position?: "left" | "right" | "bottom"
   title?: string
   hasOverlay?: boolean
+  /** Tailwind classes merged onto the backdrop (e.g. higher z-index when nested in shell panes). */
+  overlayClassName?: string
+  /** When position is "bottom", height of the sheet (e.g. "70vh"). Default "45vh". */
+  bottomSheetHeight?: string
 }
 
 const SWIPE_CLOSE_THRESHOLD_PX = 80
@@ -21,9 +27,12 @@ export function SlidePanel({
   onClose,
   children,
   className,
+  contentClassName,
   position = "right",
   title,
   hasOverlay = true,
+  bottomSheetHeight = "45vh",
+  overlayClassName,
 }: SlidePanelProps) {
   const [isMounted, setIsMounted] = React.useState(false)
   const touchStartY = React.useRef<number | null>(null)
@@ -60,7 +69,10 @@ export function SlidePanel({
       {/* Overlay */}
       {isOpen && hasOverlay && (
         <div
-          className="fixed inset-0 z-40 bg-black/50 transition-opacity"
+          className={cn(
+            "fixed inset-0 z-40 bg-black/50 transition-opacity",
+            overlayClassName,
+          )}
           onClick={onClose}
         />
       )}
@@ -78,7 +90,7 @@ export function SlidePanel({
           )}
           style={
             position === "bottom"
-              ? { height: "45vh", maxHeight: "90vh" }
+              ? { height: bottomSheetHeight, maxHeight: "90vh" }
               : undefined
           }
         >
@@ -112,7 +124,7 @@ export function SlidePanel({
 
             {/* Content: safe area inset for bottom sheet on notched devices */}
             <div
-              className="flex-1 min-h-0 overflow-y-auto p-4"
+              className={cn("flex-1 min-h-0 overflow-y-auto p-4", contentClassName)}
               style={
                 position === "bottom"
                   ? { paddingBottom: "max(1rem, env(safe-area-inset-bottom))" }

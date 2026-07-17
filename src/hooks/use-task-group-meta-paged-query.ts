@@ -1,13 +1,35 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { createClientComponentClient } from '@supabase/auth-helpers-nextjs';
 import type { SearchSessionRef } from '../../app/lib/types/search-session';
+import type { BootstrapResponse } from './use-task-group-tasks-query';
+import { getDefaultGroupOrderForGroupBy } from '@/lib/tasks-grouping-url';
 
 type GroupOrder = 'asc' | 'desc';
+type RowSortOrder = 'asc' | 'desc';
+const DEBUG_GROUPED_BOOTSTRAP = process.env.NODE_ENV === 'development';
+/** Orchestration / row-sort reset diagnostics (grouped list). */
+const DEBUG_GROUPED_ROW_SORT = process.env.NODE_ENV === 'development';
+
+const uiToViewSortMap: Record<string, string> = {
+  assigned_user: 'assigned_to_name',
+  users: 'assigned_to_name',
+  projects: 'project_name',
+  project_statuses: 'project_status_name',
+  title: 'title',
+  delivery_date: 'delivery_date',
+  publication_date: 'publication_date',
+  publication_timestamp: 'publication_date',
+  updated_at: 'updated_at',
+  content_type_title: 'content_type_title',
+  production_type_title: 'production_type_title',
+  language_code: 'language_code',
+};
 
 /** Meta RPC returns groups with group_key and label only (no task_count). */
 export type TaskGroupMeta = {
   group_key: string;
   label: string;
+  task_count?: number;
 };
 
 /** Payload for task_group_meta_paged_filtered. Send all keys (null when unused) to avoid PGRST202. */
@@ -43,6 +65,11 @@ export interface UseTaskGroupMetaPagedQueryOptions {
   editFields?: any;
   /** When provided, RPC reads q/filters/etc from this ref at call time (avoids stale closures). */
   searchSessionRef?: SearchSessionRef | null;
+  rowSortBy?: string;
+  rowSortOrder?: RowSortOrder;
+  bootstrapGroupLimit?: number;
+  useBootstrapInitialLoad?: boolean;
+  onBootstrapHydrate?: (payload: BootstrapResponse) => void;
 }
 
 export interface UseTaskGroupMetaPagedQueryResult {
@@ -52,6 +79,7 @@ export interface UseTaskGroupMetaPagedQueryResult {
   hasMore: boolean;
   error: string | null;
   fetchNextPage: () => void;
+  isBootstrapping: boolean;
 }
 
 export function useTaskGroupMetaPagedQuery({
@@ -64,12 +92,18 @@ export function useTaskGroupMetaPagedQuery({
   enabled = true,
   editFields,
   searchSessionRef,
+  rowSortBy,
+  rowSortOrder = 'desc',
+  bootstrapGroupLimit,
+  useBootstrapInitialLoad = false,
+  onBootstrapHydrate,
 }: UseTaskGroupMetaPagedQueryOptions): UseTaskGroupMetaPagedQueryResult {
   const [groups, setGroups] = useState<TaskGroupMeta[]>([]);
   const [nextCursor, setNextCursor] = useState<any | null>(null);
   const [isFetching, setIsFetching] = useState(false);
   const [hasMore, setHasMore] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [isBootstrapping, setIsBootstrapping] = useState(false);
 
   const editFieldsRef = useRef(editFields);
   useEffect(() => {
@@ -89,7 +123,11 @@ export function useTaskGroupMetaPagedQuery({
       const projectVal = sessionParams?.project ?? project;
       const filtersVal = sessionParams?.filters ?? filters;
       const groupByVal = sessionParams?.groupBy ?? groupBy ?? '';
-      const groupOrderVal = sessionParams?.groupOrder ?? groupOrder ?? 'asc';
+      const explicitGroupOrder = sessionParams?.groupOrder ?? groupOrder;
+      const groupOrderVal =
+        explicitGroupOrder != null && String(explicitGroupOrder).trim() !== ''
+          ? explicitGroupOrder
+          : getDefaultGroupOrderForGroupBy(groupByVal);
 
       // Convert project filter - can be single ID or comma-separated list.
       let projectIds: number[] | undefined;
@@ -140,26 +178,25 @@ export function useTaskGroupMetaPagedQuery({
         }
       }
 
-      // Convert content type filter.
+      // Convert content type filter. Accept numeric ID (from pills/filter pane) or title.
       const contentTypeParam = filtersVal['content_type_title'];
       let contentTypeIds: number[] | undefined;
       if (contentTypeParam && editFieldsRef.current?.content_types) {
         const contentTypes = Array.isArray(contentTypeParam) ? contentTypeParam : [contentTypeParam];
         const ids: number[] = [];
-
         for (const ct of contentTypes) {
-          const contentType = editFieldsRef.current.content_types.find((c: any) => c.title === ct);
-          if (contentType?.id) {
-            ids.push(Number(contentType.id));
+          const raw = String(ct).trim();
+          const asId = /^\d+$/.test(raw) ? parseInt(raw, 10) : NaN;
+          if (Number.isFinite(asId)) ids.push(asId);
+          else {
+            const contentType = editFieldsRef.current.content_types.find((c: any) => c.title === raw);
+            if (contentType?.id) ids.push(Number(contentType.id));
           }
         }
-
-        if (ids.length > 0) {
-          contentTypeIds = ids;
-        }
+        if (ids.length > 0) contentTypeIds = ids;
       }
 
-      // Convert production type filter.
+      // Convert production type filter. Accept numeric ID or title.
       const productionTypeParam = filtersVal['production_type_title'];
       let productionTypeIds: number[] | undefined;
       if (productionTypeParam && editFieldsRef.current?.production_types) {
@@ -167,19 +204,18 @@ export function useTaskGroupMetaPagedQuery({
           ? productionTypeParam
           : [productionTypeParam];
         const ids: number[] = [];
-
         for (const pt of productionTypes) {
-          const productionType = editFieldsRef.current.production_types.find(
-            (p: any) => p.title === pt,
-          );
-          if (productionType?.id) {
-            ids.push(Number(productionType.id));
+          const raw = String(pt).trim();
+          const asId = /^\d+$/.test(raw) ? parseInt(raw, 10) : NaN;
+          if (Number.isFinite(asId)) ids.push(asId);
+          else {
+            const productionType = editFieldsRef.current.production_types.find(
+              (p: any) => p.title === raw,
+            );
+            if (productionType?.id) ids.push(Number(productionType.id));
           }
         }
-
-        if (ids.length > 0) {
-          productionTypeIds = ids;
-        }
+        if (ids.length > 0) productionTypeIds = ids;
       }
 
       // Convert language filter.
@@ -275,6 +311,38 @@ export function useTaskGroupMetaPagedQuery({
     [q, project, filters, groupBy, groupOrder, limit],
   );
 
+  const buildBootstrapRpcParams = useCallback(
+    (sessionParams?: { q: string; project?: string; filters: Record<string, string | string[]>; groupBy: string; groupOrder: string }) => {
+      const metaParams = buildRpcParams(null, sessionParams);
+      const mappedRowSortBy = rowSortBy ? uiToViewSortMap[rowSortBy] || rowSortBy : null;
+      return {
+        p_q: metaParams.p_q,
+        p_project_ids: metaParams.p_project_ids,
+        p_status_names: metaParams.p_status_names,
+        p_assignee_ids: metaParams.p_assignee_ids,
+        p_content_type_ids: metaParams.p_content_type_ids,
+        p_production_type_ids: metaParams.p_production_type_ids,
+        p_language_ids: metaParams.p_language_ids,
+        p_is_overdue: metaParams.p_is_overdue,
+        p_is_publication_overdue: metaParams.p_is_publication_overdue,
+        p_group_by: metaParams.p_group_by,
+        p_group_order: metaParams.p_group_order,
+        p_channels: metaParams.p_channels,
+        p_delivery_date_gte: metaParams.p_delivery_date_gte,
+        p_delivery_date_lt: metaParams.p_delivery_date_lt,
+        p_publication_date_gte: metaParams.p_publication_date_gte,
+        p_publication_date_lt: metaParams.p_publication_date_lt,
+        p_row_sort_by: mappedRowSortBy,
+        p_row_sort_order: rowSortOrder ?? null,
+        p_group_limit:
+          typeof bootstrapGroupLimit === 'number' && Number.isFinite(bootstrapGroupLimit)
+            ? Math.max(1, Math.floor(bootstrapGroupLimit))
+            : null,
+      };
+    },
+    [bootstrapGroupLimit, buildRpcParams, rowSortBy, rowSortOrder],
+  );
+
   const performFetch = useCallback(
     async (cursor: any | null) => {
       if (!isEnabled) return;
@@ -287,29 +355,83 @@ export function useTaskGroupMetaPagedQuery({
       const requestGen = session?.gen ?? 0;
       const sessionParams = session?.params;
 
-      console.log('[TaskGroupMeta] Starting RPC fetch', {
-        hasCursor: cursor != null,
-        groupsCount: groups.length,
-      });
+      if (DEBUG_GROUPED_BOOTSTRAP) {
+        console.log('[TaskGroupMeta] Starting RPC fetch', {
+          hasCursor: cursor != null,
+          groupsCount: groups.length,
+        });
+      }
 
       setIsFetching(true);
       setError(null);
 
       try {
         const supabase = createClientComponentClient();
-        const rpcParams = buildRpcParams(cursor, sessionParams ?? undefined);
+        const isBootstrapRequest = useBootstrapInitialLoad ? cursor == null : false;
+        if (useBootstrapInitialLoad && !isBootstrapRequest) {
+          // Grouped flow now receives all headers from bootstrap. Disable meta pagination.
+          setHasMore(false);
+          setNextCursor(null);
+          return;
+        }
+        const rpcName = isBootstrapRequest
+          ? 'task_group_bootstrap_filtered'
+          : 'task_group_meta_paged_filtered';
+        const rpcParams = isBootstrapRequest
+          ? buildBootstrapRpcParams(sessionParams ?? undefined)
+          : buildRpcParams(cursor, sessionParams ?? undefined);
+        const groupByForReset = sessionParams?.groupBy ?? groupBy ?? '';
+        const explicitGoForReset = sessionParams?.groupOrder ?? groupOrder;
+        const resolvedGoForReset =
+          explicitGoForReset != null && String(explicitGoForReset).trim() !== ''
+            ? explicitGoForReset
+            : getDefaultGroupOrderForGroupBy(groupByForReset);
+        const resetParamsKey = JSON.stringify({
+          q: sessionParams?.q ?? q,
+          project: sessionParams?.project ?? project,
+          filters: sessionParams?.filters ?? filters,
+          groupBy: groupByForReset,
+          groupOrder: resolvedGoForReset,
+          rowSortBy: rowSortBy ?? null,
+          rowSortOrder: rowSortOrder ?? 'desc',
+        });
 
-        const { data, error: rpcError } = await supabase.rpc(
-          'task_group_meta_paged_filtered',
-          rpcParams,
-        );
+        if (isBootstrapRequest) {
+          setIsBootstrapping(true);
+          if (DEBUG_GROUPED_BOOTSTRAP) {
+            console.log('[TaskGroupMeta] grouped bootstrap start', {
+              resetParamsKey,
+            });
+          }
+        } else if (DEBUG_GROUPED_BOOTSTRAP && cursor != null) {
+          console.log('[TaskGroupMeta] follow-up task_group_meta_paged_filtered', {
+            hasCursor: true,
+          });
+        }
+
+        let rpcResult = await supabase.rpc(rpcName, rpcParams as any);
+        if (
+          isBootstrapRequest &&
+          rpcResult.error &&
+          typeof (rpcParams as any)?.p_group_limit !== 'undefined'
+        ) {
+          const fallbackParams = { ...(rpcParams as any) };
+          delete (fallbackParams as any).p_group_limit;
+          if (DEBUG_GROUPED_BOOTSTRAP) {
+            console.log('[TaskGroupMeta] bootstrap limit param rejected, retrying without p_group_limit');
+          }
+          rpcResult = await supabase.rpc(rpcName, fallbackParams);
+        }
+        const { data, error: rpcError } = rpcResult;
 
         if (lastRequestIdRef.current !== requestId) {
-          console.log('[TaskGroupMeta] Ignoring stale RPC response');
+          if (DEBUG_GROUPED_BOOTSTRAP) console.log('[TaskGroupMeta] Ignoring stale RPC response');
           return;
         }
         if (queryKeyAtStart !== lastQueryKeyRef.current) {
-          console.log('[TaskGroupMeta] Query shape changed during fetch, discarding response');
+          if (DEBUG_GROUPED_BOOTSTRAP) {
+            console.log('[TaskGroupMeta] Query shape changed during fetch, discarding response');
+          }
           return;
         }
         // When gen changed: only discard if params actually changed. On initial load with q from URL,
@@ -322,7 +444,9 @@ export function useTaskGroupMetaPagedQuery({
             JSON.stringify(sessionParams?.filters ?? {}) === JSON.stringify(currentParams?.filters ?? {}) &&
             sessionParams?.groupBy === currentParams?.groupBy;
           if (!paramsMatch) {
-            console.log('[TaskGroupMeta] Session gen changed, discarding response');
+            if (DEBUG_GROUPED_BOOTSTRAP) {
+              console.log('[TaskGroupMeta] Session gen changed, discarding response');
+            }
             return;
           }
         }
@@ -335,14 +459,80 @@ export function useTaskGroupMetaPagedQuery({
           return;
         }
 
-        const payload = (data as { groups?: Array<{ group_key?: unknown; label?: unknown }>; next_cursor?: any }) || {};
+        const isBootstrapResponse = useBootstrapInitialLoad && cursor == null;
+        if (isBootstrapResponse) {
+          const payload = (data as BootstrapResponse) || { groups: [], next_group_cursor: null };
+          if (DEBUG_GROUPED_BOOTSTRAP) {
+            console.log(
+              '[TaskGroupMeta] raw backend bootstrap order',
+              (payload.groups ?? []).map(group => ({
+                key: String((group as any)?.group_key ?? ''),
+                label: String((group as any)?.label ?? ''),
+              })),
+            );
+          }
+          const normalizedBootstrapGroups = (payload.groups ?? []).map(group => ({
+            group_key: String(group.group_key ?? ''),
+            label: typeof group.label === 'string' ? group.label : String(group.group_key ?? ''),
+            task_count: undefined,
+            rows: Array.isArray(group.rows) ? group.rows : [],
+            has_more_rows:
+              typeof group.has_more_rows === 'boolean' ? group.has_more_rows : null,
+            is_hydrated: Boolean(group.is_hydrated),
+            next_row_cursor: group.next_row_cursor ?? null,
+          }));
+          const totalRows = normalizedBootstrapGroups.reduce(
+            (sum, group) => sum + (group.rows?.length ?? 0),
+            0,
+          );
+
+          onBootstrapHydrate?.({
+            groups: normalizedBootstrapGroups,
+            next_group_cursor: null,
+          });
+
+          const normalizedMetaGroups = normalizedBootstrapGroups.map(group => ({
+            group_key: group.group_key,
+            label: group.label,
+            task_count: group.task_count,
+          }));
+
+          setGroups(normalizedMetaGroups);
+          setNextCursor(null);
+          setHasMore(false);
+
+          if (DEBUG_GROUPED_BOOTSTRAP || DEBUG_GROUPED_ROW_SORT) {
+            console.log('[TaskGroupGrouped] task_group_bootstrap_filtered completed (canonical grouped state)', {
+              resetParamsKey,
+              p_row_sort_by: (rpcParams as any)?.p_row_sort_by ?? null,
+              p_row_sort_order: (rpcParams as any)?.p_row_sort_order ?? null,
+              groupCount: normalizedMetaGroups.length,
+              totalRowCount: totalRows,
+              groupKeys: normalizedMetaGroups.map(g => g.group_key),
+              hydratedFromBootstrap: normalizedBootstrapGroups
+                .filter(g => g.is_hydrated)
+                .map(g => ({
+                  group_key: g.group_key,
+                  has_more_rows: g.has_more_rows,
+                  row_count: g.rows?.length ?? 0,
+                  has_next_row_cursor: g.next_row_cursor != null,
+                })),
+            })
+          }
+          return;
+        }
+
+        const payload = (data as { groups?: Array<{ group_key?: unknown; label?: unknown; task_count?: unknown }>; next_cursor?: any }) || {};
         const rawGroups = payload.groups ?? [];
         const newCursor = payload.next_cursor ?? null;
 
-        // Normalize immediately: group_key must be a stable string (backend may return number or string).
         const normalized = rawGroups.map(g => ({
           group_key: String(g.group_key ?? ''),
           label: typeof g.label === 'string' ? g.label : String(g.group_key ?? ''),
+          task_count:
+            g.task_count == null || Number.isNaN(Number(g.task_count))
+              ? undefined
+              : Number(g.task_count),
         }));
 
         setGroups(prev => {
@@ -350,11 +540,13 @@ export function useTaskGroupMetaPagedQuery({
           const deduped = normalized.filter(g => !existingKeys.has(g.group_key));
           const combined = cursor ? [...prev, ...deduped] : normalized;
 
-          console.log('[TaskGroupMeta] Completed RPC fetch', {
-            fetchedGroups: normalized.length,
-            totalGroups: combined.length,
-            hasNextCursor: newCursor != null,
-          });
+          if (DEBUG_GROUPED_BOOTSTRAP) {
+            console.log('[TaskGroupMeta] Completed RPC fetch', {
+              fetchedGroups: normalized.length,
+              totalGroups: combined.length,
+              hasNextCursor: newCursor != null,
+            });
+          }
 
           return combined;
         });
@@ -370,12 +562,32 @@ export function useTaskGroupMetaPagedQuery({
         if (lastRequestIdRef.current === requestId) {
           setIsFetching(false);
         }
+        setIsBootstrapping(false);
       }
     },
-    [buildRpcParams, groups.length, isEnabled, searchSessionRef],
+    [
+      buildRpcParams,
+      buildBootstrapRpcParams,
+      filters,
+      groupBy,
+      groupOrder,
+      groups.length,
+      isEnabled,
+      onBootstrapHydrate,
+      project,
+      q,
+      rowSortBy,
+      rowSortOrder,
+      bootstrapGroupLimit,
+      searchSessionRef,
+      useBootstrapInitialLoad,
+    ],
   );
 
   // Reset and load first page when the "query shape" changes.
+  // IMPORTANT: `rowSortBy` / `rowSortOrder` MUST be part of `queryKey`. If they are omitted, header sort
+  // changes re-run this effect (deps) but hit the early return — `task_group_bootstrap_filtered` never
+  // runs, group headers stay stale, and `task_group_tasks_filtered` cascades across every group.
   useEffect(() => {
     if (!isEnabled) {
       return;
@@ -388,10 +600,34 @@ export function useTaskGroupMetaPagedQuery({
       groupBy,
       groupOrder,
       limit,
+      rowSortBy: rowSortBy ?? null,
+      rowSortOrder: rowSortOrder ?? 'desc',
+      bootstrapGroupLimit: bootstrapGroupLimit ?? null,
+      useBootstrapInitialLoad: !!useBootstrapInitialLoad,
     });
 
     if (lastQueryKeyRef.current === queryKey) {
       return;
+    }
+
+    if (DEBUG_GROUPED_ROW_SORT && lastQueryKeyRef.current) {
+      try {
+        const prev = JSON.parse(lastQueryKeyRef.current) as {
+          rowSortBy?: string | null
+          rowSortOrder?: string | null
+        }
+        const next = JSON.parse(queryKey) as typeof prev
+        if (prev.rowSortBy !== next.rowSortBy || prev.rowSortOrder !== next.rowSortOrder) {
+          const viewRowSort = rowSortBy ? uiToViewSortMap[rowSortBy] || rowSortBy : null
+          console.log('[TaskGroupGrouped] row sort changed → reset group meta + bootstrap', {
+            prevUi: { rowSortBy: prev.rowSortBy, rowSortOrder: prev.rowSortOrder },
+            nextUi: { rowSortBy: next.rowSortBy, rowSortOrder: next.rowSortOrder },
+            nextRpc: { p_row_sort_by: viewRowSort, p_row_sort_order: next.rowSortOrder },
+          })
+        }
+      } catch {
+        /* ignore parse errors */
+      }
     }
 
     lastQueryKeyRef.current = queryKey;
@@ -404,15 +640,16 @@ export function useTaskGroupMetaPagedQuery({
 
     performFetch(null);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [isEnabled, q, project, filtersString, groupBy, groupOrder, limit]);
+  }, [isEnabled, q, project, filtersString, groupBy, groupOrder, rowSortBy, rowSortOrder, limit, bootstrapGroupLimit, useBootstrapInitialLoad]);
 
   const fetchNextPage = useCallback(() => {
+    if (useBootstrapInitialLoad) return;
     if (!isEnabled) return;
     if (isFetching) return;
     if (!hasMore) return;
 
     performFetch(nextCursor);
-  }, [isEnabled, isFetching, hasMore, nextCursor, performFetch]);
+  }, [isEnabled, isFetching, hasMore, nextCursor, performFetch, useBootstrapInitialLoad]);
 
   return {
     groups,
@@ -421,6 +658,7 @@ export function useTaskGroupMetaPagedQuery({
     hasMore,
     error,
     fetchNextPage,
+    isBootstrapping,
   };
 }
 

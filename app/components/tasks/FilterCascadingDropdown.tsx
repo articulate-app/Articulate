@@ -1,14 +1,24 @@
 "use client"
 
 import { useState } from 'react'
-import { useRouter, useSearchParams, usePathname } from 'next/navigation'
 import { cn } from '@/lib/utils'
-import { ChevronDown, ChevronRight } from 'lucide-react'
-import { Popover, PopoverContent, PopoverTrigger } from '../ui/popover'
-import { Command, CommandEmpty, CommandGroup, CommandInput, CommandItem } from '../ui/command'
-import { Check } from 'lucide-react'
+import { buildFilterSearchParams } from '../../lib/tasks-filter-url'
+import { ChevronDown, ChevronRight, Check, Filter } from 'lucide-react'
+import { Input } from '../ui/input'
+import {
+  DropdownMenu,
+  DropdownMenuTrigger,
+  DropdownMenuContent,
+  DropdownMenuSub,
+  DropdownMenuSubTrigger,
+  DropdownMenuSubContent,
+  DropdownMenuItem,
+} from '../ui/dropdown-menu'
 import type { TaskFilters as TaskFiltersType } from '../../store/tasks-ui'
 import type { FilterOptions } from '../../lib/services/filters'
+import { useCurrentUserStore } from '../../store/current-user'
+import { IconTooltip } from '../ui/icon-tooltip'
+import { FilterOptionVisual } from './task-list-visuals'
 
 interface FilterCascadingDropdownProps {
   editFields?: any
@@ -19,9 +29,13 @@ interface FilterCascadingDropdownProps {
   pathname: string
   params: URLSearchParams
   className?: string
+  /** When true, hide the Project category in the dropdown (e.g. when already scoped to a project). */
+  hideProjectFilter?: boolean
+  /** Icon-only trigger (toolbar right cluster). */
+  variant?: 'default' | 'icon'
 }
 
-const FILTER_CATEGORIES = [
+const FILTER_CATEGORIES_ALL = [
   { id: 'assignedTo', label: 'Assigned To' },
   { id: 'status', label: 'Status' },
   { id: 'project', label: 'Project' },
@@ -33,94 +47,104 @@ const FILTER_CATEGORIES = [
 ] as const
 
 export function FilterCascadingDropdown({
-  editFields,
+  editFields: _editFields,
   filterOptions,
   filters,
   setFilters,
   router,
   pathname,
   params,
-  className
+  className,
+  hideProjectFilter = false,
+  variant = 'default',
 }: FilterCascadingDropdownProps) {
-  const [isOpen, setIsOpen] = useState(false)
-  const [selectedCategory, setSelectedCategory] = useState<string | null>(null)
-  const [categorySearch, setCategorySearch] = useState('')
-  const [optionSearch, setOptionSearch] = useState('')
-  
+  const [menuOpen, setMenuOpen] = useState(false)
+  const [paramSearch, setParamSearch] = useState<Record<string, string>>({})
+  const currentUserId = useCurrentUserStore((state) => state.publicUserId)
+
+  const filterCategories = hideProjectFilter
+    ? FILTER_CATEGORIES_ALL.filter((c) => c.id !== 'project')
+    : FILTER_CATEGORIES_ALL
+
   const updateUrl = (newFilters: TaskFiltersType) => {
-    const newParams = new URLSearchParams(params.toString());
-    [
-      'assignedTo','status','project','contentType','productionType','language','channels','overdueStatus',
-      'deliveryDateFrom','deliveryDateTo','publicationDateFrom','publicationDateTo'
-    ].forEach((key: string) => newParams.delete(key));
-    if (newFilters.assignedTo?.length) newParams.set('assignedTo', newFilters.assignedTo.join(','));
-    if (newFilters.status?.length) newParams.set('status', newFilters.status.join(','));
-    if (newFilters.project?.length) newParams.set('project', newFilters.project.join(','));
-    if (newFilters.contentType?.length) newParams.set('contentType', newFilters.contentType.join(','));
-    if (newFilters.productionType?.length) newParams.set('productionType', newFilters.productionType.join(','));
-    if (newFilters.language?.length) newParams.set('language', newFilters.language.join(','));
-    if (newFilters.channels?.length) newParams.set('channels', newFilters.channels.join(','));
-    if (newFilters.overdueStatus?.length) newParams.set('overdueStatus', newFilters.overdueStatus.join(','));
-    if (newFilters.deliveryDate?.from) newParams.set('deliveryDateFrom', newFilters.deliveryDate.from.toISOString().slice(0,10));
-    if (newFilters.deliveryDate?.to) newParams.set('deliveryDateTo', newFilters.deliveryDate.to.toISOString().slice(0,10));
-    if (newFilters.publicationDate?.from) newParams.set('publicationDateFrom', newFilters.publicationDate.from.toISOString().slice(0,10));
-    if (newFilters.publicationDate?.to) newParams.set('publicationDateTo', newFilters.publicationDate.to.toISOString().slice(0,10));
-    router.replace(`${pathname}?${newParams.toString()}`);
-    setFilters(newFilters);
-  };
-  
-  const handleCategorySelect = (categoryId: string) => {
-    setSelectedCategory(categoryId)
-    setOptionSearch('')
+    const newParams = buildFilterSearchParams(params, newFilters)
+    router.replace(`${pathname}?${newParams.toString()}`)
+    setFilters(newFilters)
   }
-  
+
   const handleOptionSelect = (categoryId: string, optionId: string) => {
-    const currentValues = (filters as any)[categoryId] as string[] || []
+    const currentValues = ((filters as any)[categoryId] as string[]) || []
     const newValues = currentValues.includes(optionId)
       ? currentValues.filter((v: string) => v !== optionId)
       : [...currentValues, optionId]
-    
+
     const newFilters = { ...filters, [categoryId]: newValues }
     updateUrl(newFilters)
   }
-  
+
+  const applyQuickFilter = (kind: "due_today" | "assigned_to_me" | "delivery_overdue" | "publication_overdue") => {
+    const today = new Date()
+    const start = new Date(today.getFullYear(), today.getMonth(), today.getDate())
+    const end = new Date(today.getFullYear(), today.getMonth(), today.getDate() + 1)
+    const nextFilters: TaskFiltersType = {
+      assignedTo:
+        kind === "due_today" || kind === "assigned_to_me"
+          ? currentUserId != null
+            ? [String(currentUserId)]
+            : []
+          : [],
+      status: [],
+      deliveryDate: kind === "due_today" ? { from: start, to: end } : {},
+      publicationDate: {},
+      project: [],
+      contentType: [],
+      productionType: [],
+      language: [],
+      channels: [],
+      overdueStatus:
+        kind === "delivery_overdue"
+          ? ["delivery_overdue"]
+          : kind === "publication_overdue"
+          ? ["publication_overdue"]
+          : [],
+    }
+    setFilters(nextFilters)
+    setMenuOpen(false)
+  }
+
   const getCategoryOptions = (categoryId: string) => {
     if (!filterOptions) return []
-    
+
     switch (categoryId) {
       case 'assignedTo':
-        return (filterOptions.users || []).map(u => ({ id: u.value, label: u.label }))
+        return (filterOptions.users || []).map((u) => ({ id: u.value, label: u.label }))
       case 'status':
-        return (filterOptions.statuses || []).map(s => ({ id: s.value, label: s.label, color: s.color }))
+        return (filterOptions.statuses || []).map((s) => ({ id: s.value, label: s.label, color: s.color }))
       case 'project':
-        return (filterOptions.projects || []).map(p => ({ id: p.value, label: p.label }))
+        return (filterOptions.projects || []).map((p) => ({
+          id: p.value,
+          label: p.label,
+          color: p.color,
+          logo: p.logo,
+        }))
       case 'contentType':
-        return (filterOptions.contentTypes || []).map(c => ({ id: c.value, label: c.label }))
+        return (filterOptions.contentTypes || []).map((c) => ({ id: c.value, label: c.label }))
       case 'productionType':
-        return (filterOptions.productionTypes || []).map(p => ({ id: p.value, label: p.label }))
+        return (filterOptions.productionTypes || []).map((p) => ({ id: p.value, label: p.label }))
       case 'language':
-        return (filterOptions.languages || []).map(l => ({ id: l.value, label: l.label }))
+        return (filterOptions.languages || []).map((l) => ({ id: l.value, label: l.label }))
       case 'channels':
-        return (filterOptions.channels || []).map(ch => ({ id: ch.value, label: ch.label }))
+        return (filterOptions.channels || []).map((ch) => ({ id: ch.value, label: ch.label }))
       case 'overdueStatus':
         return [
           { id: 'delivery_overdue', label: 'Delivery overdue' },
-          { id: 'publication_overdue', label: 'Publication overdue' }
+          { id: 'publication_overdue', label: 'Publication overdue' },
         ]
       default:
         return []
     }
   }
-  
-  const filteredCategories = FILTER_CATEGORIES.filter(cat =>
-    cat.label.toLowerCase().includes(categorySearch.toLowerCase())
-  )
-  
-  const categoryOptions = selectedCategory ? getCategoryOptions(selectedCategory) : []
-  const filteredOptions = categoryOptions.filter(opt =>
-    opt.label.toLowerCase().includes(optionSearch.toLowerCase())
-  )
-  
+
   const activeFiltersCount = Object.values(filters).reduce((count, val) => {
     if (Array.isArray(val)) return count + val.length
     if (val && typeof val === 'object' && ('from' in val || 'to' in val)) {
@@ -128,109 +152,138 @@ export function FilterCascadingDropdown({
     }
     return count
   }, 0)
-  
+
   return (
-    <Popover open={isOpen} onOpenChange={(open) => {
-      setIsOpen(open)
-      if (!open) {
-        setSelectedCategory(null)
-        setCategorySearch('')
-        setOptionSearch('')
-      }
-    }}>
-      <PopoverTrigger asChild>
-        <button 
-          type="button" 
+    <DropdownMenu
+      open={menuOpen}
+      onOpenChange={(open) => {
+        setMenuOpen(open)
+        if (!open) setParamSearch({})
+      }}
+    >
+      {(() => {
+        const filterTrigger = (
+        <DropdownMenuTrigger asChild>
+        <button
+          type="button"
+          aria-label={variant === 'icon' ? 'Filter tasks' : undefined}
           className={cn(
-            'gap-2 ml-2 inline-flex items-center',
+            variant === 'icon' &&
+              'relative inline-flex h-8 w-8 shrink-0 items-center justify-center rounded text-gray-500 hover:bg-gray-100 hover:text-gray-700',
+            variant === 'default' && 'inline-flex items-center gap-1.5',
             className,
-            activeFiltersCount > 0 && 'font-semibold'
+            variant === 'default' && activeFiltersCount > 0 && 'font-semibold',
+            variant === 'icon' && activeFiltersCount > 0 && 'text-gray-800',
           )}
         >
-          {activeFiltersCount > 0 
-            ? `${activeFiltersCount} Filter${activeFiltersCount > 1 ? 's' : ''}`
-            : 'Filters'}
-          <ChevronDown className="w-4 h-4 ml-1" />
+          {variant === 'icon' ? (
+            <>
+              <Filter className="h-4 w-4" />
+              {activeFiltersCount > 0 ? (
+                <span
+                  className="absolute -right-0.5 -top-0.5 flex h-4 min-w-4 items-center justify-center rounded-full bg-gray-300 px-1 text-[10px] font-medium tabular-nums text-gray-800"
+                  aria-hidden
+                >
+                  {activeFiltersCount > 9 ? '9+' : activeFiltersCount}
+                </span>
+              ) : null}
+            </>
+          ) : (
+            <>
+              <span>Filter</span>
+              {activeFiltersCount > 0 ? (
+                <span
+                  className="inline-flex min-h-[1.125rem] min-w-[1.125rem] items-center justify-center rounded bg-gray-200 px-1 text-[10px] font-medium tabular-nums leading-none text-gray-700"
+                  aria-label={`${activeFiltersCount} active filters`}
+                >
+                  {activeFiltersCount}
+                </span>
+              ) : null}
+              <ChevronDown className="h-4 w-4 shrink-0 opacity-70" />
+            </>
+          )}
         </button>
-      </PopoverTrigger>
-      <PopoverContent align="start" className="w-80 p-0" onOpenAutoFocus={(e) => e.preventDefault()}>
-        <div className="flex h-[400px]">
-          {/* First dropdown - Categories */}
-          <div className="flex-1 border-r border-gray-200">
-            <Command shouldFilter={false}>
-              <CommandInput
-                placeholder="Search filters..."
-                value={categorySearch}
-                onValueChange={setCategorySearch}
-                className="text-gray-900"
-              />
-              <CommandGroup className="max-h-[360px] overflow-y-auto">
-                {filteredCategories.map((category) => (
-                  <CommandItem
-                    key={category.id}
-                    value={category.label}
-                    onSelect={() => handleCategorySelect(category.id)}
-                    className={cn(
-                      "flex items-center justify-between px-2 py-1.5 text-sm cursor-pointer",
-                      selectedCategory === category.id && "bg-blue-50"
-                    )}
-                  >
-                    <span>{category.label}</span>
-                    {selectedCategory === category.id && (
-                      <ChevronRight className="w-4 h-4" />
-                    )}
-                  </CommandItem>
-                ))}
-              </CommandGroup>
-            </Command>
-          </div>
-          
-          {/* Second dropdown - Options (only shown when category is selected) */}
-          {selectedCategory && (
-            <div className="flex-1">
-              <Command shouldFilter={false}>
-                <CommandInput
-                  placeholder={`Search ${FILTER_CATEGORIES.find(c => c.id === selectedCategory)?.label.toLowerCase()}...`}
-                  value={optionSearch}
-                  onValueChange={setOptionSearch}
-                  className="text-gray-900"
-                />
-                {filteredOptions.length === 0 && (
-                  <CommandEmpty className="py-2 text-sm text-gray-600">
-                    No options found.
-                  </CommandEmpty>
-                )}
-                <CommandGroup className="max-h-[360px] overflow-y-auto">
-                  {filteredOptions.map((option) => {
-                    const currentValues = (filters as any)[selectedCategory] as string[] || []
+        </DropdownMenuTrigger>
+        )
+        return variant === 'icon' ? (
+          <IconTooltip label="Filter">{filterTrigger}</IconTooltip>
+        ) : (
+          filterTrigger
+        )
+      })()}
+      <DropdownMenuContent align="start" className="min-w-[200px] max-w-[min(280px,calc(100vw-2rem))] p-1">
+        <DropdownMenuItem onSelect={() => applyQuickFilter("due_today")}>Due today</DropdownMenuItem>
+        <DropdownMenuItem onSelect={() => applyQuickFilter("assigned_to_me")}>Assigned to me</DropdownMenuItem>
+        <DropdownMenuItem onSelect={() => applyQuickFilter("delivery_overdue")}>Delivery overdue</DropdownMenuItem>
+        <DropdownMenuItem onSelect={() => applyQuickFilter("publication_overdue")}>Publication overdue</DropdownMenuItem>
+        <div className="my-1 h-px bg-gray-200" />
+        {filterCategories.map((category) => {
+          const allOptions = getCategoryOptions(category.id)
+          const q = (paramSearch[category.id] ?? '').trim().toLowerCase()
+          const options = q
+            ? allOptions.filter((o) => o.label.toLowerCase().includes(q))
+            : allOptions
+          return (
+            <DropdownMenuSub key={category.id}>
+              <DropdownMenuSubTrigger className="gap-2">
+                <span className="min-w-0 flex-1 truncate text-left">{category.label}</span>
+                <ChevronRight className="h-4 w-4 shrink-0 opacity-60" />
+              </DropdownMenuSubTrigger>
+              <DropdownMenuSubContent
+                sideOffset={6}
+                className="max-h-[min(360px,70vh)] min-w-[12rem] w-max max-w-[min(26rem,calc(100vw-2rem))] overflow-y-auto p-0"
+              >
+                <div
+                  className="sticky top-0 z-[1] border-b border-border bg-popover p-2"
+                  onPointerDown={(e) => e.stopPropagation()}
+                >
+                  <Input
+                    placeholder="Search…"
+                    className="h-8 text-sm"
+                    value={paramSearch[category.id] ?? ''}
+                    onChange={(e) =>
+                      setParamSearch((prev) => ({ ...prev, [category.id]: e.target.value }))
+                    }
+                    onKeyDown={(e) => e.stopPropagation()}
+                  />
+                </div>
+                <div className="p-1">
+                {options.length === 0 ? (
+                  <div className="px-2 py-2 text-sm text-muted-foreground">No options</div>
+                ) : (
+                  options.map((option) => {
+                    const currentValues = ((filters as any)[category.id] as string[]) || []
                     const isSelected = currentValues.includes(option.id)
                     return (
-                      <CommandItem
+                      <DropdownMenuItem
                         key={option.id}
-                        value={option.label}
-                        onSelect={() => handleOptionSelect(selectedCategory, option.id)}
-                        className="flex items-center px-2 py-1.5 text-sm text-gray-900 cursor-pointer"
+                        className="min-h-8 min-w-0 max-w-full cursor-pointer gap-2 whitespace-nowrap py-1.5 pr-3"
+                        onSelect={(e) => {
+                          e.preventDefault()
+                          handleOptionSelect(category.id, option.id)
+                        }}
                       >
-                        <div className="flex h-4 w-4 items-center justify-center mr-2">
-                          <Check
-                            className={cn(
-                              "h-4 w-4",
-                              isSelected ? "opacity-100" : "opacity-0"
-                            )}
+                        <span className="flex h-4 w-4 shrink-0 items-center justify-center">
+                          <Check className={cn('h-4 w-4', isSelected ? 'opacity-100' : 'opacity-0')} />
+                        </span>
+                        <span className="min-w-0 max-w-[22rem] flex-1 truncate" title={option.label}>
+                          <FilterOptionVisual
+                            categoryId={category.id}
+                            label={option.label}
+                            color={(option as { color?: string | null }).color}
+                            logo={(option as { logo?: string | null }).logo}
                           />
-                        </div>
-                        <span>{option.label}</span>
-                      </CommandItem>
+                        </span>
+                      </DropdownMenuItem>
                     )
-                  })}
-                </CommandGroup>
-              </Command>
-            </div>
-          )}
-        </div>
-      </PopoverContent>
-    </Popover>
+                  })
+                )}
+                </div>
+              </DropdownMenuSubContent>
+            </DropdownMenuSub>
+          )
+        })}
+      </DropdownMenuContent>
+    </DropdownMenu>
   )
 }
-
-

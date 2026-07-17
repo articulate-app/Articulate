@@ -7,9 +7,9 @@ import { format, formatDistanceToNow } from "date-fns"
 import { Button } from "../ui/button"
 import type { ProjectActivityFeedRow } from "../../lib/services/project-activity"
 import { createClientComponentClient } from "@supabase/auth-helpers-nextjs"
-import { getProjectStatuses } from "../../lib/services/projectStatuses"
 import { UserAvatar } from "../UserAvatar"
 import { getImageUrl } from "../../lib/public-media"
+import { useProjectStatusesQuery } from "../../hooks/use-project-shared-queries"
 
 interface ActivityLogDetailsPaneProps {
   log: ProjectActivityFeedRow
@@ -82,6 +82,12 @@ function formatDetailValue(value: unknown, allowBlank = false): string {
   return String(value)
 }
 
+function toSafeDate(value: string | null | undefined): Date | null {
+  if (!value) return null
+  const parsed = new Date(value)
+  return Number.isNaN(parsed.getTime()) ? null : parsed
+}
+
 function renderChangedValue(
   v: unknown,
   fieldKey: string,
@@ -126,14 +132,7 @@ export function ActivityLogDetailsPane({ log, onClose, onTaskSelect }: ActivityL
     enabled: !!log.user_id,
   })
 
-  const { data: statuses } = useQuery({
-    queryKey: ["project-statuses", log.project_id],
-    queryFn: async () => {
-      const { data } = await getProjectStatuses(log.project_id)
-      return data ?? []
-    },
-    enabled: !!log.project_id,
-  })
+  const { data: statuses } = useProjectStatusesQuery(log.project_id)
 
   const { statusById, statusByName } = React.useMemo(() => {
     const byId = new Map<number, { name: string; color: string }>()
@@ -146,7 +145,12 @@ export function ActivityLogDetailsPane({ log, onClose, onTaskSelect }: ActivityL
     return { statusById: byId, statusByName: byName }
   }, [statuses])
 
-  const userDisplay = userData?.full_name ?? log.assigned_to_name ?? `User ${log.user_id}`
+  const userDisplay =
+    userData?.full_name ??
+    log.assigned_to_name ??
+    log.assigned_to_email ??
+    (log.user_id != null ? `User ${log.user_id}` : "System")
+  const safeTimestamp = toSafeDate(log.timestamp)
 
   const changed = log.changed ?? {}
   const allChangedFields = log.changed_fields ?? Object.keys(changed)
@@ -210,8 +214,10 @@ export function ActivityLogDetailsPane({ log, onClose, onTaskSelect }: ActivityL
           <div className="flex justify-between items-center gap-4 text-sm py-1">
             <span className="text-left text-gray-500 shrink-0">Timestamp</span>
             <div className="text-right text-gray-800">
-              <div>{format(new Date(log.timestamp), "PPp")}</div>
-              <div className="text-xs text-gray-500">{formatDistanceToNow(new Date(log.timestamp), { addSuffix: true })}</div>
+              <div>{safeTimestamp ? format(safeTimestamp, "PPp") : "—"}</div>
+              <div className="text-xs text-gray-500">
+                {safeTimestamp ? formatDistanceToNow(safeTimestamp, { addSuffix: true }) : "Unknown time"}
+              </div>
             </div>
           </div>
           <div className="flex justify-between items-center gap-4 text-sm py-1">

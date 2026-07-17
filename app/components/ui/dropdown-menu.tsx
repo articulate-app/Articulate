@@ -4,6 +4,37 @@ import { cn } from '@/lib/utils'
 
 export const DropdownMenu = RadixDropdownMenu.Root
 export const DropdownMenuTrigger = RadixDropdownMenu.Trigger
+export const DropdownMenuSub = RadixDropdownMenu.Sub
+
+export const DropdownMenuSubTrigger = React.forwardRef<
+  React.ElementRef<typeof RadixDropdownMenu.SubTrigger>,
+  React.ComponentPropsWithoutRef<typeof RadixDropdownMenu.SubTrigger>
+>(({ className, ...props }, ref) => (
+  <RadixDropdownMenu.SubTrigger
+    ref={ref}
+    className={cn(
+      'flex cursor-pointer select-none items-center justify-between rounded-sm px-2 py-1.5 text-sm outline-none transition-colors focus:bg-accent focus:text-accent-foreground data-[state=open]:bg-accent',
+      className
+    )}
+    {...props}
+  />
+))
+DropdownMenuSubTrigger.displayName = RadixDropdownMenu.SubTrigger.displayName
+
+export const DropdownMenuSubContent = React.forwardRef<
+  React.ElementRef<typeof RadixDropdownMenu.SubContent>,
+  React.ComponentPropsWithoutRef<typeof RadixDropdownMenu.SubContent>
+>(({ className, ...props }, ref) => (
+  <RadixDropdownMenu.SubContent
+    ref={ref}
+    className={cn(
+      'z-50 min-w-[10rem] rounded-md border bg-popover p-1 text-popover-foreground shadow-md outline-none animate-in fade-in-0',
+      className
+    )}
+    {...props}
+  />
+))
+DropdownMenuSubContent.displayName = RadixDropdownMenu.SubContent.displayName
 
 export const DropdownMenuContent = React.forwardRef<
   React.ElementRef<typeof RadixDropdownMenu.Content>,
@@ -49,3 +80,15 @@ export const DropdownMenuSeparator = React.forwardRef<
   />
 ))
 DropdownMenuSeparator.displayName = RadixDropdownMenu.Separator.displayName 
+
+export const DropdownMenuLabel = React.forwardRef<
+  React.ElementRef<typeof RadixDropdownMenu.Label>,
+  React.ComponentPropsWithoutRef<typeof RadixDropdownMenu.Label>
+>(({ className, ...props }, ref) => (
+  <RadixDropdownMenu.Label
+    ref={ref}
+    className={cn("px-2 py-1.5 text-xs font-medium", className)}
+    {...props}
+  />
+))
+DropdownMenuLabel.displayName = RadixDropdownMenu.Label.displayName

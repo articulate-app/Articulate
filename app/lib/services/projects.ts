@@ -161,7 +161,7 @@ function generateSlug(text: string): string {
 /**
  * Create a new project with minimal required fields
  */
-export async function createProject(name: string, billingTeamId: number) {
+export async function createProject(name: string, teamId: number) {
   const supabase = createClientComponentClient()
 
   const trimmedName = name.trim()
@@ -172,11 +172,31 @@ export async function createProject(name: string, billingTeamId: number) {
     .insert({
       name: trimmedName,
       slug: slug || 'project', // Fallback if slug generation results in empty string
-      billing_team_id: billingTeamId,
+      team_id: teamId,
+      billing_team_id: teamId,
       active: true,
     })
     .select("id, name")
     .single()
+
+  return { data, error }
+}
+
+/**
+ * Create a new project and a new team in one atomic RPC.
+ */
+export async function createProjectWithTeam(projectName: string, teamName: string) {
+  const supabase = createClientComponentClient()
+
+  const trimmedProjectName = projectName.trim()
+  const trimmedTeamName = teamName.trim()
+  const projectSlug = generateSlug(trimmedProjectName) || 'project'
+
+  const { data, error } = await supabase.rpc('create_project_with_team', {
+    p_project_name: trimmedProjectName,
+    p_project_slug: projectSlug,
+    p_team_name: trimmedTeamName,
+  })
 
   return { data, error }
 }

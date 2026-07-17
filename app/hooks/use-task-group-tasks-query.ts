@@ -67,7 +67,8 @@ export function computeGroupKeyForTask(row: TaskListRow, groupBy: string | null)
     case 'assigned_to':
       return row.assigned_to_id != null ? String(row.assigned_to_id) : '__unassigned__'
     case 'status':
-      return row.project_status_name ?? '__unassigned__'
+      if (row.project_status_id == null) return '__unassigned__'
+      return row.project_status_name ?? String(row.project_status_id)
     case 'project':
       return row.project_id_int != null ? String(row.project_id_int) : '__no_project__'
     case 'content_type':
@@ -190,6 +191,8 @@ function addOneDay(dateStr: string): string | null {
 function buildRpcParams(args: {
   q: string
   project?: string
+  /** When in project scope, pass current projectId so p_project_ids is never omitted. */
+  scopeProjectId?: number | null
   filters: { [key: string]: string | string[] }
   groupBy: string | null
   groupOrder?: GroupOrder
@@ -202,7 +205,7 @@ function buildRpcParams(args: {
   /** When set, forces the RPC to return only rows for this group (group-mode, for re-expand). */
   forceGroupKey?: string | null
 }) {
-  const { q, project, filters, groupBy, groupOrder, rowSortBy, rowSortOrder, perPage, editFields, cursor, skipGroupKey, forceGroupKey } = args
+  const { q, project, scopeProjectId, filters, groupBy, groupOrder, rowSortBy, rowSortOrder, perPage, editFields, cursor, skipGroupKey, forceGroupKey } = args
 
   const uiToViewSortMap: Record<string, string> = {
     assigned_user: 'assigned_to_name',
@@ -220,13 +223,20 @@ function buildRpcParams(args: {
   }
   const mappedRowSortBy = rowSortBy ? uiToViewSortMap[rowSortBy] || rowSortBy : undefined
 
-  const projectIds =
+  let projectIds: number[] | null =
     project && project.trim().length
       ? project
           .split(',')
           .map(p => Number.parseInt(p.trim(), 10))
           .filter(n => Number.isFinite(n))
       : null
+  // In project scope, never send null; enforce at hook layer so UI cannot omit
+  if ((!projectIds || projectIds.length === 0) && scopeProjectId != null && Number.isFinite(scopeProjectId)) {
+    projectIds = [scopeProjectId]
+  }
+  if (typeof process !== 'undefined' && process.env.NODE_ENV === 'development' && scopeProjectId != null && Number.isFinite(scopeProjectId) && (!projectIds || projectIds.length === 0)) {
+    console.error('[use-task-group-tasks-query] Project scope but p_project_ids would be null; scopeProjectId=', scopeProjectId)
+  }
 
   const statusParam =
     (filters as any).project_status_name ?? (filters as any).status ?? (filters as any).project_status_id
@@ -389,6 +399,8 @@ function deriveFromPages(pages: RpcPage[]) {
 export interface UseTaskGroupTasksQueryOptions {
   q: string
   project?: string
+  /** When in project scope, pass current projectId so every RPC includes p_project_ids. */
+  scopeProjectId?: number | null
   filters?: { [key: string]: string | string[] }
   groupBy: string | null
   groupOrder?: GroupOrder
@@ -639,6 +651,7 @@ const MAX_GROUP_RESUME_QUERIES = 5
 export function useTaskGroupTasksQuery({
   q,
   project,
+  scopeProjectId,
   filters = {},
   groupBy,
   groupOrder,
@@ -706,6 +719,7 @@ export function useTaskGroupTasksQuery({
     () => ({
       q,
       project,
+      scopeProjectId,
       filters,
       groupBy,
       groupOrder,
@@ -714,7 +728,7 @@ export function useTaskGroupTasksQuery({
       perPage,
       editFields,
     }),
-    [q, project, filters, groupBy, groupOrder, rowSortBy, rowSortOrder, perPage, editFields],
+    [q, project, scopeProjectId, filters, groupBy, groupOrder, rowSortBy, rowSortOrder, perPage, editFields],
   )
 
   // Stream mode: p_force_group_key=null, p_cursor=streamCursor (or null). Response next_cursor is stream cursor.

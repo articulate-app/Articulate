@@ -9,6 +9,7 @@ import { Loader2 } from "lucide-react"
 import { toast } from "../ui/use-toast"
 import {
   getProjectBilling,
+  getProjectOverview,
   updateProjectBilling,
   type ProjectBillingProfile,
 } from "../../lib/services/projects-briefing"
@@ -16,9 +17,11 @@ import { createClientComponentClient } from "@supabase/auth-helpers-nextjs"
 
 interface BillingTabProps {
   projectId: number
+  /** Hide the built-in heading when embedded in project settings. */
+  hideTitle?: boolean
 }
 
-export function BillingTab({ projectId }: BillingTabProps) {
+export function BillingTab({ projectId, hideTitle = false }: BillingTabProps) {
   const queryClient = useQueryClient()
   const supabase = createClientComponentClient()
   const [formData, setFormData] = useState<Partial<ProjectBillingProfile>>({})
@@ -46,6 +49,15 @@ export function BillingTab({ projectId }: BillingTabProps) {
         .single()
       if (error) throw error
       return data
+    },
+  })
+
+  const { data: projectOverview } = useQuery({
+    queryKey: ["project-overview", projectId],
+    queryFn: async () => {
+      const result = await getProjectOverview(projectId)
+      if (result.error) throw result.error
+      return result.data
     },
   })
 
@@ -216,10 +228,21 @@ export function BillingTab({ projectId }: BillingTabProps) {
 
   return (
     <div>
-      <div className="mb-6">
-        <h2 className="text-xl font-semibold">Billing Information</h2>
-      </div>
+      {hideTitle ? null : (
+        <div className="mb-6">
+          <h2 className="text-xl font-semibold">Billing Information</h2>
+        </div>
+      )}
       <div className="grid grid-cols-1 gap-6 md:grid-cols-2">
+          <FieldWrapper field="team" label="Team">
+            <Input
+              id="team"
+              value={projectOverview?.team_name || ""}
+              disabled
+              className="bg-gray-50"
+            />
+          </FieldWrapper>
+
           {/* Currency Code */}
           <FieldWrapper field="currency_code" label="Currency Code">
             <Input

@@ -44,6 +44,31 @@ function calculateOverdueStatus(
  * Remove a task from all InfiniteList caches (all filters/pagination).
  * Ensures the task disappears instantly regardless of filters or pagination.
  */
+/**
+ * Remove a task id from every cached React Query payload keyed under `['tasks', ...]`
+ * where data is a flat array (calendar chunks, legacy lists, etc.). Does not refetch.
+ */
+export function removeTaskIdFromTasksQueryArrays(queryClient: QueryClient, taskId: string | number) {
+  const idStr = String(taskId)
+  queryClient.setQueryData(['tasks'], (old: any) => {
+    if (!old) return old
+    if (Array.isArray(old)) {
+      return old.filter((x: any) => String(x.id) !== idStr)
+    }
+    return old
+  })
+  for (const q of queryClient.getQueryCache().getAll()) {
+    const queryKey = q.queryKey
+    if (!Array.isArray(queryKey) || queryKey[0] !== 'tasks') continue
+    const oldData = q.state.data
+    if (!Array.isArray(oldData)) continue
+    const newData = oldData.filter((x: any) => String(x.id) !== idStr)
+    if (newData.length !== oldData.length) {
+      q.setData([...newData])
+    }
+  }
+}
+
 export function removeTaskFromAllStores(taskId: number, opts?: { groupKey?: string }) {
   if (typeof window === 'undefined') return;
   

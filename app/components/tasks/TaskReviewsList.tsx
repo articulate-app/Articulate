@@ -1,47 +1,59 @@
 "use client"
 
 import { useState, useEffect, useImperativeHandle, forwardRef } from "react"
-import { ChevronRight, Edit, Trash2, Clock } from "lucide-react"
+import { Edit, Trash2 } from "lucide-react"
 import { Review } from "../../lib/types/tasks"
 import { Button } from "../ui/button"
+import { Input } from "../ui/input"
+import { Textarea } from "../ui/textarea"
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from "../ui/dialog"
 import { createClientComponentClient } from "@supabase/auth-helpers-nextjs"
 import { toast } from "../ui/use-toast"
 import { useCurrentUserStore } from "../../store/current-user"
-import { EditReviewModal } from "./EditReviewModal"
+import { useQueryClient } from "@tanstack/react-query"
+import { fetchTaskReviews, taskReviewsQueryKey } from "../../hooks/use-task-reviews-query"
 
 interface TaskReviewsListProps {
   taskId: number;
   reviewCount?: number | null;
   onReviewsChanged: () => void; // Callback to refresh the summary
+  autoOpen?: boolean;
 }
 
 export interface TaskReviewsListRef {
   refreshReviews: () => void;
 }
 
-// Star display component (read-only)
 function StarDisplay({ score }: { score: number | null }) {
-  if (score === null) return <span className="text-gray-400">—</span>;
-
+  if (score === null) return <span className="text-gray-400 text-xs">—</span>;
   return (
-    <div className="flex items-center gap-1">
-      <span className="text-xs font-medium text-gray-600">
-        {score.toFixed(1)}
-      </span>
-      <div className="flex items-center">
-        {Array.from({ length: 5 }, (_, i) => (
-          <span
-            key={i}
-            className={`text-sm ${
-              i < score ? 'text-yellow-400' : 'text-gray-300'
-            }`}
-          >
-            ★
-          </span>
-        ))}
-      </div>
-    </div>
+    <span className="inline-flex items-center gap-0.5">
+      <span className="text-xs text-gray-600">{score.toFixed(1)}</span>
+      {Array.from({ length: 5 }, (_, i) => (
+        <span key={i} className={`text-xs ${i < score ? 'text-yellow-400' : 'text-gray-300'}`}>★</span>
+      ))}
+    </span>
+  );
+}
+
+function StarInputEdit({ value, onChange }: { value: number | null; onChange: (v: number | null) => void }) {
+  const [hovered, setHovered] = useState<number | null>(null);
+  const active = hovered ?? value ?? 0;
+  return (
+    <span className="inline-flex items-center gap-0.5">
+      {[1, 2, 3, 4, 5].map((star) => (
+        <button
+          key={star}
+          type="button"
+          className={`text-sm ${star <= active ? 'text-yellow-400' : 'text-gray-300'} hover:text-yellow-400`}
+          onMouseEnter={() => setHovered(star)}
+          onMouseLeave={() => setHovered(null)}
+          onClick={() => onChange(value === star ? null : star)}
+        >
+          ★
+        </button>
+      ))}
+    </span>
   );
 }
 
@@ -59,141 +71,124 @@ function getRelativeTime(dateString: string): string {
   return date.toLocaleDateString();
 }
 
-// Individual review card component
-function ReviewCard({ 
-  review, 
-  currentUserPublicId, 
-  onEdit, 
-  onDelete 
-}: { 
+type ReviewFormData = {
+  review_title: string;
+  score_seo: number | null;
+  score_relevance: number | null;
+  score_grammar: number | null;
+  score_delays: number | null;
+  positive_feedback: string;
+  negative_feedback: string;
+};
+
+function ReviewCard({
+  review,
+  currentUserPublicId,
+  isEditing,
+  onEdit,
+  onCancelEdit,
+  onSaveEdit,
+  onDelete,
+}: {
   review: Review;
   currentUserPublicId: number | null;
+  isEditing: boolean;
   onEdit: (review: Review) => void;
+  onCancelEdit: () => void;
+  onSaveEdit: (data: ReviewFormData) => Promise<void>;
   onDelete: (review: Review) => void;
 }) {
   const isOwnReview = currentUserPublicId === review.created_by;
   const isUpdated = new Date(review.updated_at) > new Date(review.created_at);
+  const [formData, setFormData] = useState<ReviewFormData>({
+    review_title: review.review_title || '',
+    score_seo: review.score_seo,
+    score_relevance: review.score_relevance,
+    score_grammar: review.score_grammar,
+    score_delays: review.score_delays,
+    positive_feedback: review.positive_feedback || '',
+    negative_feedback: review.negative_feedback || '',
+  });
+  const [isSaving, setIsSaving] = useState(false);
+
+  useEffect(() => {
+    if (isEditing) {
+      setFormData({
+        review_title: review.review_title || '',
+        score_seo: review.score_seo,
+        score_relevance: review.score_relevance,
+        score_grammar: review.score_grammar,
+        score_delays: review.score_delays,
+        positive_feedback: review.positive_feedback || '',
+        negative_feedback: review.negative_feedback || '',
+      });
+    }
+  }, [isEditing, review.id]);
+
+  const handleSave = async () => {
+    setIsSaving(true);
+    try {
+      await onSaveEdit(formData);
+    } finally {
+      setIsSaving(false);
+    }
+  };
+
+  if (isEditing) {
+    return (
+      <div className="bg-white border border-gray-200 rounded-lg p-3 space-y-3">
+        <Input
+          value={formData.review_title}
+          onChange={(e) => setFormData((p) => ({ ...p, review_title: e.target.value }))}
+          placeholder="Title"
+          className="h-8 text-sm"
+        />
+        <div className="grid grid-cols-2 gap-2 text-xs">
+          <div><span className="text-gray-500 w-12 inline-block">SEO</span><StarInputEdit value={formData.score_seo} onChange={(v) => setFormData((p) => ({ ...p, score_seo: v }))} /></div>
+          <div><span className="text-gray-500 w-12 inline-block">Rel.</span><StarInputEdit value={formData.score_relevance} onChange={(v) => setFormData((p) => ({ ...p, score_relevance: v }))} /></div>
+          <div><span className="text-gray-500 w-12 inline-block">Gram.</span><StarInputEdit value={formData.score_grammar} onChange={(v) => setFormData((p) => ({ ...p, score_grammar: v }))} /></div>
+          <div><span className="text-gray-500 w-12 inline-block">Delays</span><StarInputEdit value={formData.score_delays} onChange={(v) => setFormData((p) => ({ ...p, score_delays: v }))} /></div>
+        </div>
+        <Textarea value={formData.positive_feedback} onChange={(e) => setFormData((p) => ({ ...p, positive_feedback: e.target.value }))} placeholder="Positive feedback" rows={2} className="text-sm min-h-0" />
+        <Textarea value={formData.negative_feedback} onChange={(e) => setFormData((p) => ({ ...p, negative_feedback: e.target.value }))} placeholder="Areas for improvement" rows={2} className="text-sm min-h-0" />
+        <div className="flex gap-2">
+          <Button size="sm" variant="outline" className="h-7 text-xs" onClick={onCancelEdit} disabled={isSaving}>Cancel</Button>
+          <Button size="sm" className="h-7 text-xs" onClick={handleSave} disabled={isSaving}>{isSaving ? 'Saving...' : 'Save'}</Button>
+        </div>
+      </div>
+    );
+  }
 
   return (
-    <div className="bg-white border border-gray-200 rounded-lg p-4 space-y-3">
-      {/* Header */}
-      <div className="flex items-start justify-between">
-        <div className="flex items-center gap-3">
-          {/* Author Avatar */}
-          <div className="w-8 h-8 rounded-full bg-gray-200 flex items-center justify-center text-sm font-medium">
-            {review.author?.full_name 
-              ? review.author.full_name.split(' ').map(n => n[0]).join('').toUpperCase()
-              : '?'
-            }
+    <div className="bg-white border border-gray-200 rounded-lg p-3 space-y-2">
+      <div className="flex items-center justify-between gap-2">
+        <div className="flex items-center gap-2 min-w-0">
+          <div className="w-6 h-6 rounded-full bg-gray-200 flex items-center justify-center text-xs font-medium shrink-0">
+            {review.author?.full_name ? review.author.full_name.split(' ').map(n => n[0]).join('').toUpperCase() : '?'}
           </div>
-          <div>
-            <div className="text-sm font-medium text-gray-900">
-              {review.author?.full_name || 'Unknown User'}
-            </div>
-            <div className="flex items-center gap-2 text-xs text-gray-500">
-              <span>{getRelativeTime(review.created_at)}</span>
-              {isUpdated && (
-                <>
-                  <span>•</span>
-                  <span className="flex items-center gap-1">
-                    <Clock className="w-3 h-3" />
-                    edited
-                  </span>
-                </>
-              )}
-            </div>
+          <div className="min-w-0">
+            <span className="text-xs font-medium text-gray-900 truncate block">{review.author?.full_name || 'Unknown'}</span>
+            <span className="text-xs text-gray-500">{getRelativeTime(review.created_at)}{isUpdated && ' · edited'}</span>
           </div>
         </div>
-        
-        {/* Actions */}
         {isOwnReview && (
-          <div className="flex items-center gap-1">
-            <Button
-              variant="ghost"
-              size="sm"
-              onClick={() => onEdit(review)}
-              className="text-gray-400 hover:text-blue-600 p-1 h-auto"
-            >
-              <Edit className="w-4 h-4" />
-            </Button>
-            <Button
-              variant="ghost"
-              size="sm"
-              onClick={() => onDelete(review)}
-              className="text-gray-400 hover:text-red-600 p-1 h-auto"
-            >
-              <Trash2 className="w-4 h-4" />
-            </Button>
+          <div className="flex items-center gap-0.5 shrink-0">
+            <button type="button" className="p-1 text-gray-400 hover:text-gray-600" onClick={() => onEdit(review)} aria-label="Edit"><Edit className="w-3.5 h-3.5" /></button>
+            <button type="button" className="p-1 text-gray-400 hover:text-red-500" onClick={() => onDelete(review)} aria-label="Delete"><Trash2 className="w-3.5 h-3.5" /></button>
           </div>
         )}
       </div>
-
-      {/* Review Title */}
-      {review.review_title && (
-        <div className="text-sm font-medium text-gray-900">
-          {review.review_title}
-        </div>
-      )}
-
-      {/* Scores Grid */}
-      <div className="grid grid-cols-2 gap-3 text-xs">
-        <div>
-          <div className="text-gray-500 mb-1">SEO</div>
-          <StarDisplay score={review.score_seo} />
-        </div>
-        <div>
-          <div className="text-gray-500 mb-1">Relevance</div>
-          <StarDisplay score={review.score_relevance} />
-        </div>
-        <div>
-          <div className="text-gray-500 mb-1">Grammar</div>
-          <StarDisplay score={review.score_grammar} />
-        </div>
-        <div>
-          <div className="text-gray-500 mb-1">Delays</div>
-          <StarDisplay score={review.score_delays} />
-        </div>
+      {review.review_title && <div className="text-xs font-medium text-gray-900">{review.review_title}</div>}
+      <div className="flex flex-wrap gap-x-3 gap-y-0.5 text-xs">
+        <span><span className="text-gray-500">SEO</span> <StarDisplay score={review.score_seo} /></span>
+        <span><span className="text-gray-500">Rel.</span> <StarDisplay score={review.score_relevance} /></span>
+        <span><span className="text-gray-500">Gram.</span> <StarDisplay score={review.score_grammar} /></span>
+        <span><span className="text-gray-500">Delays</span> <StarDisplay score={review.score_delays} /></span>
       </div>
-
-      {/* Overall Score */}
-      {review.review_score !== null && (
-        <div className="border-t pt-3">
-          <div className="text-xs text-gray-500 mb-1">Overall Score</div>
-          <div className="flex items-center gap-2">
-            <span className="text-sm font-medium text-gray-900">
-              {review.review_score.toFixed(1)} / 5
-            </span>
-            <div className="flex items-center">
-              {Array.from({ length: 5 }, (_, i) => (
-                <span
-                  key={i}
-                  className={`text-lg ${
-                    i < review.review_score! ? 'text-yellow-400' : 'text-gray-300'
-                  }`}
-                >
-                  ★
-                </span>
-              ))}
-            </div>
-          </div>
-        </div>
-      )}
-
-      {/* Feedback */}
       {(review.positive_feedback || review.negative_feedback) && (
-        <div className="space-y-2 text-xs">
-          {review.positive_feedback && (
-            <div>
-              <div className="text-green-600 font-medium mb-1">Positives</div>
-              <div className="text-gray-700">{review.positive_feedback}</div>
-            </div>
-          )}
-          {review.negative_feedback && (
-            <div>
-              <div className="text-orange-600 font-medium mb-1">Areas for Improvement</div>
-              <div className="text-gray-700">{review.negative_feedback}</div>
-            </div>
-          )}
+        <div className="text-xs text-gray-600 space-y-0.5 pt-1 border-t border-gray-100">
+          {review.positive_feedback && <div><span className="text-gray-500">+</span> {review.positive_feedback}</div>}
+          {review.negative_feedback && <div><span className="text-gray-500">−</span> {review.negative_feedback}</div>}
         </div>
       )}
     </div>
@@ -201,8 +196,9 @@ function ReviewCard({
 }
 
 export const TaskReviewsList = forwardRef<TaskReviewsListRef, TaskReviewsListProps>(
-  ({ taskId, reviewCount, onReviewsChanged }, ref) => {
-  const [isOpen, setIsOpen] = useState(false);
+  ({ taskId, reviewCount, onReviewsChanged, autoOpen = false }, ref) => {
+  const queryClient = useQueryClient()
+  const [isOpen, setIsOpen] = useState(true);
   const [reviews, setReviews] = useState<Review[]>([]);
   const [isLoading, setIsLoading] = useState(false);
   const [hasLoaded, setHasLoaded] = useState(false);
@@ -212,42 +208,14 @@ export const TaskReviewsList = forwardRef<TaskReviewsListRef, TaskReviewsListPro
 
   const currentUserPublicId = useCurrentUserStore(state => state.publicUserId);
 
-  // Fetch reviews when expanded for the first time
-  useEffect(() => {
-    if (isOpen && !hasLoaded) {
-      fetchReviews();
-    }
-  }, [isOpen, hasLoaded]);
-
-  // Expose fetchReviews function to parent component
-  useImperativeHandle(ref, () => ({
-    refreshReviews: fetchReviews
-  }));
-
   const fetchReviews = async () => {
     setIsLoading(true);
-    const supabase = createClientComponentClient();
-
     try {
-      const { data, error } = await supabase
-        .from('reviews')
-        .select(`
-          id, task_id, created_by, created_at, updated_at,
-          score_seo, score_relevance, score_grammar, score_delays, review_score,
-          positive_feedback, negative_feedback, review_title,
-          author:created_by ( id, full_name, photo )
-        `)
-        .eq('task_id', taskId)
-        .order('created_at', { ascending: false });
-
-      if (error) throw error;
-
-      // Transform the data to match our Review type (author is returned as array by Supabase)
-      const transformedReviews = (data || []).map(review => ({
-        ...review,
-        author: Array.isArray(review.author) ? review.author[0] : review.author
-      })) as Review[];
-
+      const cached = queryClient.getQueryData<Review[]>(taskReviewsQueryKey(taskId))
+      const transformedReviews = cached ?? await fetchTaskReviews(taskId)
+      if (!cached) {
+        queryClient.setQueryData(taskReviewsQueryKey(taskId), transformedReviews)
+      }
       setReviews(transformedReviews);
       setHasLoaded(true);
     } catch (error: any) {
@@ -262,15 +230,63 @@ export const TaskReviewsList = forwardRef<TaskReviewsListRef, TaskReviewsListPro
     }
   };
 
+  useEffect(() => {
+    setHasLoaded(false)
+    setReviews([])
+  }, [taskId])
+
+  // Fetch reviews when expanded for the first time
+  useEffect(() => {
+    if (isOpen && !hasLoaded) {
+      void fetchReviews();
+    }
+  }, [isOpen, hasLoaded, taskId]);
+
+  useEffect(() => {
+    if (autoOpen && !isOpen) {
+      setIsOpen(true);
+    }
+  }, [autoOpen, isOpen]);
+
+  // Expose fetchReviews function to parent component
+  useImperativeHandle(ref, () => ({
+    refreshReviews: fetchReviews
+  }));
+
   const handleEdit = (review: Review) => {
     setEditingReview(review);
   };
 
   const handleEditSave = () => {
-    // Refetch reviews and refresh summary
     fetchReviews();
     onReviewsChanged();
     setEditingReview(null);
+  };
+
+  const handleSaveEdit = async (reviewId: number, data: ReviewFormData) => {
+    const supabase = createClientComponentClient();
+    const { error } = await supabase
+      .from('reviews')
+      .update({
+        review_title: data.review_title.trim() || null,
+        score_seo: data.score_seo,
+        score_relevance: data.score_relevance,
+        score_grammar: data.score_grammar,
+        score_delays: data.score_delays,
+        positive_feedback: data.positive_feedback.trim() || null,
+        negative_feedback: data.negative_feedback.trim() || null,
+      })
+      .eq('id', reviewId);
+    if (error) {
+      if (error.code === '42501' || error.message?.includes('permission')) {
+        toast({ title: 'Permission denied', description: 'You can only edit your own reviews.', variant: 'destructive' });
+      } else {
+        toast({ title: 'Failed to update review', description: error?.message ?? 'Update failed.', variant: 'destructive' });
+      }
+      throw error;
+    }
+    toast({ title: 'Review updated', description: 'Your review has been updated.' });
+    handleEditSave();
   };
 
   const handleDelete = (review: Review) => {
@@ -326,58 +342,29 @@ export const TaskReviewsList = forwardRef<TaskReviewsListRef, TaskReviewsListPro
   return (
     <>
       <div className="mt-4">
-        <button
-          className="flex items-center w-full text-left text-sm font-medium text-gray-400 mb-1 focus:outline-none"
-          onClick={() => setIsOpen(prev => !prev)}
-          aria-expanded={isOpen}
-          aria-controls="all-reviews-panel"
-          type="button"
-        >
-          <ChevronRight className={`transition-transform mr-2 ${isOpen ? 'rotate-90' : ''}`} />
-          All Reviews
-          {reviewCount && reviewCount > 0 && (
-            <span className="ml-2 text-xs text-gray-500">({reviewCount})</span>
-          )}
-        </button>
-
-        {isOpen && (
-          <div id="all-reviews-panel" className="mt-2">
+        <div id="all-reviews-panel" className="mt-2">
             {isLoading ? (
-              <div className="bg-gray-50 rounded-lg p-8 text-center">
-                <div className="text-sm text-gray-500">Loading reviews...</div>
-              </div>
+              <p className="text-sm text-gray-500 py-2">Loading reviews...</p>
             ) : reviews.length === 0 ? (
-              <div className="bg-gray-50 rounded-lg p-8 text-center text-gray-500">
-                <div className="text-lg mb-2">💬</div>
-                <div className="text-sm">No reviews yet</div>
-                <div className="text-xs text-gray-400 mt-1">
-                  Be the first to leave a review for this task
-                </div>
-              </div>
+              <p className="text-sm text-gray-500 py-2">No reviews yet</p>
             ) : (
-              <div className="space-y-3">
+              <div className="space-y-2">
                 {reviews.map(review => (
                   <ReviewCard
                     key={review.id}
                     review={review}
                     currentUserPublicId={currentUserPublicId}
+                    isEditing={editingReview?.id === review.id}
                     onEdit={handleEdit}
+                    onCancelEdit={() => setEditingReview(null)}
+                    onSaveEdit={(data) => handleSaveEdit(review.id, data)}
                     onDelete={handleDelete}
                   />
                 ))}
               </div>
             )}
-          </div>
-        )}
+        </div>
       </div>
-
-      {/* Edit Modal */}
-      <EditReviewModal
-        review={editingReview}
-        isOpen={!!editingReview}
-        onClose={() => setEditingReview(null)}
-        onSave={handleEditSave}
-      />
 
       {/* Delete Confirmation Dialog */}
       <Dialog open={!!deletingReview} onOpenChange={() => !isDeleting && setDeletingReview(null)}>

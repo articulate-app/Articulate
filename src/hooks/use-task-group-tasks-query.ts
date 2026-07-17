@@ -6,6 +6,46 @@ import type { SearchSession, SearchSessionRef } from '../../app/lib/types/search
 type RowSortOrder = 'asc' | 'desc';
 
 const DEBUG_GROUPED_TASKS = false;
+const DEBUG_GROUPED_BOOTSTRAP = process.env.NODE_ENV === 'development';
+/** Row-sort / grouped orchestration (console in development). */
+const DEBUG_GROUPED_ROW_SORT = process.env.NODE_ENV === 'development';
+
+type GroupFetchTriggerSource =
+  | 'initial hydration'
+  | 'visible hydration'
+  | 'expand'
+  | 're-expand'
+  | 'load more'
+  | 'viewport fill'
+  | 'unknown';
+
+/** Human-readable reason for `task_group_tasks_filtered` logs. */
+function mapGroupedFetchReason(source: GroupFetchTriggerSource): string {
+  switch (source) {
+    case 'visible hydration':
+      return 'hydrate_unhydrated_group';
+    case 'load more':
+      return 'continue_group';
+    case 'viewport fill':
+      return 'viewport_fill';
+    case 'initial hydration':
+      return 'initial_hydration';
+    case 'expand':
+      return 'expand';
+    case 're-expand':
+      return 're_expand';
+    default:
+      return 'unknown';
+  }
+}
+type RowFetchContext = {
+  isBlockingGroup?: boolean;
+  areEarlierGroupsFullyDrained?: boolean;
+  groupCameFromBootstrap?: boolean;
+  nextRowCursor?: any | null;
+  groupIndex?: number;
+  visibleWindowIndices?: { start: number; end: number } | null;
+};
 
 // Track the latest grouping and row-sort configuration for the active
 // grouped-tasks hook instance so our cache patcher can move rows between
@@ -18,6 +58,11 @@ let currentRowSortOrder: RowSortOrder = 'desc';
 // (e.g. delete handlers that only have an id) can still resolve which group a row
 // belonged to.
 const taskIdToGroupKey = new Map<string, string>();
+let latestLoadedTaskRowsSnapshot: TaskListRow[] = [];
+
+export function getLoadedTaskRowsSnapshot(): TaskListRow[] {
+  return latestLoadedTaskRowsSnapshot;
+}
 
 // Map UI sort keys (column accessor keys) to TaskListRow fields.
 const uiToRowFieldMap: Record<string, keyof TaskListRow> = {
@@ -64,7 +109,8 @@ export function computeGroupKeyForTask(row: TaskListRow, groupBy: string | null)
     case 'assigned_to':
       return row.assigned_to_id != null ? String(row.assigned_to_id) : '__unassigned__';
     case 'status':
-      return row.project_status_name ?? '__unassigned__';
+      if (row.project_status_id == null) return '__unassigned__'
+      return row.project_status_name ?? String(row.project_status_id);
     case 'project':
       return row.project_id_int != null ? String(row.project_id_int) : '__no_project__';
     case 'content_type':
@@ -117,6 +163,8 @@ function compareRowsForSort(a: TaskListRow, b: TaskListRow): number {
 export interface UseTaskGroupTasksQueryOptions {
   q: string;
   project?: string;
+  /** When in project scope, pass current projectId so p_project_ids is never omitted. */
+  scopeProjectId?: number | null;
   filters?: { [key: string]: string | string[] };
   groupBy: string | null;
   rowSortBy?: string;
@@ -130,6 +178,8 @@ export interface UseTaskGroupTasksQueryOptions {
 
 export interface UseTaskGroupTasksQueryResult {
   tasksByGroup: Record<string, TaskListRow[]>;
+  hydratedByGroup: Record<string, boolean>;
+  bootstrapHydratedByGroup: Record<string, boolean>;
   cursorByGroup: Record<string, any | null>;
   /**
    * True once we've received at least one RPC response for this group (including an empty first page).
@@ -143,12 +193,39 @@ export interface UseTaskGroupTasksQueryResult {
    */
   prefetchedFirstPageByGroup: Record<string, boolean>;
   hasMoreByGroup: Record<string, boolean>;
+  isLoadingRowsByGroup: Record<string, boolean>;
   isFetchingByGroup: Record<string, boolean>;
   errorByGroup: Record<string, string | null>;
-  ensureFirstPage: (groupKey: string) => void;
-  fetchMore: (groupKey: string) => void;
+  ensureFirstPage: (
+    groupKey: string,
+    triggerSource?: GroupFetchTriggerSource,
+    context?: RowFetchContext,
+  ) => void;
+  fetchMore: (
+    groupKey: string,
+    triggerSource?: GroupFetchTriggerSource,
+    context?: RowFetchContext,
+  ) => void;
+  hydrateFromBootstrap: (payload: BootstrapResponse) => void;
   resetAll: () => void;
 }
+
+export type GroupRowCursor = { rok: string; id: number } | null;
+export type GroupPaginationCursor = { sd?: string; gok?: string; gk: string } | null;
+
+export type BootstrapGroup = {
+  group_key: string;
+  label: string;
+  is_hydrated: boolean;
+  rows: TaskListRow[];
+  has_more_rows: boolean | null;
+  next_row_cursor: GroupRowCursor;
+};
+
+export type BootstrapResponse = {
+  groups: BootstrapGroup[];
+  next_group_cursor: GroupPaginationCursor;
+};
 
 // --- Cross-hook cache patching for grouped task rows ------------------------
 // This small registry allows non-hook utilities (e.g. task-cache-utils) to
@@ -362,24 +439,24 @@ export function patchTaskInGroupTasksCaches(updatedTask: any) {
 
           const desiredKey = currentGroupBy
             ? (computeGroupKeyForTask(merged, currentGroupBy) ?? null)
-            : 'all';
+            : 'all'
           // Only move when we can confidently compute a new key.
-          if (desiredKey && desiredKey !== groupKey) {
-            movedRow = merged;
-            targetGroupKey = desiredKey;
+          if (desiredKey != null && desiredKey !== groupKey) {
+            movedRow = merged
+            targetGroupKey = desiredKey
             // Do not push into this group's rows – effectively remove it here.
           } else {
-            newRows.push(merged);
+            newRows.push(merged)
           }
         }
 
         next[groupKey] = newRows;
       }
 
-      if (movedRow && targetGroupKey) {
-        const existing = next[targetGroupKey] ?? prev[targetGroupKey] ?? [];
-        const withoutDup = existing.filter(r => String(r.id) !== idStr);
-        next[targetGroupKey] = insertRowSorted(withoutDup, movedRow);
+      if (movedRow != null && targetGroupKey != null) {
+        const existing = next[targetGroupKey] ?? prev[targetGroupKey] ?? []
+        const withoutDup = existing.filter(r => String(r.id) !== idStr)
+        next[targetGroupKey] = insertRowSorted(withoutDup, movedRow)
       }
 
       return hasAnyChange ? next : prev;
@@ -387,9 +464,52 @@ export function patchTaskInGroupTasksCaches(updatedTask: any) {
   });
 }
 
+/**
+ * Reinsert a task within a group using the active intra-group sort.
+ * Used for same-group drops where no grouped-field mutation is needed.
+ */
+export function repositionTaskInGroupCaches(args: {
+  taskId: number | string
+  groupKey: string
+  beforeTaskId?: number | null
+}) {
+  const idStr = String(args.taskId)
+  groupTasksSubscribers.forEach(apply => {
+    apply(prev => {
+      const rows = prev[args.groupKey]
+      if (!rows?.length) return prev
+
+      const moved = rows.find(r => String(r.id) === idStr)
+      if (!moved) return prev
+
+      const without = rows.filter(r => String(r.id) !== idStr)
+
+      let insertIdx = without.length
+      if (args.beforeTaskId != null) {
+        const beforeIdx = without.findIndex(r => String(r.id) === String(args.beforeTaskId))
+        if (beforeIdx !== -1) insertIdx = beforeIdx
+      }
+
+      const nextRows = [...without]
+      nextRows.splice(insertIdx, 0, moved)
+
+      const unchanged =
+        nextRows.length === rows.length &&
+        nextRows.every((row, index) => String(row.id) === String(rows[index]?.id))
+      if (unchanged) return prev
+
+      return {
+        ...prev,
+        [args.groupKey]: nextRows,
+      }
+    })
+  })
+}
+
 export function useTaskGroupTasksQuery({
   q,
   project,
+  scopeProjectId,
   filters = {},
   groupBy,
   rowSortBy,
@@ -400,6 +520,8 @@ export function useTaskGroupTasksQuery({
   searchSessionRef,
 }: UseTaskGroupTasksQueryOptions): UseTaskGroupTasksQueryResult {
   const [tasksByGroup, setTasksByGroup] = useState<Record<string, TaskListRow[]>>({});
+  const [hydratedByGroup, setHydratedByGroup] = useState<Record<string, boolean>>({});
+  const [bootstrapHydratedByGroup, setBootstrapHydratedByGroup] = useState<Record<string, boolean>>({});
   const [cursorByGroup, setCursorByGroup] = useState<Record<string, any | null>>({});
   const [loadedFirstPageByGroup, setLoadedFirstPageByGroup] = useState<Record<string, boolean>>({});
   const [prefetchedFirstPageByGroup, setPrefetchedFirstPageByGroup] = useState<Record<string, boolean>>({});
@@ -456,13 +578,19 @@ export function useTaskGroupTasksQuery({
 
   // Keep our best-effort id -> groupKey index up to date for delete handlers.
   useEffect(() => {
-    if (!isEnabled) return;
+    if (!isEnabled) {
+      latestLoadedTaskRowsSnapshot = [];
+      return;
+    }
     taskIdToGroupKey.clear();
+    const snapshotRows: TaskListRow[] = [];
     for (const [groupKey, rows] of Object.entries(tasksByGroup)) {
       for (const row of rows) {
         taskIdToGroupKey.set(String(row.id), groupKey);
+        snapshotRows.push(row);
       }
     }
+    latestLoadedTaskRowsSnapshot = snapshotRows;
   }, [isEnabled, tasksByGroup]);
 
   const buildRpcParams = useCallback(
@@ -487,6 +615,13 @@ export function useTaskGroupTasksQuery({
         if (parsed.length > 0) {
           projectIds = parsed;
         }
+      }
+      // In project scope, never send null; enforce at hook layer so UI cannot omit.
+      if ((!projectIds || projectIds.length === 0) && scopeProjectId != null && Number.isFinite(scopeProjectId)) {
+        projectIds = [scopeProjectId];
+      }
+      if (typeof process !== 'undefined' && process.env.NODE_ENV === 'development' && scopeProjectId != null && Number.isFinite(scopeProjectId) && (!projectIds || projectIds.length === 0)) {
+        console.error('[use-task-group-tasks-query] Project scope but p_project_ids would be null; scopeProjectId=', scopeProjectId);
       }
 
       // Convert status filter - filter by name directly.
@@ -526,7 +661,7 @@ export function useTaskGroupTasksQuery({
         }
       }
 
-      // Convert content type filter.
+      // Convert content type filter. Accept numeric ID (from pills/filter pane) or title (lookup).
       const contentTypeParam = filtersVal['content_type_title'];
       let contentTypeIds: number[] | undefined;
       if (contentTypeParam && editFieldsRef.current?.content_types) {
@@ -534,18 +669,20 @@ export function useTaskGroupTasksQuery({
         const ids: number[] = [];
 
         for (const ct of contentTypes) {
-          const contentType = editFieldsRef.current.content_types.find((c: any) => c.title === ct);
-          if (contentType?.id) {
-            ids.push(Number(contentType.id));
+          const raw = String(ct).trim();
+          const asId = /^\d+$/.test(raw) ? parseInt(raw, 10) : NaN;
+          if (Number.isFinite(asId)) {
+            ids.push(asId);
+          } else {
+            const contentType = editFieldsRef.current.content_types.find((c: any) => c.title === raw);
+            if (contentType?.id) ids.push(Number(contentType.id));
           }
         }
 
-        if (ids.length > 0) {
-          contentTypeIds = ids;
-        }
+        if (ids.length > 0) contentTypeIds = ids;
       }
 
-      // Convert production type filter.
+      // Convert production type filter. Accept numeric ID or title.
       const productionTypeParam = filtersVal['production_type_title'];
       let productionTypeIds: number[] | undefined;
       if (productionTypeParam && editFieldsRef.current?.production_types) {
@@ -555,17 +692,19 @@ export function useTaskGroupTasksQuery({
         const ids: number[] = [];
 
         for (const pt of productionTypes) {
-          const productionType = editFieldsRef.current.production_types.find(
-            (p: any) => p.title === pt,
-          );
-          if (productionType?.id) {
-            ids.push(Number(productionType.id));
+          const raw = String(pt).trim();
+          const asId = /^\d+$/.test(raw) ? parseInt(raw, 10) : NaN;
+          if (Number.isFinite(asId)) {
+            ids.push(asId);
+          } else {
+            const productionType = editFieldsRef.current.production_types.find(
+              (p: any) => p.title === raw,
+            );
+            if (productionType?.id) ids.push(Number(productionType.id));
           }
         }
 
-        if (ids.length > 0) {
-          productionTypeIds = ids;
-        }
+        if (ids.length > 0) productionTypeIds = ids;
       }
 
       // Convert language filter.
@@ -654,11 +793,13 @@ export function useTaskGroupTasksQuery({
         p_publication_date_lt: p_publication_date_lt,
       };
     },
-    [q, project, filters, groupBy, rowSortBy, rowSortOrder, perPage],
+    [q, project, scopeProjectId, filters, groupBy, rowSortBy, rowSortOrder, perPage],
   );
 
   const resetState = useCallback(() => {
     setTasksByGroup({});
+    setHydratedByGroup({});
+    setBootstrapHydratedByGroup({});
     setCursorByGroup({});
     setLoadedFirstPageByGroup({});
     setPrefetchedFirstPageByGroup({});
@@ -671,7 +812,13 @@ export function useTaskGroupTasksQuery({
   }, []);
 
   const performFetchForGroup = useCallback(
-    async (groupKey: string, cursor: any | null, isFirstPage: boolean) => {
+    async (
+      groupKey: string,
+      cursor: any | null,
+      isFirstPage: boolean,
+      triggerSource: GroupFetchTriggerSource = 'unknown',
+      context?: RowFetchContext,
+    ) => {
       if (!isEnabled) return;
 
       // Always use string group key for storage/lookups (avoids tasksByGroup["85"] vs tasksByGroup[85]).
@@ -682,6 +829,33 @@ export function useTaskGroupTasksQuery({
       const sessionParams = session?.params;
 
       const generationAtStart = queryGenerationRef.current;
+      const wasHydrated = !!hydratedByGroup[gk];
+      const rowCount = tasksByGroup[gk]?.length ?? 0;
+      const hasMoreRows = hasMoreByGroup[gk];
+      const isLoadingRows = !!isFetchingByGroup[gk];
+
+      if (DEBUG_GROUPED_BOOTSTRAP) {
+        console.log('[TaskGroupTasks] row fetch start', {
+          group_key: gk,
+          reason: triggerSource,
+          isBlockingGroup: Boolean(context?.isBlockingGroup),
+          areEarlierGroupsFullyDrained:
+            typeof context?.areEarlierGroupsFullyDrained === 'boolean'
+              ? context.areEarlierGroupsFullyDrained
+              : null,
+          groupCameFromBootstrap:
+            typeof context?.groupCameFromBootstrap === 'boolean'
+              ? context.groupCameFromBootstrap
+              : Boolean(bootstrapHydratedByGroup[gk]),
+          wasHydrated,
+          rowCount,
+          hasMoreRows,
+          nextRowCursor: context?.nextRowCursor ?? cursorByGroup[gk] ?? null,
+          groupIndex: context?.groupIndex ?? null,
+          visibleWindowIndices: context?.visibleWindowIndices ?? null,
+          isLoadingRows,
+        });
+      }
 
       // Guard 1: per-group in-flight lock
       if (inFlightByGroupRef.current[gk]) {
@@ -772,6 +946,18 @@ export function useTaskGroupTasksQuery({
         const supabase = createClientComponentClient();
         const rpcParams = buildRpcParams(gk, cursor, sessionParams ?? undefined);
 
+        if (DEBUG_GROUPED_ROW_SORT) {
+          console.log('[TaskGroupGrouped] task_group_tasks_filtered', {
+            group_key: gk,
+            reason: mapGroupedFetchReason(triggerSource),
+            triggerSource,
+            isFirstPage,
+            p_row_sort_by: (rpcParams as any).p_row_sort_by,
+            p_row_sort_order: (rpcParams as any).p_row_sort_order,
+            p_cursor_present: (rpcParams as any).p_cursor != null,
+          })
+        }
+
         const { data, error: rpcError } = await supabase.rpc(
           'task_group_tasks_filtered',
           rpcParams,
@@ -835,6 +1021,7 @@ export function useTaskGroupTasksQuery({
         // Mark this group as having completed at least one page request.
         // This remains true even if the first page is empty (valid "drained" state).
         setLoadedFirstPageByGroup(prev => ({ ...prev, [gk]: true }));
+        setHydratedByGroup(prev => ({ ...prev, [gk]: true }));
 
         setTasksByGroup(prev => {
           const previous = prev[gk] ?? [];
@@ -866,7 +1053,16 @@ export function useTaskGroupTasksQuery({
         setIsFetchingByGroup(prev => ({ ...prev, [gk]: false }));
       }
     },
-    [buildRpcParams, isEnabled, searchSessionRef],
+    [
+      buildRpcParams,
+      hasMoreByGroup,
+      bootstrapHydratedByGroup,
+      hydratedByGroup,
+      isEnabled,
+      isFetchingByGroup,
+      searchSessionRef,
+      tasksByGroup,
+    ],
   );
 
   // Reset all groups when the "query shape" changes.
@@ -896,20 +1092,46 @@ export function useTaskGroupTasksQuery({
     });
 
     if (searchSessionRef?.current != null) {
-      const gen = searchSessionRef.current.gen;
       const queryShapeChanged = lastQueryKeyRef.current !== queryKey;
-      const genChanged = lastSeenSessionGenRef.current !== gen;
-      if (!queryShapeChanged && !genChanged) return;
+      if (!queryShapeChanged) return;
+      if (DEBUG_GROUPED_ROW_SORT && lastQueryKeyRef.current) {
+        try {
+          const prev = JSON.parse(lastQueryKeyRef.current) as { rowSortBy?: string; rowSortOrder?: string }
+          const next = JSON.parse(queryKey) as typeof prev
+          if (prev.rowSortBy !== next.rowSortBy || prev.rowSortOrder !== next.rowSortOrder) {
+            console.log('[TaskGroupGrouped] row sort changed → tasks hook reset (clear cursors / hydration)', {
+              prev,
+              next,
+            })
+          }
+        } catch {
+          /* ignore */
+        }
+      }
       lastQueryKeyRef.current = queryKey;
-      lastSeenSessionGenRef.current = gen;
+      lastSeenSessionGenRef.current = searchSessionRef.current.gen;
     } else {
       lastSeenSessionGenRef.current = null;
       if (lastQueryKeyRef.current === queryKey) return;
+      if (DEBUG_GROUPED_ROW_SORT && lastQueryKeyRef.current) {
+        try {
+          const prev = JSON.parse(lastQueryKeyRef.current) as { rowSortBy?: string; rowSortOrder?: string }
+          const next = JSON.parse(queryKey) as typeof prev
+          if (prev.rowSortBy !== next.rowSortBy || prev.rowSortOrder !== next.rowSortOrder) {
+            console.log('[TaskGroupGrouped] row sort changed → tasks hook reset (clear cursors / hydration)', {
+              prev,
+              next,
+            })
+          }
+        } catch {
+          /* ignore */
+        }
+      }
       lastQueryKeyRef.current = queryKey;
     }
 
     if (DEBUG_GROUPED_TASKS) {
-      console.log('[TaskGroupTasks] Reset (query shape or session gen changed)', {
+      console.log('[TaskGroupTasks] Reset (query shape changed)', {
         queryKey: queryKey.slice(0, 80),
         hasSessionRef: !!searchSessionRef?.current,
       });
@@ -919,11 +1141,16 @@ export function useTaskGroupTasksQuery({
   }, [isEnabled, resetState, q, project, filtersString, groupBy, rowSortBy, rowSortOrder, perPage, searchSessionRef]);
 
   const ensureFirstPage = useCallback(
-    (groupKey: string) => {
+    (
+      groupKey: string,
+      triggerSource: GroupFetchTriggerSource = 'unknown',
+      context?: RowFetchContext,
+    ) => {
       if (!isEnabled) return;
       const gk = String(groupKey);
 
       const fetching = !!isFetchingByGroup[gk];
+      const isHydrated = !!hydratedByGroup[gk];
       const alreadyRequested =
         !!loadedFirstPageByGroup[gk] || firstPageRequestedRef.current.has(gk);
       const hasRows = (tasksByGroup[gk]?.length ?? 0) > 0;
@@ -935,6 +1162,7 @@ export function useTaskGroupTasksQuery({
         console.log('[TaskGroupTasks] ensureFirstPage', {
           groupKey: gk,
           isEnabled,
+          isHydrated,
           hasRows,
           loadedFirstPageFlag: !!loadedFirstPageByGroup[gk],
           isFetching: fetching,
@@ -944,6 +1172,17 @@ export function useTaskGroupTasksQuery({
         });
       }
 
+      if (isHydrated) {
+        if (DEBUG_GROUPED_BOOTSTRAP) {
+          console.log('[TaskGroupTasks] ensureFirstPage: skip hydrated group', {
+            groupKey: gk,
+            triggerSource,
+            hasRows,
+            hasMoreRows: hasMoreFlag,
+          });
+        }
+        return;
+      }
       if (alreadyRequested) {
         if (DEBUG_GROUPED_TASKS) {
           console.log('[TaskGroupTasks] ensureFirstPage: early return (alreadyRequested)', { groupKey: gk });
@@ -956,10 +1195,14 @@ export function useTaskGroupTasksQuery({
         }
         return;
       }
+      if (hasRows && hasMoreFlag === false) {
+        return;
+      }
 
-      performFetchForGroup(gk, null, true);
+      performFetchForGroup(gk, null, true, triggerSource, context);
     },
     [
+      hydratedByGroup,
       isEnabled,
       isFetchingByGroup,
       loadedFirstPageByGroup,
@@ -971,7 +1214,11 @@ export function useTaskGroupTasksQuery({
   );
 
   const fetchMore = useCallback(
-    (groupKey: string) => {
+    (
+      groupKey: string,
+      triggerSource: GroupFetchTriggerSource = 'load more',
+      context?: RowFetchContext,
+    ) => {
       if (!isEnabled) return;
       const gk = String(groupKey);
 
@@ -980,10 +1227,132 @@ export function useTaskGroupTasksQuery({
 
       // Pass stored cursor exactly as returned by RPC; don't transform or build from last row.
       const cursor = cursorByGroup[gk] ?? null;
-      performFetchForGroup(gk, cursor, false);
+      if (DEBUG_GROUPED_BOOTSTRAP) {
+        console.log('[TaskGroupTasks] follow-up task_group_tasks_filtered', {
+          group_key: gk,
+          reason: triggerSource,
+          isBlockingGroup: Boolean(context?.isBlockingGroup),
+          areEarlierGroupsFullyDrained:
+            typeof context?.areEarlierGroupsFullyDrained === 'boolean'
+              ? context.areEarlierGroupsFullyDrained
+              : null,
+          groupCameFromBootstrap:
+            typeof context?.groupCameFromBootstrap === 'boolean'
+              ? context.groupCameFromBootstrap
+              : Boolean(bootstrapHydratedByGroup[gk]),
+          wasHydrated: !!hydratedByGroup[gk],
+          rowCount: tasksByGroup[gk]?.length ?? 0,
+          hasMoreRows: hasMoreByGroup[gk],
+          nextRowCursor: context?.nextRowCursor ?? cursor,
+          groupIndex: context?.groupIndex ?? null,
+          visibleWindowIndices: context?.visibleWindowIndices ?? null,
+          hasCursor: cursor != null,
+        });
+      }
+      performFetchForGroup(gk, cursor, false, triggerSource, context);
     },
-    [isEnabled, isFetchingByGroup, hasMoreByGroup, cursorByGroup, performFetchForGroup],
+    [
+      bootstrapHydratedByGroup,
+      cursorByGroup,
+      hasMoreByGroup,
+      hydratedByGroup,
+      isEnabled,
+      isFetchingByGroup,
+      performFetchForGroup,
+      tasksByGroup,
+    ],
   );
+
+  const hydrateFromBootstrap = useCallback((payload: BootstrapResponse) => {
+    const groups = Array.isArray(payload?.groups) ? payload.groups : [];
+    const normalized: BootstrapGroup[] = groups
+      .filter((group): group is BootstrapGroup => !!group && typeof group.group_key === 'string')
+      .map(group => ({
+        group_key: String(group.group_key),
+        label: typeof group.label === 'string' ? group.label : String(group.group_key),
+        is_hydrated: Boolean(group.is_hydrated),
+        rows: Array.isArray(group.rows) ? group.rows : [],
+        has_more_rows:
+          typeof group.has_more_rows === 'boolean' ? group.has_more_rows : null,
+        next_row_cursor: (group.next_row_cursor ?? null) as GroupRowCursor,
+      }));
+
+    if (DEBUG_GROUPED_BOOTSTRAP) {
+      const totalRows = normalized.reduce((sum, group) => sum + (group.rows?.length ?? 0), 0);
+      console.log('[TaskGroupTasks] bootstrap hydrate', {
+        groups: normalized.length,
+        totalRows,
+      });
+    }
+    if (DEBUG_GROUPED_ROW_SORT) {
+      console.log('[TaskGroupGrouped] hydrateFromBootstrap (canonical; old row cursors discarded)', {
+        groupCount: normalized.length,
+        groups: normalized.map(g => ({
+          group_key: g.group_key,
+          is_hydrated: g.is_hydrated,
+          row_count: g.rows?.length ?? 0,
+          has_more_rows: g.has_more_rows,
+          has_next_row_cursor: g.next_row_cursor != null,
+        })),
+      })
+    }
+
+    setTasksByGroup(() => {
+      const next: Record<string, TaskListRow[]> = {};
+      for (const group of normalized) next[group.group_key] = group.rows;
+      return next;
+    });
+    setHydratedByGroup(() => {
+      const next: Record<string, boolean> = {};
+      for (const group of normalized) next[group.group_key] = Boolean(group.is_hydrated);
+      return next;
+    });
+    setBootstrapHydratedByGroup(() => {
+      const next: Record<string, boolean> = {};
+      for (const group of normalized) next[group.group_key] = true;
+      return next;
+    });
+    setCursorByGroup(() => {
+      const next: Record<string, any | null> = {};
+      for (const group of normalized) next[group.group_key] = group.next_row_cursor ?? null;
+      return next;
+    });
+    setLoadedFirstPageByGroup(() => {
+      const next: Record<string, boolean> = {};
+      for (const group of normalized) next[group.group_key] = Boolean(group.is_hydrated);
+      return next;
+    });
+    setPrefetchedFirstPageByGroup(() => {
+      const next: Record<string, boolean> = {};
+      for (const group of normalized) next[group.group_key] = Boolean(group.is_hydrated);
+      return next;
+    });
+    setHasMoreByGroup(() => {
+      const next: Record<string, boolean> = {};
+      for (const group of normalized) {
+        next[group.group_key] = group.is_hydrated
+          ? Boolean(group.has_more_rows)
+          : true;
+      }
+      return next;
+    });
+    setIsFetchingByGroup(() => {
+      const next: Record<string, boolean> = {};
+      for (const group of normalized) next[group.group_key] = false;
+      return next;
+    });
+    setErrorByGroup(() => {
+      const next: Record<string, string | null> = {};
+      for (const group of normalized) next[group.group_key] = null;
+      return next;
+    });
+
+    inFlightByGroupRef.current = {};
+    lastCursorKeyByGroupRef.current = {};
+    firstPageRequestedRef.current = new Set(
+      normalized.filter(group => group.is_hydrated).map(group => group.group_key),
+    );
+  }, []);
 
   const resetAll = useCallback(() => {
     queryGenerationRef.current += 1;
@@ -992,14 +1361,18 @@ export function useTaskGroupTasksQuery({
 
   return {
     tasksByGroup,
+    hydratedByGroup,
+    bootstrapHydratedByGroup,
     cursorByGroup,
     loadedFirstPageByGroup,
     prefetchedFirstPageByGroup,
+    isLoadingRowsByGroup: isFetchingByGroup,
     hasMoreByGroup,
     isFetchingByGroup,
     errorByGroup,
     ensureFirstPage,
     fetchMore,
+    hydrateFromBootstrap,
     resetAll,
   };
 }

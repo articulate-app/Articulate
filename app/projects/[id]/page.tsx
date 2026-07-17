@@ -35,6 +35,7 @@ export default function ProjectPage() {
   const params = useParams()
   const projectId = parseInt(params.id as string, 10)
   const [isSidebarCollapsed, setIsSidebarCollapsed] = useState(true)
+  const [isActionsMenuOpen, setIsActionsMenuOpen] = useState(false)
   const [showDeleteDialog, setShowDeleteDialog] = useState(false)
   const [showDuplicateDialog, setShowDuplicateDialog] = useState(false)
   const [duplicateProjectName, setDuplicateProjectName] = useState("")
@@ -141,6 +142,20 @@ export default function ProjectPage() {
     }
   }
 
+  const openDeleteDialogFromMenu = () => {
+    setIsActionsMenuOpen(false)
+    window.setTimeout(() => {
+      setShowDeleteDialog(true)
+    }, 0)
+  }
+
+  const openDuplicateDialogFromMenu = () => {
+    setIsActionsMenuOpen(false)
+    window.setTimeout(() => {
+      setShowDuplicateDialog(true)
+    }, 0)
+  }
+
   if (isNaN(projectId)) {
     return (
       <div className="flex items-center justify-center h-screen">
@@ -191,19 +206,27 @@ export default function ProjectPage() {
             <Share2 className="w-4 h-4" />
           </Button>
 
-          <DropdownMenu>
+          <DropdownMenu open={isActionsMenuOpen} onOpenChange={setIsActionsMenuOpen}>
             <DropdownMenuTrigger asChild>
               <Button variant="outline" size="icon" className="h-9 w-9">
                 <MoreVertical className="w-4 h-4" />
               </Button>
             </DropdownMenuTrigger>
             <DropdownMenuContent align="end">
-              <DropdownMenuItem onClick={() => setShowDuplicateDialog(true)}>
+              <DropdownMenuItem
+                onSelect={(event) => {
+                  event.preventDefault()
+                  openDuplicateDialogFromMenu()
+                }}
+              >
                 <Copy className="w-4 h-4 mr-2" />
                 Duplicate Project
               </DropdownMenuItem>
               <DropdownMenuItem 
-                onClick={() => setShowDeleteDialog(true)}
+                onSelect={(event) => {
+                  event.preventDefault()
+                  openDeleteDialogFromMenu()
+                }}
                 className="text-red-600 focus:text-red-600"
               >
                 <Trash2 className="w-4 h-4 mr-2" />

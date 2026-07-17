@@ -373,32 +373,44 @@ export async function refreshProjectPlanningMemory(projectId: number) {
   return { data: (data as unknown) ?? null, error }
 }
 
-export async function getPlanningLookups(): Promise<{
+export async function getPlanningLookups(projectId: number): Promise<{
   data: PlanningLookups | null
   error: any
 }> {
   const [
-    contentTypesRes,
+    projectContentTypesRes,
     productionTypesRes,
-    languagesRes,
+    projectLanguagesRes,
     briefingTypesRes,
     channelsRes,
   ] = await Promise.all([
-    supabase.from("content_types").select("id,title").eq("is_deleted", false).order("title"),
+    supabase
+      .from("project_content_type_settings")
+      .select("content_type_id,content_types!inner(id,title)")
+      .eq("project_id", projectId),
     supabase
       .from("production_types")
       .select("id,title")
       .eq("is_deleted", false)
       .order("title"),
-    supabase.from("languages").select("id,code").eq("is_deleted", false).order("code"),
-    supabase.from("briefing_types").select("id,title").eq("is_deleted", false).order("title"),
+    supabase
+      .from("project_languages")
+      .select("language_id,languages!inner(id,code)")
+      .eq("project_id", projectId)
+      .eq("is_deleted", false),
+    supabase
+      .from("v_project_briefing_types")
+      .select("briefing_type_id,display_title,global_title")
+      .eq("project_id", projectId)
+      .order("position", { ascending: true, nullsFirst: false })
+      .order("display_title", { ascending: true }),
     supabase.from("channels").select("id,name").eq("is_deleted", false).order("name"),
   ])
 
   const error =
-    contentTypesRes.error ||
+    projectContentTypesRes.error ||
     productionTypesRes.error ||
-    languagesRes.error ||
+    projectLanguagesRes.error ||
     briefingTypesRes.error ||
     channelsRes.error
 
@@ -406,10 +418,30 @@ export async function getPlanningLookups(): Promise<{
 
   return {
     data: {
-      contentTypes: (contentTypesRes.data as any[])?.map((r) => ({ id: r.id, title: r.title })) ?? [],
+      contentTypes:
+        Array.from(
+          new Map(
+            ((projectContentTypesRes.data as any[]) ?? [])
+              .map((row: any) => row?.content_types)
+              .filter((row: any) => row?.id != null && row?.title)
+              .map((row: any) => [row.id, { id: row.id, title: row.title }]),
+          ).values(),
+        ) ?? [],
       productionTypes: (productionTypesRes.data as any[])?.map((r) => ({ id: r.id, title: r.title })) ?? [],
-      languages: (languagesRes.data as any[])?.map((r) => ({ id: r.id, code: r.code })) ?? [],
-      briefingTypes: (briefingTypesRes.data as any[])?.map((r) => ({ id: r.id, title: r.title })) ?? [],
+      languages:
+        Array.from(
+          new Map(
+            ((projectLanguagesRes.data as any[]) ?? [])
+              .map((row: any) => row?.languages)
+              .filter((row: any) => row?.id != null && row?.code)
+              .map((row: any) => [row.id, { id: row.id, code: row.code }]),
+          ).values(),
+        ) ?? [],
+      briefingTypes:
+        (briefingTypesRes.data as any[])?.map((r) => ({
+          id: r.briefing_type_id,
+          title: r.display_title || r.global_title || "Untitled briefing",
+        })) ?? [],
       channels: (channelsRes.data as any[])?.map((r) => ({ id: r.id, name: r.name })) ?? [],
     },
     error: null,

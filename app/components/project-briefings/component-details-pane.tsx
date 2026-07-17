@@ -21,11 +21,11 @@ import {
   AlertDialogTitle,
 } from "../ui/alert-dialog"
 import {
-  fetchProjectComponentUsage,
   loadProjectComponentIndex,
   updateProjectComponentInProject,
   type ComponentIndexItem,
 } from "../../lib/services/project-briefings"
+import { ChannelRequirementsSection } from "./channel-requirements-section"
 
 type Props = {
   projectId: number
@@ -130,8 +130,9 @@ export function ComponentDetailsPane({ projectId, componentKey }: Props) {
         const chIds = Array.from(new Set(rows.map((r) => r.channel_id)))
         const defaultsRes = await supabase
           .from("project_ct_channel_briefings")
-          .select("content_type_id, channel_id, briefing_type_id")
+          .select("content_type_id, channel_id, briefing_type_id, is_default")
           .eq("project_id", projectId)
+          .eq("is_default", true)
           .in("content_type_id", ctIds)
           .in("channel_id", chIds)
         if (defaultsRes.error) throw defaultsRes.error
@@ -181,22 +182,6 @@ export function ComponentDetailsPane({ projectId, componentKey }: Props) {
     },
   })
 
-  // Project usage (templates + CT×Channel)
-  const {
-    data: selectedUsage,
-    isLoading: isUsageLoading,
-    error: usageError,
-  } = useQuery({
-    queryKey: ["projBriefings:library:componentUsage", projectId, selectedProjectComponentId],
-    enabled: !!selectedProjectComponentId,
-    queryFn: async () => {
-      if (!selectedProjectComponentId) return { templates: [], ctChannel: [] }
-      const { data, error } = await fetchProjectComponentUsage(projectId, selectedProjectComponentId)
-      if (error) throw error
-      return data || { templates: [], ctChannel: [] }
-    },
-  })
-
   // Keep right-pane form in sync when selection changes.
   useEffect(() => {
     if (!selectedItem) {
@@ -210,9 +195,9 @@ export function ComponentDetailsPane({ projectId, componentKey }: Props) {
 
   const invalidateUsageEverywhere = useCallback(() => {
     queryClient.invalidateQueries({ queryKey: ["projBriefings:library:index", projectId] })
-    queryClient.invalidateQueries({ queryKey: ["projBriefings:library:componentUsage", projectId] })
     queryClient.invalidateQueries({ queryKey: ["projBriefings:library:globalUsage:templates", projectId] })
     queryClient.invalidateQueries({ queryKey: ["projBriefings:library:globalUsage:ct", projectId] })
+    queryClient.invalidateQueries({ queryKey: ["projBriefings:library:channelPolicies", projectId] })
     queryClient.invalidateQueries({ queryKey: ["projBriefings:components"] })
     queryClient.invalidateQueries({ queryKey: ["availableComponents"] })
     queryClient.invalidateQueries({ queryKey: ["allowedGlobalComponents"] })
@@ -294,22 +279,6 @@ export function ComponentDetailsPane({ projectId, componentKey }: Props) {
     }
   }, [editDescription, editTitle, globalCtUsage, invalidateUsageEverywhere, projectId, selectedGlobalComponentId, selectedItem, supabase])
 
-  const handleRemoveFromTemplate = useCallback(
-    async (briefingTypeId: number) => {
-      if (!selectedProjectComponentId) return
-      const { error } = await supabase.rpc("pbtc_remove", {
-        p_project_id: projectId,
-        p_briefing_type_id: briefingTypeId,
-        p_component_id: selectedProjectComponentId,
-        p_is_project_component: true,
-      })
-      if (error) throw error
-      toast({ title: "Success", description: "Removed from template" })
-      invalidateUsageEverywhere()
-    },
-    [invalidateUsageEverywhere, projectId, selectedProjectComponentId, supabase]
-  )
-
   const handleRemoveGlobalFromTemplate = useCallback(
     async (briefingTypeId: number) => {
       if (!selectedGlobalComponentId) return
@@ -324,24 +293,6 @@ export function ComponentDetailsPane({ projectId, componentKey }: Props) {
       invalidateUsageEverywhere()
     },
     [invalidateUsageEverywhere, projectId, selectedGlobalComponentId, supabase]
-  )
-
-  const handleRemoveFromCtChannel = useCallback(
-    async (args: { contentTypeId: number; channelId: number; briefingTypeId: number }) => {
-      if (!selectedProjectComponentId) return
-      const { error } = await supabase.rpc("pcctbc_remove", {
-        p_project_id: projectId,
-        p_content_type_id: args.contentTypeId,
-        p_channel_id: args.channelId,
-        p_briefing_type_id: args.briefingTypeId,
-        p_component_id: selectedProjectComponentId,
-        p_is_project_component: true,
-      })
-      if (error) throw error
-      toast({ title: "Success", description: "Removed from briefing" })
-      invalidateUsageEverywhere()
-    },
-    [invalidateUsageEverywhere, projectId, selectedProjectComponentId, supabase]
   )
 
   const handleRemoveGlobalFromCtChannel = useCallback(
@@ -362,15 +313,13 @@ export function ComponentDetailsPane({ projectId, componentKey }: Props) {
     [invalidateUsageEverywhere, projectId, selectedGlobalComponentId, supabase]
   )
 
-  // Inline override editing for CT×Channel rows (project + global)
+  // Inline override editing for CT×Channel rows (global system components only)
   const [overrideDrafts, setOverrideDrafts] = useState<Record<string, { custom_title: string; custom_description: string }>>({})
   const [overrideInitialByKey, setOverrideInitialByKey] = useState<Record<string, { custom_title: string; custom_description: string }>>({})
 
   useEffect(() => {
-    const rows: any[] =
-      selectedItem?.kind === "project"
-        ? (selectedUsage?.ctChannel || [])
-        : (globalCtUsage || [])
+    if (selectedItem?.kind !== "global") return
+    const rows: any[] = globalCtUsage || []
     if (!rows.length) return
     const next: Record<string, { custom_title: string; custom_description: string }> = {}
     const initial: Record<string, { custom_title: string; custom_description: string }> = {}
@@ -381,7 +330,7 @@ export function ComponentDetailsPane({ projectId, componentKey }: Props) {
     })
     setOverrideDrafts(next)
     setOverrideInitialByKey(initial)
-  }, [globalCtUsage, selectedItem?.kind, selectedUsage?.ctChannel])
+  }, [globalCtUsage, selectedItem?.kind])
 
   const handleSaveOverride = useCallback(
     async (args: { contentTypeId: number; channelId: number; briefingTypeId: number }) => {
@@ -392,18 +341,15 @@ export function ComponentDetailsPane({ projectId, componentKey }: Props) {
       const isSameTitle = (draft.custom_title.trim() || "") === ((initial?.custom_title ?? "").trim() || "")
       const isSameDesc = (draft.custom_description.trim() || "") === ((initial?.custom_description ?? "").trim() || "")
       if (isSameTitle && isSameDesc) return
-
-      const isProject = selectedItem?.kind === "project"
-      const componentId = isProject ? selectedProjectComponentId : selectedGlobalComponentId
-      if (!componentId) return
+      if (!selectedGlobalComponentId) return
 
       const { error } = await supabase.rpc("pcctbc_update", {
         p_project_id: projectId,
         p_content_type_id: args.contentTypeId,
         p_channel_id: args.channelId,
         p_briefing_type_id: args.briefingTypeId,
-        p_component_id: componentId,
-        p_is_project_component: isProject,
+        p_component_id: selectedGlobalComponentId,
+        p_is_project_component: false,
         p_custom_title: draft.custom_title.trim() || null,
         p_custom_description: draft.custom_description.trim() || null,
       })
@@ -417,8 +363,6 @@ export function ComponentDetailsPane({ projectId, componentKey }: Props) {
       overrideInitialByKey,
       projectId,
       selectedGlobalComponentId,
-      selectedItem?.kind,
-      selectedProjectComponentId,
       supabase,
     ]
   )
@@ -471,7 +415,11 @@ export function ComponentDetailsPane({ projectId, componentKey }: Props) {
             </div>
             <div className="mt-3">
               <h3 className="text-base font-semibold text-gray-900 leading-tight">{selectedItem.title}</h3>
-              <p className="text-sm text-gray-500 mt-1">Edit the component and manage where it’s used.</p>
+              <p className="text-sm text-gray-500 mt-1">
+                {selectedItem.kind === "project"
+                  ? "Edit the component and set channel requirements for AI builds."
+                  : "Edit the component and manage where it’s used."}
+              </p>
             </div>
           </div>
 
@@ -543,245 +491,136 @@ export function ComponentDetailsPane({ projectId, componentKey }: Props) {
           </div>
         )}
 
-        {/* Usage in templates */}
-        <div className="space-y-4">
-          <div>
-            <h4 className="text-sm font-semibold text-gray-900">Used in Project Briefing Templates</h4>
-            <p className="text-xs text-gray-500 mt-1">Project-level template usage for this component.</p>
-          </div>
-
-          {selectedItem.kind === "project" ? (
-            isUsageLoading ? (
-              <div className="space-y-2">
-                <div className="h-10 bg-gray-100 rounded animate-pulse" />
-                <div className="h-10 bg-gray-100 rounded animate-pulse" />
+        {selectedItem.kind === "project" && selectedProjectComponentId != null ? (
+          <ChannelRequirementsSection
+            projectId={projectId}
+            component={{ kind: "project", projectComponentId: selectedProjectComponentId }}
+          />
+        ) : (
+          <>
+            {/* Usage in templates (system / global components only) */}
+            <div className="space-y-4">
+              <div>
+                <h4 className="text-sm font-semibold text-gray-900">Used in Project Briefing Templates</h4>
+                <p className="text-xs text-gray-500 mt-1">Project-level template usage for this component.</p>
               </div>
-            ) : usageError ? (
-              <div className="text-sm text-red-600">Failed to load usage: {String(usageError)}</div>
-            ) : (selectedUsage?.templates?.length || 0) === 0 ? (
-              <div className="text-sm text-gray-500">Not used in any project briefing templates.</div>
-            ) : (
-              <div className="space-y-2">
-                {selectedUsage!.templates.map((row: any) => (
-                  <div key={row.briefing_type_id} className="border rounded-md border-gray-200 p-3">
-                    <div className="flex items-start justify-between gap-3">
-                      <div className="min-w-0">
-                        <div className="text-sm font-medium text-gray-900">{row.briefing_type_title}</div>
-                        <div className="text-xs text-gray-500 mt-1">Position: {row.position ?? "—"}</div>
-                      </div>
-                      <Button
-                        size="sm"
-                        variant="outline"
-                        className="text-red-600 border-red-200 hover:bg-red-50"
-                        onClick={() => handleRemoveFromTemplate(row.briefing_type_id)}
-                      >
-                        Remove from template
-                      </Button>
-                    </div>
-                  </div>
-                ))}
-              </div>
-            )
-          ) : (globalTemplateUsage?.length || 0) === 0 ? (
-            <div className="text-sm text-gray-500">Not used in any project briefing templates.</div>
-          ) : (
-            <div className="space-y-2">
-              {(globalTemplateUsage as any[]).map((row: any) => (
-                <div key={row.briefing_type_id} className="border rounded-md border-gray-200 p-3">
-                  <div className="flex items-start justify-between gap-3">
-                    <div className="min-w-0">
-                      <div className="text-sm font-medium text-gray-900">{row.briefing_type_title}</div>
-                      <div className="text-xs text-gray-500 mt-1">Position: {row.position ?? "—"}</div>
-                    </div>
-                    <Button
-                      size="sm"
-                      variant="outline"
-                      className="text-red-600 border-red-200 hover:bg-red-50"
-                      onClick={() => handleRemoveGlobalFromTemplate(row.briefing_type_id)}
-                    >
-                      Remove from template
-                    </Button>
-                  </div>
-                </div>
-              ))}
-            </div>
-          )}
-        </div>
 
-        {/* Usage in CT×Channel */}
-        <div className="space-y-4">
-          <div>
-            <h4 className="text-sm font-semibold text-gray-900">Used in Channel/Content-Type Briefings</h4>
-            <p className="text-xs text-gray-500 mt-1">Per channel/content-type usage for this component.</p>
-          </div>
-
-          {selectedItem.kind === "project" ? (
-            isUsageLoading ? (
-              <div className="space-y-2">
-                <div className="h-14 bg-gray-100 rounded animate-pulse" />
-                <div className="h-14 bg-gray-100 rounded animate-pulse" />
-              </div>
-            ) : (selectedUsage?.ctChannel?.length || 0) === 0 ? (
-              <div className="text-sm text-gray-500">Not used in any channel/content-type briefings.</div>
-            ) : (
-              <div className="space-y-3">
-                {selectedUsage!.ctChannel.map((row: any) => {
-                  const key = `${row.content_type_id}:${row.channel_id}:${row.briefing_type_id}`
-                  const draft = overrideDrafts[key] || { custom_title: "", custom_description: "" }
-                  return (
-                    <div key={key} className="border rounded-md border-gray-200 p-3 space-y-3">
+              {(globalTemplateUsage?.length || 0) === 0 ? (
+                <div className="text-sm text-gray-500">Not used in any project briefing templates.</div>
+              ) : (
+                <div className="space-y-2">
+                  {(globalTemplateUsage as any[]).map((row: any) => (
+                    <div key={row.briefing_type_id} className="border rounded-md border-gray-200 p-3">
                       <div className="flex items-start justify-between gap-3">
                         <div className="min-w-0">
-                          <div className="text-sm font-medium text-gray-900">
-                            {row.briefing_type_title} - {row.channel_title} - {row.content_type_title}
-                          </div>
+                          <div className="text-sm font-medium text-gray-900">{row.briefing_type_title}</div>
                           <div className="text-xs text-gray-500 mt-1">Position: {row.position ?? "—"}</div>
                         </div>
                         <Button
                           size="sm"
                           variant="outline"
                           className="text-red-600 border-red-200 hover:bg-red-50"
-                          onClick={() =>
-                            handleRemoveFromCtChannel({
-                              contentTypeId: row.content_type_id,
-                              channelId: row.channel_id,
-                              briefingTypeId: row.briefing_type_id,
-                            })
-                          }
+                          onClick={() => handleRemoveGlobalFromTemplate(row.briefing_type_id)}
                         >
-                          Remove from this briefing
+                          Remove from template
                         </Button>
                       </div>
-
-                      <div className="grid grid-cols-1 gap-3">
-                        <div>
-                          <Label className="text-xs">Override title</Label>
-                          <Input
-                            value={draft.custom_title}
-                            onChange={(e) =>
-                              setOverrideDrafts((prev) => ({
-                                ...prev,
-                                [key]: { ...draft, custom_title: e.target.value },
-                              }))
-                            }
-                            onBlur={() =>
-                              handleSaveOverride({
-                                contentTypeId: row.content_type_id,
-                                channelId: row.channel_id,
-                                briefingTypeId: row.briefing_type_id,
-                              })
-                            }
-                            placeholder="(optional)"
-                          />
-                        </div>
-                        <div>
-                          <Label className="text-xs">Override description</Label>
-                          <Textarea
-                            value={draft.custom_description}
-                            onChange={(e) =>
-                              setOverrideDrafts((prev) => ({
-                                ...prev,
-                                [key]: { ...draft, custom_description: e.target.value },
-                              }))
-                            }
-                            onBlur={() =>
-                              handleSaveOverride({
-                                contentTypeId: row.content_type_id,
-                                channelId: row.channel_id,
-                                briefingTypeId: row.briefing_type_id,
-                              })
-                            }
-                            placeholder="(optional)"
-                            rows={3}
-                          />
-                        </div>
-                      </div>
                     </div>
-                  )
-                })}
-              </div>
-            )
-          ) : (globalCtUsage?.length || 0) === 0 ? (
-            <div className="text-sm text-gray-500">Not used in any channel/content-type briefings.</div>
-          ) : (
-            <div className="space-y-3">
-              {(globalCtUsage as any[]).map((row: any) => {
-                const key = `${row.content_type_id}:${row.channel_id}:${row.briefing_type_id}`
-                const draft = overrideDrafts[key] || { custom_title: "", custom_description: "" }
-                return (
-                  <div key={key} className="border rounded-md border-gray-200 p-3 space-y-3">
-                    <div className="flex items-start justify-between gap-3">
-                      <div className="min-w-0">
-                        <div className="text-sm font-medium text-gray-900">
-                          {row.briefing_type_title} - {row.channel_title} - {row.content_type_title}
-                        </div>
-                        <div className="text-xs text-gray-500 mt-1">Position: {row.position ?? "—"}</div>
-                      </div>
-                      <Button
-                        size="sm"
-                        variant="outline"
-                        className="text-red-600 border-red-200 hover:bg-red-50"
-                        onClick={() =>
-                          handleRemoveGlobalFromCtChannel({
-                            contentTypeId: row.content_type_id,
-                            channelId: row.channel_id,
-                            briefingTypeId: row.briefing_type_id,
-                          })
-                        }
-                      >
-                        Remove from this briefing
-                      </Button>
-                    </div>
-
-                    <div className="grid grid-cols-1 gap-3">
-                      <div>
-                        <Label className="text-xs">Override title</Label>
-                        <Input
-                          value={draft.custom_title}
-                          onChange={(e) =>
-                            setOverrideDrafts((prev) => ({
-                              ...prev,
-                              [key]: { ...draft, custom_title: e.target.value },
-                            }))
-                          }
-                          onBlur={() =>
-                            handleSaveOverride({
-                              contentTypeId: row.content_type_id,
-                              channelId: row.channel_id,
-                              briefingTypeId: row.briefing_type_id,
-                            })
-                          }
-                          placeholder="(optional)"
-                        />
-                      </div>
-                      <div>
-                        <Label className="text-xs">Override description</Label>
-                        <Textarea
-                          value={draft.custom_description}
-                          onChange={(e) =>
-                            setOverrideDrafts((prev) => ({
-                              ...prev,
-                              [key]: { ...draft, custom_description: e.target.value },
-                            }))
-                          }
-                          onBlur={() =>
-                            handleSaveOverride({
-                              contentTypeId: row.content_type_id,
-                              channelId: row.channel_id,
-                              briefingTypeId: row.briefing_type_id,
-                            })
-                          }
-                          placeholder="(optional)"
-                          rows={3}
-                        />
-                      </div>
-                    </div>
-                  </div>
-                )
-              })}
+                  ))}
+                </div>
+              )}
             </div>
-          )}
-        </div>
+
+            {/* Usage in CT×Channel (system / global components only) */}
+            <div className="space-y-4">
+              <div>
+                <h4 className="text-sm font-semibold text-gray-900">Used in Channel/Content-Type Briefings</h4>
+                <p className="text-xs text-gray-500 mt-1">Per channel/content-type usage for this component.</p>
+              </div>
+
+              {(globalCtUsage?.length || 0) === 0 ? (
+                <div className="text-sm text-gray-500">Not used in any channel/content-type briefings.</div>
+              ) : (
+                <div className="space-y-3">
+                  {(globalCtUsage as any[]).map((row: any) => {
+                    const key = `${row.content_type_id}:${row.channel_id}:${row.briefing_type_id}`
+                    const draft = overrideDrafts[key] || { custom_title: "", custom_description: "" }
+                    return (
+                      <div key={key} className="border rounded-md border-gray-200 p-3 space-y-3">
+                        <div className="flex items-start justify-between gap-3">
+                          <div className="min-w-0">
+                            <div className="text-sm font-medium text-gray-900">
+                              {row.briefing_type_title} - {row.channel_title} - {row.content_type_title}
+                            </div>
+                            <div className="text-xs text-gray-500 mt-1">Position: {row.position ?? "—"}</div>
+                          </div>
+                          <Button
+                            size="sm"
+                            variant="outline"
+                            className="text-red-600 border-red-200 hover:bg-red-50"
+                            onClick={() =>
+                              handleRemoveGlobalFromCtChannel({
+                                contentTypeId: row.content_type_id,
+                                channelId: row.channel_id,
+                                briefingTypeId: row.briefing_type_id,
+                              })
+                            }
+                          >
+                            Remove from this briefing
+                          </Button>
+                        </div>
+
+                        <div className="grid grid-cols-1 gap-3">
+                          <div>
+                            <Label className="text-xs">Override title</Label>
+                            <Input
+                              value={draft.custom_title}
+                              onChange={(e) =>
+                                setOverrideDrafts((prev) => ({
+                                  ...prev,
+                                  [key]: { ...draft, custom_title: e.target.value },
+                                }))
+                              }
+                              onBlur={() =>
+                                handleSaveOverride({
+                                  contentTypeId: row.content_type_id,
+                                  channelId: row.channel_id,
+                                  briefingTypeId: row.briefing_type_id,
+                                })
+                              }
+                              placeholder="(optional)"
+                            />
+                          </div>
+                          <div>
+                            <Label className="text-xs">Override description</Label>
+                            <Textarea
+                              value={draft.custom_description}
+                              onChange={(e) =>
+                                setOverrideDrafts((prev) => ({
+                                  ...prev,
+                                  [key]: { ...draft, custom_description: e.target.value },
+                                }))
+                              }
+                              onBlur={() =>
+                                handleSaveOverride({
+                                  contentTypeId: row.content_type_id,
+                                  channelId: row.channel_id,
+                                  briefingTypeId: row.briefing_type_id,
+                                })
+                              }
+                              placeholder="(optional)"
+                              rows={3}
+                            />
+                          </div>
+                        </div>
+                      </div>
+                    )
+                  })}
+                </div>
+              )}
+            </div>
+          </>
+        )}
 
         {/* Delete */}
         <div className="pt-2 border-t border-gray-200">
@@ -789,7 +628,9 @@ export function ComponentDetailsPane({ projectId, componentKey }: Props) {
             <div>
               <div className="text-sm font-semibold text-gray-900">Danger zone</div>
               <div className="text-xs text-gray-500 mt-1">
-                Deleting will remove this component from all briefings where it is used.
+                {selectedItem.kind === "project"
+                  ? "Deleting removes this project component from the library. Channel requirement settings for it are cleared."
+                  : "Deleting will remove this component from all briefings where it is used."}
               </div>
             </div>
             <Button variant="destructive" size="sm" onClick={() => setIsDeleteDialogOpen(true)}>

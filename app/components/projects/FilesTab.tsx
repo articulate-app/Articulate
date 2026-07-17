@@ -11,7 +11,8 @@ import {
   DropdownMenuTrigger,
 } from "../ui/dropdown-menu"
 import { Input } from "../ui/input"
-import { Loader2, Upload, MoreVertical, Download, Copy, Trash2, File } from "lucide-react"
+import { Loader2, MoreVertical, Download, Copy, Trash2, File } from "lucide-react"
+import { AddComponentButton } from "../task/AddComponentButton"
 import { toast } from "../ui/use-toast"
 import { format } from "date-fns"
 import {
@@ -25,6 +26,8 @@ import { useCurrentUserStore } from "../../store/current-user"
 
 interface FilesTabProps {
   projectId: number
+  /** Hide the built-in "Files" heading (e.g. when embedded in overview). */
+  hideTitle?: boolean
 }
 
 function formatFileSize(bytes: number): string {
@@ -35,7 +38,7 @@ function formatFileSize(bytes: number): string {
   return Math.round(bytes / Math.pow(k, i) * 100) / 100 + " " + sizes[i]
 }
 
-export function FilesTab({ projectId }: FilesTabProps) {
+export function FilesTab({ projectId, hideTitle = false }: FilesTabProps) {
   const queryClient = useQueryClient()
   const publicUserId = useCurrentUserStore((s) => s.publicUserId)
   const [files, setFiles] = useState<ProjectFile[]>([])
@@ -314,41 +317,24 @@ export function FilesTab({ projectId }: FilesTabProps) {
 
   return (
     <div>
-      <div className="mb-6 flex items-center justify-between">
-        <h2 className="text-xl font-semibold">Files</h2>
-          <div>
-            <input
-              ref={fileInputRef}
-              type="file"
-              onChange={handleUpload}
-              className="hidden"
-              id="file-upload"
-            />
-            <Button
-              onClick={() => fileInputRef.current?.click()}
-              disabled={isUploading}
-            >
-              {isUploading ? (
-                <Loader2 className="w-4 h-4 animate-spin mr-2" />
-              ) : (
-                <Upload className="w-4 h-4 mr-2" />
-              )}
-              Upload File
-            </Button>
+      {hideTitle ? null : (
+        <div className="mb-6">
+          <h2 className="text-xl font-semibold">Files</h2>
+        </div>
+      )}
+      <input
+        ref={fileInputRef}
+        type="file"
+        onChange={handleUpload}
+        className="hidden"
+        id="file-upload"
+      />
+      <div className="space-y-2">
+        {visibleFiles.length === 0 && !isLoading && (
+          <div className="py-8 text-center text-sm text-gray-500">
+            No files uploaded yet.
           </div>
-        </div>
-        {/* Hint about chat uploads */}
-        <div className="mb-4 rounded-lg bg-blue-50 border border-blue-200 p-3 text-sm text-blue-700">
-          Files from chat uploads also appear here.
-        </div>
-
-        {/* Files List */}
-        <div className="space-y-2">
-          {visibleFiles.length === 0 && !isLoading && (
-            <div className="py-8 text-center text-gray-500">
-              No files uploaded yet. Upload your first file to get started.
-            </div>
-          )}
+        )}
 
           {visibleFiles.map((file) => (
             <div
@@ -442,6 +428,12 @@ export function FilesTab({ projectId }: FilesTabProps) {
             </div>
           )}
         </div>
+
+      <AddComponentButton
+        label={isUploading ? "Uploading..." : "Add file"}
+        disabled={isUploading}
+        onClick={() => fileInputRef.current?.click()}
+      />
     </div>
   )
 }

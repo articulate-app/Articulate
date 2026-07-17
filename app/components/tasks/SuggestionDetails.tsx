@@ -4,11 +4,15 @@ import * as React from "react"
 import { Button } from "../ui/button"
 import { cn } from "@/lib/utils"
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "../ui/tabs"
+import { RichTextEditor } from "../ui/rich-text-editor"
 
 export type SuggestionDetailsModel = {
   id: number
   title: string
   briefing: string | null
+  assigned_to_id?: number | null
+  assigned_to_name?: string | null
+  assigned_to_photo?: string | null
   planned_for_date: string | null
   content_type_id: number | null
   content_type_title?: string | null
@@ -113,8 +117,23 @@ export function SuggestionDetails({
                 <label className="text-sm font-medium text-gray-400 self-center justify-self-start text-left">
                   Briefing
                 </label>
-                <div className={cn("w-full px-3 py-2 rounded-md min-h-[40px] whitespace-pre-wrap", isLoading && "text-gray-400")}>
-                  {isLoading ? "Loading..." : suggestion?.briefing || ""}
+                <div className="w-full px-3 py-2 rounded-md min-h-[40px]">
+                  {isLoading ? (
+                    <span className="text-sm text-gray-400">Loading...</span>
+                  ) : suggestion?.briefing ? (
+                    // Read-only rich text display (suggestions are read-only). Uses the app's standard
+                    // editor in read-only mode so stored formatting renders correctly and no raw HTML
+                    // is exposed.
+                    <RichTextEditor
+                      value={suggestion.briefing}
+                      onChange={() => {}}
+                      readOnly
+                      toolbarVisibility="hidden"
+                      showBubbleToolbar={false}
+                      flatSurface
+                      editorClassName="text-sm leading-snug"
+                    />
+                  ) : null}
                 </div>
 
                 <label className="text-sm font-medium text-gray-400 self-center justify-self-start text-left">

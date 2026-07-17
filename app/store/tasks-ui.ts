@@ -50,11 +50,15 @@ interface TasksUIState {
   setViewMode: (mode: ViewMode) => void
   searchValue: string
   setSearchValue: (val: string) => void
+  searchDraftValue: string
+  setSearchDraftValue: (val: string) => void
   filters: TaskFilters
   setFilters: (filters: TaskFilters) => void
   syncFromUrl: (params: URLSearchParams) => void
   selectedTaskId: string | number | null
   setSelectedTaskId: (id: string | number | null) => void
+  selectedTaskSeed: any | null
+  setSelectedTaskSeed: (task: any | null) => void
   plannerVisibility: PlannerVisibilityFilters
   setPlannerVisibility: (patch: Partial<PlannerVisibilityFilters>) => void
 }
@@ -64,6 +68,8 @@ export const useTasksUI = create<TasksUIState>((set, get) => ({
   setViewMode: (mode) => set({ viewMode: mode }),
   searchValue: '',
   setSearchValue: (val) => set({ searchValue: val }),
+  searchDraftValue: '',
+  setSearchDraftValue: (val) => set({ searchDraftValue: val }),
   filters: {
     assignedTo: [],
     status: [],
@@ -81,12 +87,14 @@ export const useTasksUI = create<TasksUIState>((set, get) => ({
     // Layout system now handles view mode independently, no longer sync from old view param
     // searchValue from ?q=...
     const q = params.get('q') || ''
-    set({ searchValue: q })
+    set({ searchValue: q, searchDraftValue: q })
     // filters
     set({ filters: parseFiltersFromParams(params) })
   },
   selectedTaskId: null,
   setSelectedTaskId: (id) => set({ selectedTaskId: id }),
+  selectedTaskSeed: null,
+  setSelectedTaskSeed: (task) => set({ selectedTaskSeed: task }),
   plannerVisibility: { showTasks: true, showSuggestions: true },
   setPlannerVisibility: (patch) =>
     set((state) => ({ plannerVisibility: { ...state.plannerVisibility, ...patch } })),

@@ -9,6 +9,7 @@
  */
 
 import { getSupabaseBrowser } from "../../lib/supabase-browser"
+import { invokeEdgeFunctionFetch } from "@/lib/edge-functions"
 import type { AiThread, AiMessage } from "./types"
 
 /**
@@ -53,7 +54,7 @@ export async function ensureAiThread({
       scope: 'task',
       visibility: 'private',
       is_collaborative: true,
-      title: 'Task AI Assistant'
+      title: null,
     })
     .select('*')
     .single()
@@ -113,7 +114,7 @@ export async function ensureProjectThread(projectId: number): Promise<string> {
       scope: 'project',
       visibility: 'project',
       is_collaborative: true,
-      title: 'Project AI Assistant'
+      title: null,
     })
     .select('*')
     .single()
@@ -163,7 +164,7 @@ export async function ensureGlobalThread(): Promise<string> {
       scope: 'global',
       visibility: 'private',
       is_collaborative: false,
-      title: 'Global AI Assistant'
+      title: null,
     })
     .select('*')
     .single()
@@ -200,22 +201,13 @@ export async function sendToAI({
 }): Promise<AiMessage> {
   const supabase = getSupabaseBrowser()
   
-  // Get the current session
-  const { data: { session } } = await supabase.auth.getSession()
-  
-  if (!session) {
-    throw new Error('No active session')
-  }
-  
   // Call the edge function with new contract
-  const res = await fetch(
-    `${process.env.NEXT_PUBLIC_SUPABASE_URL}/functions/v1/ai-chat`,
-    {
+  const res = await invokeEdgeFunctionFetch({
+    supabase,
+    url: `${process.env.NEXT_PUBLIC_SUPABASE_URL}/functions/v1/ai-chat`,
+    debugLabel: "ai-chat",
+    init: {
       method: 'POST',
-      headers: {
-        Authorization: `Bearer ${session.access_token}`,
-        'Content-Type': 'application/json',
-      },
       body: JSON.stringify({
         thread_id: threadId,
         message: message || null,
@@ -225,8 +217,11 @@ export async function sendToAI({
         component_id: componentId ?? null,
         auto_run: autoRun,
       }),
-    }
-  )
+    },
+    headers: {
+      'Content-Type': 'application/json',
+    },
+  })
   
   if (!res.ok) {
     const errText = await res.text()

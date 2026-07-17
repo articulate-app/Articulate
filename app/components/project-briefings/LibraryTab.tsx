@@ -5,12 +5,11 @@ import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { usePathname, useRouter, useSearchParams } from 'next/navigation'
 import { Button } from '../ui/button'
 import { Input } from '../ui/input'
-import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger, DialogFooter } from '../ui/dialog'
 import { Label } from '../ui/label'
 import { Textarea } from '../ui/textarea'
-import { Badge } from '../ui/badge'
 import { toast } from '../ui/use-toast'
-import { Plus, Trash2, Search, Loader2, ExternalLink } from 'lucide-react'
+import { Trash2, Search, Loader2 } from 'lucide-react'
+import { AddComponentButton } from '../task/AddComponentButton'
 import {
   AlertDialog,
   AlertDialogAction,
@@ -24,20 +23,25 @@ import {
 import {
   type ProjectComponent,
   createProjectComponent,
-  addProjectComponentToBriefing,
   addGlobalComponentToBriefing,
-  fetchProjectComponentUsage,
   loadProjectComponentIndex,
   updateProjectComponentInProject,
 } from '../../lib/services/project-briefings'
 import { createClientComponentClient } from '@supabase/auth-helpers-nextjs'
-import { MultiSelect } from '../ui/multi-select'
-import { SlidePanel } from '../ui/slide-panel'
+import { ChannelRequirementsSection } from './channel-requirements-section'
 
 interface LibraryTabProps {
   projectId: number
   selectedBriefingTypeId: number | null
   onRefresh: () => void
+}
+
+const TAB_CACHE_QUERY_OPTIONS = {
+  staleTime: 5 * 60 * 1000,
+  gcTime: 30 * 60 * 1000,
+  refetchOnMount: false as const,
+  refetchOnWindowFocus: false as const,
+  refetchOnReconnect: false as const,
 }
 
 export function LibraryTab({
@@ -51,7 +55,7 @@ export function LibraryTab({
   const pathname = usePathname()
   const searchParams = useSearchParams()
   const [searchQuery, setSearchQuery] = useState('')
-  const [isCreateDialogOpen, setIsCreateDialogOpen] = useState(false)
+  const [showInlineNewComponent, setShowInlineNewComponent] = useState(false)
   const [isDeleteDialogOpen, setIsDeleteDialogOpen] = useState(false)
   const [isBulkDeleteDialogOpen, setIsBulkDeleteDialogOpen] = useState(false)
   const [isBulkDeleting, setIsBulkDeleting] = useState(false)
@@ -63,7 +67,6 @@ export function LibraryTab({
   const [selectedKeys, setSelectedKeys] = useState<string[]>([])
   const selectedKey = selectedKeys.length === 1 ? selectedKeys[0] : null
   const isMultiSelect = selectedKeys.length > 1
-  const isDetailsOpen = selectedKey !== null && !isMultiSelect
 
   const setSelectedKeyAndUrl = useCallback(
     (nextKey: string | null) => {
@@ -96,24 +99,6 @@ export function LibraryTab({
   const [addUsageBriefingTypeIds, setAddUsageBriefingTypeIds] = useState<string[]>([])
   const [isAddingUsage, setIsAddingUsage] = useState(false)
 
-  const [briefingFilterIds, setBriefingFilterIds] = useState<string[]>([])
-
-  const { data: briefingFilterOptions } = useQuery({
-    queryKey: ['projBriefings:library:briefingFilterOptions', projectId],
-    queryFn: async () => {
-      const { data, error } = await supabase
-        .from('v_project_briefing_types')
-        .select('briefing_type_id, display_title')
-        .eq('project_id', projectId)
-        .order('display_title', { ascending: true })
-      if (error) throw error
-      return (data || []).map((row: any) => ({
-        id: String(row.briefing_type_id),
-        label: row.display_title,
-      }))
-    },
-  })
-
   // Fetch union list (project + global) for the left pane
   const { data: indexItems, isLoading, error } = useQuery({
     queryKey: ['projBriefings:library:index', projectId],
@@ -122,24 +107,12 @@ export function LibraryTab({
       if (error) throw error
       return data || []
     },
+    ...TAB_CACHE_QUERY_OPTIONS,
+    placeholderData: (previousData) => previousData,
   })
 
   const filteredItems = useMemo(() => {
     if (!indexItems) return []
-
-    const briefingTitleById = new Map<string, string>(
-      (briefingFilterOptions || []).map((o: any) => [o.id, o.label])
-    )
-    const selectedBriefingTitles = new Set(
-      briefingFilterIds.map((id) => briefingTitleById.get(id)).filter(Boolean) as string[]
-    )
-
-    const byBriefing = (item: any) => {
-      if (!briefingFilterIds.length) return true
-      const labels: string[] = Array.isArray(item.usage_labels) ? item.usage_labels : []
-      // Labels are formatted: "{briefingTitle} - {channel} - {contentType}" or "{briefingTitle}"
-      return labels.some((l) => selectedBriefingTitles.has(String(l).split(' - ')[0]?.trim() || ''))
-    }
 
     const bySearch = (item: any) => {
       if (!searchQuery.trim()) return true
@@ -150,8 +123,8 @@ export function LibraryTab({
       return inTitle || inDesc || inUsage
     }
 
-    return indexItems.filter((item: any) => byBriefing(item) && bySearch(item))
-  }, [briefingFilterIds, briefingFilterOptions, indexItems, searchQuery])
+    return indexItems.filter((item: any) => bySearch(item))
+  }, [indexItems, searchQuery])
 
   const selectedItem = useMemo(() => {
     if (!indexItems || !selectedKey) return null
@@ -169,7 +142,8 @@ export function LibraryTab({
     error: globalTemplateUsageError,
   } = useQuery({
     queryKey: ['projBriefings:library:globalUsage:templates', projectId, selectedGlobalComponentId],
-    enabled: !!selectedGlobalComponentId,
+    // Usage sections removed from the UI; keep query disabled to avoid unused fetches.
+    enabled: false,
     queryFn: async () => {
       if (!selectedGlobalComponentId) return []
 
@@ -195,6 +169,8 @@ export function LibraryTab({
         position: row.position ?? null,
       }))
     },
+    ...TAB_CACHE_QUERY_OPTIONS,
+    placeholderData: (previousData) => previousData,
   })
 
   const {
@@ -203,7 +179,7 @@ export function LibraryTab({
     error: globalCtUsageError,
   } = useQuery({
     queryKey: ['projBriefings:library:globalUsage:ct', projectId, selectedGlobalComponentId],
-    enabled: !!selectedGlobalComponentId,
+    enabled: false,
     queryFn: async () => {
       if (!selectedGlobalComponentId) return []
 
@@ -230,8 +206,9 @@ export function LibraryTab({
         const chIds = Array.from(new Set(rows.map(r => r.channel_id)))
         const defaultsRes = await supabase
           .from('project_ct_channel_briefings')
-          .select('content_type_id, channel_id, briefing_type_id')
+          .select('content_type_id, channel_id, briefing_type_id, is_default')
           .eq('project_id', projectId)
+          .eq('is_default', true)
           .in('content_type_id', ctIds)
           .in('channel_id', chIds)
         if (defaultsRes.error) throw defaultsRes.error
@@ -288,6 +265,8 @@ export function LibraryTab({
         })
         .filter(Boolean)
     },
+    ...TAB_CACHE_QUERY_OPTIONS,
+    placeholderData: (previousData) => previousData,
   })
 
   // Keep right-pane form in sync when selection changes (project + global).
@@ -332,12 +311,12 @@ export function LibraryTab({
         description: 'Component created',
       })
 
-      setIsCreateDialogOpen(false)
+      setShowInlineNewComponent(false)
       resetForm()
       queryClient.invalidateQueries({ queryKey: ['projBriefings:library:index', projectId] })
       onRefresh()
 
-      // Auto-select newly created component
+      // Auto-expand newly created component
       if (data?.id) {
         setSelectedKeyAndUrl(`project:${data.id}`)
       }
@@ -389,48 +368,6 @@ export function LibraryTab({
       })
     }
   }, [componentToDelete, queryClient, projectId, supabase, onRefresh, selectedKey, setSelectedKeyAndUrl])
-
-  const handleAddToBriefing = useCallback(
-    async (componentId: number) => {
-      if (!selectedBriefingTypeId) {
-        toast({
-          title: 'Error',
-          description: 'Please select a briefing type first',
-          variant: 'destructive',
-        })
-        return
-      }
-
-      try {
-        const { error } = await addProjectComponentToBriefing(
-          projectId,
-          selectedBriefingTypeId,
-          componentId,
-          null,
-          null,
-          null
-        )
-        if (error) throw error
-
-        toast({
-          title: 'Success',
-          description: 'Component added to briefing template',
-        })
-
-        queryClient.invalidateQueries({
-          queryKey: ['projBriefings:components', projectId, selectedBriefingTypeId],
-        })
-        onRefresh()
-      } catch (error: any) {
-        toast({
-          title: 'Error',
-          description: error.message || 'Failed to add component to briefing',
-          variant: 'destructive',
-        })
-      }
-    },
-    [projectId, selectedBriefingTypeId, queryClient, onRefresh]
-  )
 
   const handleAddGlobalToCurrentTemplate = useCallback(
     async (briefingComponentId: number) => {
@@ -510,9 +447,9 @@ export function LibraryTab({
   }, [selectedItem, selectedProjectComponentId, editTitle, editDescription, projectId, queryClient, onRefresh])
 
   const invalidateUsageEverywhere = useCallback(() => {
-    queryClient.invalidateQueries({ queryKey: ['projBriefings:library:componentUsage', projectId] })
     queryClient.invalidateQueries({ queryKey: ['projBriefings:library:globalUsage:templates', projectId] })
     queryClient.invalidateQueries({ queryKey: ['projBriefings:library:globalUsage:ct', projectId] })
+    queryClient.invalidateQueries({ queryKey: ['projBriefings:library:channelPolicies', projectId] })
     queryClient.invalidateQueries({ queryKey: ['projBriefings:library:index', projectId] })
     // Also refresh any open briefings panes that reference these components
     queryClient.invalidateQueries({ queryKey: ['projBriefings:components'] })
@@ -609,32 +546,35 @@ export function LibraryTab({
     setSelectedKeys,
   ])
 
-  // Sync selection from URL
+  // Stable param value so effects don't run on every searchParams reference change (avoids infinite RSC requests)
+  const componentParam = searchParams.get('component')
+
+  // Sync selection from URL (run only when the component param value actually changes)
   useEffect(() => {
-    const urlKey = searchParams.get('component')
-    if (!urlKey) {
+    if (!componentParam) {
       if (selectedKeys.length) setSelectedKeys([])
       return
     }
-    if (urlKey !== selectedKey) {
-      setSelectedKeys([urlKey])
+    if (componentParam !== selectedKey) {
+      setSelectedKeys([componentParam])
     }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [searchParams])
+  }, [componentParam, selectedKey, selectedKeys.length])
 
-  // Ensure URL stays clean if selectedKey points to a missing item (e.g. after deletion)
+  // Ensure URL stays clean if selectedKey points to a missing item (e.g. after deletion).
+  // Use stable deps (param + keys string) so we don't run on every indexItems reference change.
+  const indexKeysStr = indexItems?.map((i: any) => i.key).join(',') ?? ''
   useEffect(() => {
-    const urlKey = searchParams.get('component')
-    if (!urlKey) return
-    if (!indexItems) return
-    const exists = indexItems.some((i: any) => i.key === urlKey)
+    if (!componentParam) return
+    if (!indexKeysStr) return // still loading
+    const keysList = indexKeysStr.split(',')
+    const exists = keysList.includes(componentParam)
     if (!exists) {
       const params = new URLSearchParams(searchParams.toString())
       params.delete('component')
       router.replace(`${pathname}?${params.toString()}`, { scroll: false })
       setSelectedKeys([])
     }
-  }, [indexItems, pathname, router, searchParams, selectedKeys])
+  }, [componentParam, indexKeysStr, pathname, router, searchParams])
 
   const toggleMultiSelectKey = useCallback((key: string) => {
     // when entering multi-select, clear the URL param to avoid mismatch
@@ -728,44 +668,6 @@ export function LibraryTab({
     supabase,
   ])
 
-  // Right pane: usage rows for selected component (parallel fetch in service)
-  const {
-    data: selectedUsage,
-    isLoading: isUsageLoading,
-    error: usageError,
-  } = useQuery({
-    queryKey: ['projBriefings:library:componentUsage', projectId, selectedProjectComponentId],
-    enabled: !!selectedProjectComponentId,
-    queryFn: async () => {
-      if (!selectedProjectComponentId) return { templates: [], ctChannel: [] }
-      const { data, error } = await fetchProjectComponentUsage(projectId, selectedProjectComponentId)
-      if (error) throw error
-      return data || { templates: [], ctChannel: [] }
-    },
-  })
-
-  const handleRemoveFromTemplate = useCallback(
-    async (briefingTypeId: number) => {
-      if (!selectedProjectComponentId) return
-      try {
-        const { error } = await supabase.rpc('pbtc_remove', {
-          p_project_id: projectId,
-          p_briefing_type_id: briefingTypeId,
-          p_component_id: selectedProjectComponentId,
-          p_is_project_component: true,
-        })
-        if (error) throw error
-
-        toast({ title: 'Success', description: 'Removed from template' })
-        invalidateUsageEverywhere()
-        onRefresh()
-      } catch (err: any) {
-        toast({ title: 'Error', description: err.message || 'Failed to remove', variant: 'destructive' })
-      }
-    },
-    [invalidateUsageEverywhere, onRefresh, projectId, selectedProjectComponentId, supabase]
-  )
-
   const handleRemoveGlobalFromTemplate = useCallback(
     async (briefingTypeId: number) => {
       if (!selectedGlobalComponentId) return
@@ -785,30 +687,6 @@ export function LibraryTab({
       }
     },
     [invalidateUsageEverywhere, onRefresh, projectId, selectedGlobalComponentId, supabase]
-  )
-
-  const handleRemoveFromCtChannel = useCallback(
-    async (args: { contentTypeId: number; channelId: number; briefingTypeId: number }) => {
-      if (!selectedProjectComponentId) return
-      try {
-        const { error } = await supabase.rpc('pcctbc_remove', {
-          p_project_id: projectId,
-          p_content_type_id: args.contentTypeId,
-          p_channel_id: args.channelId,
-          p_briefing_type_id: args.briefingTypeId,
-          p_component_id: selectedProjectComponentId,
-          p_is_project_component: true,
-        })
-        if (error) throw error
-
-        toast({ title: 'Success', description: 'Removed from briefing' })
-        invalidateUsageEverywhere()
-        onRefresh()
-      } catch (err: any) {
-        toast({ title: 'Error', description: err.message || 'Failed to remove', variant: 'destructive' })
-      }
-    },
-    [invalidateUsageEverywhere, onRefresh, projectId, selectedProjectComponentId, supabase]
   )
 
   const handleRemoveGlobalFromCtChannel = useCallback(
@@ -835,68 +713,7 @@ export function LibraryTab({
     [invalidateUsageEverywhere, onRefresh, projectId, selectedGlobalComponentId, supabase]
   )
 
-  // Inline override editing for CT×Channel usage rows
-  const [overrideDrafts, setOverrideDrafts] = useState<
-    Record<string, { custom_title: string; custom_description: string }>
-  >({})
-  const [overrideInitialByKey, setOverrideInitialByKey] = useState<
-    Record<string, { custom_title: string; custom_description: string }>
-  >({})
-
-  useEffect(() => {
-    if (!selectedUsage?.ctChannel) return
-    const next: Record<string, { custom_title: string; custom_description: string }> = {}
-    const initial: Record<string, { custom_title: string; custom_description: string }> = {}
-    selectedUsage.ctChannel.forEach((row: any) => {
-      const key = `${row.content_type_id}:${row.channel_id}:${row.briefing_type_id}`
-      next[key] = {
-        custom_title: row.custom_title || '',
-        custom_description: row.custom_description || '',
-      }
-      initial[key] = {
-        custom_title: row.custom_title || '',
-        custom_description: row.custom_description || '',
-      }
-    })
-    setOverrideDrafts(next)
-    setOverrideInitialByKey(initial)
-  }, [selectedUsage])
-
-  const handleSaveOverride = useCallback(
-    async (args: { contentTypeId: number; channelId: number; briefingTypeId: number }) => {
-      if (!selectedProjectComponentId) return
-      const key = `${args.contentTypeId}:${args.channelId}:${args.briefingTypeId}`
-      const draft = overrideDrafts[key]
-      if (!draft) return
-      const initial = overrideInitialByKey[key]
-      const isSameTitle = (draft.custom_title.trim() || '') === ((initial?.custom_title ?? '').trim() || '')
-      const isSameDesc =
-        (draft.custom_description.trim() || '') === ((initial?.custom_description ?? '').trim() || '')
-      if (isSameTitle && isSameDesc) return
-
-      try {
-        const { error } = await supabase.rpc('pcctbc_update', {
-          p_project_id: projectId,
-          p_content_type_id: args.contentTypeId,
-          p_channel_id: args.channelId,
-          p_briefing_type_id: args.briefingTypeId,
-          p_component_id: selectedProjectComponentId,
-          p_is_project_component: true,
-          p_custom_title: draft.custom_title.trim() || null,
-          p_custom_description: draft.custom_description.trim() || null,
-        })
-        if (error) throw error
-
-        toast({ title: 'Success', description: 'Overrides updated' })
-        invalidateUsageEverywhere()
-      } catch (err: any) {
-        toast({ title: 'Error', description: err.message || 'Failed to update overrides', variant: 'destructive' })
-      }
-    },
-    [invalidateUsageEverywhere, overrideDrafts, overrideInitialByKey, projectId, selectedProjectComponentId, supabase]
-  )
-
-  // Add-to-briefing options (loaded on-demand)
+  // Add-to-briefing options (loaded on-demand; system/global components only)
   const { data: addUsageBriefingTypes } = useQuery({
     queryKey: ['projBriefings:library:addUsage:briefingTypes', projectId],
     enabled: isAddUsageDialogOpen,
@@ -923,6 +740,8 @@ export function LibraryTab({
         title: titleById.get(row.briefing_type_id) ?? 'Briefing',
       }))
     },
+    ...TAB_CACHE_QUERY_OPTIONS,
+    placeholderData: (previousData) => previousData,
   })
 
   const { data: addUsageContentTypes } = useQuery({
@@ -948,6 +767,8 @@ export function LibraryTab({
         .map((ct: any) => ({ id: ct.id, title: ct.title }))
         .sort((a: any, b: any) => a.title.localeCompare(b.title))
     },
+    ...TAB_CACHE_QUERY_OPTIONS,
+    placeholderData: (previousData) => previousData,
   })
 
   const { data: addUsageChannelsData, isLoading: isChannelsLoading } = useQuery({
@@ -996,10 +817,13 @@ export function LibraryTab({
         allowedPairs,
       }
     },
+    ...TAB_CACHE_QUERY_OPTIONS,
+    placeholderData: (previousData) => previousData,
   })
 
   const handleAddUsage = useCallback(async () => {
-    if (!selectedProjectComponentId && !selectedGlobalComponentId) return
+    // Project components use Channel requirements — never write briefing-template usage here.
+    if (!selectedGlobalComponentId || selectedProjectComponentId) return
     if (!addUsageContentTypeIds.length || !addUsageChannelIds.length || !addUsageBriefingTypeIds.length) {
       toast({
         title: 'Error',
@@ -1017,75 +841,12 @@ export function LibraryTab({
     const channelIds = addUsageChannelIds.map(Number).filter(Boolean)
     const briefingTypeIds = addUsageBriefingTypeIds.map(Number).filter(Boolean)
 
-    // Ensure CT×Channel briefing exists for the selected briefing type(s).
-    // We only auto-create when the CT×Channel briefing is missing / null.
-    const { data: existingBriefings, error: existingErr } = await supabase
-      .from('project_ct_channel_briefings')
-      .select('content_type_id, channel_id, briefing_type_id')
-      .eq('project_id', projectId)
-      .in('content_type_id', contentTypeIds)
-      .in('channel_id', channelIds)
-    if (existingErr) {
-      toast({
-        title: 'Error',
-        description: existingErr.message || 'Failed to load channel briefings',
-        variant: 'destructive',
-      })
-      return
-    }
-
-    const briefingByPair = new Map<string, number | null>()
-    ;(existingBriefings || []).forEach((row: any) => {
-      briefingByPair.set(`${row.content_type_id}:${row.channel_id}`, row.briefing_type_id ?? null)
-    })
-
-    const skippedPairs: Array<{ ct: number; ch: number; bt: number }> = []
-    const ensuredPairs: Array<{ ct: number; ch: number; bt: number }> = []
-
-    for (const ct of contentTypeIds) {
-      for (const ch of channelIds) {
-        if (allowedPairs.size && !allowedPairs.has(`${ct}:${ch}`)) continue
-        const pairKey = `${ct}:${ch}`
-        const currentBt = briefingByPair.get(pairKey) ?? null
-
-        for (const bt of briefingTypeIds) {
-          if (currentBt == null) {
-            // Not set yet -> create default briefing for this CT×Channel
-            const { error: setErr } = await supabase.rpc('pcctb_set', {
-              p_project_id: projectId,
-              p_content_type_id: ct,
-              p_channel_id: ch,
-              p_briefing_type_id: bt,
-            })
-            if (setErr) {
-              toast({
-                title: 'Error',
-                description: setErr.message || 'Failed to create channel briefing',
-                variant: 'destructive',
-              })
-              return
-            }
-            briefingByPair.set(pairKey, bt)
-            ensuredPairs.push({ ct, ch, bt })
-          } else if (currentBt !== bt) {
-            // Safety: don't overwrite an existing CT×Channel briefing assignment automatically.
-            skippedPairs.push({ ct, ch, bt })
-            continue
-          }
-        }
-      }
-    }
-
     const calls: Array<{ ct: number; ch: number; bt: number }> = []
     for (const ct of contentTypeIds) {
       for (const ch of channelIds) {
         if (allowedPairs.size && !allowedPairs.has(`${ct}:${ch}`)) continue
-        const pairKey = `${ct}:${ch}`
-        const currentBt = briefingByPair.get(pairKey) ?? null
-        if (currentBt == null) continue
-        // Only add for briefing types that are the active briefing for this pair
         for (const bt of briefingTypeIds) {
-          if (bt === currentBt) calls.push({ ct, ch, bt })
+          calls.push({ ct, ch, bt })
         }
       }
     }
@@ -1111,27 +872,37 @@ export function LibraryTab({
 
     setIsAddingUsage(true)
     try {
-      const results = await Promise.allSettled(
-        calls.map(({ ct, ch, bt }) => {
-          if (selectedProjectComponentId) {
-            return supabase.rpc('pcctbc_add_project', {
-              p_project_id: projectId,
-              p_content_type_id: ct,
-              p_channel_id: ch,
-              p_briefing_type_id: bt,
-              p_project_component_id: selectedProjectComponentId,
-              p_position: null,
-              p_custom_title: null,
-              p_custom_description: null,
-              p_purpose: null,
-              p_guidance: null,
-              p_suggested_word_count: null,
-              p_subheads: null,
-            })
-          }
+      // Attach selected briefing types to each CT×Channel without replacing existing assignments.
+      const ensureAssignments = await Promise.allSettled(
+        calls.map(({ ct, ch, bt }) =>
+          supabase.rpc('pcctb_add', {
+            p_project_id: projectId,
+            p_content_type_id: ct,
+            p_channel_id: ch,
+            p_briefing_type_id: bt,
+          })
+        )
+      )
+      const ensureFailures = ensureAssignments.filter(
+        (result): result is PromiseRejectedResult => result.status === 'rejected'
+      )
+      const ensureRpcErrors = ensureAssignments
+        .filter((result) => result.status === 'fulfilled')
+        .map((result) => result.value)
+        .filter((result: any) => Boolean(result?.error))
+      if (ensureFailures.length || ensureRpcErrors.length) {
+        const sampleError =
+          (ensureRpcErrors[0] as any)?.error?.message ||
+          ensureFailures[0]?.reason?.message ||
+          'Failed to attach briefing assignment(s)'
+        throw new Error(
+          `${sampleError} (${ensureFailures.length + ensureRpcErrors.length}/${calls.length} failed)`
+        )
+      }
 
-          // Global component add
-          return supabase.rpc('pcctbc_add_global', {
+      const results = await Promise.allSettled(
+        calls.map(({ ct, ch, bt }) =>
+          supabase.rpc('pcctbc_add_global', {
             p_project_id: projectId,
             p_content_type_id: ct,
             p_channel_id: ch,
@@ -1144,13 +915,21 @@ export function LibraryTab({
             p_guidance: null,
             p_suggested_word_count: null,
             p_subheads: null,
-          })
-        })
+          }),
+        ),
       )
 
       const failures = results.filter(r => r.status === 'rejected') as Array<PromiseRejectedResult>
-      if (failures.length) {
-        throw new Error(`Failed to add to ${failures.length} of ${calls.length} selected briefings`)
+      const rpcErrors = results
+        .filter((result) => result.status === 'fulfilled')
+        .map((result) => result.value)
+        .filter((result: any) => Boolean(result?.error))
+      if (failures.length || rpcErrors.length) {
+        const sampleError =
+          (rpcErrors[0] as any)?.error?.message ||
+          failures[0]?.reason?.message ||
+          'Failed to add to briefing'
+        throw new Error(`${sampleError} (${failures.length + rpcErrors.length}/${calls.length} failed)`)
       }
 
       toast({ title: 'Success', description: 'Added to briefing' })
@@ -1185,21 +964,9 @@ export function LibraryTab({
       }
 
       invalidateUsageEverywhere()
-      // If we created any new channel briefings, refresh other briefings UIs that depend on default briefing selection.
-      if (ensuredPairs.length) {
-        queryClient.invalidateQueries({ queryKey: ['proj:ctch:default', projectId] })
-        queryClient.invalidateQueries({ queryKey: ['proj:ctch:components', projectId] })
-      }
+      queryClient.invalidateQueries({ queryKey: ['proj:ctch:default', projectId] })
+      queryClient.invalidateQueries({ queryKey: ['proj:ctch:components', projectId] })
       onRefresh()
-
-      if (skippedPairs.length) {
-        toast({
-          title: 'Some combinations skipped',
-          description:
-            'Some Content Type × Channel selections already have a different default briefing set, so we did not overwrite them.',
-          variant: 'destructive',
-        })
-      }
     } catch (err: any) {
       toast({ title: 'Error', description: err.message || 'Failed to add to briefing', variant: 'destructive' })
     } finally {
@@ -1219,8 +986,8 @@ export function LibraryTab({
     supabase,
   ])
 
-  const handleDialogClose = useCallback(() => {
-    setIsCreateDialogOpen(false)
+  const handleInlineCreateClose = useCallback(() => {
+    setShowInlineNewComponent(false)
     resetForm()
   }, [resetForm])
 
@@ -1238,628 +1005,248 @@ export function LibraryTab({
     )
   }
 
-  const renderUsageChips = (componentId: number) => {
-    const item = (indexItems || []).find((i: any) => i.kind === 'project' && i.component_id === componentId)
-    const labels = item?.usage_labels || []
-    if (!labels.length) return null
-    const visible = labels.slice(0, 3)
-    const remaining = labels.length - visible.length
-    return (
-      <div className="mt-2 flex flex-wrap gap-1">
-        {visible.map((label: string) => (
-          <Badge key={label} variant="secondary" className="text-[11px] px-2 py-0.5">
-            {label}
-          </Badge>
-        ))}
-        {remaining > 0 ? (
-          <Badge variant="outline" className="text-[11px] px-2 py-0.5">
-            +{remaining} more
-          </Badge>
-        ) : null}
-      </div>
-    )
-  }
-
   return (
-    <div className="h-full">
-      {/* Left pane */}
-      <div className="flex flex-col h-full border rounded-lg bg-white border-gray-200 overflow-hidden">
-        <div className="p-4 border-b border-gray-200">
-          <div className="flex items-start justify-between gap-3">
-            <div>
-              <h2 className="text-lg font-semibold text-gray-900">Project Components</h2>
-              <p className="text-sm text-gray-500 mt-1">Create and manage project-scoped briefing components</p>
-            </div>
-
-            <Dialog
-              open={isCreateDialogOpen}
-              onOpenChange={open => {
-                if (!open) {
-                  handleDialogClose()
-                } else {
-                  setIsCreateDialogOpen(true)
-                  resetForm()
-                }
-              }}
-            >
-              <DialogTrigger asChild>
-                <Button
-                  size="sm"
-                  className="gap-2"
-                  onClick={() => {
-                    setIsCreateDialogOpen(true)
-                    resetForm()
-                  }}
-                >
-                  <Plus className="w-4 h-4" />
-                  New
-                </Button>
-              </DialogTrigger>
-              <DialogContent className="max-w-2xl">
-                <DialogHeader>
-                  <DialogTitle>Create New Component</DialogTitle>
-                </DialogHeader>
-                <div className="space-y-4 py-4">
-                  <div>
-                    <Label htmlFor="title">Title *</Label>
-                    <Input
-                      id="title"
-                      value={title}
-                      onChange={e => setTitle(e.target.value)}
-                      placeholder="Component title"
-                    />
-                  </div>
-                  <div>
-                    <Label htmlFor="description">Description</Label>
-                    <Textarea
-                      id="description"
-                      value={description}
-                      onChange={e => setDescription(e.target.value)}
-                      placeholder="Component description"
-                      rows={3}
-                    />
-                  </div>
-                  <div>
-                    <Label htmlFor="rules">Rules</Label>
-                    <Textarea
-                      id="rules"
-                      value={rules}
-                      onChange={e => setRules(e.target.value)}
-                      placeholder="Component rules or guidelines"
-                      rows={4}
-                    />
-                  </div>
-                </div>
-                <DialogFooter>
-                  <Button variant="outline" onClick={handleDialogClose}>
-                    Cancel
-                  </Button>
-                  <Button onClick={handleCreate} disabled={!title.trim()}>
-                    Create
-                  </Button>
-                </DialogFooter>
-              </DialogContent>
-            </Dialog>
-          </div>
-
-          <div className="mt-4 flex items-center gap-2">
-            <div className="relative flex-1">
-              <Search className="absolute left-3 top-1/2 transform -translate-y-1/2 w-4 h-4 text-gray-400" />
-              <Input
-                type="search"
-                placeholder="Search components..."
-                value={searchQuery}
-                onChange={e => setSearchQuery(e.target.value)}
-                className="pl-10"
-              />
-            </div>
-            <div className="w-[220px]">
-              <MultiSelect
-                options={briefingFilterOptions || []}
-                value={briefingFilterIds}
-                onChange={setBriefingFilterIds}
-                placeholder="All briefings"
-              />
-            </div>
-          </div>
+    <div className="flex h-full flex-col overflow-hidden bg-white">
+      <div className="border-b border-gray-100 px-1 pb-3">
+        <div className="relative">
+          <Search className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-gray-400" />
+          <Input
+            type="search"
+            placeholder="Search components..."
+            value={searchQuery}
+            onChange={e => setSearchQuery(e.target.value)}
+            className="pl-10"
+          />
         </div>
+      </div>
 
-        <div className="flex-1 overflow-auto">
-          {filteredItems.length === 0 ? (
-            <div className="flex flex-col items-center justify-center h-full text-center p-6">
-              <p className="text-gray-500 mb-4">
-                {searchQuery ? 'No components match your search' : 'No components created yet'}
-              </p>
-              <Button size="sm" onClick={() => setIsCreateDialogOpen(true)}>
-                <Plus className="w-4 h-4 mr-2" />
-                Create Component
-              </Button>
-            </div>
-          ) : (
-            <div className="p-3 space-y-2">
-              {filteredItems.map((item: any) => {
-                const isSelected = item.key === selectedKey
-                const isSelectedInMulti = selectedKeys.includes(item.key)
-                const labels = Array.isArray(item.usage_labels) ? item.usage_labels : []
-                const visible = labels.slice(0, 3)
-                const remaining = labels.length - visible.length
-                return (
-                  <button
-                    key={item.key}
-                    type="button"
+      <div className="min-h-0 flex-1 overflow-auto">
+        {filteredItems.length === 0 && !showInlineNewComponent ? (
+          <div className="flex flex-col items-center justify-center px-4 py-10 text-center">
+            <p className="mb-4 text-sm text-gray-500">
+              {searchQuery ? 'No components match your search' : 'No components yet'}
+            </p>
+            <AddComponentButton
+              label="Add component"
+              onClick={() => {
+                resetForm()
+                setShowInlineNewComponent(true)
+              }}
+            />
+          </div>
+        ) : (
+          <div className="divide-y divide-gray-100 rounded-md border border-gray-100">
+            {filteredItems.map((item: any) => {
+              const isExpanded = item.key === selectedKey && !isMultiSelect
+              const isSelectedInMulti = selectedKeys.includes(item.key)
+              return (
+                <div key={item.key} className="bg-white">
+                  <div
+                    role="button"
+                    tabIndex={0}
                     onClick={(e) => {
                       if (e.metaKey || e.ctrlKey) {
                         toggleMultiSelectKey(item.key)
                         return
                       }
-                      setSelectedKeyAndUrl(item.key)
+                      setSelectedKeyAndUrl(isExpanded ? null : item.key)
+                    }}
+                    onKeyDown={(e) => {
+                      if (e.key === 'Enter' || e.key === ' ') {
+                        e.preventDefault()
+                        setSelectedKeyAndUrl(isExpanded ? null : item.key)
+                      }
                     }}
                     className={[
-                      'w-full text-left border rounded-lg p-3 transition-colors',
-                      (isSelected || isSelectedInMulti) ? 'border-black bg-gray-50' : 'border-gray-200 bg-white hover:bg-gray-50',
-                    ].join(' ')}
+                      "flex cursor-pointer items-center gap-2 px-3 py-2.5 transition-colors hover:bg-gray-50",
+                      (isExpanded || isSelectedInMulti) ? "bg-gray-50" : "",
+                    ].join(" ")}
                   >
-                    <div className="flex items-start justify-between gap-3">
-                      <div className="min-w-0">
-                        <div className="flex items-center gap-2">
-                          <div className="text-sm font-semibold text-gray-900 truncate">{item.title}</div>
-                          <Badge variant="outline" className="text-[11px]">
-                            {item.kind === 'project' ? 'Project' : 'System'}
-                          </Badge>
-                          {isSelectedInMulti && !isSelected ? (
-                            <Badge variant="secondary" className="text-[11px]">Selected</Badge>
-                          ) : null}
-                        </div>
-                        {visible.length ? (
-                          <div className="mt-2 flex flex-wrap gap-1">
-                            {visible.map((label: string) => (
-                              <Badge key={label} variant="secondary" className="text-[11px] px-2 py-0.5">
-                                {label}
-                              </Badge>
-                            ))}
-                            {remaining > 0 ? (
-                              <Badge variant="outline" className="text-[11px] px-2 py-0.5">
-                                +{remaining} more
-                              </Badge>
-                            ) : null}
-                          </div>
-                        ) : null}
-                      </div>
-                      <div className="flex items-center gap-1">
-                        {item.kind === 'project' && !isMultiSelect ? (
-                          <button
-                            type="button"
-                            onClick={e => {
-                              e.stopPropagation()
-                              setComponentToDelete({ kind: 'project', id: item.component_id, title: item.title })
-                              setIsDeleteDialogOpen(true)
-                            }}
-                            className="p-1 rounded hover:bg-red-50 text-red-500"
-                            title="Delete component"
-                          >
-                            <Trash2 className="w-4 h-4" />
-                          </button>
-                        ) : null}
-                      </div>
+                    <div className="min-w-0 flex-1 truncate text-sm font-medium text-gray-900">
+                      {item.title}
+                      {isSelectedInMulti && !isExpanded ? (
+                        <span className="ml-2 text-xs font-normal text-gray-400">selected</span>
+                      ) : null}
                     </div>
-                  </button>
-                )
-              })}
-            </div>
-          )}
-        </div>
+                    {item.kind === "project" && !isMultiSelect ? (
+                      <button
+                        type="button"
+                        onClick={e => {
+                          e.stopPropagation()
+                          setComponentToDelete({ kind: "project", id: item.component_id, title: item.title })
+                          setIsDeleteDialogOpen(true)
+                        }}
+                        className="shrink-0 rounded p-1 text-red-500 hover:bg-red-50"
+                        title="Remove component"
+                      >
+                        <Trash2 className="h-4 w-4" />
+                      </button>
+                    ) : null}
+                  </div>
 
-        {isMultiSelect ? (
-          <div className="border-t border-gray-200 p-3 flex items-center justify-between gap-2 bg-white">
-            <div className="text-sm text-gray-600">
-              {selectedKeys.length} selected (Ctrl/⌘ click to toggle)
+                  {isExpanded && selectedItem ? (
+                    <div className="space-y-4 border-t border-gray-100 px-3 py-3">
+                      <div className="space-y-3">
+                        <div>
+                          <Label htmlFor={`edit-title-${item.key}`} className="text-xs text-gray-500">
+                            Title
+                          </Label>
+                          <Input
+                            id={`edit-title-${item.key}`}
+                            value={editTitle}
+                            onChange={e => setEditTitle(e.target.value)}
+                            onBlur={selectedItem.kind === 'project' ? handleSaveMeta : handleSaveGlobalMeta}
+                            placeholder="Component title"
+                            className="mt-1 h-9"
+                          />
+                        </div>
+                        <div>
+                          <Label htmlFor={`edit-description-${item.key}`} className="text-xs text-gray-500">
+                            Description
+                          </Label>
+                          <Textarea
+                            id={`edit-description-${item.key}`}
+                            value={editDescription}
+                            onChange={e => setEditDescription(e.target.value)}
+                            onBlur={selectedItem.kind === 'project' ? handleSaveMeta : handleSaveGlobalMeta}
+                            placeholder="Component description"
+                            rows={3}
+                            className="mt-1"
+                          />
+                        </div>
+                        {isSavingMeta ? (
+                          <div className="text-xs text-gray-500 inline-flex items-center gap-1">
+                            <Loader2 className="h-3 w-3 animate-spin" />
+                            Saving…
+                          </div>
+                        ) : (
+                          <div className="text-xs text-gray-500">Auto-saves on blur.</div>
+                        )}
+                      </div>
+
+                      {selectedItem.kind === 'project' && selectedProjectComponentId != null ? (
+                        <ChannelRequirementsSection
+                          projectId={projectId}
+                          component={{ kind: "project", projectComponentId: selectedProjectComponentId }}
+                        />
+                      ) : selectedItem.kind === 'global' && selectedGlobalComponentId != null ? (
+                        <ChannelRequirementsSection
+                          projectId={projectId}
+                          component={{ kind: "global", briefingComponentId: selectedGlobalComponentId }}
+                        />
+                      ) : null}
+
+                      <button
+                        type="button"
+                        className="text-sm text-red-600 hover:underline"
+                        onClick={() => {
+                          if (selectedItem.kind === 'project') {
+                            setComponentToDelete({
+                              kind: 'project',
+                              id: selectedProjectComponentId!,
+                              title: selectedItem.title,
+                            })
+                          } else {
+                            setComponentToDelete({
+                              kind: 'global',
+                              id: selectedItem.component_id,
+                              title: selectedItem.title,
+                            })
+                          }
+                          setIsDeleteDialogOpen(true)
+                        }}
+                      >
+                        Remove from project
+                      </button>
+                    </div>
+                  ) : null}
+                </div>
+              )
+            })}
+          </div>
+        )}
+
+        {showInlineNewComponent ? (
+          <div className="mt-3 space-y-3 rounded-md border border-dashed border-gray-200 bg-white px-3 py-3">
+            <div>
+              <Label htmlFor="new-component-title" className="text-xs text-gray-500">Title *</Label>
+              <Input
+                id="new-component-title"
+                value={title}
+                onChange={e => setTitle(e.target.value)}
+                placeholder="Component title"
+                className="mt-1 h-9"
+              />
             </div>
-            <div className="flex items-center gap-2">
-              <Button variant="outline" size="sm" onClick={() => setSelectedKeys([])}>
-                Clear
+            <div>
+              <Label htmlFor="new-component-description" className="text-xs text-gray-500">Description</Label>
+              <Textarea
+                id="new-component-description"
+                value={description}
+                onChange={e => setDescription(e.target.value)}
+                placeholder="Component description"
+                rows={2}
+                className="mt-1"
+              />
+            </div>
+            <div>
+              <Label htmlFor="new-component-rules" className="text-xs text-gray-500">Rules</Label>
+              <Textarea
+                id="new-component-rules"
+                value={rules}
+                onChange={e => setRules(e.target.value)}
+                placeholder="Component rules or guidelines"
+                rows={3}
+                className="mt-1"
+              />
+            </div>
+            <div className="flex items-center justify-end gap-2">
+              <Button type="button" variant="ghost" size="sm" onClick={handleInlineCreateClose}>
+                Cancel
               </Button>
-              <Button
-                variant="destructive"
-                size="sm"
-                onClick={() => {
-                  setIsBulkDeleteDialogOpen(true)
-                }}
-                disabled={!selectedKeys.length || isBulkDeleting}
-              >
-                Delete from project
+              <Button type="button" size="sm" onClick={handleCreate} disabled={!title.trim()}>
+                Create component
               </Button>
             </div>
           </div>
+        ) : filteredItems.length > 0 ? (
+          <AddComponentButton
+            label="Add component"
+            onClick={() => {
+              resetForm()
+              setShowInlineNewComponent(true)
+            }}
+          />
         ) : null}
       </div>
 
-      {/* Details overlay */}
-      <SlidePanel
-        isOpen={isDetailsOpen}
-        onClose={() => setSelectedKeyAndUrl(null)}
-        position="right"
-        className="w-[520px] max-w-[92vw] top-16 bottom-0 border-l border-gray-200 shadow-xl z-20"
-        title="Component"
-        hasOverlay={false}
-      >
-        {!selectedItem ? (
-          <div className="text-sm text-gray-500">Select a component to view details.</div>
-        ) : (
-          <div className="flex h-full flex-col">
-            <div className="min-h-0 flex-1 space-y-6 overflow-auto pr-1">
-              <div className="flex items-start justify-between gap-3">
-                <div className="min-w-0">
-                  <div className="flex items-center gap-2">
-                    <Badge variant="secondary">
-                      {selectedItem.kind === 'project' ? 'Custom (Project component)' : 'System component'}
-                    </Badge>
-                    {isSavingMeta ? (
-                      <span className="text-xs text-gray-500 inline-flex items-center">
-                        <Loader2 className="w-3 h-3 mr-1 animate-spin" />
-                        Saving…
-                      </span>
-                    ) : null}
-                  </div>
-                  <div className="mt-3">
-                    <h3 className="text-base font-semibold text-gray-900 leading-tight">
-                      {selectedItem.kind === 'project' ? (editTitle || selectedItem.title) : selectedItem.title}
-                    </h3>
-                    <p className="text-sm text-gray-500 mt-1">Edit the component and manage where it’s used.</p>
-                  </div>
-                </div>
-              </div>
-
-              {selectedItem.kind === 'project' ? (
-                <div className="space-y-3">
-                  <div>
-                    <Label htmlFor="edit-title">Title</Label>
-                    <Input
-                      id="edit-title"
-                      value={editTitle}
-                      onChange={e => setEditTitle(e.target.value)}
-                      onBlur={handleSaveMeta}
-                      placeholder="Component title"
-                    />
-                  </div>
-                  <div>
-                    <Label htmlFor="edit-description">Description</Label>
-                    <Textarea
-                      id="edit-description"
-                      value={editDescription}
-                      onChange={e => setEditDescription(e.target.value)}
-                      onBlur={handleSaveMeta}
-                      placeholder="Component description"
-                      rows={4}
-                    />
-                  </div>
-                  <div className="text-xs text-gray-500">Auto-saves on blur.</div>
-                </div>
-              ) : (
-                <div className="space-y-3">
-                  <div>
-                    <Label htmlFor="edit-global-title">Title</Label>
-                    <Input
-                      id="edit-global-title"
-                      value={editTitle}
-                      onChange={e => setEditTitle(e.target.value)}
-                      onBlur={handleSaveGlobalMeta}
-                      placeholder="Custom title"
-                    />
-                  </div>
-                  <div>
-                    <Label htmlFor="edit-global-description">Description</Label>
-                    <Textarea
-                      id="edit-global-description"
-                      value={editDescription}
-                      onChange={e => setEditDescription(e.target.value)}
-                      onBlur={handleSaveGlobalMeta}
-                      placeholder="Custom description"
-                      rows={4}
-                    />
-                  </div>
-                  <div className="text-xs text-gray-500">Auto-saves on blur (updates all selected briefings).</div>
-                </div>
-              )}
-
-              {/* Usage */}
-              <div className="space-y-4">
-              <div>
-                <h4 className="text-sm font-semibold text-gray-900">Used in Project Briefing Templates</h4>
-                <p className="text-xs text-gray-500 mt-1">Project-level template usage for this component.</p>
-              </div>
-
-              {selectedItem.kind === 'project' ? (
-                isUsageLoading ? (
-                  <div className="space-y-2">
-                    <div className="h-10 bg-gray-100 rounded animate-pulse" />
-                    <div className="h-10 bg-gray-100 rounded animate-pulse" />
-                  </div>
-                ) : usageError ? (
-                  <div className="text-sm text-red-600">Failed to load usage: {String(usageError)}</div>
-                ) : (selectedUsage?.templates?.length || 0) === 0 ? (
-                  <div className="text-sm text-gray-500">Not used in any project briefing templates.</div>
-                ) : (
-                  <div className="space-y-2">
-                    {selectedUsage!.templates.map((row: any) => (
-                      <div key={row.briefing_type_id} className="border rounded-md border-gray-200 p-3">
-                        <div className="flex items-start justify-between gap-3">
-                          <div className="min-w-0">
-                            <div className="text-sm font-medium text-gray-900">{row.briefing_type_title}</div>
-                            <div className="text-xs text-gray-500 mt-1">Position: {row.position ?? '—'}</div>
-                          </div>
-                          <Button
-                            size="sm"
-                            variant="outline"
-                            className="text-red-600 border-red-200 hover:bg-red-50"
-                            onClick={() => handleRemoveFromTemplate(row.briefing_type_id)}
-                          >
-                            Remove from template
-                          </Button>
-                        </div>
-                      </div>
-                    ))}
-                  </div>
-                )
-              ) : isGlobalTemplateUsageLoading ? (
-                <div className="space-y-2">
-                  <div className="h-10 bg-gray-100 rounded animate-pulse" />
-                  <div className="h-10 bg-gray-100 rounded animate-pulse" />
-                </div>
-              ) : globalTemplateUsageError ? (
-                <div className="text-sm text-red-600">Failed to load usage: {String(globalTemplateUsageError)}</div>
-              ) : (globalTemplateUsage?.length || 0) === 0 ? (
-                <div className="text-sm text-gray-500">Not used in any project briefing templates.</div>
-              ) : (
-                <div className="space-y-2">
-                  {(globalTemplateUsage as any[]).map((row: any) => {
-                    return (
-                    <div key={row.briefing_type_id} className="border rounded-md border-gray-200 p-3">
-                      <div className="flex items-start justify-between gap-3">
-                        <div className="min-w-0">
-                          <div className="text-sm font-medium text-gray-900">{row.briefing_type_title}</div>
-                          <div className="text-xs text-gray-500 mt-1">Position: {row.position ?? '—'}</div>
-                        </div>
-                        <Button
-                          size="sm"
-                          variant="outline"
-                          className="text-red-600 border-red-200 hover:bg-red-50"
-                          onClick={() => handleRemoveGlobalFromTemplate(row.briefing_type_id)}
-                        >
-                          Remove from template
-                        </Button>
-                      </div>
-                    </div>
-                    )
-                  })}
-                </div>
-              )}
-
-              <div className="flex flex-wrap gap-2">
-                {selectedItem.kind === 'project' && selectedBriefingTypeId ? (
-                  <Button
-                    size="sm"
-                    variant="outline"
-                    onClick={() => handleAddToBriefing(selectedProjectComponentId!)}
-                    className="gap-2"
-                  >
-                    <ExternalLink className="w-4 h-4" />
-                    Add to current template
-                  </Button>
-                ) : null}
-
-                {selectedItem.kind === 'global' && selectedBriefingTypeId ? (
-                  <Button
-                    size="sm"
-                    variant="outline"
-                    onClick={() => handleAddGlobalToCurrentTemplate(selectedGlobalComponentId!)}
-                    className="gap-2"
-                  >
-                    <ExternalLink className="w-4 h-4" />
-                    Add to current template
-                  </Button>
-                ) : null}
-
-                {selectedItem.kind === 'project' ? (
-                  <Button size="sm" variant="outline" onClick={() => setIsAddUsageDialogOpen(true)} className="gap-2">
-                    <Plus className="w-4 h-4" />
-                    Add to briefing…
-                  </Button>
-                ) : null}
-
-                {selectedItem.kind === 'global' ? (
-                  <Button size="sm" variant="outline" onClick={() => setIsAddUsageDialogOpen(true)} className="gap-2">
-                    <Plus className="w-4 h-4" />
-                    Add to briefing…
-                  </Button>
-                ) : null}
-              </div>
-            </div>
-
-            <div className="space-y-4">
-              <div>
-                <h4 className="text-sm font-semibold text-gray-900">Used in Channel/Content-Type Briefings</h4>
-                <p className="text-xs text-gray-500 mt-1">Per channel/content-type usage for this component.</p>
-              </div>
-
-              {selectedItem.kind === 'project' ? (
-                isUsageLoading ? (
-                  <div className="space-y-2">
-                    <div className="h-14 bg-gray-100 rounded animate-pulse" />
-                    <div className="h-14 bg-gray-100 rounded animate-pulse" />
-                  </div>
-                ) : (selectedUsage?.ctChannel?.length || 0) === 0 ? (
-                  <div className="text-sm text-gray-500">Not used in any channel/content-type briefings.</div>
-                ) : (
-                  <div className="space-y-3">
-                    {selectedUsage!.ctChannel
-                      .filter((r: any) => r.briefing_type_id)
-                      .map((row: any) => {
-                        const key = `${row.content_type_id}:${row.channel_id}:${row.briefing_type_id}`
-                        const draft = overrideDrafts[key] || { custom_title: '', custom_description: '' }
-                        return (
-                          <div key={key} className="border rounded-md border-gray-200 p-3 space-y-3">
-                            <div className="flex items-start justify-between gap-3">
-                              <div className="min-w-0">
-                                <div className="text-sm font-medium text-gray-900">
-                                  {row.briefing_type_title} - {row.channel_title} - {row.content_type_title}
-                                </div>
-                                <div className="text-xs text-gray-500 mt-1">Position: {row.position ?? '—'}</div>
-                              </div>
-                              <Button
-                                size="sm"
-                                variant="outline"
-                                className="text-red-600 border-red-200 hover:bg-red-50"
-                                onClick={() =>
-                                  handleRemoveFromCtChannel({
-                                    contentTypeId: row.content_type_id,
-                                    channelId: row.channel_id,
-                                    briefingTypeId: row.briefing_type_id,
-                                  })
-                                }
-                              >
-                                Remove from this briefing
-                              </Button>
-                            </div>
-
-                            <div className="grid grid-cols-1 gap-3">
-                              <div>
-                                <Label className="text-xs">Override title</Label>
-                                <Input
-                                  value={draft.custom_title}
-                                  onChange={e =>
-                                    setOverrideDrafts(prev => ({
-                                      ...prev,
-                                      [key]: { ...draft, custom_title: e.target.value },
-                                    }))
-                                  }
-                                  onBlur={() =>
-                                    handleSaveOverride({
-                                      contentTypeId: row.content_type_id,
-                                      channelId: row.channel_id,
-                                      briefingTypeId: row.briefing_type_id,
-                                    })
-                                  }
-                                  placeholder="(optional)"
-                                />
-                              </div>
-                              <div>
-                                <Label className="text-xs">Override description</Label>
-                                <Textarea
-                                  value={draft.custom_description}
-                                  onChange={e =>
-                                    setOverrideDrafts(prev => ({
-                                      ...prev,
-                                      [key]: { ...draft, custom_description: e.target.value },
-                                    }))
-                                  }
-                                  onBlur={() =>
-                                    handleSaveOverride({
-                                      contentTypeId: row.content_type_id,
-                                      channelId: row.channel_id,
-                                      briefingTypeId: row.briefing_type_id,
-                                    })
-                                  }
-                                  placeholder="(optional)"
-                                  rows={3}
-                                />
-                              </div>
-                            </div>
-                          </div>
-                        )
-                      })}
-                  </div>
-                )
-              ) : isGlobalCtUsageLoading ? (
-                <div className="space-y-2">
-                  <div className="h-14 bg-gray-100 rounded animate-pulse" />
-                  <div className="h-14 bg-gray-100 rounded animate-pulse" />
-                </div>
-              ) : globalCtUsageError ? (
-                <div className="text-sm text-red-600">Failed to load usage: {String(globalCtUsageError)}</div>
-              ) : (globalCtUsage?.length || 0) === 0 ? (
-                <div className="text-sm text-gray-500">Not used in any channel/content-type briefings.</div>
-              ) : (
-                <div className="space-y-3">
-                  {(globalCtUsage as any[]).map((row: any) => {
-                      const key = `${row.content_type_id}:${row.channel_id}:${row.briefing_type_id}`
-                      return (
-                        <div key={key} className="border rounded-md border-gray-200 p-3 space-y-3">
-                          <div className="flex items-start justify-between gap-3">
-                            <div className="min-w-0">
-                              <div className="text-sm font-medium text-gray-900">
-                                {row.briefing_type_title} - {row.channel_title} - {row.content_type_title}
-                              </div>
-                              <div className="text-xs text-gray-500 mt-1">Position: {row.position ?? '—'}</div>
-                            </div>
-                            <Button
-                              size="sm"
-                              variant="outline"
-                              className="text-red-600 border-red-200 hover:bg-red-50"
-                              onClick={() =>
-                                handleRemoveGlobalFromCtChannel({
-                                  contentTypeId: row.content_type_id,
-                                  channelId: row.channel_id,
-                                  briefingTypeId: row.briefing_type_id,
-                                })
-                              }
-                            >
-                              Remove from this briefing
-                            </Button>
-                          </div>
-                        </div>
-                      )
-                    })}
-                </div>
-              )}
-            </div>
-
-            {/* Delete */}
-            {selectedItem.kind === 'project' || selectedItem.kind === 'global' ? (
-              <div className="pt-2 border-t border-gray-200">
-                <div className="flex items-center justify-between gap-3">
-                  <div>
-                    <div className="text-sm font-semibold text-gray-900">Danger zone</div>
-                    <div className="text-xs text-gray-500 mt-1">
-                      Deleting will remove this component from all briefings where it is used.
-                    </div>
-                  </div>
-                  <Button
-                    variant="destructive"
-                    size="sm"
-                    onClick={() => {
-                      if (selectedItem.kind === 'project') {
-                        setComponentToDelete({
-                          kind: 'project',
-                          id: selectedProjectComponentId!,
-                          title: selectedItem.title,
-                        })
-                      } else {
-                        setComponentToDelete({
-                          kind: 'global',
-                          id: selectedItem.component_id,
-                          title: selectedItem.title,
-                        })
-                      }
-                      setIsDeleteDialogOpen(true)
-                    }}
-                  >
-                    Delete from project
-                  </Button>
-                </div>
-              </div>
-            ) : null}
-            </div>
+      {isMultiSelect ? (
+        <div className="flex items-center justify-between gap-2 border-t border-gray-200 bg-white p-3">
+          <div className="text-sm text-gray-600">
+            {selectedKeys.length} selected (Ctrl/⌘ click to toggle)
           </div>
-        )}
-      </SlidePanel>
+          <div className="flex items-center gap-2">
+            <Button variant="outline" size="sm" onClick={() => setSelectedKeys([])}>
+              Clear
+            </Button>
+            <Button
+              variant="destructive"
+              size="sm"
+              onClick={() => setIsBulkDeleteDialogOpen(true)}
+              disabled={!selectedKeys.length || isBulkDeleting}
+            >
+              Delete from project
+            </Button>
+          </div>
+        </div>
+      ) : null}
 
-      {/* Delete confirmation dialog */}
       <AlertDialog open={isDeleteDialogOpen} onOpenChange={setIsDeleteDialogOpen}>
         <AlertDialogContent>
           <AlertDialogHeader>
-            <AlertDialogTitle>Delete component from project</AlertDialogTitle>
+            <AlertDialogTitle>Remove from project</AlertDialogTitle>
             <AlertDialogDescription>
-              Delete this component from the project? It will be removed from all briefings where it is used.
+              Remove this component from the project? It will no longer be available in this project&apos;s library.
             </AlertDialogDescription>
           </AlertDialogHeader>
           <AlertDialogFooter>
@@ -1872,13 +1259,12 @@ export function LibraryTab({
               Cancel
             </AlertDialogCancel>
             <AlertDialogAction className="bg-red-600 hover:bg-red-700" onClick={handleDelete}>
-              Delete
+              Remove
             </AlertDialogAction>
           </AlertDialogFooter>
         </AlertDialogContent>
       </AlertDialog>
 
-      {/* Bulk delete confirmation dialog */}
       <AlertDialog open={isBulkDeleteDialogOpen} onOpenChange={setIsBulkDeleteDialogOpen}>
         <AlertDialogContent>
           <AlertDialogHeader>
@@ -1893,9 +1279,7 @@ export function LibraryTab({
           <AlertDialogFooter>
             <AlertDialogCancel
               disabled={isBulkDeleting}
-              onClick={() => {
-                setIsBulkDeleteDialogOpen(false)
-              }}
+              onClick={() => setIsBulkDeleteDialogOpen(false)}
             >
               Cancel
             </AlertDialogCancel>
@@ -1909,94 +1293,6 @@ export function LibraryTab({
           </AlertDialogFooter>
         </AlertDialogContent>
       </AlertDialog>
-
-      {/* Add usage dialog */}
-      <Dialog
-        open={isAddUsageDialogOpen}
-        onOpenChange={open => {
-          setIsAddUsageDialogOpen(open)
-          if (!open) {
-            setAddUsageContentTypeIds([])
-            setAddUsageChannelIds([])
-            setAddUsageBriefingTypeIds([])
-          }
-        }}
-      >
-        <DialogContent className="max-w-xl">
-          <DialogHeader>
-            <DialogTitle>Add to briefing…</DialogTitle>
-          </DialogHeader>
-
-          <div className="space-y-4 py-2">
-            <div>
-              <Label>Briefing type</Label>
-              <MultiSelect
-                options={(addUsageBriefingTypes || []).map((bt: any) => ({
-                  id: String(bt.id),
-                  label: bt.title,
-                }))}
-                value={addUsageBriefingTypeIds}
-                onChange={setAddUsageBriefingTypeIds}
-                placeholder="Select briefing type(s)…"
-              />
-            </div>
-
-            <div>
-              <Label>Content type</Label>
-              <MultiSelect
-                options={(addUsageContentTypes || []).map((ct: any) => ({
-                  id: String(ct.id),
-                  label: ct.title,
-                }))}
-                value={addUsageContentTypeIds}
-                onChange={(ids) => {
-                  setAddUsageContentTypeIds(ids)
-                  // reset channels when content types change
-                  setAddUsageChannelIds([])
-                }}
-                placeholder="Select content type(s)…"
-              />
-            </div>
-
-            <div>
-              <Label>Channel</Label>
-              <MultiSelect
-                options={(
-                  (Array.isArray(addUsageChannelsData)
-                    ? addUsageChannelsData
-                    : (addUsageChannelsData?.channelOptions || [])) as any[]
-                ).map((ch: any) => ({
-                  id: String(ch.id),
-                  label: ch.title,
-                }))}
-                value={addUsageChannelIds}
-                onChange={setAddUsageChannelIds}
-                placeholder={isChannelsLoading ? 'Loading channels…' : 'Select channel(s)…'}
-                className={isChannelsLoading ? 'opacity-60' : undefined}
-              />
-              {addUsageContentTypeIds.length === 0 ? (
-                <div className="text-xs text-gray-500 mt-1">Select content type(s) to load channel options.</div>
-              ) : null}
-            </div>
-          </div>
-
-          <DialogFooter>
-            <Button variant="outline" onClick={() => setIsAddUsageDialogOpen(false)}>
-              Cancel
-            </Button>
-            <Button onClick={handleAddUsage} disabled={isAddingUsage}>
-              {isAddingUsage ? (
-                <>
-                  <Loader2 className="w-4 h-4 mr-2 animate-spin" />
-                  Adding…
-                </>
-              ) : (
-                'Add selected'
-              )}
-            </Button>
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
     </div>
   )
 }

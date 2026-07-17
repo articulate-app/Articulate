@@ -3,7 +3,11 @@
 import { useEffect, useRef, useCallback } from 'react'
 import { createClientComponentClient } from '@supabase/auth-helpers-nextjs'
 import { useQueryClient } from '@tanstack/react-query'
-import { updateTaskInCaches } from '../app/components/tasks/task-cache-utils'
+import {
+  removeTaskFromAllStores,
+  removeTaskIdFromTasksQueryArrays,
+  updateTaskInCaches,
+} from '../app/components/tasks/task-cache-utils'
 import { updateItemInStore } from './use-infinite-query'
 import { toast } from '../app/components/ui/use-toast'
 
@@ -88,11 +92,14 @@ export function useTaskRealtime(options: UseTaskRealtimeOptions = {}) {
           }
           break
 
-        case 'DELETE':
-          // Remove from caches and invalidate queries
-          queryClient.invalidateQueries({ queryKey: ['tasks'] })
-          queryClient.invalidateQueries({ queryKey: ['task', String(task.id)] })
-          
+        case 'DELETE': {
+          const taskIdStr = String(task.id)
+          const taskIdNum = Number(task.id)
+          if (Number.isFinite(taskIdNum)) {
+            removeTaskFromAllStores(taskIdNum)
+          }
+          removeTaskIdFromTasksQueryArrays(queryClient, taskIdStr)
+          queryClient.removeQueries({ queryKey: ['task', taskIdStr] })
           if (showNotifications) {
             toast({
               title: 'Task deleted',
@@ -100,6 +107,7 @@ export function useTaskRealtime(options: UseTaskRealtimeOptions = {}) {
             })
           }
           break
+        }
       }
 
       // Call custom handler if provided

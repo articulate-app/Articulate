@@ -2,6 +2,7 @@ import React, { useState, useCallback, useEffect } from 'react';
 import { InfiniteList } from '../ui/infinite-list';
 import { Popover, PopoverTrigger, PopoverContent } from '../ui/popover';
 import { createClientComponentClient } from '@supabase/auth-helpers-nextjs';
+import { ChevronDown } from 'lucide-react';
 
 interface ParentTaskSelectProps {
   currentParentId: string | null;
@@ -16,9 +17,6 @@ export function ParentTaskSelect({ currentParentId, onChange, disabledIds = [], 
   const [search, setSearch] = useState('');
   const [currentParentTitle, setCurrentParentTitle] = useState<string | null>(null);
   const [currentParentType, setCurrentParentType] = useState<number | null>(null); // content_type_id
-
-  // Debug log for parent task data
-  console.log('ParentTaskSelect: parentTaskData', parentTaskData, 'currentParentId', currentParentId);
 
   // Use parent task data from props if available, otherwise fetch from API
   useEffect(() => {
@@ -74,22 +72,21 @@ export function ParentTaskSelect({ currentParentId, onChange, disabledIds = [], 
   return (
     <Popover open={open} onOpenChange={setOpen}>
       <PopoverTrigger asChild>
-        <div
-          className="w-full px-3 py-2 rounded-md cursor-pointer hover:bg-gray-50 truncate text-left"
-          tabIndex={0}
+        <button
+          type="button"
+          className="h-10 min-h-10 w-full min-w-0 flex items-center justify-between gap-2 rounded-md border border-gray-200 bg-white px-3 py-2 text-left text-sm font-normal text-gray-900 cursor-pointer hover:bg-gray-50 focus:outline-none focus:ring-2 focus:ring-gray-200"
           aria-label="Select parent task"
           title={currentParentId && currentParentTitle ? currentParentTitle : 'Set Parent Task'}
         >
-          {currentParentId && currentParentTitle
-            ? (
-                <span className={currentParentType === 39 ? 'font-bold' : ''}>
-                  {currentParentTitle}
-                </span>
-              )
-            : <span className="text-gray-400">Click to set parent task</span>}
-        </div>
+          <span className="truncate min-w-0">
+            {currentParentId && currentParentTitle
+              ? currentParentTitle
+              : <span className="text-gray-400">Select parent task</span>}
+          </span>
+          <ChevronDown className="w-4 h-4 shrink-0 text-gray-400" />
+        </button>
       </PopoverTrigger>
-      <PopoverContent className="w-80 p-2">
+      <PopoverContent className="w-[min(90vw,24rem)] max-w-full p-2" align="start">
         <input
           type="text"
           className="w-full border rounded px-2 py-1 text-xs mb-2"
@@ -115,7 +112,7 @@ export function ParentTaskSelect({ currentParentId, onChange, disabledIds = [], 
                     <li key={task.id}>
                       <button
                         type="button"
-                        className={`w-full text-left px-2 py-1 hover:bg-accent rounded text-xs truncate ${task.content_type_id === 39 ? 'font-bold' : ''}`}
+                        className="w-full truncate rounded px-2 py-1 text-left text-xs font-normal hover:bg-accent"
                         onClick={() => {
                           onChange(task.id, task);
                           setOpen(false);

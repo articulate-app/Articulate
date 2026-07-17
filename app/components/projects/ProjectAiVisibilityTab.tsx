@@ -22,9 +22,25 @@ import { DateRangePicker } from "../ui/date-range-picker"
 import { MultiSelect } from "../ui/multi-select"
 import { Loader2, AlertCircle } from "lucide-react"
 import { toast } from "../ui/use-toast"
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "../ui/select"
+
+type DateRangeValue = {
+  from?: Date
+  to?: Date
+}
 
 interface ProjectAiVisibilityTabProps {
   projectId: number
+  /** Overview embed: brand-position chart only. */
+  variant?: "full" | "preview"
+  dateRange?: DateRangeValue
+  onDateRangeChange?: (range: DateRangeValue) => void
 }
 
 type AiPromptRow = {
@@ -49,11 +65,6 @@ type AiTool = {
   id: number
   code: string
   name: string
-}
-
-type DateRangeValue = {
-  from?: Date
-  to?: Date
 }
 
 type AiTimeseriesPoint = {
@@ -93,7 +104,13 @@ const formatShortDateTime = (dateStr: string) => {
   }
 }
 
-export function ProjectAiVisibilityTab({ projectId }: ProjectAiVisibilityTabProps) {
+export function ProjectAiVisibilityTab({
+  projectId,
+  variant = "full",
+  dateRange: controlledDateRange,
+  onDateRangeChange,
+}: ProjectAiVisibilityTabProps) {
+  const isPreview = variant === "preview"
   const supabase = useMemo(() => createClient(), [])
   const functionsClient = useMemo(() => createClientComponentClient(), [])
   const queryClient = useQueryClient()
@@ -108,7 +125,9 @@ export function ProjectAiVisibilityTab({ projectId }: ProjectAiVisibilityTabProp
   const [selectedPromptId, setSelectedPromptId] = useState<number | null>(null)
   const [selectedToolId, setSelectedToolId] = useState<number | null>(null)
 
-  const [dateRange, setDateRange] = useState<DateRangeValue>(() => getDefaultDateRange())
+  const [uncontrolledDateRange, setUncontrolledDateRange] = useState<DateRangeValue>(() => getDefaultDateRange())
+  const dateRange = controlledDateRange ?? uncontrolledDateRange
+  const setDateRange = onDateRangeChange ?? setUncontrolledDateRange
   const [selectedRunAt, setSelectedRunAt] = useState<Date | null>(null)
 
   const from = dateRange.from
@@ -167,7 +186,7 @@ export function ProjectAiVisibilityTab({ projectId }: ProjectAiVisibilityTabProp
       from ? from.toISOString() : null,
       to ? to.toISOString() : null,
     ],
-    enabled: !!selectedPromptId && !!selectedToolId && !!from && !!to,
+    enabled: !isPreview && !!selectedPromptId && !!selectedToolId && !!from && !!to,
     queryFn: async () => {
       if (!selectedPromptId || !selectedToolId || !from || !to) return []
 
@@ -187,6 +206,60 @@ export function ProjectAiVisibilityTab({ projectId }: ProjectAiVisibilityTabProp
       }
 
       return (data || []) as AiTimeseriesPoint[]
+    },
+  })
+
+  const {
+    data: globalTimeseries,
+    isLoading: isLoadingGlobalTimeseries,
+    error: globalTimeseriesError,
+  } = useQuery<Array<{ run_at: string; brand_position: number | null }>>({
+    queryKey: [
+      "project-ai-global-timeseries",
+      projectId,
+      from ? from.toISOString() : null,
+      to ? to.toISOString() : null,
+    ],
+    enabled: isPreview && !!from && !!to,
+    queryFn: async () => {
+      if (!from || !to) return []
+
+      const { data: promptRows, error: promptError } = await (supabase as any)
+        .from("project_ai_prompts")
+        .select("id")
+        .eq("project_id", projectId)
+      if (promptError) throw promptError
+
+      const promptIds = ((promptRows || []) as Array<{ id: number }>).map((row) => row.id)
+      if (!promptIds.length) return []
+
+      const { data: resultRows, error: resultError } = await (supabase as any)
+        .from("project_ai_prompt_results")
+        .select("run_at, brand_position")
+        .in("project_ai_prompt_id", promptIds)
+        .gte("run_at", from.toISOString())
+        .lte("run_at", to.toISOString())
+        .order("run_at", { ascending: true })
+      if (resultError) throw resultError
+
+      const byDay = new Map<string, number[]>()
+      for (const row of (resultRows || []) as Array<{ run_at: string; brand_position: number | null }>) {
+        const dayKey = format(new Date(row.run_at), "yyyy-MM-dd")
+        if (row.brand_position == null || !Number.isFinite(row.brand_position)) continue
+        const bucket = byDay.get(dayKey) ?? []
+        bucket.push(row.brand_position)
+        byDay.set(dayKey, bucket)
+      }
+
+      return Array.from(byDay.entries())
+        .sort(([a], [b]) => a.localeCompare(b))
+        .map(([day, positions]) => ({
+          run_at: `${day}T12:00:00`,
+          brand_position:
+            positions.length > 0
+              ? Math.round((positions.reduce((sum, value) => sum + value, 0) / positions.length) * 10) / 10
+              : null,
+        }))
     },
   })
 
@@ -439,116 +512,254 @@ export function ProjectAiVisibilityTab({ projectId }: ProjectAiVisibilityTabProp
     ? (snapshot!.ranked_entities as RankedEntity[])
     : []
 
-  return (
-    <div className="space-y-6">
-      <div className="flex items-center justify-between">
-        <h2 className="text-lg font-semibold text-gray-900">AI visibility</h2>
-      </div>
+  const promptSelectOptions = useMemo(() => {
+    if (!prompts?.length) return []
+    const seen = new Set<string>()
+    return prompts
+      .map((row) => {
+        const key = `${row.project_ai_prompt_id}:${row.ai_tool_id}`
+        if (seen.has(key)) return null
+        seen.add(key)
+        return {
+          key,
+          promptId: row.project_ai_prompt_id,
+          toolId: row.ai_tool_id,
+          label: `${row.prompt_text} · ${row.ai_tool_name}`,
+        }
+      })
+      .filter(Boolean) as Array<{
+      key: string
+      promptId: number
+      toolId: number
+      label: string
+    }>
+  }, [prompts])
 
-      {/* Brand position + snapshot at top */}
-      <div className="grid gap-4 lg:grid-cols-2">
-        <Card className="p-4 md:p-6">
-          <div className="mb-3 flex flex-col gap-2 md:flex-row md:items-center md:justify-between">
-            <div>
-              <h4 className="text-sm font-semibold text-gray-900">
-                Brand position over time
-              </h4>
-              <p className="text-[11px] text-gray-500">
-                Lower position is better (1 = top mention).
+  const brandPositionChart = (
+    <Card className="min-w-0 p-4 md:p-6">
+      <div className="mb-3 flex min-w-0 flex-col gap-3">
+        {isPreview ? null : (
+          <div className="min-w-0">
+            <h4 className="text-sm font-semibold text-gray-900">
+              Brand position over time
+            </h4>
+            <p className="text-[11px] text-gray-500">
+              Lower position is better (1 = top mention).
+            </p>
+            {selectedTool ? (
+              <p className="mt-1 text-[11px] text-gray-500">
+                Tool:{" "}
+                <span className="font-medium text-gray-900">
+                  {selectedTool.name}
+                </span>
               </p>
-              {selectedTool && (
-                <p className="mt-1 text-[11px] text-gray-500">
-                  Tool:{" "}
-                  <span className="font-medium text-gray-900">
-                    {selectedTool.name}
-                  </span>
-                </p>
-              )}
+            ) : null}
+          </div>
+        )}
+        <div className="flex min-w-0 flex-col gap-2 sm:flex-row sm:flex-wrap sm:items-center">
+          {isPreview && promptSelectOptions.length > 0 ? (
+            <div className="w-full min-w-0 sm:max-w-md sm:flex-1">
+              <Select
+                value={
+                  selectedPromptId != null && selectedToolId != null
+                    ? `${selectedPromptId}:${selectedToolId}`
+                    : undefined
+                }
+                onValueChange={(value) => {
+                  const [promptIdRaw, toolIdRaw] = value.split(":")
+                  const promptId = Number(promptIdRaw)
+                  const toolId = Number(toolIdRaw)
+                  if (!Number.isFinite(promptId) || !Number.isFinite(toolId)) return
+                  setSelectedPromptId(promptId)
+                  setSelectedToolId(toolId)
+                  const match = prompts?.find(
+                    (row) =>
+                      row.project_ai_prompt_id === promptId &&
+                      row.ai_tool_id === toolId,
+                  )
+                  setSelectedRunAt(match?.run_at ? new Date(match.run_at) : null)
+                }}
+              >
+                <SelectTrigger className="h-8 w-full text-xs">
+                  <SelectValue placeholder="Select prompt & tool" />
+                </SelectTrigger>
+                <SelectContent>
+                  {promptSelectOptions.map((option) => (
+                    <SelectItem key={option.key} value={option.key} className="text-xs">
+                      <span className="line-clamp-1">{option.label}</span>
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
             </div>
-            <div className="w-full md:w-56">
+          ) : null}
+          {isPreview ? null : (
+            <div className="w-full min-w-0 sm:w-56">
               <DateRangePicker
                 value={dateRange}
                 onChange={(range) => setDateRange(range)}
               />
             </div>
-          </div>
+          )}
+        </div>
+      </div>
 
-          <div className="h-64">
-            {!selectedPromptId || !selectedToolId ? (
-              <div className="flex h-full items-center justify-center text-sm text-gray-500">
-                Select a prompt and tool from the table below to see history.
-              </div>
-            ) : isLoadingTimeseries ? (
-              <div className="flex h-full items-center justify-center text-sm text-gray-500">
-                <Loader2 className="mr-2 h-5 w-5 animate-spin" />
-                Loading brand position history…
-              </div>
-            ) : timeseriesError ? (
-              <div className="flex h-full items-center gap-2 rounded-md border border-red-200 bg-red-50 px-3 py-2 text-xs text-red-700">
-                <AlertCircle className="h-4 w-4" />
-                <span>Failed to load brand position timeseries.</span>
-              </div>
-            ) : !hasTimeseries ? (
-              <div className="flex h-full items-center justify-center text-sm text-gray-500">
-                No runs yet for this prompt and tool. Use &quot;Run now&quot; to
-                fetch AI responses.
-              </div>
-            ) : (
-              <ResponsiveContainer width="100%" height="100%">
-                <LineChart
-                  data={timeseries}
-                  onClick={(e: any) => {
-                    const payload =
-                      e && e.activePayload && e.activePayload[0]
-                        ? e.activePayload[0].payload
-                        : null
-                    if (payload && payload.run_at) {
-                      setSelectedRunAt(new Date(payload.run_at))
-                    }
+      <div className="h-64 min-w-0">
+        {!selectedPromptId || !selectedToolId ? (
+          <div className="flex h-full items-center justify-center text-sm text-gray-500">
+            {isPreview
+              ? "No AI prompts configured yet."
+              : "Select a prompt and tool from the table below to see history."}
+          </div>
+        ) : isLoadingTimeseries ? (
+          <div className="flex h-full items-center justify-center text-sm text-gray-500">
+            <Loader2 className="mr-2 h-5 w-5 animate-spin" />
+            Loading brand position history…
+          </div>
+        ) : timeseriesError ? (
+          <div className="flex h-full items-center gap-2 rounded-md border border-red-200 bg-red-50 px-3 py-2 text-xs text-red-700">
+            <AlertCircle className="h-4 w-4" />
+            <span>Failed to load brand position timeseries.</span>
+          </div>
+        ) : !hasTimeseries ? (
+          <div className="flex h-full items-center justify-center text-sm text-gray-500">
+            No runs yet for this prompt and tool. Use &quot;Run now&quot; to
+            fetch AI responses.
+          </div>
+        ) : (
+          <ResponsiveContainer width="100%" height="100%">
+            <LineChart
+              data={timeseries}
+              onClick={(e: any) => {
+                const payload =
+                  e && e.activePayload && e.activePayload[0]
+                    ? e.activePayload[0].payload
+                    : null
+                if (payload && payload.run_at) {
+                  setSelectedRunAt(new Date(payload.run_at))
+                }
+              }}
+            >
+              <CartesianGrid strokeDasharray="3 3" stroke="#e5e7eb" />
+              <XAxis
+                dataKey="run_at"
+                stroke="#6b7280"
+                style={{ fontSize: "12px" }}
+                tickFormatter={formatShortDateTime}
+              />
+              <YAxis
+                stroke="#6b7280"
+                style={{ fontSize: "12px" }}
+                reversed
+                domain={[1, "dataMax + 1"]}
+                allowDecimals={false}
+              />
+              <RechartsTooltip
+                formatter={(value: any) => {
+                  const v = value as number | null
+                  if (v == null) return ["Not mentioned", "Position"]
+                  return [`#${v}`, "Position"]
+                }}
+                labelFormatter={(label) =>
+                  `Run at: ${format(
+                    new Date(label),
+                    "yyyy-MM-dd HH:mm",
+                  )}`
+                }
+              />
+              <Line
+                type="monotone"
+                dataKey="brand_position"
+                stroke="#2563eb"
+                strokeWidth={2}
+                dot={{ r: 3 }}
+                activeDot={{ r: 4 }}
+              />
+            </LineChart>
+          </ResponsiveContainer>
+        )}
+      </div>
+    </Card>
+  )
+
+  if (isPreview) {
+    const hasGlobal = !!globalTimeseries?.length
+    return (
+      <div className="min-w-0">
+        <div className="h-64 min-w-0">
+          {isLoadingGlobalTimeseries ? (
+            <div className="flex h-full items-center justify-center text-sm text-gray-500">
+              <Loader2 className="mr-2 h-5 w-5 animate-spin" />
+              Loading brand position…
+            </div>
+          ) : globalTimeseriesError ? (
+            <div className="flex h-full items-center gap-2 text-xs text-red-700">
+              <AlertCircle className="h-4 w-4" />
+              <span>Failed to load brand position history.</span>
+            </div>
+          ) : !hasGlobal ? (
+            <div className="flex h-full items-center justify-center text-sm text-gray-500">
+              No AI visibility runs yet for this period.
+            </div>
+          ) : (
+            <ResponsiveContainer width="100%" height="100%">
+              <LineChart
+                data={globalTimeseries}
+                margin={{ top: 8, right: 8, left: 0, bottom: 0 }}
+              >
+                <CartesianGrid strokeDasharray="3 3" stroke="#e5e7eb" />
+                <XAxis
+                  dataKey="run_at"
+                  stroke="#6b7280"
+                  style={{ fontSize: "12px" }}
+                  tickFormatter={formatShortDateTime}
+                  tickMargin={8}
+                />
+                <YAxis
+                  width={36}
+                  stroke="#6b7280"
+                  style={{ fontSize: "12px" }}
+                  reversed
+                  domain={[1, "dataMax + 1"]}
+                  allowDecimals={false}
+                />
+                <RechartsTooltip
+                  formatter={(value: any) => {
+                    const v = value as number | null
+                    if (v == null) return ["Not mentioned", "Avg position"]
+                    return [`#${v}`, "Avg position"]
                   }}
-                >
-                  <CartesianGrid strokeDasharray="3 3" stroke="#e5e7eb" />
-                  <XAxis
-                    dataKey="run_at"
-                    stroke="#6b7280"
-                    style={{ fontSize: "12px" }}
-                    tickFormatter={formatShortDateTime}
-                  />
-                  <YAxis
-                    stroke="#6b7280"
-                    style={{ fontSize: "12px" }}
-                    reversed
-                    domain={[1, "dataMax + 1"]}
-                    allowDecimals={false}
-                  />
-                  <RechartsTooltip
-                    formatter={(value: any) => {
-                      const v = value as number | null
-                      if (v == null) return ["Not mentioned", "Position"]
-                      return [`#${v}`, "Position"]
-                    }}
-                    labelFormatter={(label) =>
-                      `Run at: ${format(
-                        new Date(label),
-                        "yyyy-MM-dd HH:mm",
-                      )}`
-                    }
-                  />
-                  <Line
-                    type="monotone"
-                    dataKey="brand_position"
-                    stroke="#2563eb"
-                    strokeWidth={2}
-                    dot={{ r: 3 }}
-                    activeDot={{ r: 4 }}
-                  />
-                </LineChart>
-              </ResponsiveContainer>
-            )}
-          </div>
-        </Card>
+                  labelFormatter={(label) =>
+                    `Date: ${format(new Date(label), "yyyy-MM-dd")}`
+                  }
+                />
+                <Line
+                  type="monotone"
+                  dataKey="brand_position"
+                  stroke="#2563eb"
+                  strokeWidth={2}
+                  dot={false}
+                  activeDot={{ r: 4 }}
+                />
+              </LineChart>
+            </ResponsiveContainer>
+          )}
+        </div>
+      </div>
+    )
+  }
 
-        <Card className="p-4 md:p-6">
+  return (
+    <div className="min-w-0 space-y-6">
+      <div className="flex items-center justify-between">
+        <h2 className="text-lg font-semibold text-gray-900">AI visibility</h2>
+      </div>
+
+      {/* Brand position + snapshot at top */}
+      <div className="grid min-w-0 gap-4 lg:grid-cols-2">
+        {brandPositionChart}
+
+        <Card className="min-w-0 p-4 md:p-6">
           <div className="mb-3">
             <h4 className="text-sm font-semibold text-gray-900">
               Latest entities in answer
@@ -613,14 +824,14 @@ export function ProjectAiVisibilityTab({ projectId }: ProjectAiVisibilityTabProp
                 )}
               </div>
 
-              <div className="max-h-64 overflow-y-auto rounded-md border">
-                <table className="min-w-full text-left text-xs">
+              <div className="max-h-64 min-w-0 overflow-auto rounded-md border">
+                <table className="w-full min-w-[28rem] table-fixed text-left text-xs">
                   <thead className="border-b bg-gray-50 text-[11px] font-medium uppercase text-gray-500">
                     <tr>
-                      <th className="px-3 py-2 w-16">Position</th>
+                      <th className="w-14 px-3 py-2">Pos</th>
                       <th className="px-3 py-2">Brand / Name</th>
-                      <th className="px-3 py-2">URL</th>
-                      <th className="px-3 py-2">Snippet</th>
+                      <th className="hidden px-3 py-2 sm:table-cell">URL</th>
+                      <th className="hidden px-3 py-2 md:table-cell">Snippet</th>
                     </tr>
                   </thead>
                   <tbody>
@@ -650,16 +861,27 @@ export function ProjectAiVisibilityTab({ projectId }: ProjectAiVisibilityTabProp
                             <td className="px-3 py-2 text-xs text-gray-700">
                               {entity.position ?? index + 1}
                             </td>
-                            <td className="px-3 py-2 text-xs text-gray-900">
-                              {entity.name || "—"}
-                            </td>
-                            <td className="px-3 py-2 text-xs text-gray-700 max-w-xs">
+                            <td className="min-w-0 px-3 py-2 text-xs text-gray-900">
+                              <div className="truncate">{entity.name || "—"}</div>
                               {entity.url ? (
                                 <a
                                   href={entity.url}
                                   target="_blank"
                                   rel="noopener noreferrer"
-                                  className="text-blue-600 hover:text-blue-800 truncate inline-block max-w-[180px]"
+                                  className="mt-0.5 block truncate text-[11px] text-blue-600 hover:text-blue-800 sm:hidden"
+                                  title={entity.url}
+                                >
+                                  {entity.url}
+                                </a>
+                              ) : null}
+                            </td>
+                            <td className="hidden min-w-0 px-3 py-2 text-xs text-gray-700 sm:table-cell">
+                              {entity.url ? (
+                                <a
+                                  href={entity.url}
+                                  target="_blank"
+                                  rel="noopener noreferrer"
+                                  className="inline-block max-w-full truncate text-blue-600 hover:text-blue-800"
                                   title={entity.url}
                                 >
                                   {entity.url}
@@ -668,7 +890,7 @@ export function ProjectAiVisibilityTab({ projectId }: ProjectAiVisibilityTabProp
                                 <span className="text-gray-400">—</span>
                               )}
                             </td>
-                            <td className="px-3 py-2 text-xs text-gray-700 max-w-md">
+                            <td className="hidden min-w-0 px-3 py-2 text-xs text-gray-700 md:table-cell">
                               <span className="line-clamp-2">
                                 {entity.snippet || "—"}
                               </span>
@@ -686,9 +908,9 @@ export function ProjectAiVisibilityTab({ projectId }: ProjectAiVisibilityTabProp
       </div>
 
       {/* Prompts, tools, and sync */}
-      <Card className="p-4 md:p-6">
-        <div className="mb-4 flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
-          <div>
+      <Card className="min-w-0 p-4 md:p-6">
+        <div className="mb-4 flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+          <div className="min-w-0">
             <h3 className="text-base font-semibold text-gray-900">
               AI prompts & tools
             </h3>
@@ -696,7 +918,7 @@ export function ProjectAiVisibilityTab({ projectId }: ProjectAiVisibilityTabProp
               Configure prompts and track how your brand appears in AI answers.
             </p>
           </div>
-          <div className="flex items-center gap-2">
+          <div className="flex flex-wrap items-center gap-2">
             <Button
               type="button"
               size="sm"
@@ -732,8 +954,8 @@ export function ProjectAiVisibilityTab({ projectId }: ProjectAiVisibilityTabProp
         </div>
 
         {/* Add prompt form */}
-        <div className="mb-4 grid gap-3 md:grid-cols-3">
-          <div className="md:col-span-2 space-y-1">
+        <div className="mb-4 grid min-w-0 gap-3 md:grid-cols-3">
+          <div className="min-w-0 space-y-1 md:col-span-2">
             <Label htmlFor="new-prompt" className="text-xs">
               Prompt
             </Label>
@@ -745,7 +967,7 @@ export function ProjectAiVisibilityTab({ projectId }: ProjectAiVisibilityTabProp
               className="h-8 text-xs"
             />
           </div>
-          <div className="space-y-1">
+          <div className="min-w-0 space-y-1">
             <Label htmlFor="new-notes" className="text-xs">
               Notes (optional)
             </Label>
@@ -759,8 +981,8 @@ export function ProjectAiVisibilityTab({ projectId }: ProjectAiVisibilityTabProp
           </div>
         </div>
 
-        <div className="mb-4 grid gap-3 md:grid-cols-3 md:items-end">
-          <div className="space-y-1 md:col-span-2">
+        <div className="mb-4 grid min-w-0 gap-3 md:grid-cols-3 md:items-end">
+          <div className="min-w-0 space-y-1 md:col-span-2">
             <Label className="text-xs">AI tools</Label>
             <MultiSelect
               options={toolOptions}
@@ -771,11 +993,11 @@ export function ProjectAiVisibilityTab({ projectId }: ProjectAiVisibilityTabProp
               }
             />
           </div>
-          <div className="flex items-center gap-2">
+          <div className="flex min-w-0 flex-col gap-2 sm:flex-row sm:items-center">
             <Button
               type="button"
               size="sm"
-              className="mt-4 md:mt-0"
+              className="w-full shrink-0 sm:w-auto"
               onClick={handleAddPrompt}
               disabled={isAdding}
             >
@@ -788,7 +1010,7 @@ export function ProjectAiVisibilityTab({ projectId }: ProjectAiVisibilityTabProp
                 <>Add prompt</>
               )}
             </Button>
-            <p className="hidden text-[11px] text-gray-500 md:inline">
+            <p className="text-[11px] text-gray-500">
               New prompts will be included the next time you run AI visibility.
             </p>
           </div>
@@ -811,14 +1033,14 @@ export function ProjectAiVisibilityTab({ projectId }: ProjectAiVisibilityTabProp
             AI visibility.
           </div>
         ) : (
-          <div className="overflow-x-auto">
-            <table className="min-w-full text-left text-xs">
+          <div className="min-w-0 overflow-x-auto">
+            <table className="w-full min-w-[36rem] text-left text-xs">
               <thead className="border-b bg-gray-50 text-[11px] font-medium uppercase text-gray-500">
                 <tr>
                   <th className="px-3 py-2">Prompt</th>
                   <th className="px-3 py-2">Tool</th>
                   <th className="px-3 py-2 text-right">Latest position</th>
-                  <th className="px-3 py-2">Brand URL</th>
+                  <th className="hidden px-3 py-2 md:table-cell">Brand URL</th>
                   <th className="px-3 py-2 text-right">Last run</th>
                 </tr>
               </thead>
@@ -852,13 +1074,13 @@ export function ProjectAiVisibilityTab({ projectId }: ProjectAiVisibilityTabProp
                           ? `#${row.brand_position}`
                           : "Not mentioned"}
                       </td>
-                      <td className="px-3 py-2 text-xs text-gray-700 max-w-xs">
+                      <td className="hidden max-w-xs px-3 py-2 text-xs text-gray-700 md:table-cell">
                         {row.brand_url ? (
                           <a
                             href={row.brand_url}
                             target="_blank"
                             rel="noopener noreferrer"
-                            className="text-blue-600 hover:text-blue-800 truncate inline-block max-w-[220px]"
+                            className="inline-block max-w-[220px] truncate text-blue-600 hover:text-blue-800"
                             title={row.brand_url}
                           >
                             {row.brand_url}

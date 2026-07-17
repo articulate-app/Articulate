@@ -9,6 +9,11 @@ import { DropdownMenu, DropdownMenuContent, DropdownMenuTrigger, DropdownMenuIte
 import { Dialog, DialogContent, DialogTitle, DialogFooter } from "../../components/ui/dialog"
 import { Button } from "../../components/ui/button"
 
+function getThreadDisplayTitle(title: string | null | undefined): string {
+  const normalized = (title ?? "").trim()
+  return normalized.length > 0 ? normalized : "New chat"
+}
+
 interface HistoryDropdownProps {
   onSelectThread: (thread: AiThread) => void
   activeThreadId?: string | null
@@ -27,9 +32,10 @@ export function HistoryDropdown({ onSelectThread, activeThreadId }: HistoryDropd
 
   const filteredThreads = useMemo(() => {
     if (!searchQuery) return threads
-    return threads.filter(thread => 
-      (thread.title || '').toLowerCase().includes(searchQuery.toLowerCase())
-    )
+    return threads.filter((thread) => {
+      const title = getThreadDisplayTitle(thread.title)
+      return title.toLowerCase().includes(searchQuery.toLowerCase())
+    })
   }, [threads, searchQuery])
 
   const groupedThreads = useMemo(() => {
@@ -97,7 +103,7 @@ export function HistoryDropdown({ onSelectThread, activeThreadId }: HistoryDropd
   }
 
   return (
-    <DropdownMenu>
+    <DropdownMenu modal={false}>
       <DropdownMenuTrigger asChild>
         <button className="p-2 hover:bg-gray-100 rounded-md transition-colors" title="Chat History">
           <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -165,7 +171,7 @@ export function HistoryDropdown({ onSelectThread, activeThreadId }: HistoryDropd
                       />
                     ) : (
                       <>
-                        <div className="text-sm font-medium truncate">{thread.title || 'Untitled'}</div>
+                        <div className="text-sm font-medium truncate">{getThreadDisplayTitle(thread.title)}</div>
                         <div className="text-xs text-muted-foreground capitalize">
                           {thread.scope} • {thread.visibility}
                         </div>

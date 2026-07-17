@@ -3,6 +3,8 @@ import { createClientComponentClient } from "@supabase/auth-helpers-nextjs"
 import { Popover, PopoverTrigger, PopoverContent } from "../ui/popover"
 import { Button } from "../ui/button"
 import { Dialog, DialogContent, DialogTitle, DialogFooter } from '../ui/dialog';
+import { getImageUrl } from "../../lib/public-media";
+import { UserHoverCard } from "../ui/user-hover-card";
 
 interface ThreadParticipantsInlineProps {
   threadId?: number
@@ -38,6 +40,7 @@ interface User {
   full_name: string
   email: string
   auth_user_id: string
+  photo?: string | null
 }
 
 function getInitials(name: string | undefined | null) {
@@ -46,6 +49,29 @@ function getInitials(name: string | undefined | null) {
   if (parts.length === 0) return "?"
   if (parts.length === 1) return parts[0].slice(0, 2).toUpperCase()
   return (parts[0][0] + parts[parts.length - 1][0]).toUpperCase()
+}
+
+function AvatarCircle({ name, email, photo }: { name?: string | null; email?: string | null; photo?: string | null }) {
+  const photoUrl = getImageUrl(photo || undefined)
+  if (photoUrl) {
+    // Fixed-size, block, non-shrinking circular container clips the photo cleanly; the image fills it
+    // and is centered (object-cover object-center) so it is never trimmed at the top or distorted by
+    // flex squashing or the inline-image baseline gap.
+    return (
+      <span className="block h-7 w-7 shrink-0 overflow-hidden rounded-full border border-gray-300 shadow">
+        <img
+          src={photoUrl}
+          alt={name || email || "User"}
+          className="block h-full w-full rounded-full object-cover object-center"
+        />
+      </span>
+    )
+  }
+  return (
+    <div className="w-7 h-7 shrink-0 rounded-full bg-muted flex items-center justify-center text-[11px] font-bold uppercase text-gray-900 border border-gray-300 shadow">
+      {getInitials(name || email)}
+    </div>
+  )
 }
 
 function _ThreadParticipantsInline({
@@ -84,7 +110,6 @@ function _ThreadParticipantsInline({
   const handleAdd = async (userId: number) => {
     setIsAdding(true);
     setError(null);
-    console.log('Adding participant:', { threadId, watcherId: userId, currentUserId });
     if (!userId || !currentUserId) {
       setError("Invalid user or current user");
       setIsAdding(false);
@@ -103,117 +128,171 @@ function _ThreadParticipantsInline({
 
   // Remove all local refresh logic, rely on parent to update props
 
-  // Remove allProjectUsers state, use prop
-  console.log('allProjectUsers:', allProjectUsers);
-  console.log('allProjectUsers ids:', allProjectUsers.map(u => u.id));
-  console.log('pendingParticipants:', pendingParticipants);
-  console.log('pendingParticipants ids:', pendingParticipants.map(u => u && u.id));
   const safeParticipants = Array.isArray(participants) ? participants.filter(Boolean) : [];
+  const participantsWithDetails = safeParticipants.map((p: any) => {
+    const fallback = allProjectUsers.find((u: any) => {
+      if (Number(u.id) === Number(p?.id)) return true
+      if (u?.auth_user_id && p?.auth_user_id && String(u.auth_user_id) === String(p.auth_user_id)) return true
+      if (u?.email && p?.email && String(u.email).toLowerCase() === String(p.email).toLowerCase()) return true
+      return false
+    })
+    return {
+      ...fallback,
+      ...p,
+      photo: p?.photo ?? fallback?.photo ?? null,
+      full_name: p?.full_name ?? fallback?.full_name ?? p?.email ?? fallback?.email ?? `User #${p?.id}`,
+      email: p?.email ?? fallback?.email ?? null,
+    }
+  })
   const filteredUsers = allProjectUsers.filter(u =>
     (u.full_name?.toLowerCase().includes(search.toLowerCase()) || u.email?.toLowerCase().includes(search.toLowerCase())) &&
     !safeParticipants.some(w => w && w.id === u.id)
   )
-  console.log('filteredUsers (non-pending mode):', filteredUsers);
 
   if (pendingMode) {
-    // Pending mode: show pendingParticipants avatars and add/search UI
-    // Use pendingParticipants if not empty, otherwise use participants (project watchers)
-    const displayParticipants = pendingParticipants.length > 0 ? pendingParticipants.filter(Boolean) : safeParticipants;
-    console.log('displayParticipants (pending mode):', displayParticipants);
-    // Debug log for pending participants
-    console.log('DEBUG: pendingParticipants', pendingParticipants);
-    console.log('DEBUG: displayParticipants', displayParticipants);
+    // Pending mode: avatars open the same manage popover as add (+); remove lives inside that popover.
+    const displayParticipants = pendingParticipants.length > 0 ? pendingParticipants.filter(Boolean) : safeParticipants
+    const sameUser = (a: any, b: any) => {
+      if (!a || !b) return false
+      if (a.id != null && b.id != null) return Number(a.id) === Number(b.id)
+      if (a.auth_user_id && b.auth_user_id) return String(a.auth_user_id) === String(b.auth_user_id)
+      if (a.email && b.email) return String(a.email).toLowerCase() === String(b.email).toLowerCase()
+      return false
+    }
+    const openPendingPopover = () => requestAnimationFrame(() => setPopoverOpen(true))
+    const removePendingParticipant = (user: any) => {
+      if (typeof setPendingParticipants === "function") {
+        const base = pendingParticipants.length > 0 ? pendingParticipants.filter(Boolean) : displayParticipants
+        setPendingParticipants(base.filter((u: any) => !sameUser(u, user)))
+      }
+      if (typeof setRemovedParticipants === "function") {
+        setRemovedParticipants([...(removedParticipants || []), user])
+      }
+    }
     return (
-      <div className="flex items-center gap-1">
-        {displayParticipants.map((user, idx) => (
+      <div
+        role="button"
+        tabIndex={0}
+        onClick={openPendingPopover}
+        onKeyDown={(e) => {
+          if (e.key === "Enter" || e.key === " ") {
+            e.preventDefault()
+            openPendingPopover()
+          }
+        }}
+        className="flex min-w-0 cursor-pointer items-center gap-1"
+        aria-label="View or manage participants"
+        data-comment-watcher-picker-trigger="true"
+      >
+        {displayParticipants.map((user, idx) =>
           user ? (
-            <div key={`pending-participant-${user.id ?? `idx-${idx}`}`} className="relative group flex flex-col items-center">
-              <div
-                className="w-7 h-7 rounded-full bg-muted flex items-center justify-center text-[11px] font-bold uppercase text-gray-900 border border-gray-300 shadow"
-                title={user.full_name || user.email}
-              >
-                {getInitials(user.full_name || user.email)}
-              </div>
-              {setPendingParticipants && setRemovedParticipants && (
+            <div key={`pending-participant-${user.id ?? `idx-${idx}`}`} className="relative flex flex-col items-center">
+              <UserHoverCard user={{ full_name: user.full_name, email: user.email, photo: user.photo || null }}>
                 <button
                   type="button"
-                  className="absolute -top-1 -right-1 w-4 h-4 rounded-full bg-destructive text-white text-xs flex items-center justify-center opacity-0 group-hover:opacity-100 transition"
-                  onClick={() => {
-                    if (typeof setPendingParticipants === 'function') {
-                      const next = pendingParticipants.filter((u: any) => u && u.auth_user_id !== user.auth_user_id);
-                      setPendingParticipants(next);
-                    }
-                    if (typeof setRemovedParticipants === 'function') {
-                      setRemovedParticipants([...(removedParticipants || []), user]);
-                    }
+                  className="rounded-full outline-none focus-visible:ring-2 focus-visible:ring-black focus-visible:ring-offset-1"
+                  onClick={(e) => {
+                    e.stopPropagation()
+                    openPendingPopover()
                   }}
-                  title="Remove participant"
-                  aria-label="Remove participant"
-                >×</button>
-              )}
+                  aria-label={`View participants (${user.full_name || user.email})`}
+                >
+                  <AvatarCircle name={user.full_name} email={user.email} photo={user.photo || null} />
+                </button>
+              </UserHoverCard>
             </div>
-          ) : null
-        ))}
-        {/* Add participant popover */}
-        <Popover>
+          ) : null,
+        )}
+        <Popover open={popoverOpen} onOpenChange={setPopoverOpen}>
           <PopoverTrigger asChild>
             <Button
               size="icon"
               variant="outline"
-              className="w-7 h-7 rounded-full flex items-center justify-center text-xl border border-gray-300 text-gray-900 bg-white shadow"
+              className="flex h-7 w-7 shrink-0 items-center justify-center rounded-full border border-gray-300 bg-white text-xl text-gray-900 shadow"
               aria-label="Add participant"
               title="Add participant"
-            >+
+              data-comment-watcher-picker-trigger="true"
+              onMouseDown={(event) => event.stopPropagation()}
+              onPointerDown={(event) => event.stopPropagation()}
+              onClick={(e) => e.stopPropagation()}
+            >
+              +
             </Button>
           </PopoverTrigger>
-          <PopoverContent className="w-56 p-2">
+          <PopoverContent
+            className="z-[260] w-56 p-2"
+            data-comment-watcher-picker="true"
+            onMouseDown={(event) => event.stopPropagation()}
+            onPointerDown={(event) => event.stopPropagation()}
+          >
+            {displayParticipants.length > 0 ? (
+              <div className="mb-2 rounded border border-gray-200 p-2">
+                <div className="mb-1 text-[11px] font-normal text-gray-500">Current participants</div>
+                <div className="max-h-28 space-y-1 overflow-y-auto">
+                  {displayParticipants.map((user, idx) => (
+                    <div
+                      key={`pending-current-${user.id ?? `idx-${idx}`}`}
+                      className="flex items-center justify-between gap-2 rounded px-1 py-1 hover:bg-gray-50"
+                    >
+                      <div className="flex min-w-0 items-center gap-2">
+                        <AvatarCircle name={user.full_name} email={user.email} photo={user.photo || null} />
+                        <span className="truncate text-xs text-gray-700">{user.full_name || user.email}</span>
+                      </div>
+                      {setPendingParticipants ? (
+                        <button
+                          type="button"
+                          className="shrink-0 text-xs text-red-600 hover:underline"
+                          onClick={() => removePendingParticipant(user)}
+                        >
+                          Remove
+                        </button>
+                      ) : null}
+                    </div>
+                  ))}
+                </div>
+              </div>
+            ) : null}
             <input
               type="text"
-              className="w-full border rounded px-2 py-1 text-xs mb-2"
+              className="mb-2 w-full rounded border px-2 py-1 text-xs"
               placeholder="Search users..."
               value={search}
-              onChange={e => setSearch(e.target.value)}
+              onChange={(e) => setSearch(e.target.value)}
               autoFocus
             />
             <div className="max-h-40 overflow-y-auto">
-              {allProjectUsers.filter(u => {
-                const isInPending = pendingParticipants.some(p => {
-                  const match = p && Number(p.id) === Number(u.id);
-                  if (match) {
-                    console.log('DROPDOWN FILTER: Exclude user', u, 'because id matches pending', p, 'u.id:', u.id, 'p.id:', p && p.id);
-                  }
-                  return match;
-                });
-                const passes = (u.full_name?.toLowerCase().includes(search.toLowerCase()) || u.email?.toLowerCase().includes(search.toLowerCase())) && !isInPending;
-                if (passes) {
-                  console.log('Dropdown candidate (pending mode):', u, 'not in pendingParticipants');
-                }
-                return passes;
-              }).slice(0, 8).map(u => (
-                <div
-                  key={u.id}
-                  className="flex items-center gap-2 px-2 py-1 hover:bg-accent cursor-pointer text-xs rounded"
-                  onClick={() => {
-                    // Always add the full user object from allProjectUsers (by id)
-                    const userToAdd = allProjectUsers.find(apu => apu.id === u.id) || u;
-                    setPendingParticipants && setPendingParticipants([
-                      ...pendingParticipants.filter(Boolean).filter(p => !!p.id),
-                      userToAdd
-                    ]);
-                  }}
-                  title={`Add ${u.full_name || u.email}`}
-                >
-                  <div className="w-6 h-6 rounded-full bg-muted flex items-center justify-center text-[10px] font-bold uppercase text-gray-900 border border-gray-300">
-                    {getInitials(u.full_name || u.email)}
+              {allProjectUsers
+                .filter((u) => {
+                  const base = pendingParticipants.length > 0 ? pendingParticipants.filter(Boolean) : displayParticipants
+                  const isInPending = base.some((p: any) => sameUser(p, u))
+                  return (
+                    (u.full_name?.toLowerCase().includes(search.toLowerCase())
+                      || u.email?.toLowerCase().includes(search.toLowerCase()))
+                    && !isInPending
+                  )
+                })
+                .slice(0, 8)
+                .map((u) => (
+                  <div
+                    key={u.id}
+                    className="flex cursor-pointer items-center gap-2 rounded px-2 py-1 text-xs hover:bg-accent"
+                    onClick={() => {
+                      const userToAdd = allProjectUsers.find((apu) => apu.id === u.id) || u
+                      const base = pendingParticipants.length > 0 ? pendingParticipants.filter(Boolean) : displayParticipants
+                      if (base.some((p: any) => sameUser(p, userToAdd))) return
+                      setPendingParticipants?.([...base, userToAdd])
+                    }}
+                    title={`Add ${u.full_name || u.email}`}
+                  >
+                    <AvatarCircle name={u.full_name} email={u.email} photo={u.photo || null} />
+                    <span>{u.full_name || u.email}</span>
                   </div>
-                  <span>{u.full_name || u.email}</span>
-                </div>
-              ))}
+                ))}
             </div>
           </PopoverContent>
         </Popover>
       </div>
-    );
+    )
   }
 
   // Remove local isLoading, always false
@@ -235,29 +314,25 @@ function _ThreadParticipantsInline({
 
   if (isLoading) return <div className="text-xs text-muted-foreground">Loading participants...</div>
 
-  // Debug log for participants
-  console.log('ThreadParticipantsInline participants:', participants);
+  const openPopover = () => requestAnimationFrame(() => setPopoverOpen(true));
+
   return (
-    <div className="flex items-center gap-1">
-      {participants.map((user, idx) => (
+    <div
+      role="button"
+      tabIndex={0}
+      onClick={openPopover}
+      onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); openPopover(); } }}
+      className="flex items-center gap-1 cursor-pointer min-w-0"
+      aria-label="View or manage participants"
+    >
+      {participantsWithDetails.map((user, idx) => (
         user ? (
-          <div key={`participant-${user.id ?? `idx-${idx}`}`} className="relative group flex flex-col items-center">
-            <div
-              className="w-7 h-7 rounded-full bg-muted flex items-center justify-center text-[11px] font-bold uppercase text-gray-900 border border-gray-300 shadow"
-              title={user.full_name || user.email}
-            >
-              {getInitials(user.full_name || user.email)}
-            </div>
-            {allowRemove && user.id !== currentUserId && (
-              <button
-                type="button"
-                className="absolute -top-1 -right-1 w-4 h-4 rounded-full bg-destructive text-white text-xs flex items-center justify-center opacity-0 group-hover:opacity-100 transition"
-                onClick={() => { if (typeof user.id === 'number') { setShowRemoveDialog(true); setRemovingUserId(user.id); } }}
-                disabled={isRemoving === user.id}
-                title="Remove participant"
-                aria-label="Remove participant"
-              >×</button>
-            )}
+          <div key={`participant-${user.id ?? `idx-${idx}`}`} className="relative flex flex-col items-center">
+            <UserHoverCard user={{ full_name: user.full_name, email: user.email, photo: user.photo || null }}>
+              <button type="button" className="rounded-full" onClick={(e) => { e.stopPropagation(); openPopover(); }} aria-label={`View participants (${user.full_name || user.email})`}>
+                <AvatarCircle name={user.full_name} email={user.email} photo={user.photo || null} />
+              </button>
+            </UserHoverCard>
           </div>
         ) : null
       ))}
@@ -267,13 +342,43 @@ function _ThreadParticipantsInline({
           <Button
             size="icon"
             variant="outline"
-            className="w-7 h-7 rounded-full flex items-center justify-center text-xl border border-gray-300 text-gray-900 bg-white shadow"
+            className="w-7 h-7 rounded-full flex items-center justify-center text-xl border border-gray-300 text-gray-900 bg-white shadow shrink-0"
             aria-label="Add participant"
             title="Add participant"
+            onClick={(e) => e.stopPropagation()}
           >+
           </Button>
         </PopoverTrigger>
-        <PopoverContent className="w-56 p-2">
+        <PopoverContent className="z-[260] w-56 p-2">
+          {participantsWithDetails.length > 0 ? (
+            <div className="mb-2 rounded border border-gray-200 p-2">
+              <div className="mb-1 text-[11px] font-normal text-gray-500">Current participants</div>
+              <div className="max-h-28 space-y-1 overflow-y-auto">
+                {participantsWithDetails.map((user, idx) => (
+                  <div key={`current-${user.id ?? `idx-${idx}`}`} className="flex items-center justify-between gap-2 rounded px-1 py-1 hover:bg-gray-50">
+                    <div className="flex min-w-0 items-center gap-2">
+                      <AvatarCircle name={user.full_name} email={user.email} photo={user.photo || null} />
+                      <span className="truncate text-xs text-gray-700">{user.full_name || user.email}</span>
+                    </div>
+                    {allowRemove && user.id !== currentUserId ? (
+                      <button
+                        type="button"
+                        className="text-xs text-red-600 hover:underline"
+                        onClick={() => {
+                          if (typeof user.id === 'number') {
+                            setShowRemoveDialog(true);
+                            setRemovingUserId(user.id);
+                          }
+                        }}
+                      >
+                        Remove
+                      </button>
+                    ) : null}
+                  </div>
+                ))}
+              </div>
+            </div>
+          ) : null}
           <input
             type="text"
             className="w-full border rounded px-2 py-1 text-xs mb-2"
@@ -294,9 +399,7 @@ function _ThreadParticipantsInline({
                   onClick={() => u.id && handleAdd(u.id)}
                   title={`Add ${u.full_name || u.email}`}
                 >
-                  <div className="w-6 h-6 rounded-full bg-muted flex items-center justify-center text-[10px] font-bold uppercase text-gray-900 border border-gray-300">
-                    {getInitials(u.full_name || u.email)}
-                  </div>
+                  <AvatarCircle name={u.full_name} email={u.email} photo={u.photo || null} />
                   <span>{u.full_name || u.email}</span>
                 </div>
               )) : (

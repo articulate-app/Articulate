@@ -17,16 +17,20 @@ export default function InboxLayout({ children }: InboxLayoutProps) {
   const [isMobileMenuOpen, setIsMobileMenuOpen] = useState(false)
   const [searchValue, setSearchValue] = useState('')
 
-  const handleMobileMenuToggle = () => {
-    setIsMobileMenuOpen(!isMobileMenuOpen)
-  }
-
   const handleMobileMenuClose = () => {
     setIsMobileMenuOpen(false)
   }
 
   const handleSidebarToggle = () => {
     setIsSidebarCollapsed(!isSidebarCollapsed)
+  }
+
+  const handleHeaderSidebarToggle = () => {
+    if (typeof window !== 'undefined' && window.matchMedia('(max-width: 767px)').matches) {
+      setIsMobileMenuOpen((prev) => !prev)
+      return
+    }
+    handleSidebarToggle()
   }
 
   // Sync search with URL if needed
@@ -54,7 +58,7 @@ export default function InboxLayout({ children }: InboxLayoutProps) {
         searchValue={searchValue}
         onSearchChange={handleHeaderSearchChange}
         onFilterClick={() => window.dispatchEvent(new CustomEvent('inbox:filter-click'))}
-        onSidebarToggle={handleMobileMenuToggle}
+        onSidebarToggle={handleHeaderSidebarToggle}
         placeholder="Search inbox..."
         title="Inbox"
       />

@@ -1,33 +1,43 @@
 "use client"
 
-import Link from "next/link"
 import { usePathname, useRouter, useSearchParams } from "next/navigation"
-import { Home, ListTodo, FolderKanban, Users, User, Inbox, BarChart, FileText, Settings, LogOut, ChevronDown, ChevronRight, Plus } from "lucide-react"
+import { Home, ListTodo, FolderKanban, Users, User, FileText, ChevronDown, ChevronRight, Plus, AtSign, Settings, LogOut } from "lucide-react"
 import { cn } from "@/lib/utils"
+import { invokeEdgeFunctionFetch } from "@/lib/edge-functions"
 import { createClientComponentClient } from '@supabase/auth-helpers-nextjs'
-import { useCurrentUserStore } from '../../store/current-user'
-import { useState, useEffect } from "react"
+import { useCallback, useEffect, useState } from "react"
 import { useQuery, useQueryClient } from "@tanstack/react-query"
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "./dialog"
 import { Button } from "./button"
 import { Input } from "./input"
 import { Label } from "./label"
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "./select"
+import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "./tooltip"
 import { toast } from "./use-toast"
-import { createProject } from "../../lib/services/projects"
+import { createProject, createProjectWithTeam } from "../../lib/services/projects"
 import { getRoles } from "../../lib/services/teams"
 import { Checkbox } from "./checkbox"
 import type { AdminCreateUserPayload, AdminCreateUserResponse } from "../../types/users"
+import { useGlobalSearchContext } from "../../contexts/global-search-context"
+import { buildObjectRoute, type SearchObjectRoute } from "../../lib/search-routing"
+import { parseWorkspaceUrlState } from "../../lib/workspace-url-state"
+import { type GlobalSearchResultTab } from "../../lib/global-search-types"
+import { buildRightPaneSelectionSearchParams } from "../../lib/right-pane-selection-url"
+import { buildCenterPaneSelectionSearchParams } from "../../lib/center-pane-selection-url"
+import { getImageUrl } from "../../lib/public-media"
+import { UserAvatar } from "../UserAvatar"
+import { useCurrentUserStore } from "../../store/current-user"
+import { leftPaneObjectLabel } from "../../lib/left-pane-object"
+import { fetchMentionsInbox } from "../../lib/services/global-search"
 
 const navigation = [
-  { name: "Home", href: "/", icon: Home },
-  { name: "Tasks", href: "/tasks", icon: ListTodo },
-  { name: "Projects", href: "/projects", icon: FolderKanban, isExpandable: true },
-  { name: "Teams", href: "/teams", icon: Users, isExpandable: true },
-  { name: "Users", href: "/users", icon: User, isExpandable: true },
-  { name: "Inbox", href: "/inbox", icon: Inbox },
+  { name: leftPaneObjectLabel("all"), href: "/", icon: Home, object: "all" as SearchObjectRoute },
+  { name: "Tasks", href: "/", icon: ListTodo, object: "task" as SearchObjectRoute },
+  { name: "Projects", href: "/", icon: FolderKanban, isExpandable: true, object: "project" as SearchObjectRoute },
+  { name: "Mentions", href: "/", icon: AtSign, object: "mention" as SearchObjectRoute },
+  { name: "Teams", href: "/", icon: Users, isExpandable: true, object: "team" as SearchObjectRoute },
+  { name: "Users", href: "/", icon: User, isExpandable: true, object: "user" as SearchObjectRoute },
   { name: "Financials", href: "/financials", icon: FileText },
-  { name: "Settings", href: "/settings", icon: Settings },
 ]
 
 interface SidebarProps {
@@ -36,15 +46,39 @@ interface SidebarProps {
   onClose?: () => void
 }
 
+type OpenNewUserModalDetail = {
+  email?: string
+  fullName?: string
+}
+
 export function Sidebar({ isCollapsed, isMobileMenuOpen = false, onClose }: SidebarProps) {
+  const CREATE_NEW_TEAM_OPTION = "__create_new_team__";
   const pathname = usePathname();
   const router = useRouter();
   const searchParams = useSearchParams();
   const queryClient = useQueryClient();
   const supabase = createClientComponentClient();
-  const publicUserId = useCurrentUserStore((s) => s.publicUserId);
+  const globalSearch = useGlobalSearchContext();
+
+  // Current-user identity (same source/behavior as the desktop TaskHeaderBar account menu, which is
+  // hidden on mobile). Surfaced in the mobile sidebar so the signed-in user/avatar stays visible.
   const fullName = useCurrentUserStore((s) => s.fullName);
   const userMetadata = useCurrentUserStore((s) => s.userMetadata);
+  const accountDisplayName = fullName || userMetadata?.full_name || userMetadata?.email || "User";
+  const accountAvatarUrl = getImageUrl(userMetadata?.photo || userMetadata?.avatar_url || null);
+
+  const handleOpenSettings = useCallback(() => {
+    const next = new URLSearchParams(searchParams.toString());
+    next.set("settings", "open");
+    router.push(`/?${next.toString()}`);
+    onClose?.();
+  }, [router, searchParams, onClose]);
+
+  const handleAccountSignOut = useCallback(async () => {
+    await supabase.auth.signOut();
+    onClose?.();
+    router.push("/auth");
+  }, [router, supabase, onClose]);
   
   const [isProjectsExpanded, setIsProjectsExpanded] = useState(false);
   const [isTeamsExpanded, setIsTeamsExpanded] = useState(false);
@@ -52,7 +86,8 @@ export function Sidebar({ isCollapsed, isMobileMenuOpen = false, onClose }: Side
   const [showNewProjectModal, setShowNewProjectModal] = useState(false);
   const [showNewUserModal, setShowNewUserModal] = useState(false);
   const [newProjectName, setNewProjectName] = useState("");
-  const [selectedTeamId, setSelectedTeamId] = useState<number | null>(null);
+  const [selectedTeamValue, setSelectedTeamValue] = useState<string>("");
+  const [newTeamName, setNewTeamName] = useState("");
   const [isCreatingProject, setIsCreatingProject] = useState(false);
   const [newUserName, setNewUserName] = useState("");
   const [newUserEmail, setNewUserEmail] = useState("");
@@ -62,13 +97,29 @@ export function Sidebar({ isCollapsed, isMobileMenuOpen = false, onClose }: Side
   const [isCreatingUser, setIsCreatingUser] = useState(false);
   const [emailError, setEmailError] = useState<string | null>(null);
 
+  useEffect(() => {
+    const handleOpenNewUserModal = (event: Event) => {
+      const customEvent = event as CustomEvent<OpenNewUserModalDetail>
+      const detail = customEvent.detail || {}
+      setShowNewUserModal(true)
+      setEmailError(null)
+      if (detail.email) setNewUserEmail(detail.email)
+      if (detail.fullName) setNewUserName(detail.fullName)
+    }
+
+    window.addEventListener("app:open-new-user-modal", handleOpenNewUserModal)
+    return () => {
+      window.removeEventListener("app:open-new-user-modal", handleOpenNewUserModal)
+    }
+  }, [])
+
   // Fetch projects
   const { data: projects } = useQuery({
     queryKey: ['projects-minimal'],
     queryFn: async () => {
       const { data, error } = await supabase
         .from('v_projects_minimal')
-        .select('id, name, color')
+        .select('id, name, color, logo')
         .order('name');
       if (error) throw error;
       return data || [];
@@ -115,55 +166,132 @@ export function Sidebar({ isCollapsed, isMobileMenuOpen = false, onClose }: Side
     enabled: showNewUserModal,
   });
 
-  // Helper to get user initials
-  function getUserInitials() {
-    // First try to use full_name from the users table
-    if (fullName) {
-      const parts = fullName.trim().split(' ');
-      if (parts.length === 1) return parts[0][0].toUpperCase();
-      return (parts[0][0] + parts[parts.length - 1][0]).toUpperCase();
-    }
-    
-    // Fallback to user metadata
-    if (userMetadata?.full_name) {
-      const parts = userMetadata.full_name.trim().split(' ');
-      if (parts.length === 1) return parts[0][0].toUpperCase();
-      return (parts[0][0] + parts[parts.length - 1][0]).toUpperCase();
-    }
-    
-    // Fallback to email from metadata
-    if (userMetadata?.email) {
-      return userMetadata.email[0].toUpperCase();
-    }
-    
-    return 'U';
-  }
+  const mentionCountsQuery = useQuery({
+    queryKey: ["sidebar-mentions-counts"],
+    queryFn: ({ signal }) =>
+      fetchMentionsInbox({
+        mode: "received",
+        seenFilter: "unseen",
+        limit: 1,
+        offset: 0,
+        signal,
+      }),
+    staleTime: 30_000,
+  })
+  const hasUnseenMentions = (mentionCountsQuery.data?.length ?? 0) > 0
+  const activeObject = parseWorkspaceUrlState(new URLSearchParams(searchParams.toString())).object
 
-  const handleSignOut = async () => {
-    await supabase.auth.signOut();
-    router.push('/auth');
-  };
+  const isObjectActive = useCallback(
+    (object: SearchObjectRoute | undefined) => {
+      if (!object) return false
+      return activeObject === object
+    },
+    [activeObject],
+  )
+
+  const toggleExpandedGroup = useCallback((group: "projects" | "teams" | "users") => {
+    if (group === "projects") setIsProjectsExpanded((current) => !current)
+    if (group === "teams") setIsTeamsExpanded((current) => !current)
+    if (group === "users") setIsUsersExpanded((current) => !current)
+  }, [])
+
+  const navigateTo = useCallback((href: string, object?: SearchObjectRoute) => {
+    const tabByObject: Record<SearchObjectRoute, GlobalSearchResultTab> = {
+      all: "all",
+      task: "task",
+      project: "project",
+      mention: "mention",
+      user: "user",
+      team: "team",
+      ai_thread: "ai_thread",
+    }
+    const objectByHref: Record<string, SearchObjectRoute | undefined> = {
+      "/": "all",
+      "/tasks": "task",
+      "/projects": "project",
+      "/mentions": "mention",
+      "/users": "user",
+      "/teams": "team",
+      "/ai-threads": "ai_thread",
+    }
+    const targetObject = object ?? objectByHref[href]
+
+    if (targetObject) {
+      const baseSearchParams =
+        typeof window !== "undefined"
+          ? new URLSearchParams(window.location.search)
+          : new URLSearchParams(searchParams.toString())
+      const nextRoute = buildObjectRoute(targetObject, baseSearchParams)
+      router.push(nextRoute.url, { scroll: false })
+      const nextTab = tabByObject[targetObject]
+      if (nextTab && globalSearch?.setActiveResultTab) {
+        globalSearch.setActiveResultTab(nextTab)
+      }
+      return
+    }
+
+    if (pathname !== href) {
+      router.replace(href, { scroll: false })
+    }
+  }, [globalSearch, pathname, router, searchParams]);
+
+  const openSidebarSearchResult = useCallback((
+    entityType: "project" | "team" | "user",
+    entityId: number,
+  ) => {
+    const targetObject: SearchObjectRoute = entityType === "project" ? "project" : entityType === "team" ? "team" : "user"
+    const currentParams = new URLSearchParams(searchParams.toString())
+    const routeWithObject = buildObjectRoute(targetObject, currentParams)
+    const baseParams = new URLSearchParams(routeWithObject.searchParams.toString())
+    const isAiRightPane = currentParams.get("rightView") === "ai"
+    const next = isAiRightPane
+      ? buildCenterPaneSelectionSearchParams({
+          currentSearchParams: baseParams,
+          entity: entityType === "project" ? "project" : entityType === "team" ? "team" : "user",
+          id: String(entityId),
+          tab: null,
+        })
+      : buildRightPaneSelectionSearchParams({
+          currentSearchParams: baseParams,
+          entity: entityType === "project" ? "project" : entityType === "team" ? "team" : "user",
+          id: String(entityId),
+          tab: null,
+        })
+    const query = next.toString()
+    router.push(query ? `/?${query}` : "/", { scroll: false })
+  }, [router, searchParams]);
 
   const handleProjectClick = (projectId: number) => {
-    // Navigate to full project page
-    router.push(`/projects/${projectId}`);
-    if (onClose) onClose();
+    openSidebarSearchResult("project", projectId);
   };
 
   const handleTeamClick = (teamId: number) => {
-    // Navigate to full team page
-    router.push(`/teams/${teamId}`);
-    if (onClose) onClose();
+    openSidebarSearchResult("team", teamId);
   };
 
   const handleUserClick = (userId: number) => {
-    // Navigate to full user page
-    router.push(`/users/${userId}`);
-    if (onClose) onClose();
+    openSidebarSearchResult("user", userId);
   };
 
+  const getProjectLogoUrl = (logo: string | null | undefined) => getImageUrl(logo);
+  const getTeamLogoUrl = (logo: string | null | undefined) => getImageUrl(logo);
+  const getUserPhotoUrl = (photo: string | null | undefined) => getImageUrl(photo);
+  const getTeamLabel = (team: { title?: string | null; name?: string | null; full_name?: string | null }) =>
+    team.title?.trim() || team.name?.trim() || team.full_name?.trim() || "Untitled team";
+
   const handleCreateProject = async () => {
-    if (!newProjectName.trim()) {
+    if (isCreatingProject) return;
+
+    const trimmedProjectName = newProjectName.trim();
+    const trimmedTeamName = newTeamName.trim();
+    const isCreatingNewTeam = selectedTeamValue === CREATE_NEW_TEAM_OPTION;
+    const selectedExistingTeamId = isCreatingNewTeam
+      ? null
+      : Number.isFinite(Number(selectedTeamValue))
+        ? Number(selectedTeamValue)
+        : null;
+
+    if (!trimmedProjectName) {
       toast({
         title: "Validation Error",
         description: "Project name is required",
@@ -172,7 +300,16 @@ export function Sidebar({ isCollapsed, isMobileMenuOpen = false, onClose }: Side
       return;
     }
 
-    if (!selectedTeamId) {
+    if (isCreatingNewTeam && !trimmedTeamName) {
+      toast({
+        title: "Validation Error",
+        description: "Team name is required when creating a new team",
+        variant: "destructive",
+      });
+      return;
+    }
+
+    if (!isCreatingNewTeam && !selectedExistingTeamId) {
       toast({
         title: "Validation Error",
         description: "Team selection is required",
@@ -183,11 +320,20 @@ export function Sidebar({ isCollapsed, isMobileMenuOpen = false, onClose }: Side
 
     setIsCreatingProject(true);
     try {
-      const { data, error } = await createProject(newProjectName.trim(), selectedTeamId);
-      
+      const { data, error } = isCreatingNewTeam
+        ? await createProjectWithTeam(trimmedProjectName, trimmedTeamName)
+        : await createProject(trimmedProjectName, selectedExistingTeamId as number);
+
       if (error) throw error;
-      
-      if (!data) {
+
+      const createdRecord = Array.isArray(data) ? data[0] : data;
+      const createdProjectId =
+        createdRecord?.id ??
+        createdRecord?.project_id ??
+        createdRecord?.created_project_id ??
+        null;
+
+      if (!createdProjectId) {
         throw new Error("Failed to create project");
       }
 
@@ -196,21 +342,29 @@ export function Sidebar({ isCollapsed, isMobileMenuOpen = false, onClose }: Side
         description: "Project created successfully",
       });
 
-      // Refresh projects list
+      // Refresh project and team lists to keep modal/options up to date.
       queryClient.invalidateQueries({ queryKey: ['projects-minimal'] });
+      queryClient.invalidateQueries({ queryKey: ['teams-minimal'] });
 
       // Navigate to the new project
-      router.push(`/projects/${data.id}`);
+      router.push(`/projects/${createdProjectId}`);
 
       // Close modal and reset
       setShowNewProjectModal(false);
       setNewProjectName("");
-      setSelectedTeamId(null);
+      setSelectedTeamValue("");
+      setNewTeamName("");
       if (onClose) onClose();
     } catch (err: any) {
+      const formattedMessageParts = [
+        err?.message,
+        err?.details,
+        err?.hint,
+      ].filter((part, index, arr) => Boolean(part) && arr.indexOf(part) === index);
+
       toast({
         title: "Error",
-        description: err.message || "Failed to create project",
+        description: formattedMessageParts.join(" - ") || "Failed to create project",
         variant: "destructive",
       });
     } finally {
@@ -251,14 +405,6 @@ export function Sidebar({ isCollapsed, isMobileMenuOpen = false, onClose }: Side
 
     setIsCreatingUser(true);
     try {
-      // Get the current session and access token
-      const { data: sessionData } = await supabase.auth.getSession();
-      const accessToken = sessionData.session?.access_token;
-
-      if (!accessToken) {
-        throw new Error("No access token available. Please sign in again.");
-      }
-
       // Build payload
       const payload: AdminCreateUserPayload = {
         email: newUserEmail.trim(),
@@ -275,14 +421,18 @@ export function Sidebar({ isCollapsed, isMobileMenuOpen = false, onClose }: Side
       }
 
       // Call Edge Function
-      const res = await fetch(`${supabaseUrl}/functions/v1/admin-create-user`, {
-        method: "POST",
+      const res = await invokeEdgeFunctionFetch({
+        supabase,
+        url: `${supabaseUrl}/functions/v1/admin-create-user`,
+        debugLabel: "admin-create-user",
+        init: {
+          method: "POST",
+          body: JSON.stringify(payload),
+        },
         headers: {
           "Content-Type": "application/json",
-          Authorization: `Bearer ${accessToken}`,
         },
-        body: JSON.stringify(payload),
-      });
+      })
 
       if (!res.ok) {
         const errorBody = await res.json().catch(() => null);
@@ -335,11 +485,14 @@ export function Sidebar({ isCollapsed, isMobileMenuOpen = false, onClose }: Side
     }
   };
 
-  // Mobile overlay styles
+  // Mobile overlay/drawer styles. The drawer spans the full dynamic viewport height (`100dvh`) so it
+  // never feels cut off on mobile browsers whose URL bar changes the visible height. `100vh` fallback
+  // is implicit via the arbitrary value; the inner flex column (nav scrolls, footer pinned) handles
+  // internal scrolling.
   const mobileOverlay =
     'fixed inset-0 z-40 bg-black bg-opacity-40 flex md:hidden transition-opacity duration-200';
   const mobileSidebar =
-    'fixed top-0 left-0 z-50 bg-white w-64 h-screen shadow-lg p-4';
+    'fixed left-0 top-0 z-50 bg-white w-64 shadow-lg p-4 h-[100dvh] min-h-[100dvh]';
 
   return (
     <>
@@ -354,31 +507,52 @@ export function Sidebar({ isCollapsed, isMobileMenuOpen = false, onClose }: Side
             >
               <svg width="20" height="20" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
             </button>
-            <ul className="space-y-2 mt-8 flex-1 overflow-y-auto">
+            <ul className="space-y-2 mt-8 min-h-0 flex-1 overflow-y-auto overflow-x-hidden">
               {navigation.map((item) => (
-                <li key={item.name}>
+                <li key={item.name} className="relative">
                   {item.isExpandable ? (
                     <div>
                       <button
                         onClick={() => {
-                          if (item.name === 'Projects') setIsProjectsExpanded(!isProjectsExpanded);
-                          if (item.name === 'Teams') setIsTeamsExpanded(!isTeamsExpanded);
-                          if (item.name === 'Users') setIsUsersExpanded(!isUsersExpanded);
+                          navigateTo(item.href, item.object);
                         }}
                         className={cn(
                           "flex items-center gap-3 px-3 py-2 rounded-md hover:bg-gray-100 transition-colors w-full text-left",
-                          (pathname === item.href || 
-                           (item.href === "/projects" && pathname.startsWith("/projects")) ||
-                           (item.href === "/teams" && pathname.startsWith("/teams"))) ? "bg-gray-100" : ""
+                          isObjectActive(item.object) ? "bg-gray-100" : ""
                         )}
                       >
                         <item.icon className="w-5 h-5" />
-                        <span className="flex-1">{item.name}</span>
-                        {((item.name === 'Projects' && isProjectsExpanded) || (item.name === 'Teams' && isTeamsExpanded) || (item.name === 'Users' && isUsersExpanded)) ? (
-                          <ChevronDown className="w-4 h-4" />
-                        ) : (
-                          <ChevronRight className="w-4 h-4" />
-                        )}
+                        <span className="flex flex-1 items-center gap-2">
+                          {item.name}
+                          {item.name === "Mentions" && hasUnseenMentions ? <span className="h-2 w-2 rounded-full bg-blue-500" aria-hidden /> : null}
+                        </span>
+                        <span
+                          role="button"
+                          tabIndex={0}
+                          onClick={(event) => {
+                            event.stopPropagation()
+                            event.preventDefault()
+                            if (item.name === "Projects") toggleExpandedGroup("projects")
+                            if (item.name === "Teams") toggleExpandedGroup("teams")
+                            if (item.name === "Users") toggleExpandedGroup("users")
+                          }}
+                          onKeyDown={(event) => {
+                            if (event.key !== "Enter" && event.key !== " ") return
+                            event.stopPropagation()
+                            event.preventDefault()
+                            if (item.name === "Projects") toggleExpandedGroup("projects")
+                            if (item.name === "Teams") toggleExpandedGroup("teams")
+                            if (item.name === "Users") toggleExpandedGroup("users")
+                          }}
+                          className="inline-flex h-5 w-5 items-center justify-center rounded hover:bg-gray-200"
+                          aria-label={`Toggle ${item.name}`}
+                        >
+                          {((item.name === 'Projects' && isProjectsExpanded) || (item.name === 'Teams' && isTeamsExpanded) || (item.name === 'Users' && isUsersExpanded)) ? (
+                            <ChevronDown className="w-4 h-4 stroke-[1.75]" />
+                          ) : (
+                            <ChevronRight className="w-4 h-4 stroke-[1.75]" />
+                          )}
+                        </span>
                       </button>
                       {/* Projects list */}
                       {item.name === 'Projects' && isProjectsExpanded && (
@@ -398,10 +572,18 @@ export function Sidebar({ isCollapsed, isMobileMenuOpen = false, onClose }: Side
                                 onClick={() => handleProjectClick(project.id)}
                                 className="flex items-center gap-2 px-3 py-1.5 rounded-md hover:bg-gray-50 transition-colors w-full text-left text-sm"
                               >
-                                <div 
-                                  className="w-3 h-3 rounded-full flex-shrink-0" 
-                                  style={{ backgroundColor: project.color || '#gray' }}
-                                />
+                                {getProjectLogoUrl(project.logo) ? (
+                                  <img
+                                    src={getProjectLogoUrl(project.logo) || ""}
+                                    alt={project.name}
+                                    className="w-3 h-3 rounded-full flex-shrink-0 object-cover"
+                                  />
+                                ) : (
+                                  <div
+                                    className="w-3 h-3 rounded-full flex-shrink-0"
+                                    style={{ backgroundColor: project.color || '#d1d5db' }}
+                                  />
+                                )}
                                 <span className="truncate">{project.name}</span>
                               </button>
                             </li>
@@ -417,16 +599,16 @@ export function Sidebar({ isCollapsed, isMobileMenuOpen = false, onClose }: Side
                                 onClick={() => handleTeamClick(team.id)}
                                 className="flex items-center gap-2 px-3 py-1.5 rounded-md hover:bg-gray-50 transition-colors w-full text-left text-sm"
                               >
-                                {team.logo ? (
+                                {getTeamLogoUrl(team.logo) ? (
                                   <img 
-                                    src={team.logo} 
-                                    alt={team.title}
+                                    src={getTeamLogoUrl(team.logo) || ""} 
+                                    alt={getTeamLabel(team)}
                                     className="w-3 h-3 rounded-full flex-shrink-0 object-cover"
                                   />
                                 ) : (
                                   <div className="w-3 h-3 rounded-full flex-shrink-0 bg-gray-300" />
                                 )}
-                                <span className="truncate">{team.title}</span>
+                                <span className="truncate">{getTeamLabel(team)}</span>
                               </button>
                             </li>
                           ))}
@@ -450,15 +632,11 @@ export function Sidebar({ isCollapsed, isMobileMenuOpen = false, onClose }: Side
                                 onClick={() => handleUserClick(user.id)}
                                 className="flex items-center gap-2 px-3 py-1.5 rounded-md hover:bg-gray-50 transition-colors w-full text-left text-sm"
                               >
-                                {user.photo ? (
-                                  <img 
-                                    src={user.photo} 
-                                    alt={user.full_name || user.email || 'User'}
-                                    className="w-3 h-3 rounded-full flex-shrink-0 object-cover"
-                                  />
-                                ) : (
-                                  <div className="w-3 h-3 rounded-full flex-shrink-0 bg-gradient-to-br from-blue-500 to-indigo-600" />
-                                )}
+                                <UserAvatar
+                                  name={user.full_name || user.email || 'User'}
+                                  photoUrl={getUserPhotoUrl(user.photo)}
+                                  size="xs"
+                                />
                                 <span className="truncate">{user.full_name || user.email}</span>
                               </button>
                             </li>
@@ -467,95 +645,128 @@ export function Sidebar({ isCollapsed, isMobileMenuOpen = false, onClose }: Side
                       )}
                     </div>
                   ) : (
-                    <Link
-                      href={item.href}
+                    <button
+                      type="button"
+                      onClick={() => navigateTo(item.href, item.object)}
                       className={cn(
-                        "flex items-center gap-3 px-3 py-2 rounded-md hover:bg-gray-100 transition-colors",
-                        "group relative",
-                        (pathname === item.href || 
-                         (item.href === "/billing" && pathname.startsWith("/billing")) ||
-                         (item.href === "/expenses/supplier-invoices" && pathname.startsWith("/expenses"))) ? "bg-gray-100" : ""
+                        "flex w-full items-center gap-3 px-3 py-2 rounded-md hover:bg-gray-100 transition-colors",
+                        "group relative text-left",
+                        item.object
+                          ? (isObjectActive(item.object) ? "bg-gray-100" : "")
+                          : (pathname === item.href ||
+                              (item.href === "/billing" && pathname.startsWith("/billing")) ||
+                              (item.href === "/expenses/supplier-invoices" && pathname.startsWith("/expenses")))
+                            ? "bg-gray-100"
+                            : ""
                       )}
-                      onClick={onClose}
                     >
                       <item.icon className="w-5 h-5" />
                       <span className="ml-2">{item.name}</span>
-                    </Link>
+                    </button>
                   )}
                 </li>
               ))}
             </ul>
-            
-            {/* User info and sign out */}
-            <div className="pt-4 border-t border-gray-200 flex-shrink-0">
-              <div className="flex items-center gap-3 px-3 py-2">
-                <div className="w-8 h-8 rounded-full bg-gray-100 flex items-center justify-center text-gray-700 border border-gray-200 font-medium text-sm">
-                  {getUserInitials()}
-                </div>
-                <div className="flex-1 min-w-0">
-                  <p className="text-sm font-medium text-gray-900 truncate">
-                    {fullName || userMetadata?.full_name || userMetadata?.email || 'User'}
-                  </p>
-                </div>
+            {/* Current user identity — mirrors the desktop header account menu (avatar + Preferences +
+                Sign out), which is hidden on mobile. Pinned below the scrollable nav so it never crowds it. */}
+            <div className="mt-2 shrink-0 border-t border-gray-100 pt-3">
+              <div className="flex items-center gap-2">
+                <button
+                  type="button"
+                  onClick={handleOpenSettings}
+                  className="flex min-w-0 flex-1 items-center gap-3 rounded-md px-3 py-2 text-left transition-colors hover:bg-gray-100"
+                  aria-label="Open preferences"
+                >
+                  <UserAvatar name={accountDisplayName} photoUrl={accountAvatarUrl} size="sm" />
+                  <span className="min-w-0 flex-1 truncate text-sm font-medium text-gray-900">{accountDisplayName}</span>
+                  <Settings className="h-4 w-4 shrink-0 text-gray-400" />
+                </button>
+                <button
+                  type="button"
+                  onClick={() => { void handleAccountSignOut() }}
+                  className="inline-flex h-9 w-9 shrink-0 items-center justify-center rounded-md text-gray-500 transition-colors hover:bg-gray-100 hover:text-gray-700"
+                  aria-label="Sign out"
+                  title="Sign out"
+                >
+                  <LogOut className="h-4 w-4" />
+                </button>
               </div>
-              <button
-                onClick={handleSignOut}
-                className="flex items-center gap-3 px-3 py-2 w-full text-left rounded-md hover:bg-gray-100 transition-colors text-gray-700"
-              >
-                <LogOut className="w-5 h-5" />
-                <span>Sign Out</span>
-              </button>
             </div>
           </div>
         </div>
       )}
       {/* Desktop Sidebar */}
-      <nav className="h-full hidden md:flex flex-col overflow-hidden pl-2">
-        <ul className="space-y-1 flex-1 overflow-y-auto overflow-x-hidden pt-1 pb-2">
+      <TooltipProvider delayDuration={120}>
+      <nav className="relative z-30 hidden h-full md:flex md:flex-col">
+        <div className="absolute inset-0 overflow-x-hidden overflow-y-auto pl-2">
+          <ul className="space-y-1 pt-2 pb-2 overflow-x-hidden">
           {navigation.map((item) => (
-            <li key={item.name}>
+            <li key={item.name} className="relative z-0 hover:z-[120]">
               {item.isExpandable ? (
                 <div>
-                  <button
-                    onClick={() => {
-                      if (item.name === 'Projects') setIsProjectsExpanded(!isProjectsExpanded);
-                      if (item.name === 'Teams') setIsTeamsExpanded(!isTeamsExpanded);
-                      if (item.name === 'Users') setIsUsersExpanded(!isUsersExpanded);
-                    }}
-                    className={cn(
-                      "flex items-center py-2 rounded-md hover:bg-gray-100 transition-colors group relative w-full",
-                      isCollapsed ? "justify-center px-2" : "gap-3 pl-3 pr-3",
-                      (pathname === item.href || 
-                       (item.href === "/projects" && pathname.startsWith("/projects")) ||
-                       (item.href === "/teams" && pathname.startsWith("/teams"))) ? "bg-gray-100" : ""
-                    )}
-                  >
-                    {/* Icon: always visible with fixed width */}
-                    <div className="w-6 h-6 flex items-center justify-center flex-shrink-0">
-                      <item.icon className="w-5 h-5" />
-                    </div>
-                    <span className={cn(
-                      "transition-all duration-200 flex-1 text-left",
-                      isCollapsed ? "opacity-0 w-0 overflow-hidden absolute" : "opacity-100 w-auto"
-                    )}>
-                      {item.name}
-                    </span>
-                    {!isCollapsed && (
-                      <div className="w-4 h-4 flex items-center justify-center flex-shrink-0">
-                        {((item.name === 'Projects' && isProjectsExpanded) || (item.name === 'Teams' && isTeamsExpanded) || (item.name === 'Users' && isUsersExpanded)) ? (
-                          <ChevronDown className="w-4 h-4" />
-                        ) : (
-                          <ChevronRight className="w-4 h-4" />
+                  <Tooltip>
+                    <TooltipTrigger asChild>
+                      <button
+                        onClick={() => {
+                          navigateTo(item.href, item.object);
+                        }}
+                        className={cn(
+                          "group relative flex w-full items-center justify-start gap-3 rounded-md py-2 pl-3 pr-3 transition-colors hover:bg-gray-100",
+                          isObjectActive(item.object) ? "bg-gray-100" : ""
                         )}
-                      </div>
-                    )}
-                    {/* Tooltip for icon when collapsed */}
-                    {isCollapsed && (
-                      <span className="absolute left-full ml-2 px-2 py-1 bg-gray-900 text-white text-sm rounded-md opacity-0 group-hover:opacity-100 transition-opacity duration-200 pointer-events-none whitespace-nowrap z-50">
+                      >
+                        {/* Icon: always visible with fixed width */}
+                        <div className="w-6 h-6 flex items-center justify-center flex-shrink-0">
+                          <item.icon className="w-5 h-5" />
+                        </div>
+                        <span className={cn(
+                          "transition-all duration-200 flex-1 text-left",
+                          isCollapsed ? "opacity-0 w-0 overflow-hidden absolute" : "opacity-100 w-auto"
+                        )}>
+                          <span className="flex items-center gap-2">
+                            {item.name}
+                            {item.name === "Mentions" && hasUnseenMentions ? <span className="h-2 w-2 rounded-full bg-blue-500" aria-hidden /> : null}
+                          </span>
+                        </span>
+                        {!isCollapsed && (
+                          <div className="w-4 h-4 flex items-center justify-center flex-shrink-0">
+                            <span
+                              role="button"
+                              tabIndex={0}
+                              onClick={(event) => {
+                                event.stopPropagation()
+                                event.preventDefault()
+                                if (item.name === "Projects") toggleExpandedGroup("projects")
+                                if (item.name === "Teams") toggleExpandedGroup("teams")
+                                if (item.name === "Users") toggleExpandedGroup("users")
+                              }}
+                              onKeyDown={(event) => {
+                                if (event.key !== "Enter" && event.key !== " ") return
+                                event.stopPropagation()
+                                event.preventDefault()
+                                if (item.name === "Projects") toggleExpandedGroup("projects")
+                                if (item.name === "Teams") toggleExpandedGroup("teams")
+                                if (item.name === "Users") toggleExpandedGroup("users")
+                              }}
+                              className="inline-flex h-5 w-5 items-center justify-center rounded hover:bg-gray-200"
+                              aria-label={`Toggle ${item.name}`}
+                            >
+                              {((item.name === 'Projects' && isProjectsExpanded) || (item.name === 'Teams' && isTeamsExpanded) || (item.name === 'Users' && isUsersExpanded)) ? (
+                                <ChevronDown className="w-4 h-4 stroke-[1.75]" />
+                              ) : (
+                                <ChevronRight className="w-4 h-4 stroke-[1.75]" />
+                              )}
+                            </span>
+                          </div>
+                        )}
+                      </button>
+                    </TooltipTrigger>
+                    {isCollapsed ? (
+                      <TooltipContent side="right" className="bg-gray-900 text-gray-100">
                         {item.name}
-                      </span>
-                    )}
-                  </button>
+                      </TooltipContent>
+                    ) : null}
+                  </Tooltip>
                   {/* Projects list */}
                   {item.name === 'Projects' && isProjectsExpanded && !isCollapsed && (
                     <ul className="ml-8 mt-1 space-y-1">
@@ -574,10 +785,18 @@ export function Sidebar({ isCollapsed, isMobileMenuOpen = false, onClose }: Side
                             onClick={() => handleProjectClick(project.id)}
                             className="flex items-center gap-2 px-3 py-1.5 rounded-md hover:bg-gray-50 transition-colors w-full text-left text-sm"
                           >
-                            <div 
-                              className="w-3 h-3 rounded-full flex-shrink-0" 
-                              style={{ backgroundColor: project.color || '#gray' }}
-                            />
+                            {getProjectLogoUrl(project.logo) ? (
+                              <img
+                                src={getProjectLogoUrl(project.logo) || ""}
+                                alt={project.name}
+                                className="w-3 h-3 rounded-full flex-shrink-0 object-cover"
+                              />
+                            ) : (
+                              <div
+                                className="w-3 h-3 rounded-full flex-shrink-0"
+                                style={{ backgroundColor: project.color || '#d1d5db' }}
+                              />
+                            )}
                             <span className="truncate">{project.name}</span>
                           </button>
                         </li>
@@ -593,16 +812,16 @@ export function Sidebar({ isCollapsed, isMobileMenuOpen = false, onClose }: Side
                             onClick={() => handleTeamClick(team.id)}
                             className="flex items-center gap-2 px-3 py-1.5 rounded-md hover:bg-gray-50 transition-colors w-full text-left text-sm"
                           >
-                            {team.logo ? (
+                            {getTeamLogoUrl(team.logo) ? (
                               <img 
-                                src={team.logo} 
-                                alt={team.title}
+                                src={getTeamLogoUrl(team.logo) || ""} 
+                                alt={getTeamLabel(team)}
                                 className="w-3 h-3 rounded-full flex-shrink-0 object-cover"
                               />
                             ) : (
                               <div className="w-3 h-3 rounded-full flex-shrink-0 bg-gray-300" />
                             )}
-                            <span className="truncate">{team.title}</span>
+                            <span className="truncate">{getTeamLabel(team)}</span>
                           </button>
                         </li>
                       ))}
@@ -626,15 +845,11 @@ export function Sidebar({ isCollapsed, isMobileMenuOpen = false, onClose }: Side
                             onClick={() => handleUserClick(user.id)}
                             className="flex items-center gap-2 px-3 py-1.5 rounded-md hover:bg-gray-50 transition-colors w-full text-left text-sm"
                           >
-                            {user.photo ? (
-                              <img 
-                                src={user.photo} 
-                                alt={user.full_name || user.email || 'User'}
-                                className="w-3 h-3 rounded-full flex-shrink-0 object-cover"
-                              />
-                            ) : (
-                              <div className="w-3 h-3 rounded-full flex-shrink-0 bg-gradient-to-br from-blue-500 to-indigo-600" />
-                            )}
+                            <UserAvatar
+                              name={user.full_name || user.email || 'User'}
+                              photoUrl={getUserPhotoUrl(user.photo)}
+                              size="xs"
+                            />
                             <span className="truncate">{user.full_name || user.email}</span>
                           </button>
                         </li>
@@ -643,72 +858,51 @@ export function Sidebar({ isCollapsed, isMobileMenuOpen = false, onClose }: Side
                   )}
                 </div>
               ) : (
-                <Link
-                  href={item.href}
-                  className={cn(
-                    "flex items-center py-2 rounded-md hover:bg-gray-100 transition-colors group relative",
-                    isCollapsed ? "justify-center px-2" : "gap-3 pl-3 pr-3",
-                    (pathname === item.href || 
-                     (item.href === "/billing" && pathname.startsWith("/billing")) ||
-                     (item.href === "/expenses/supplier-invoices" && pathname.startsWith("/expenses")) ||
-                     (item.href === "/documents" && pathname.startsWith("/documents"))) ? "bg-gray-100" : ""
-                  )}
-                >
-                  {/* Icon: always visible with fixed width */}
-                  <div className="w-6 h-6 flex items-center justify-center flex-shrink-0">
-                    <item.icon className="w-5 h-5" />
-                  </div>
-                  <span className={cn(
-                    "transition-all duration-200",
-                    isCollapsed ? "opacity-0 w-0 overflow-hidden absolute" : "opacity-100 w-auto"
-                  )}>
-                    {item.name}
-                  </span>
-                  {/* Tooltip for icon when collapsed */}
-                  {isCollapsed && (
-                    <span className="absolute left-full ml-2 px-2 py-1 bg-gray-900 text-white text-sm rounded-md opacity-0 group-hover:opacity-100 transition-opacity duration-200 pointer-events-none whitespace-nowrap z-50">
+                <Tooltip>
+                  <TooltipTrigger asChild>
+                    <button
+                      type="button"
+                      onClick={() => navigateTo(item.href, item.object)}
+                      className={cn(
+                        "group relative flex w-full items-center justify-start gap-3 rounded-md py-2 pl-3 pr-3 text-left transition-colors hover:bg-gray-100",
+                        item.object
+                          ? (isObjectActive(item.object) ? "bg-gray-100" : "")
+                          : (pathname === item.href ||
+                              (item.href === "/billing" && pathname.startsWith("/billing")) ||
+                              (item.href === "/expenses/supplier-invoices" && pathname.startsWith("/expenses")) ||
+                              (item.href === "/documents" && pathname.startsWith("/documents")))
+                            ? "bg-gray-100"
+                            : ""
+                      )}
+                    >
+                      {/* Icon: always visible with fixed width */}
+                      <div className="w-6 h-6 flex items-center justify-center flex-shrink-0">
+                        <item.icon className="w-5 h-5" />
+                      </div>
+                      <span className={cn(
+                        "transition-all duration-200",
+                        isCollapsed ? "opacity-0 w-0 overflow-hidden absolute" : "opacity-100 w-auto"
+                      )}>
+                        <span className="flex items-center gap-2">
+                          {item.name}
+                          {item.name === "Mentions" && hasUnseenMentions ? <span className="h-2 w-2 rounded-full bg-blue-500" aria-hidden /> : null}
+                        </span>
+                      </span>
+                    </button>
+                  </TooltipTrigger>
+                  {isCollapsed ? (
+                    <TooltipContent side="right" className="bg-gray-900 text-gray-100">
                       {item.name}
-                    </span>
-                  )}
-                </Link>
+                    </TooltipContent>
+                  ) : null}
+                </Tooltip>
               )}
             </li>
           ))}
-        </ul>
-        
-        {/* User info and sign out - desktop */}
-        <div className="pt-2 border-t border-gray-200 flex-shrink-0">
-          <div className={cn(
-            "flex items-center py-2",
-            isCollapsed ? "justify-center px-2" : "gap-3 pl-3 pr-3"
-          )}>
-            <div className="w-6 h-6 flex items-center justify-center flex-shrink-0">
-              <div className="w-5 h-5 rounded-full bg-gray-100 flex items-center justify-center text-gray-700 border border-gray-200 font-medium text-[10px]">
-                {getUserInitials()}
-              </div>
-            </div>
-            {!isCollapsed && (
-              <div className="flex-1 min-w-0">
-                <p className="text-xs font-medium text-gray-900 truncate">
-                  {fullName || userMetadata?.full_name || userMetadata?.email || 'User'}
-                </p>
-              </div>
-            )}
-          </div>
-          <button
-            onClick={handleSignOut}
-            className={cn(
-              "flex items-center py-2 w-full text-left rounded-md hover:bg-gray-100 transition-colors text-gray-700",
-              isCollapsed ? "justify-center px-2" : "gap-3 pl-3 pr-3"
-            )}
-          >
-            <div className="w-6 h-6 flex items-center justify-center flex-shrink-0">
-              <LogOut className="w-5 h-5" />
-            </div>
-            {!isCollapsed && <span className="text-sm">Sign Out</span>}
-          </button>
+          </ul>
         </div>
       </nav>
+      </TooltipProvider>
 
       {/* New Project Modal */}
       <Dialog open={showNewProjectModal} onOpenChange={setShowNewProjectModal}>
@@ -731,7 +925,7 @@ export function Sidebar({ isCollapsed, isMobileMenuOpen = false, onClose }: Side
                 onChange={(e) => setNewProjectName(e.target.value)}
                 placeholder="e.g., Website Redesign"
                 onKeyDown={(e) => {
-                  if (e.key === 'Enter' && !isCreatingProject && selectedTeamId) {
+                  if (e.key === 'Enter' && !isCreatingProject) {
                     handleCreateProject();
                   }
                 }}
@@ -744,32 +938,54 @@ export function Sidebar({ isCollapsed, isMobileMenuOpen = false, onClose }: Side
                 Team <span className="text-red-500">*</span>
               </Label>
               <Select
-                value={selectedTeamId?.toString() || ""}
-                onValueChange={(value) => setSelectedTeamId(Number(value))}
+                value={selectedTeamValue}
+                onValueChange={setSelectedTeamValue}
               >
                 <SelectTrigger id="team-select">
                   <SelectValue placeholder="Select a team" />
                 </SelectTrigger>
-                <SelectContent>
+                <SelectContent className="z-[120]">
+                  <SelectItem value={CREATE_NEW_TEAM_OPTION}>
+                    + Create new team
+                  </SelectItem>
                   {teams?.map((team) => (
                     <SelectItem key={team.id} value={team.id.toString()}>
                       <div className="flex items-center gap-2">
                         {team.logo ? (
                           <img 
                             src={team.logo} 
-                            alt={team.title}
+                            alt={getTeamLabel(team)}
                             className="w-4 h-4 rounded-full object-cover"
                           />
                         ) : (
                           <div className="w-4 h-4 rounded-full bg-gray-300" />
                         )}
-                        <span>{team.title}</span>
+                        <span>{getTeamLabel(team)}</span>
                       </div>
                     </SelectItem>
                   ))}
                 </SelectContent>
               </Select>
             </div>
+
+            {selectedTeamValue === CREATE_NEW_TEAM_OPTION && (
+              <div className="space-y-2">
+                <Label htmlFor="new-team-name">
+                  Team Name <span className="text-red-500">*</span>
+                </Label>
+                <Input
+                  id="new-team-name"
+                  value={newTeamName}
+                  onChange={(e) => setNewTeamName(e.target.value)}
+                  placeholder="e.g., Acme Team"
+                  onKeyDown={(e) => {
+                    if (e.key === 'Enter' && !isCreatingProject) {
+                      handleCreateProject();
+                    }
+                  }}
+                />
+              </div>
+            )}
           </div>
 
           <DialogFooter>
@@ -778,7 +994,8 @@ export function Sidebar({ isCollapsed, isMobileMenuOpen = false, onClose }: Side
               onClick={() => {
                 setShowNewProjectModal(false);
                 setNewProjectName("");
-                setSelectedTeamId(null);
+                setSelectedTeamValue("");
+                setNewTeamName("");
               }}
               disabled={isCreatingProject}
             >
@@ -786,7 +1003,12 @@ export function Sidebar({ isCollapsed, isMobileMenuOpen = false, onClose }: Side
             </Button>
             <Button
               onClick={handleCreateProject}
-              disabled={isCreatingProject || !newProjectName.trim() || !selectedTeamId}
+              disabled={
+                isCreatingProject ||
+                !newProjectName.trim() ||
+                !selectedTeamValue ||
+                (selectedTeamValue === CREATE_NEW_TEAM_OPTION && !newTeamName.trim())
+              }
             >
               {isCreatingProject ? "Creating..." : "Create Project"}
             </Button>
@@ -855,7 +1077,7 @@ export function Sidebar({ isCollapsed, isMobileMenuOpen = false, onClose }: Side
                 <SelectTrigger id="user-team-select">
                   <SelectValue placeholder="Select a team (optional)" />
                 </SelectTrigger>
-                <SelectContent>
+                <SelectContent className="z-[120]">
                   <SelectItem value="none">None</SelectItem>
                   {teams?.map((team) => (
                     <SelectItem key={team.id} value={team.id.toString()}>
@@ -863,13 +1085,13 @@ export function Sidebar({ isCollapsed, isMobileMenuOpen = false, onClose }: Side
                         {team.logo ? (
                           <img 
                             src={team.logo} 
-                            alt={team.title}
+                            alt={getTeamLabel(team)}
                             className="w-4 h-4 rounded-full object-cover"
                           />
                         ) : (
                           <div className="w-4 h-4 rounded-full bg-gray-300" />
                         )}
-                        <span>{team.title}</span>
+                        <span>{getTeamLabel(team)}</span>
                       </div>
                     </SelectItem>
                   ))}
@@ -894,7 +1116,7 @@ export function Sidebar({ isCollapsed, isMobileMenuOpen = false, onClose }: Side
                 <SelectTrigger id="user-role-select">
                   <SelectValue placeholder="Select a role (optional)" />
                 </SelectTrigger>
-                <SelectContent>
+                <SelectContent className="z-[120]">
                   <SelectItem value="none">None</SelectItem>
                   {roles?.map((role) => (
                     <SelectItem key={role.id} value={role.id.toString()}>

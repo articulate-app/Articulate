@@ -8,22 +8,43 @@ import { useCurrentUserStore } from '../../store/current-user'
 import { createClientComponentClient } from '@supabase/auth-helpers-nextjs'
 import { ThreadParticipantsInline } from '../comments-section/thread-participants-inline'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
-import { Loader2, Pencil } from 'lucide-react'
+import { Loader2, Maximize2, Minimize2, Pencil, X } from 'lucide-react'
+import { Button } from '../ui/button'
 import { Input } from '../ui/input'
 import { toast } from '../ui/use-toast'
+import { useMobileDetection } from '../../hooks/use-mobile-detection'
+import { MobileDetailHeader, type MobileDetailAction } from '../ui/mobile-detail-header'
 
 interface InboxThreadViewProps {
-  threadId: number | null
+  threadId: number | string | null
   threadTitle: string | null
   projectId: number | null
   taskId: number | null
+  autoFocusComposer?: boolean
+  focusedMentionId?: number | string | null
   onOpenTaskDetails?: (taskId: number) => void
   onOpenProjectDetails?: (projectId: number) => void
+  onClose?: () => void
+  isDetailsFocused?: boolean
+  onFocusToggle?: () => void
 }
 
-export function InboxThreadView({ threadId, threadTitle, projectId, taskId, onOpenTaskDetails, onOpenProjectDetails }: InboxThreadViewProps) {
+export function InboxThreadView({
+  threadId,
+  threadTitle,
+  projectId,
+  taskId,
+  autoFocusComposer = false,
+  focusedMentionId = null,
+  onOpenTaskDetails,
+  onOpenProjectDetails,
+  onClose,
+  isDetailsFocused = false,
+  onFocusToggle,
+}: InboxThreadViewProps) {
   const supabase = createClientComponentClient()
   const queryClient = useQueryClient()
+  const isMobile = useMobileDetection()
   const currentUserId = useCurrentUserStore((s) => s.publicUserId)
   const currentUserName = useCurrentUserStore((s) => s.fullName)
   const currentUserEmail = useCurrentUserStore((s) => s.userMetadata?.email)
@@ -199,10 +220,86 @@ export function InboxThreadView({ threadId, threadTitle, projectId, taskId, onOp
     )
   }
 
+  const openLinkedEntity = () => {
+    if (typeof taskId === 'number' && onOpenTaskDetails) {
+      onOpenTaskDetails(taskId)
+      return
+    }
+    if (typeof projectId === 'number' && onOpenProjectDetails) {
+      onOpenProjectDetails(projectId)
+    }
+  }
+  const linkedEntityLabel = taskInfo?.title || taskInfo?.project_name || projectInfo?.name || null
+  const mobileThreadActions: MobileDetailAction[] = [
+    {
+      id: 'rename',
+      label: 'Rename thread',
+      icon: <Pencil className="h-4 w-4" />,
+      onSelect: () => setIsEditingTitle(true),
+    },
+  ]
+
   return (
     <div className="flex flex-col h-full">
-      {/* Thread header */}
-      <div className="p-4 border-b flex items-center justify-between">
+      {/* Mobile thread header: stable title + top-right "..." overflow (participants stay inline). */}
+      {isMobile ? (
+        <MobileDetailHeader
+          onBack={onClose}
+          backLabel="Close details"
+          title={
+            isEditingTitle ? (
+              <Input
+                value={draftTitle}
+                onChange={(e) => setDraftTitle(e.target.value)}
+                onKeyDown={async (e) => {
+                  if (e.key === 'Enter') {
+                    e.preventDefault()
+                    await saveTitle()
+                  } else if (e.key === 'Escape') {
+                    setDraftTitle(threadTitle || '')
+                    setIsEditingTitle(false)
+                  }
+                }}
+                onBlur={saveTitle}
+                autoFocus
+                className="h-8"
+              />
+            ) : (
+              threadTitle || 'Untitled Thread'
+            )
+          }
+          subtitle={
+            linkedEntityLabel ? (
+              <button
+                type="button"
+                className="truncate hover:underline"
+                onClick={openLinkedEntity}
+                title={taskId ? 'Open task details' : 'Open project details'}
+              >
+                {linkedEntityLabel}
+              </button>
+            ) : projectId ? (
+              `Project #${projectId}`
+            ) : undefined
+          }
+          rightSlot={
+            threadId ? (
+              <ThreadParticipantsInline
+                threadId={Number(threadId)}
+                projectId={projectId || undefined}
+                allowRemove={true}
+                participants={watchers || []}
+                allProjectUsers={allProjectUsers || []}
+                currentUserId={currentUserId}
+                onParticipantsChanged={() => refetchWatchers()}
+              />
+            ) : null
+          }
+          actions={mobileThreadActions}
+        />
+      ) : (
+      /* Thread header */
+      <div className="p-4 border-b flex items-center justify-between gap-3">
         <div className="flex-1 min-w-0">
           {isEditingTitle ? (
             <Input
@@ -257,18 +354,47 @@ export function InboxThreadView({ threadId, threadTitle, projectId, taskId, onOp
             </button>
           ) : null}
         </div>
-        {threadId && (
-          <ThreadParticipantsInline
-            threadId={threadId}
-            projectId={projectId || undefined}
-            allowRemove={true}
-            participants={watchers || []}
-            allProjectUsers={allProjectUsers || []}
-            currentUserId={currentUserId}
-            onParticipantsChanged={() => refetchWatchers()}
-          />
-        )}
+        <div className="flex items-center gap-1">
+          {threadId ? (
+            <ThreadParticipantsInline
+              threadId={Number(threadId)}
+              projectId={projectId || undefined}
+              allowRemove={true}
+              participants={watchers || []}
+              allProjectUsers={allProjectUsers || []}
+              currentUserId={currentUserId}
+              onParticipantsChanged={() => refetchWatchers()}
+            />
+          ) : null}
+          {onFocusToggle ? (
+            <Button
+              type="button"
+              variant="ghost"
+              size="sm"
+              onClick={onFocusToggle}
+              className="h-8 w-8 p-0 text-gray-500 hover:bg-gray-100 hover:text-gray-700"
+              aria-label={isDetailsFocused ? "Restore details pane" : "Expand details pane"}
+              title={isDetailsFocused ? "Restore details pane" : "Expand details pane"}
+            >
+              {isDetailsFocused ? <Minimize2 className="w-4 h-4" /> : <Maximize2 className="w-4 h-4" />}
+            </Button>
+          ) : null}
+          {onClose ? (
+            <Button
+              type="button"
+              variant="ghost"
+              size="sm"
+              onClick={onClose}
+              className="h-8 w-8 p-0 text-gray-500 hover:bg-gray-100 hover:text-gray-700"
+              aria-label="Close details"
+              title="Close details"
+            >
+              <X className="w-4 h-4" />
+            </Button>
+          ) : null}
+        </div>
       </div>
+      )}
 
       {/* Messages */}
       <div className="flex-1 overflow-hidden">
@@ -284,6 +410,8 @@ export function InboxThreadView({ threadId, threadTitle, projectId, taskId, onOp
             currentUserAvatar={currentUserAvatar || undefined}
             currentUserEmail={currentUserEmail || undefined}
             currentPublicUserId={currentUserId || undefined}
+            autoFocusInput={autoFocusComposer}
+            focusedMentionId={focusedMentionId}
             hideInput={false}
             groupByDate={true}
             initialMessages={mentions

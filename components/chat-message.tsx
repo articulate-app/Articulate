@@ -1,8 +1,9 @@
-import { cn } from '@/lib/utils'
+import { getImageUrl } from '@/lib/public-media'
 import type { ChatMessage as BaseChatMessage } from '../hooks/useThreadedChat'
 import { Pencil, Reply, Trash2 } from 'lucide-react'
 import { useState } from 'react'
-import { format, isToday, isYesterday, differenceInDays } from 'date-fns';
+import { format } from 'date-fns';
+import { UserAvatar } from '../app/components/UserAvatar'
 
 // Extend ChatMessage to allow optional attachment
 export type ChatMessageWithAttachment = BaseChatMessage & { attachment?: string }
@@ -23,37 +24,33 @@ interface ChatMessageItemProps {
   replyPreview?: { author?: string; preview: string } | null
 }
 
-// Minimalistic palette
-const AVATAR_COLORS = [
-  'bg-gray-400 text-white',
-  'bg-blue-600 text-white',
-  'bg-gray-700 text-white',
-  'bg-blue-400 text-white',
-]
-
-function getAvatarColor(userId: string, isMe: boolean) {
-  if (isMe) return 'bg-black text-white';
-  // Simple hash for consistent color
-  let hash = 0;
-  for (let i = 0; i < userId.length; i++) hash = userId.charCodeAt(i) + ((hash << 5) - hash);
-  const idx = Math.abs(hash) % AVATAR_COLORS.length;
-  return AVATAR_COLORS[idx];
+/** Relative time like activity timeline (e.g. "5 mins ago", "2 weeks ago"). */
+function getRelativeTimeLabel(dateString: string | Date | undefined): string {
+  if (!dateString) return '';
+  const date = new Date(dateString);
+  const now = new Date();
+  const diffMs = now.getTime() - date.getTime();
+  const diffMins = Math.floor(diffMs / 60000);
+  const diffHours = Math.floor(diffMs / 3600000);
+  const diffDays = Math.floor(diffMs / 86400000);
+  if (diffMins < 1) return 'Just now';
+  if (diffMins < 60) return `${diffMins} min${diffMins !== 1 ? 's' : ''} ago`;
+  if (diffHours < 24) return `${diffHours} hour${diffHours !== 1 ? 's' : ''} ago`;
+  if (diffDays < 7) return `${diffDays} day${diffDays !== 1 ? 's' : ''} ago`;
+  if (diffDays < 30) return `${Math.floor(diffDays / 7)} week${Math.floor(diffDays / 7) !== 1 ? 's' : ''} ago`;
+  if (diffDays < 365) return `${Math.floor(diffDays / 30)} month${Math.floor(diffDays / 30) !== 1 ? 's' : ''} ago`;
+  return `${Math.floor(diffDays / 365)} year${Math.floor(diffDays / 365) !== 1 ? 's' : ''} ago`;
 }
 
-function getFriendlyDate(createdAt: string | Date | undefined) {
+/** Short date + time like activity (e.g. "14:32 · 02/25"). */
+function formatDateShort(createdAt: string | Date | undefined): string {
   if (!createdAt) return '';
   const date = new Date(createdAt);
-  if (isToday(date)) {
-    const diff = (Date.now() - date.getTime()) / 1000;
-    if (diff < 60) return 'just now';
-    return format(date, 'HH:mm');
-  } else if (isYesterday(date)) {
-    return 'yesterday';
-  } else {
-    const daysAgo = differenceInDays(new Date(), date);
-    if (daysAgo < 10) return `${daysAgo} days ago`;
-    return format(date, 'yyyy-MM-dd');
-  }
+  const mm = String(date.getMonth() + 1).padStart(2, '0');
+  const yy = String(date.getFullYear()).slice(-2);
+  const h = String(date.getHours()).padStart(2, '0');
+  const m = String(date.getMinutes()).padStart(2, '0');
+  return `${h}:${m} · ${mm}/${yy}`;
 }
 
 function getFileIcon(ext: string) {
@@ -112,61 +109,26 @@ export const ChatMessageItem = ({
     : typeof user?.userId === 'string' && user.userId
     ? user.userId
     : 'User';
-  const initialsSource = typeof user?.displayName === 'string' && user.displayName
-    ? user.displayName
-    : typeof user?.email === 'string' && user.email
-    ? user.email
-    : '?';
-  const initials = initialsSource.split(' ').map((n) => n[0]).join('').toUpperCase().slice(0, 2);
-  const friendlyDate = getFriendlyDate(message.createdAt ?? '');
+  const relativeTime = getRelativeTimeLabel(message.createdAt ?? '');
+  const shortDate = formatDateShort(message.createdAt ?? '');
   const exactDate = message.createdAt ? format(new Date(message.createdAt), 'yyyy-MM-dd HH:mm:ss') : '';
-  // Determine if this is the current user
   const isMe = currentPublicUserId != null && (String(user?.userId ?? '') === String(currentPublicUserId) || String(user?.id ?? '') === String(currentPublicUserId));
-  // Use userId/email/name for color hash
-  const colorKey = String(user?.userId ?? '') || String(user?.id ?? '') || String(user?.email ?? '') || String(user?.displayName ?? '');
-  const avatarColor = getAvatarColor(colorKey, isMe);
+  const photoUrl = getImageUrl(user?.avatar ?? null);
 
   return (
-    <div className="flex flex-col gap-1 items-start w-full mt-2 group relative">
-      {/* 1st line: avatar, name, date, edit/delete buttons */}
-      <div className="flex items-center gap-2 w-full">
-        <div className={`w-8 h-8 rounded-full flex items-center justify-center text-xs font-bold uppercase border border-gray-300 ${avatarColor}`} title={displayName}>
-          {initials}
-        </div>
-        <span className="font-medium text-gray-900 text-sm">{displayName}</span>
-        <span className="text-xs text-muted-foreground" title={exactDate}>{friendlyDate}</span>
-        {/* Actions on hover (desktop) */}
-        <span className="hidden md:flex gap-1 ml-auto opacity-0 group-hover:opacity-100 transition-opacity">
-          {!isMe && onReply && (
-            <button
-              aria-label="Reply to message"
-              className="hover:text-gray-900 text-gray-500"
-              onClick={onReply}
-              disabled={isProcessing}
-              type="button"
-              title="Reply"
-            >
-              <Reply size={16} />
-            </button>
-          )}
-          {isMe && (
-            <>
-              <button aria-label="Edit message" className="hover:text-primary" onClick={onEditStart} disabled={isProcessing} type="button">
-                <Pencil size={16} />
-              </button>
-              <button aria-label="Delete message" className="hover:text-destructive" onClick={onDelete} disabled={isProcessing} type="button">
-                <Trash2 size={16} />
-              </button>
-            </>
-          )}
-        </span>
-      </div>
-      {/* 2nd line: message and attachments */}
-      <div className="pl-10 w-full">
-        {isEditing ? (
-          <div className="flex gap-2 items-center">
+    <div className="group relative mt-2 flex w-full flex-col gap-1 items-start">
+      {isEditing ? (
+        <div className="w-full rounded-md border border-gray-200 bg-white px-3 py-2">
+          <div className="mb-2 flex items-center gap-2">
+            <UserAvatar name={displayName} photoUrl={photoUrl} size="xs" />
+            <span className="font-medium text-gray-900 text-sm">{displayName}</span>
+            <span className="ml-auto text-xs text-muted-foreground shrink-0" title={exactDate}>
+              {relativeTime}{shortDate ? ` · ${shortDate}` : ''}
+            </span>
+          </div>
+          <div className="flex items-center gap-2 pl-9">
             <input
-              className="py-1 px-2 rounded border text-sm w-48"
+              className="w-48 rounded border px-2 py-1 text-sm"
               value={editValue}
               onChange={e => onEditChange?.(e.target.value)}
               disabled={isProcessing}
@@ -176,36 +138,85 @@ export const ChatMessageItem = ({
             <button className="text-xs text-primary hover:underline" onClick={onEditSave} disabled={isProcessing}>Save</button>
             <button className="text-xs text-muted-foreground hover:underline" onClick={onEditCancel} disabled={isProcessing}>Cancel</button>
           </div>
-        ) : (
-          <>
-            {replyPreview ? (
-              <div className="mb-2 border-l-2 border-gray-300 pl-3 py-1 bg-gray-50 rounded">
-                <div className="text-[11px] font-medium text-gray-700">
-                  Replying to {replyPreview.author || 'message'}
-                </div>
-                <div className="text-[11px] text-gray-600 truncate">{replyPreview.preview}</div>
-              </div>
-            ) : null}
-            <div className="text-sm text-gray-900" style={{ wordBreak: 'break-word' }} dangerouslySetInnerHTML={{ __html: message.content ?? '' }} />
-            {typeof message?.attachment === 'string' && message?.attachment && (
-              <div className="mt-2 flex items-center gap-2 bg-gray-50 border rounded px-3 py-2 w-fit">
-                {getFileIcon(getFileExt(message.attachment))}
-                <div className="flex flex-col">
-                  <span className="text-xs font-medium text-gray-900">{getFileName(message.attachment)}</span>
-                  <a
-                    href={message.attachment}
-                    target="_blank"
-                    rel="noopener noreferrer"
-                    className="text-xs text-blue-600 underline"
-                  >
-                    {getFileExt(message.attachment).toUpperCase()} · Download
-                  </a>
-                </div>
-              </div>
-            )}
-          </>
-        )}
-      </div>
+        </div>
+      ) : (
+        <div className="group w-full py-1.5">
+          <div className="flex items-center gap-2 min-h-0">
+            <UserAvatar name={displayName} photoUrl={photoUrl} />
+            <span className="min-w-0 truncate text-sm font-medium text-gray-900">{displayName}</span>
+            <div className="ml-auto flex shrink-0 items-center gap-1 text-right text-xs text-muted-foreground whitespace-nowrap">
+              {relativeTime ? <span className="block">{relativeTime}</span> : null}
+              {shortDate ? <span className="block">{shortDate}</span> : null}
+              {!isMe && onReply ? (
+                <button
+                  type="button"
+                  className="inline-flex h-5 w-5 items-center justify-center rounded text-gray-500 hover:bg-gray-100 hover:text-gray-700 md:opacity-0 md:group-hover:opacity-100 md:transition-opacity"
+                  aria-label="Reply"
+                  title="Reply"
+                  onClick={onReply}
+                >
+                  <Reply className="h-3.5 w-3.5" />
+                </button>
+              ) : null}
+              {isMe && onEditStart ? (
+                <button
+                  type="button"
+                  aria-label="Edit message"
+                  className="inline-flex h-5 w-5 items-center justify-center rounded text-gray-500 hover:bg-gray-100 hover:text-gray-700 md:opacity-0 md:group-hover:opacity-100 md:transition-opacity"
+                  onClick={onEditStart}
+                  disabled={isProcessing}
+                >
+                  <Pencil className="h-3.5 w-3.5" />
+                </button>
+              ) : null}
+              {isMe && onDelete ? (
+                <button
+                  type="button"
+                  aria-label="Delete message"
+                  className="inline-flex h-5 w-5 items-center justify-center rounded text-red-500 hover:bg-red-50 md:opacity-0 md:group-hover:opacity-100 md:transition-opacity"
+                  onClick={onDelete}
+                  disabled={isProcessing}
+                >
+                  <Trash2 className="h-3.5 w-3.5" />
+                </button>
+              ) : null}
+            </div>
+          </div>
+          <div
+            className="pl-10 text-sm text-gray-700"
+            style={{ wordBreak: "break-word" }}
+            dangerouslySetInnerHTML={{ __html: String(message.content ?? "") }}
+          />
+        </div>
+      )}
+      {!isEditing && replyPreview ? (
+        <div className="w-full pl-9">
+          <div className="mb-1 rounded border-l-2 border-gray-300 bg-gray-50 py-1 pl-3">
+            <div className="text-[11px] font-medium text-gray-700">
+              Replying to {replyPreview.author || 'message'}
+            </div>
+            <div className="truncate text-[11px] text-gray-600">{replyPreview.preview}</div>
+          </div>
+        </div>
+      ) : null}
+      {!isEditing && typeof message?.attachment === 'string' && message?.attachment ? (
+        <div className="w-full pl-9">
+          <div className="mt-1 flex w-fit items-center gap-2 rounded border bg-gray-50 px-3 py-2">
+            {getFileIcon(getFileExt(message.attachment))}
+            <div className="flex flex-col">
+              <span className="text-xs font-medium text-gray-900">{getFileName(message.attachment)}</span>
+              <a
+                href={message.attachment}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="text-xs text-blue-600 underline"
+              >
+                {getFileExt(message.attachment).toUpperCase()} · Download
+              </a>
+            </div>
+          </div>
+        </div>
+      ) : null}
       {/* Mobile: show edit/delete on long-press */}
       {isMe && showMobileActions && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40" onClick={() => setShowMobileActions(false)}>

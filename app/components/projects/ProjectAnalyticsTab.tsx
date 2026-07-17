@@ -3,12 +3,14 @@
 import { useEffect, useMemo, useState } from "react"
 import { useQuery } from "@tanstack/react-query"
 import { subDays, format, parseISO, isValid as isValidDate } from "date-fns"
-import { Loader2, AlertCircle, BarChart3, Edit2, Plus } from "lucide-react"
+import { Loader2, AlertCircle, Edit2, Plus, SlidersHorizontal } from "lucide-react"
 import { createClient } from "../../lib/supabase/client"
 import { Card } from "../ui/card"
 import { Button } from "../ui/button"
 import { DateRangePicker } from "../ui/date-range-picker"
 import { MultiSelect } from "../ui/multi-select"
+import { Popover, PopoverContent, PopoverTrigger } from "../ui/popover"
+import { Label } from "../ui/label"
 import {
   LineChart,
   Line,
@@ -49,14 +51,21 @@ type ProjectAnalyticsPropertyMapping = {
   ga_property_id: string | null
 }
 
-interface ProjectAnalyticsTabProps {
-  projectId: number
-}
-
-interface DateRangeValue {
+export interface ProjectAnalyticsDateRange {
   from?: Date
   to?: Date
 }
+
+interface ProjectAnalyticsTabProps {
+  projectId: number
+  /** Overview embed: traffic chart + selectors only. */
+  variant?: "full" | "preview"
+  /** Controlled date range (overview shares one picker across charts). */
+  dateRange?: ProjectAnalyticsDateRange
+  onDateRangeChange?: (range: ProjectAnalyticsDateRange) => void
+}
+
+type DateRangeValue = ProjectAnalyticsDateRange
 
 interface AnalyticsQueryResult {
   timeseries: ProjectAnalyticsPoint[]
@@ -227,17 +236,26 @@ function AnalyticsTooltip({
   )
 }
 
-export function ProjectAnalyticsTab({ projectId }: ProjectAnalyticsTabProps) {
+export function ProjectAnalyticsTab({
+  projectId,
+  variant = "full",
+  dateRange: controlledDateRange,
+  onDateRangeChange,
+}: ProjectAnalyticsTabProps) {
+  const isPreview = variant === "preview"
   const [periodType, setPeriodType] = useState<PeriodType>("day")
-  const [dateRange, setDateRange] = useState<DateRangeValue>(() => {
+  const [uncontrolledDateRange, setUncontrolledDateRange] = useState<DateRangeValue>(() => {
     const today = new Date()
     return {
       from: subDays(today, 29),
       to: today,
     }
   })
+  const dateRange = controlledDateRange ?? uncontrolledDateRange
+  const setDateRange = onDateRangeChange ?? setUncontrolledDateRange
   const [selectedChannels, setSelectedChannels] = useState<string[]>([])
   const [yMetric, setYMetric] = useState<YMetric>("sessions")
+  const [filtersOpen, setFiltersOpen] = useState(false)
 
   const supabase = useMemo(() => createClient(), [])
 
@@ -435,6 +453,251 @@ export function ProjectAnalyticsTab({ projectId }: ProjectAnalyticsTabProps) {
 
   const hasData = chartData.length > 0
 
+  const analyticsFiltersControl = isPreview ? (
+    <Popover open={filtersOpen} onOpenChange={setFiltersOpen}>
+      <PopoverTrigger asChild>
+        <Button
+          type="button"
+          variant="outline"
+          size="sm"
+          className="h-8 w-8 shrink-0 p-0"
+          aria-label="Chart filters"
+          title="Chart filters"
+        >
+          <SlidersHorizontal className="h-4 w-4" />
+        </Button>
+      </PopoverTrigger>
+      <PopoverContent align="end" className="w-72 space-y-3 p-3">
+        <div className="space-y-1.5">
+          <Label className="text-xs text-gray-500">Channels</Label>
+          <MultiSelect
+            options={channelOptions}
+            value={selectedChannels}
+            onChange={setSelectedChannels}
+            placeholder="All channels"
+          />
+        </div>
+        <div className="space-y-1.5">
+          <Label className="text-xs text-gray-500">Period</Label>
+          <Select
+            value={periodType}
+            onValueChange={(value: PeriodType) => handlePeriodTypeChange(value)}
+          >
+            <SelectTrigger className="h-8 text-xs">
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent>
+              {(["day", "week", "month"] as PeriodType[]).map((type) => (
+                <SelectItem key={type} value={type} className="text-xs">
+                  {PERIOD_LABELS[type]}
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+        </div>
+        <div className="space-y-1.5">
+          <Label className="text-xs text-gray-500">Metric</Label>
+          <Select value={yMetric} onValueChange={(value: YMetric) => setYMetric(value)}>
+            <SelectTrigger className="h-8 text-xs">
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent>
+              {(Object.keys(Y_METRIC_LABELS) as YMetric[]).map((metric) => (
+                <SelectItem key={metric} value={metric} className="text-xs">
+                  {Y_METRIC_LABELS[metric]}
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+        </div>
+      </PopoverContent>
+    </Popover>
+  ) : (
+    <div className="flex min-w-0 flex-wrap items-center gap-2 sm:justify-end">
+      <Select
+        value={periodType}
+        onValueChange={(value: PeriodType) => handlePeriodTypeChange(value)}
+      >
+        <SelectTrigger className="h-8 w-[7.5rem] text-xs">
+          <SelectValue />
+        </SelectTrigger>
+        <SelectContent>
+          {(["day", "week", "month"] as PeriodType[]).map((type) => (
+            <SelectItem key={type} value={type} className="text-xs">
+              {PERIOD_LABELS[type]}
+            </SelectItem>
+          ))}
+        </SelectContent>
+      </Select>
+
+      <Select value={yMetric} onValueChange={(value: YMetric) => setYMetric(value)}>
+        <SelectTrigger className="h-8 w-36 text-xs">
+          <SelectValue />
+        </SelectTrigger>
+        <SelectContent>
+          {(Object.keys(Y_METRIC_LABELS) as YMetric[]).map((metric) => (
+            <SelectItem key={metric} value={metric} className="text-xs">
+              {Y_METRIC_LABELS[metric]}
+            </SelectItem>
+          ))}
+        </SelectContent>
+      </Select>
+    </div>
+  )
+
+  const summaryCards = (
+    <div className={isPreview ? "grid gap-3 grid-cols-2 sm:grid-cols-3" : "grid gap-4 md:grid-cols-3 lg:grid-cols-4"}>
+      <Card className={isPreview ? "border-0 bg-transparent p-0 shadow-none" : "p-4"}>
+        <div className="text-xs font-medium text-gray-500">Total sessions</div>
+        <div className={isPreview ? "mt-0.5 text-lg font-semibold" : "mt-2 text-2xl font-semibold"}>
+          {numberFormatter.format(totalSessions)}
+        </div>
+      </Card>
+      <Card className={isPreview ? "border-0 bg-transparent p-0 shadow-none" : "p-4"}>
+        <div className="text-xs font-medium text-gray-500">Total active users</div>
+        <div className={isPreview ? "mt-0.5 text-lg font-semibold" : "mt-2 text-2xl font-semibold"}>
+          {numberFormatter.format(totalActiveUsers)}
+        </div>
+      </Card>
+      <Card className={isPreview ? "border-0 bg-transparent p-0 shadow-none" : "p-4"}>
+        <div className="text-xs font-medium text-gray-500">Avg. session duration</div>
+        <div className={isPreview ? "mt-0.5 text-lg font-semibold" : "mt-2 text-2xl font-semibold"}>
+          {overallAvgDurationSeconds != null
+            ? formatSessionDuration(overallAvgDurationSeconds)
+            : "—"}
+        </div>
+      </Card>
+      {!isPreview ? (
+        <Card className="hidden p-4 lg:block">
+          <div className="text-xs font-medium text-gray-500">Channels tracked</div>
+          <div className="mt-2 text-2xl font-semibold">{allChannels.length}</div>
+        </Card>
+      ) : null}
+    </div>
+  )
+
+  const showChartLegend = Object.keys(channelKeyMap).some(
+    (channel) => channel !== "Total Traffic",
+  )
+
+  const trafficChartCard = (
+    <Card
+      className={
+        isPreview
+          ? "min-w-0 border-0 bg-transparent p-0 shadow-none focus-visible:outline-none focus-visible:ring-0"
+          : "min-w-0 p-4 md:p-6 focus-visible:outline-none focus-visible:ring-0"
+      }
+    >
+      {isPreview ? null : (
+        <div className="mb-4 flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+          <div className="min-w-0">
+            <h3 className="text-base font-semibold text-gray-900">
+              Traffic over time
+            </h3>
+          </div>
+          <div className="flex shrink-0 items-center justify-end gap-2">
+            {analyticsFiltersControl}
+          </div>
+        </div>
+      )}
+
+      <div className={isPreview ? "h-64 min-w-0" : "h-80 min-w-0"}>
+        {isLoading && (
+          <div className="flex h-full items-center justify-center">
+            <Loader2 className="h-6 w-6 animate-spin text-gray-400" />
+          </div>
+        )}
+
+        {!isLoading && error && (
+          <div className="flex h-full flex-col items-center justify-center gap-2 text-sm text-red-600">
+            <AlertCircle className="h-5 w-5" />
+            <span>
+              {error instanceof Error ? error.message : "Failed to load analytics"}
+            </span>
+          </div>
+        )}
+
+        {!isLoading && !error && !hasData && (
+          <div className="flex h-full flex-col items-center justify-center text-sm text-gray-500">
+            <span>No analytics data for the selected range.</span>
+          </div>
+        )}
+
+        {!isLoading && !error && hasData && (
+          <ResponsiveContainer width="100%" height="100%">
+            <LineChart
+              data={chartData}
+              margin={
+                isPreview
+                  ? { top: 8, right: 8, left: 0, bottom: 0 }
+                  : { top: 5, right: 20, left: 0, bottom: 5 }
+              }
+            >
+              <CartesianGrid strokeDasharray="3 3" stroke="#e5e7eb" />
+              <XAxis
+                dataKey="label"
+                stroke="#6b7280"
+                style={{ fontSize: "12px" }}
+                tickMargin={8}
+              />
+              <YAxis
+                width={isPreview ? 36 : 48}
+                stroke="#6b7280"
+                style={{ fontSize: "12px" }}
+                tickFormatter={(value) =>
+                  typeof value === "number"
+                    ? value >= 1000
+                      ? `${decimalFormatter.format(value / 1000)}k`
+                      : numberFormatter.format(value)
+                    : ""
+                }
+              />
+              <RechartsTooltip
+                content={
+                  <AnalyticsTooltip
+                    periodType={periodType}
+                    metricLabel={Y_METRIC_LABELS[yMetric]}
+                  />
+                }
+              />
+              {showChartLegend ? (
+                <Legend
+                  formatter={(value) =>
+                    value === "Total Traffic" ? "" : value
+                  }
+                />
+              ) : null}
+
+              {Object.entries(channelKeyMap).map(([channel, key]) => (
+                <Line
+                  key={key}
+                  type="monotone"
+                  dataKey={key}
+                  name={channel === "Total Traffic" ? "Traffic" : channel}
+                  strokeWidth={2}
+                  dot={false}
+                  activeDot={{ r: 4 }}
+                />
+              ))}
+            </LineChart>
+          </ResponsiveContainer>
+        )}
+      </div>
+    </Card>
+  )
+
+  if (isPreview) {
+    return (
+      <div className="min-w-0 space-y-3">
+        <div className="flex items-start gap-2">
+          <div className="min-w-0 flex-1">{summaryCards}</div>
+          <div className="shrink-0 pt-0.5">{analyticsFiltersControl}</div>
+        </div>
+        {trafficChartCard}
+      </div>
+    )
+  }
+
   return (
     <div className="space-y-6">
       <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
@@ -465,7 +728,6 @@ export function ProjectAnalyticsTab({ projectId }: ProjectAnalyticsTabProps) {
         </div>
 
         <div className="flex flex-1 flex-wrap items-center justify-end gap-3">
-          {/* Date range selector */}
           <div className="w-full md:w-64">
             <label className="mb-1 block text-xs font-medium text-gray-500">
               Date range
@@ -478,7 +740,6 @@ export function ProjectAnalyticsTab({ projectId }: ProjectAnalyticsTabProps) {
             />
           </div>
 
-          {/* Channel filter */}
           <div className="w-full md:w-72">
             <label className="mb-1 block text-xs font-medium text-gray-500">
               Channels
@@ -495,163 +756,10 @@ export function ProjectAnalyticsTab({ projectId }: ProjectAnalyticsTabProps) {
 
       {!gaPropertyId && <ProjectAnalyticsSettings projectId={projectId} />}
 
-      {/* Summary cards */}
-      <div className="grid gap-4 md:grid-cols-3 lg:grid-cols-4">
-        <Card className="p-4">
-          <div className="text-xs font-medium text-gray-500">Total sessions</div>
-          <div className="mt-2 flex items-baseline gap-2">
-            <div className="text-2xl font-semibold">
-              {numberFormatter.format(totalSessions)}
-            </div>
-          </div>
-        </Card>
+      {summaryCards}
 
-        <Card className="p-4">
-          <div className="text-xs font-medium text-gray-500">
-            Total active users
-          </div>
-          <div className="mt-2 flex items-baseline gap-2">
-            <div className="text-2xl font-semibold">
-              {numberFormatter.format(totalActiveUsers)}
-            </div>
-          </div>
-        </Card>
+      {trafficChartCard}
 
-        <Card className="p-4">
-          <div className="text-xs font-medium text-gray-500">
-            Avg. session duration
-          </div>
-          <div className="mt-2 flex items-baseline gap-2">
-            <div className="text-2xl font-semibold">
-              {overallAvgDurationSeconds != null
-                ? formatSessionDuration(overallAvgDurationSeconds)
-                : "—"}
-            </div>
-          </div>
-        </Card>
-
-        <Card className="hidden p-4 lg:block">
-          <div>
-            <div className="text-xs font-medium text-gray-500">
-              Channels tracked
-            </div>
-            <div className="mt-2 text-2xl font-semibold">
-              {allChannels.length}
-            </div>
-          </div>
-        </Card>
-      </div>
-
-      {/* Time series chart */}
-      <Card className="p-4 md:p-6 focus-visible:outline-none focus-visible:ring-0">
-        <div className="mb-4 flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
-          <div>
-            <h3 className="text-base font-semibold text-gray-900">
-              Traffic over time
-            </h3>
-          </div>
-          <div className="flex flex-wrap items-center gap-2 md:justify-end">
-            <Select
-              value={periodType}
-              onValueChange={(value: PeriodType) => handlePeriodTypeChange(value)}
-            >
-              <SelectTrigger className="h-8 w-32 text-xs">
-                <SelectValue />
-              </SelectTrigger>
-              <SelectContent>
-                {(["day", "week", "month"] as PeriodType[]).map((type) => (
-                  <SelectItem key={type} value={type} className="text-xs">
-                    {PERIOD_LABELS[type]}
-                  </SelectItem>
-                ))}
-              </SelectContent>
-            </Select>
-
-            <Select value={yMetric} onValueChange={(value: YMetric) => setYMetric(value)}>
-              <SelectTrigger className="h-8 w-40 text-xs">
-                <SelectValue />
-              </SelectTrigger>
-              <SelectContent>
-                {(Object.keys(Y_METRIC_LABELS) as YMetric[]).map((metric) => (
-                  <SelectItem key={metric} value={metric} className="text-xs">
-                    {Y_METRIC_LABELS[metric]}
-                  </SelectItem>
-                ))}
-              </SelectContent>
-            </Select>
-          </div>
-        </div>
-
-        <div className="h-80">
-          {isLoading && (
-            <div className="flex h-full items-center justify-center">
-              <Loader2 className="h-6 w-6 animate-spin text-gray-400" />
-            </div>
-          )}
-
-          {!isLoading && error && (
-            <div className="flex h-full flex-col items-center justify-center gap-2 text-sm text-red-600">
-              <AlertCircle className="h-5 w-5" />
-              <span>
-                {error instanceof Error ? error.message : "Failed to load analytics"}
-              </span>
-            </div>
-          )}
-
-          {!isLoading && !error && !hasData && (
-            <div className="flex h-full flex-col items-center justify-center text-sm text-gray-500">
-              <span>No analytics data for the selected range.</span>
-            </div>
-          )}
-
-          {!isLoading && !error && hasData && (
-            <ResponsiveContainer width="100%" height="100%">
-              <LineChart data={chartData}>
-                <CartesianGrid strokeDasharray="3 3" stroke="#e5e7eb" />
-                <XAxis
-                  dataKey="label"
-                  stroke="#6b7280"
-                  style={{ fontSize: "12px" }}
-                />
-                <YAxis
-                  stroke="#6b7280"
-                  style={{ fontSize: "12px" }}
-                  tickFormatter={(value) =>
-                    typeof value === "number"
-                      ? value >= 1000
-                        ? `${decimalFormatter.format(value / 1000)}k`
-                        : numberFormatter.format(value)
-                      : ""
-                  }
-                />
-                <RechartsTooltip
-                  content={
-                    <AnalyticsTooltip
-                      periodType={periodType}
-                      metricLabel={Y_METRIC_LABELS[yMetric]}
-                    />
-                  }
-                />
-                <Legend />
-
-                {Object.entries(channelKeyMap).map(([channel, key]) => (
-                  <Line
-                    key={key}
-                    type="monotone"
-                    dataKey={key}
-                    name={channel}
-                    strokeWidth={2}
-                    dot={false}
-                    activeDot={{ r: 4 }}
-                  />
-                ))}
-              </LineChart>
-            </ResponsiveContainer>
-          )}
-        </div>
-      </Card>
-
-      {/* Channel breakdown table */}
       <Card className="p-4 md:p-6">
         <div className="mb-4 flex items-center justify-between">
           <h3 className="text-base font-semibold text-gray-900">
@@ -710,7 +818,6 @@ export function ProjectAnalyticsTab({ projectId }: ProjectAnalyticsTabProps) {
         )}
       </Card>
 
-      {/* Per page analytics */}
       {from && to && (
         <ProjectAnalyticsPagesSection
           projectId={projectId}

@@ -76,3 +76,34 @@ export function getTaskInlineStyle(task: any, colorMode: TaskCardColorMode): { b
   }
   return undefined;
 }
+
+/** Hex strokes for list row left accent (aligned with palette hash in getStablePaletteClass). */
+const PALETTE_HEX = [
+  '#bfdbfe',
+  '#bbf7d0',
+  '#fbcfe8',
+  '#fef08a',
+  '#e9d5ff',
+  '#fed7aa',
+  '#99f6e4',
+  '#fecaca',
+  '#a5f3fc',
+  '#d9f99d',
+  '#f5d0fe',
+  '#fde68a',
+] as const;
+
+/**
+ * Solid color for a minimal list-row accent (inset bar / border) when not using DB inline colors.
+ */
+export function getTaskListRowAccentColor(task: any, colorMode: TaskCardColorMode): string | undefined {
+  const inline = getTaskInlineStyle(task, colorMode);
+  if (inline) return inline.background;
+  const key = getTaskColorKey(task, colorMode);
+  let hash = 0;
+  for (let i = 0; i < key.length; i += 1) {
+    hash = (hash << 5) - hash + key.charCodeAt(i);
+    hash |= 0;
+  }
+  return PALETTE_HEX[Math.abs(hash) % PALETTE_HEX.length];
+}

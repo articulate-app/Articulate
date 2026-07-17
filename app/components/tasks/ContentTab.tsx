@@ -1,17 +1,18 @@
 "use client"
 
 import React, { useState, useEffect, useCallback, useMemo } from "react"
+import { useRouter } from "next/navigation"
 import { createClientComponentClient } from "@supabase/auth-helpers-nextjs"
 import { Button } from "../ui/button"
 import { Badge } from "../ui/badge"
 import { Input } from "../ui/input"
 import { Label } from "../ui/label"
 import { RichTextEditor } from "../ui/rich-text-editor"
-import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from "../ui/dropdown-menu"
+import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuSeparator, DropdownMenuTrigger } from "../ui/dropdown-menu"
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "../ui/dialog"
+import { Switch } from "../ui/switch"
 import { 
   X, 
-  Maximize2, 
   ChevronDown, 
   Plus,
   Wand2,
@@ -19,7 +20,8 @@ import {
   Eye,
   Loader2,
   MoreHorizontal,
-  CheckCircle2
+  CheckCircle2,
+  Star
 } from "lucide-react"
 import { toast } from "../ui/use-toast"
 import {
@@ -145,11 +147,31 @@ function ComponentItem({
   const [localTitle, setLocalTitle] = useState(component.custom_title || component.component_title)
   const [localDescription, setLocalDescription] = useState(component.custom_description || '')
   const [lastSaved, setLastSaved] = useState<string | null>(null)
+  const [componentEditorHeight, setComponentEditorHeight] = useState(250)
+  const componentResizeStartYRef = React.useRef(0)
+  const componentResizeStartHeightRef = React.useRef(250)
 
   useEffect(() => {
     setLocalTitle(component.custom_title || component.component_title)
     setLocalDescription(component.custom_description || '')
   }, [component])
+
+  const handleComponentResizeMouseDown = useCallback((e: React.MouseEvent<HTMLDivElement>) => {
+    e.preventDefault()
+    componentResizeStartYRef.current = e.clientY
+    componentResizeStartHeightRef.current = componentEditorHeight
+    const onMouseMove = (moveEvent: MouseEvent) => {
+      const delta = moveEvent.clientY - componentResizeStartYRef.current
+      const next = Math.max(160, Math.min(400, componentResizeStartHeightRef.current + delta))
+      setComponentEditorHeight(next)
+    }
+    const onMouseUp = () => {
+      document.removeEventListener('mousemove', onMouseMove)
+      document.removeEventListener('mouseup', onMouseUp)
+    }
+    document.addEventListener('mousemove', onMouseMove)
+    document.addEventListener('mouseup', onMouseUp)
+  }, [componentEditorHeight])
 
   // Track when content is saved
   const handleContentChange = (content: string) => {
@@ -211,9 +233,12 @@ function ComponentItem({
               </button>
               <button
                 onClick={() => onToggleExpanded(component.component_id)}
-                className="p-1 text-gray-500 hover:bg-gray-100 rounded"
+                className="w-5 h-5 flex items-center justify-center rounded-tl hover:bg-gray-100 text-gray-400 transition-colors z-10"
+                style={{ cursor: 'nwse-resize' }}
+                title="Expand or resize"
+                aria-label="Expand or resize"
               >
-                <Maximize2 className="w-4 h-4" />
+                <ChevronDown className="w-3 h-3 text-gray-400" />
               </button>
             </div>
           </div>
@@ -251,13 +276,25 @@ function ComponentItem({
                   <span className="text-sm text-gray-500">Loading content...</span>
                 </div>
               ) : (
-                <div className="max-h-[300px] overflow-y-auto">
+                <div className="relative max-h-[400px] overflow-y-auto">
                   <RichTextEditor
                     value={currentContent || ''}
                     onChange={handleContentChange}
                     placeholder="Start writing content..."
-                    height={250}
+                    height={componentEditorHeight}
                   />
+                  <div
+                    onMouseDown={handleComponentResizeMouseDown}
+                    className="absolute bottom-0 right-0 w-5 h-5 cursor-nwse-resize flex items-center justify-center hover:bg-gray-100 rounded-tl transition-colors z-10"
+                    style={{ cursor: 'nwse-resize' }}
+                    title="Drag to resize"
+                  >
+                    {/* Resize grip icon (matches native textarea / secondary keywords field) */}
+                    <svg width="12" height="12" viewBox="0 0 12 12" fill="none" className="text-gray-400" aria-hidden>
+                      <path d="M0 12 L12 0" stroke="currentColor" strokeWidth="1.2" strokeLinecap="round" />
+                      <path d="M4 12 L12 4" stroke="currentColor" strokeWidth="1.2" strokeLinecap="round" />
+                    </svg>
+                  </div>
                 </div>
               )}
             </div>
@@ -269,6 +306,7 @@ function ComponentItem({
 }
 
 export function ContentTab({ taskId, projectId, onBuildWithAI }: ContentTabProps) {
+  const router = useRouter()
   const supabase = createClientComponentClient()
   
   // State
@@ -653,7 +691,7 @@ export function ContentTab({ taskId, projectId, onBuildWithAI }: ContentTabProps
   }
 
   // Handle briefing type change
-  const handleBriefingTypeChange = async (briefingTypeId: number) => {
+  const handleBriefingTypeChange = async (briefingTypeId: number | null) => {
     if (!activeCttId) return
 
     try {
@@ -664,8 +702,7 @@ export function ContentTab({ taskId, projectId, onBuildWithAI }: ContentTabProps
       if (error) throw error
 
       setSelectedBriefingTypeId(briefingTypeId)
-      // Refetch components
-      await fetchComponents(activeCttId)
+      if (briefingTypeId !== null) await fetchComponents(activeCttId)
     } catch (error) {
       console.error('Failed to change briefing type:', error)
       toast({
@@ -674,6 +711,12 @@ export function ContentTab({ taskId, projectId, onBuildWithAI }: ContentTabProps
         variant: "destructive",
       })
     }
+  }
+
+  const handleClearBriefingType = (e: React.MouseEvent) => {
+    e.preventDefault()
+    e.stopPropagation()
+    void handleBriefingTypeChange(null)
   }
 
   // Handle component toggle
@@ -766,10 +809,9 @@ export function ContentTab({ taskId, projectId, onBuildWithAI }: ContentTabProps
     }
   }
 
-  // Handle SEO expansion
-  const handleSEOExpand = async () => {
-    if (!activeCttId || currentChannelId === null || currentLanguageId === null || seoExpanded) return
-
+  // Fetch SEO data when expanding (used when toggle is turned on)
+  const fetchSEOData = async () => {
+    if (!activeCttId || currentChannelId === null || currentLanguageId === null) return
     try {
       const { data, error } = await supabase
         .from('content_types_tasks_variants')
@@ -778,10 +820,8 @@ export function ContentTab({ taskId, projectId, onBuildWithAI }: ContentTabProps
         .eq('channel_id', currentChannelId)
         .eq('language_id', currentLanguageId)
         .single()
-
       if (error && error.code !== 'PGRST116') throw error
       setSeoData(data || { primary_keyword: null, secondary_keywords: null })
-      setSeoExpanded(true)
     } catch (error) {
       console.error('Failed to fetch SEO:', error)
     }
@@ -794,6 +834,30 @@ export function ContentTab({ taskId, projectId, onBuildWithAI }: ContentTabProps
     setSeoData({ primary_keyword: primaryKeyword, secondary_keywords: secondaryKeywords })
     debouncedSaveSEO(activeCttId, currentChannelId, currentLanguageId, primaryKeyword, secondaryKeywords)
   }
+
+  // Make a keyword the primary (default)
+  const handleMakeDefaultKeyword = useCallback((keyword: string) => {
+    if (!seoData) return
+    const primary = (seoData.primary_keyword || '').trim()
+    const secondaries = (seoData.secondary_keywords || '').split(/[,;]/).map((k: string) => k.trim()).filter(Boolean)
+    if (primary === keyword) return
+    const rest = [primary, ...secondaries].filter((k) => k && k !== keyword)
+    handleSEOChange(keyword, rest.join(', '))
+  }, [seoData, handleSEOChange])
+
+  const [newKeyword, setNewKeyword] = useState('')
+  const handleAddKeyword = useCallback(() => {
+    const k = newKeyword.trim()
+    if (!k) return
+    const primary = (seoData?.primary_keyword || '').trim()
+    const secondaries = (seoData?.secondary_keywords || '').split(/[,;]/).map((s: string) => s.trim()).filter(Boolean)
+    if (!primary) {
+      handleSEOChange(k, secondaries.join(', '))
+    } else {
+      handleSEOChange(primary, [...secondaries, k].join(', '))
+    }
+    setNewKeyword('')
+  }, [newKeyword, seoData, handleSEOChange])
 
   // Handle preview
   const handlePreview = async () => {
@@ -863,31 +927,30 @@ export function ContentTab({ taskId, projectId, onBuildWithAI }: ContentTabProps
 
   return (
     <div className="space-y-6">
-      {/* Header Rows */}
+      {/* Channels: no label, divider below */}
+      <div className="space-y-2">
+        <div className="flex items-center gap-2 flex-wrap">
+          {channels.map(channel => (
+            <Badge key={channel.id} variant="secondary" className="text-xs">
+              {channel.name}
+            </Badge>
+          ))}
+          {channels.length === 0 && (
+            <span className="text-xs text-gray-500">No channels</span>
+          )}
+        </div>
+        <div className="border-t border-gray-200" />
+      </div>
+
+      {/* Header Rows: Content types, Progress, Briefing type, Add keywords */}
       <div className="space-y-3">
-        {/* Row 1: Channels, Content Types, Progress */}
-        <div className="flex items-center gap-6">
-          <div className="flex items-center gap-2">
-            <span className="text-sm text-gray-600">Channels:</span>
-            <div className="flex gap-1">
-              {channels.map(channel => (
-                <Badge key={channel.id} variant="secondary" className="text-xs">
-                  {channel.name}
-                </Badge>
-              ))}
-              {channels.length === 0 && (
-                <span className="text-xs text-gray-500">No channels</span>
-              )}
-            </div>
-          </div>
-          
+        <div className="flex items-center gap-6 flex-wrap">
           <div className="flex items-center gap-2">
             <span className="text-sm text-gray-600">Content types:</span>
             <Badge variant="secondary" className="text-xs">
               {contentTypes.find(ct => ct.ctt_id === activeCttId)?.content_type_title}
             </Badge>
           </div>
-
           <div className="flex items-center gap-2">
             <span className="text-sm text-gray-600">Progress:</span>
             <button
@@ -899,37 +962,59 @@ export function ContentTab({ taskId, projectId, onBuildWithAI }: ContentTabProps
           </div>
         </div>
 
-        {/* Row 2: Briefing Type, Keyword Density */}
-        <div className="flex items-center gap-6">
-          <div className="flex items-center gap-2">
-            <span className="text-sm text-gray-600">Briefing type:</span>
+        {/* Briefing type: grid-aligned label + trigger (same sizing as Overview dropdowns) */}
+        <div className="grid grid-cols-[max-content_minmax(0,1fr)] gap-x-6 gap-y-2 items-center">
+          <span className="text-sm text-gray-400 text-left">Briefing type</span>
+          <div className="min-w-0 flex items-center gap-1">
             <DropdownMenu>
               <DropdownMenuTrigger asChild>
-                <Button variant="ghost" size="sm" className="h-6 text-xs">
-                  {selectedBriefingType?.title || 'Select'} <ChevronDown className="w-3 h-3 ml-1" />
+                <Button variant="outline" size="sm" className="h-10 min-h-10 w-full min-w-0 border-gray-200 rounded-md text-sm leading-none justify-between truncate">
+                  <span className="truncate">{selectedBriefingType?.title || 'Select'}</span>
+                  <span className="flex items-center gap-0.5 shrink-0">
+                    {selectedBriefingTypeId != null && (
+                      <button
+                        type="button"
+                        onClick={handleClearBriefingType}
+                        className="p-0.5 rounded hover:bg-gray-100 text-gray-400 hover:text-gray-600"
+                        aria-label="Clear briefing type"
+                      >
+                        <X className="w-3.5 h-3.5" />
+                      </button>
+                    )}
+                    <ChevronDown className="w-3 h-3 ml-0.5" />
+                  </span>
                 </Button>
               </DropdownMenuTrigger>
-              <DropdownMenuContent>
+              <DropdownMenuContent className="w-[min(90vw,24rem)] max-w-full">
                 {briefingTypes.map(bt => (
-                  <DropdownMenuItem 
-                    key={bt.briefing_type_id} 
+                  <DropdownMenuItem
+                    key={bt.briefing_type_id}
                     onClick={() => handleBriefingTypeChange(bt.briefing_type_id)}
                   >
                     {bt.title}
                   </DropdownMenuItem>
                 ))}
+                <DropdownMenuSeparator />
+                <DropdownMenuItem onClick={() => projectId && router.push(`/projects/${projectId}/briefings`)}>
+                  Manage briefings
+                </DropdownMenuItem>
+                <DropdownMenuItem onClick={() => toast({ title: 'Import template', description: 'Use project briefings to manage templates.' })}>
+                  Import template
+                </DropdownMenuItem>
               </DropdownMenuContent>
             </DropdownMenu>
           </div>
 
-          <div className="flex items-center gap-2">
-            <span className="text-sm text-gray-600">Keyword density:</span>
-            <button
-              onClick={handleSEOExpand}
-              className="text-sm text-red-600 hover:text-red-800 flex items-center gap-1"
-            >
-              4% <ChevronDown className="w-3 h-3" />
-            </button>
+          <label htmlFor="seo-toggle" className="text-sm text-gray-400 text-left">Add keywords</label>
+          <div className="min-w-0">
+            <Switch
+              id="seo-toggle"
+              checked={seoExpanded}
+              onCheckedChange={(checked) => {
+                setSeoExpanded(checked)
+                if (checked) fetchSEOData()
+              }}
+            />
           </div>
         </div>
       </div>
@@ -955,31 +1040,57 @@ export function ContentTab({ taskId, projectId, onBuildWithAI }: ContentTabProps
         </div>
       )}
 
-      {/* SEO Drawer */}
+      {/* SEO: when toggle on — keyword density table + add keyword row + make default (per row) */}
       {seoExpanded && (
-        <div className="p-4 border rounded-lg bg-gray-50">
-          <div className="text-sm font-medium mb-3">SEO Keywords</div>
-          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-            <div>
-              <Label htmlFor="primary-keyword" className="text-sm font-medium">Primary Keyword</Label>
-              <Input
-                id="primary-keyword"
-                value={seoData?.primary_keyword || ''}
-                onChange={(e) => handleSEOChange(e.target.value, seoData?.secondary_keywords || '')}
-                placeholder="Enter primary keyword"
-                className="mt-1"
-              />
-            </div>
-            <div>
-              <Label htmlFor="secondary-keywords" className="text-sm font-medium">Secondary Keywords</Label>
-              <Input
-                id="secondary-keywords"
-                value={seoData?.secondary_keywords || ''}
-                onChange={(e) => handleSEOChange(seoData?.primary_keyword || '', e.target.value)}
-                placeholder="Enter secondary keywords"
-                className="mt-1"
-              />
-            </div>
+        <div className="mt-2 space-y-1">
+          <table className="w-full text-sm border-collapse">
+            <thead>
+              <tr className="border-b border-gray-200">
+                <th className="text-left py-1.5 font-medium text-gray-600">Keyword</th>
+                <th className="text-right py-1.5 font-medium text-gray-600 w-16">Density</th>
+                <th className="w-8" />
+              </tr>
+            </thead>
+            <tbody>
+              {[
+                ...(seoData?.primary_keyword?.trim() ? [{ keyword: seoData.primary_keyword.trim(), isPrimary: true }] : []),
+                ...(seoData?.secondary_keywords?.split(/[,;]/).map((k: string) => k.trim()).filter(Boolean) || []).map((keyword: string) => ({ keyword, isPrimary: false })),
+              ].map((row, idx) => (
+                <tr key={`${row.keyword}-${idx}`} className="border-b border-gray-100">
+                  <td className="py-1.5">{row.keyword}</td>
+                  <td className="py-1.5 text-right text-gray-500">—</td>
+                  <td className="py-1.5 text-right">
+                    <button
+                      type="button"
+                      className="p-0.5 text-gray-400 hover:text-amber-500"
+                      title="Make default"
+                      aria-label="Make default"
+                      onClick={() => handleMakeDefaultKeyword(row.keyword)}
+                    >
+                      <Star className={`w-3.5 h-3.5 ${row.isPrimary ? 'fill-amber-400 text-amber-500' : ''}`} />
+                    </button>
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+          <div className="flex items-center gap-2 py-1 min-h-8">
+            <Input
+              placeholder="Add keyword"
+              value={newKeyword}
+              onChange={(e) => setNewKeyword(e.target.value)}
+              onKeyDown={(e) => { if (e.key === 'Enter') { e.preventDefault(); handleAddKeyword(); } }}
+              className="h-8 text-sm flex-1 min-w-0"
+            />
+            <button
+              type="button"
+              className="shrink-0 p-1.5 text-gray-400 hover:text-gray-600"
+              onClick={handleAddKeyword}
+              title="Add keyword"
+              aria-label="Add keyword"
+            >
+              <Plus className="w-4 h-4" />
+            </button>
           </div>
         </div>
       )}
@@ -1074,16 +1185,24 @@ export function ContentTab({ taskId, projectId, onBuildWithAI }: ContentTabProps
           </SortableContext>
         </DndContext>
 
-        {/* Add Component Button */}
-        <div>
-          <Button
-            onClick={handleAddComponent}
-            variant="outline"
-            size="sm"
-            className="bg-white text-gray-900 border-gray-300 hover:bg-gray-50"
-          >
-            <Plus className="w-4 h-4 mr-1" /> ADD COMPONENT
-          </Button>
+        {/* Add component card: same chrome as selected cards, no divider above */}
+        <div
+          role="button"
+          tabIndex={0}
+          onClick={handleAddComponent}
+          onKeyDown={e => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); handleAddComponent(); } }}
+          className="border rounded-lg p-4 bg-white border-gray-200 flex items-center gap-3 cursor-pointer hover:bg-gray-50/80 transition-colors"
+        >
+          <div className="flex items-center gap-2 shrink-0">
+            <div className="w-4 h-4 rounded border border-gray-300 flex items-center justify-center text-gray-400">
+              <Plus className="w-3 h-3" />
+            </div>
+            <div className="w-6 h-6 flex items-center justify-center cursor-move text-gray-300">
+              <GripVertical className="w-4 h-4" />
+            </div>
+          </div>
+          <span className="text-sm font-medium text-gray-600">Add component</span>
+          <ChevronDown className="w-4 h-4 text-gray-400 ml-auto shrink-0" />
         </div>
       </div>
 

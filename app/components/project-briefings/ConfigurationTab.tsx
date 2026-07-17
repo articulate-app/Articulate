@@ -236,9 +236,10 @@ export function ChannelsLanguagesContentTypes({ projectId }: { projectId: number
     try {
       const { data, error } = await supabase
         .from('project_ct_channel_briefings')
-        .select('content_type_id, channel_id, briefing_type_id')
+        .select('content_type_id, channel_id, briefing_type_id, is_default')
         .eq('project_id', projectId)
         .eq('content_type_id', selectedContentTypeId)
+        .eq('is_default', true)
 
       if (error) throw error
 
@@ -302,7 +303,7 @@ export function ChannelsLanguagesContentTypes({ projectId }: { projectId: number
   // Set default briefing for channel
   const handleSetChannelBriefing = useCallback(async (contentTypeId: number, channelId: number, briefingTypeId: number | null) => {
     try {
-      const { error } = await supabase.rpc('pcctb_set', {
+      const { error } = await supabase.rpc('pcctb_set_default', {
         p_project_id: projectId,
         p_content_type_id: contentTypeId,
         p_channel_id: channelId,
@@ -730,9 +731,10 @@ export function ChannelsPerContentType({ projectId }: { projectId: number }) {
     try {
       const { data, error } = await supabase
         .from('project_ct_channel_briefings')
-        .select('content_type_id, channel_id, briefing_type_id')
+        .select('content_type_id, channel_id, briefing_type_id, is_default')
         .eq('project_id', projectId)
         .eq('content_type_id', selectedContentTypeId)
+        .eq('is_default', true)
 
       if (error) throw error
 
@@ -796,7 +798,7 @@ export function ChannelsPerContentType({ projectId }: { projectId: number }) {
   // Set default briefing for channel
   const handleSetChannelBriefing = useCallback(async (contentTypeId: number, channelId: number, briefingTypeId: number | null) => {
     try {
-      const { error } = await supabase.rpc('pcctb_set', {
+      const { error } = await supabase.rpc('pcctb_set_default', {
         p_project_id: projectId,
         p_content_type_id: contentTypeId,
         p_channel_id: channelId,
@@ -1293,6 +1295,7 @@ function ChannelComponentsInline({
       queryClient.invalidateQueries({ 
         queryKey: ['proj:ctch:components', projectId, contentTypeId, channelId] 
       })
+      queryClient.invalidateQueries({ queryKey: ['projBriefings:library:index', projectId] })
       await fetchComponents()
       toast({ title: 'Success', description: 'Component removed' })
     } catch (err: any) {
@@ -1382,6 +1385,7 @@ function ChannelComponentsInline({
       queryClient.invalidateQueries({ 
         queryKey: ['proj:ctch:components', projectId, contentTypeId, channelId] 
       })
+      queryClient.invalidateQueries({ queryKey: ['projBriefings:library:index', projectId] })
       await fetchComponents()
       setShowAddGlobalDialog(false)
       setSelectedGlobalId(null)
@@ -1427,6 +1431,7 @@ function ChannelComponentsInline({
       queryClient.invalidateQueries({ 
         queryKey: ['proj:ctch:components', projectId, contentTypeId, channelId] 
       })
+      queryClient.invalidateQueries({ queryKey: ['projBriefings:library:index', projectId] })
       await fetchComponents()
       setShowAddProjectDialog(false)
       setSelectedProjectId(null)
@@ -1908,6 +1913,7 @@ function EditComponentDialog({
       queryClient.invalidateQueries({ 
         queryKey: ['proj:ctch:components', projectId, contentTypeId, channelId] 
       })
+      queryClient.invalidateQueries({ queryKey: ['projBriefings:library:index', projectId] })
       await onSave()
       toast({ title: 'Success', description: 'Component updated' })
     } catch (err: any) {
@@ -2067,8 +2073,9 @@ function DefaultBriefingsGrid_DEPRECATED({ projectId }: { projectId: number }) {
     try {
       const { data, error } = await supabase
         .from('project_ct_channel_briefings')
-        .select('content_type_id, channel_id, briefing_type_id')
+        .select('content_type_id, channel_id, briefing_type_id, is_default')
         .eq('project_id', projectId)
+        .eq('is_default', true)
 
       if (error) throw error
 
@@ -2087,7 +2094,7 @@ function DefaultBriefingsGrid_DEPRECATED({ projectId }: { projectId: number }) {
   // Set default briefing
   const handleSetDefault = useCallback(async (contentTypeId: number, channelId: number, briefingTypeId: number | null) => {
     try {
-      const { error } = await supabase.rpc('pcctb_set', {
+      const { error } = await supabase.rpc('pcctb_set_default', {
         p_project_id: projectId,
         p_content_type_id: contentTypeId,
         p_channel_id: channelId,
@@ -2511,6 +2518,7 @@ function ChannelTemplateEditor({
       queryClient.invalidateQueries({ 
         queryKey: ['proj:ctch:components', projectId, contentTypeId, channelId] 
       })
+      queryClient.invalidateQueries({ queryKey: ['projBriefings:library:index', projectId] })
       await fetchComponents()
       setShowAddMenu(false)
       toast({ title: 'Success', description: 'Project component added' })
@@ -2536,6 +2544,7 @@ function ChannelTemplateEditor({
       queryClient.invalidateQueries({ 
         queryKey: ['proj:ctch:components', projectId, contentTypeId, channelId] 
       })
+      queryClient.invalidateQueries({ queryKey: ['projBriefings:library:index', projectId] })
       await fetchComponents()
       toast({ title: 'Success', description: 'Component removed' })
     } catch (err: any) {

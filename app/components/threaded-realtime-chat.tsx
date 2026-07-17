@@ -6,7 +6,7 @@ import { useCurrentUserStore } from '../store/current-user'
 import { useEffect, useRef, useState } from 'react'
 
 interface ThreadedRealtimeChatProps {
-  threadId: number
+  threadId: number | string
   currentUserId: number
   currentUserName?: string
   currentUserAvatar?: string
@@ -14,13 +14,15 @@ interface ThreadedRealtimeChatProps {
   currentPublicUserId?: number
   hideInput?: boolean
   initialMessages?: any[]
-  focusedMentionId?: number | null
+  focusedMentionId?: number | string | null
   onFocusedMentionCleared?: () => void
   onReplySelected?: (reply: { id: number; author?: string; preview: string }) => void
   groupByDate?: boolean
+  autoFocusInput?: boolean
 }
 
-export function ThreadedRealtimeChat({ threadId, currentUserId, currentUserName, currentUserAvatar, currentUserEmail, currentPublicUserId, hideInput, initialMessages, focusedMentionId, onFocusedMentionCleared, onReplySelected, groupByDate }: ThreadedRealtimeChatProps) {
+export function ThreadedRealtimeChat({ threadId, currentUserId, currentUserName, currentUserAvatar, currentUserEmail, currentPublicUserId, hideInput, initialMessages, focusedMentionId, onFocusedMentionCleared, onReplySelected, groupByDate, autoFocusInput }: ThreadedRealtimeChatProps) {
+  const numericThreadId = typeof threadId === "number" ? threadId : Number(threadId)
   const {
     messages,
     sendMessage,
@@ -32,7 +34,7 @@ export function ThreadedRealtimeChat({ threadId, currentUserId, currentUserName,
     loadOlderMessages,
     isLoadingMore
   } = useThreadedChat(
-    threadId,
+    numericThreadId,
     currentUserId,
     { displayName: currentUserName || 'You', avatar: currentUserAvatar, email: currentUserEmail },
     initialMessages
@@ -82,14 +84,15 @@ export function ThreadedRealtimeChat({ threadId, currentUserId, currentUserName,
     if (!focusedMentionId || !messages.length) return;
 
     // Wait a bit for messages to render
+    let clearHighlightTimer: ReturnType<typeof setTimeout> | null = null
     const timer = setTimeout(() => {
       const el = document.querySelector(
-        `[data-mention-id="${focusedMentionId}"]`
+        `[data-mention-id="${String(focusedMentionId)}"]`
       );
       if (el) {
         el.scrollIntoView({ behavior: "smooth", block: "center" });
         el.classList.add("ring-2", "ring-indigo-500", "ring-offset-2");
-        setTimeout(() => {
+        clearHighlightTimer = setTimeout(() => {
           el.classList.remove("ring-2", "ring-indigo-500", "ring-offset-2");
           if (onFocusedMentionCleared) {
             onFocusedMentionCleared();
@@ -98,14 +101,22 @@ export function ThreadedRealtimeChat({ threadId, currentUserId, currentUserName,
       }
     }, 100);
 
-    return () => clearTimeout(timer);
+    return () => {
+      clearTimeout(timer);
+      if (clearHighlightTimer) clearTimeout(clearHighlightTimer);
+    };
   }, [focusedMentionId, messages, onFocusedMentionCleared]);
 
   if (isLoading) return <div className="p-4 text-muted-foreground">Loading chat…</div>
   if (error) return <div className="p-4 text-destructive">{error}</div>
 
   return (
-    <div ref={chatContainerRef} className="relative h-full overflow-auto">
+    <div ref={chatContainerRef} className="relative h-full overflow-auto flex flex-col">
+      {messages.length === 0 && (
+        <div className="flex items-center justify-center py-8 text-sm text-gray-500">
+          No comments yet
+        </div>
+      )}
       <RealtimeChat
         roomName={`thread-${threadId}`}
         username={currentUserEmail || ''}
@@ -117,6 +128,7 @@ export function ThreadedRealtimeChat({ threadId, currentUserId, currentUserName,
         currentPublicUserId={publicUserId}
         focusedMentionId={focusedMentionId}
         groupByDate={groupByDate}
+        autoFocusInput={autoFocusInput}
         onReplyMessage={(messageId) => {
           const msg = messages.find((m) => String(m.id) === String(messageId))
           if (!msg) return

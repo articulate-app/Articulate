@@ -47,6 +47,28 @@ describe('fetchTasksFromView – groupOrder handling', () => {
     expect(params.p_group_by).toBe('assigned_to')
     expect(params.p_group_order).toBe('desc')
   })
+
+  it('passes projectIds to RPC as p_project_ids for project-scoped query', async () => {
+    await fetchTasksFromView({
+      ...baseFilters,
+      projectIds: [5, 10],
+    })
+
+    expect(mockRpc).toHaveBeenCalledTimes(1)
+    const [, params] = mockRpc.mock.calls[0]
+    expect(params.p_project_ids).toEqual([5, 10])
+  })
+
+  it('passes null p_project_ids when projectIds is empty', async () => {
+    await fetchTasksFromView({
+      ...baseFilters,
+      projectIds: [],
+    })
+
+    expect(mockRpc).toHaveBeenCalledTimes(1)
+    const [, params] = mockRpc.mock.calls[0]
+    expect(params.p_project_ids).toBeNull()
+  })
 })
 
 

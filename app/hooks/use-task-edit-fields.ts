@@ -1,4 +1,6 @@
 import { useQuery } from '@tanstack/react-query';
+import { createClientComponentClient } from "@supabase/auth-helpers-nextjs"
+import { invokeEdgeFunctionFetch } from "@/lib/edge-functions"
 
 // Updated type for the new task-edit-fields response
 export type TaskEditFields = {
@@ -30,25 +32,23 @@ const SUPABASE_EDGE_URL = `${process.env.NEXT_PUBLIC_SUPABASE_URL}/functions/v1/
  * @param accessToken - The access token for authentication
  */
 export function useTaskEditFields(accessToken?: string | null) {
-  console.log('useTaskEditFields called with accessToken:', !!accessToken);
   return useQuery<TaskEditFields | undefined>({
     queryKey: ['task-edit-fields'],
     queryFn: async () => {
-      if (!accessToken) throw new Error('No access token');
-      console.log('Fetching task-edit-fields with token:', accessToken);
-      const res = await fetch(SUPABASE_EDGE_URL, {
-        method: 'POST',
-        headers: {
-          Authorization: `Bearer ${accessToken}`,
+      const supabase = createClientComponentClient()
+      const res = await invokeEdgeFunctionFetch({
+        supabase,
+        url: SUPABASE_EDGE_URL,
+        debugLabel: "task-edit-fields",
+        init: {
+          method: 'POST',
         },
-      });
-      console.log('Fetch response:', res);
+      })
       if (!res.ok) {
         const errorText = await res.text();
         throw new Error(`Failed to fetch task edit fields: ${errorText}`);
       }
       const data = await res.json();
-      console.log('Fetched data:', data);
       return data as TaskEditFields;
     },
     enabled: !!accessToken,

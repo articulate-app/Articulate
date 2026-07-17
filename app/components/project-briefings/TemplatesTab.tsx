@@ -36,7 +36,7 @@ import {
   removeBriefingComponent,
   reorderBriefingComponents,
   fetchAvailableBriefingTypes,
-  fetchProjectComponents,
+  loadProjectComponentIndex,
 } from '../../lib/services/project-briefings'
 import debounce from 'lodash.debounce'
 
@@ -192,15 +192,23 @@ export function TemplatesTab({
     enabled: !!briefingTypeId,
   })
 
-  // Fetch project components
-  const { data: projectComponents } = useQuery({
-    queryKey: ['projBriefings:library', projectId],
+  // Fetch project components list (same source as Library tab: RPC project_components_latest, effective title/description)
+  const { data: projectComponentsIndex } = useQuery({
+    queryKey: ['projBriefings:library:index', projectId],
     queryFn: async () => {
-      const { data, error } = await fetchProjectComponents(projectId)
+      const { data, error } = await loadProjectComponentIndex(projectId)
       if (error) throw error
       return data || []
     },
   })
+
+  const projectComponents = useMemo(
+    () =>
+      (projectComponentsIndex ?? [])
+        .filter((i) => i.kind === 'project')
+        .map((i) => ({ id: i.component_id, title: i.title, description: i.description })),
+    [projectComponentsIndex]
+  )
 
   const sensors = useSensors(
     useSensor(PointerSensor),

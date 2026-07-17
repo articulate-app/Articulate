@@ -1,6 +1,6 @@
 'use client'
 
-import { useState, useMemo } from 'react'
+import { useState, useMemo, useEffect } from 'react'
 import { useRouter, useSearchParams, usePathname } from 'next/navigation'
 import { useQuery, useQueryClient, useMutation } from '@tanstack/react-query'
 import { 
@@ -12,7 +12,11 @@ import {
   Loader2,
   Plus,
   Trash2,
-  ChevronRight
+  ChevronRight,
+  FolderKanban,
+  Maximize2,
+  Minimize2,
+  ChevronLeft,
 } from 'lucide-react'
 import { Button } from '../ui/button'
 import { Input } from '../ui/input'
@@ -45,6 +49,10 @@ import {
   AlertDialogTitle,
 } from '../ui/alert-dialog'
 import { toast } from '../ui/use-toast'
+import { mergeWorkspaceUrlState } from '../../lib/workspace-url-state'
+import { TASKS_SHALLOW_NAV_EVENT } from '../../lib/tasks-shallow-nav'
+import { useMobileDetection } from '../../hooks/use-mobile-detection'
+import { MobileDetailHeader, type MobileDetailAction } from '../ui/mobile-detail-header'
 import {
   getTeamProfile,
   updateTeam,
@@ -65,19 +73,64 @@ import { formatDistanceToNow } from 'date-fns'
 
 interface TeamDetailsPageProps {
   teamId: number
+  onClose?: () => void
+  isDetailsFocused?: boolean
+  onFocusToggle?: () => void
+  /** Drilled from user profile stack in tasks shell — clears `stackTeamId` only. */
+  onStackBack?: () => void
 }
 
-export function TeamDetailsPage({ teamId }: TeamDetailsPageProps) {
+export const TEAM_ALLOWED_TABS = ['overview', 'members', 'projects', 'billing', 'activity'] as const
+type TeamTabValue = (typeof TEAM_ALLOWED_TABS)[number]
+
+/**
+ * Team detail tabs share the generic `centerTab`/`rightTab`/`tab` params (the pane
+ * that owns the tab depends on whether the AI pane is open). Falls back to `overview`.
+ */
+function getTeamTabFromParams(params: URLSearchParams): TeamTabValue {
+  const rawTab = params.get('centerTab') ?? params.get('rightTab') ?? params.get('tab')
+  return TEAM_ALLOWED_TABS.includes(rawTab as TeamTabValue) ? (rawTab as TeamTabValue) : 'overview'
+}
+
+export function TeamDetailsPage({
+  teamId,
+  onClose,
+  isDetailsFocused = false,
+  onFocusToggle,
+  onStackBack,
+}: TeamDetailsPageProps) {
+  const isMobile = useMobileDetection()
   const router = useRouter()
   const pathname = usePathname()
   const searchParams = useSearchParams()
   const queryClient = useQueryClient()
 
-  // Active tab from URL
-  const activeTab = searchParams.get('tab') || 'overview'
+  // Active tab from URL. Kept in local state so shallow history updates
+  // (history.pushState via mergeWorkspaceUrlState) re-render the correct tab —
+  // Next's useSearchParams does not update on shallow writes.
+  const [activeTab, setActiveTab] = useState<TeamTabValue>(() =>
+    getTeamTabFromParams(new URLSearchParams(searchParams.toString())),
+  )
+
+  useEffect(() => {
+    setActiveTab(getTeamTabFromParams(new URLSearchParams(searchParams.toString())))
+  }, [searchParams])
+
+  useEffect(() => {
+    const syncFromWindow = () => {
+      if (typeof window === 'undefined') return
+      setActiveTab(getTeamTabFromParams(new URLSearchParams(window.location.search)))
+    }
+    window.addEventListener(TASKS_SHALLOW_NAV_EVENT, syncFromWindow)
+    window.addEventListener('popstate', syncFromWindow)
+    return () => {
+      window.removeEventListener(TASKS_SHALLOW_NAV_EVENT, syncFromWindow)
+      window.removeEventListener('popstate', syncFromWindow)
+    }
+  }, [])
 
   // Fetch team profile
-  const { data: teamProfile, isLoading: profileLoading } = useQuery({
+  const { data: teamProfile, isLoading: profileLoading, isFetching: profileFetching } = useQuery({
     queryKey: ['team-profile', teamId],
     queryFn: async () => {
       const { data, error } = await getTeamProfile(teamId)
@@ -85,12 +138,32 @@ export function TeamDetailsPage({ teamId }: TeamDetailsPageProps) {
       return data
     },
     enabled: !isNaN(teamId) && teamId > 0,
+    initialData: () => queryClient.getQueryData(['team-profile', teamId]),
+    staleTime: 0,
   })
 
   const handleTabChange = (value: string) => {
-    const params = new URLSearchParams(searchParams.toString())
-    params.set('tab', value)
-    router.push(`${pathname}?${params.toString()}`)
+    const nextTab = TEAM_ALLOWED_TABS.includes(value as TeamTabValue) ? (value as TeamTabValue) : 'overview'
+    // Optimistically switch so the pane renders immediately, before the shallow URL write.
+    setActiveTab(nextTab)
+    const params = new URLSearchParams(
+      typeof window !== "undefined" ? window.location.search : searchParams.toString(),
+    )
+    const isAiRightPane = params.get('rightView') === 'ai'
+    mergeWorkspaceUrlState(
+      isAiRightPane
+        ? {
+            centerTab: value === "overview" ? null : value,
+            rightTab: null,
+            tab: null,
+          }
+        : {
+            rightTab: value === "overview" ? null : value,
+            centerTab: null,
+            tab: null,
+          },
+      { source: "team-tab-change", mode: "push" },
+    )
   }
 
   const handleChatWithTeam = async () => {
@@ -110,7 +183,13 @@ export function TeamDetailsPage({ teamId }: TeamDetailsPageProps) {
       const params = new URLSearchParams(searchParams.toString())
       params.set('rightView', 'thread-chat')
       params.set('rightThreadId', String(threadId))
-      router.push(`${pathname}?${params.toString()}`)
+      mergeWorkspaceUrlState(
+        {
+          rightView: "thread-chat",
+          rightThreadId: String(threadId),
+        },
+        { source: "team-chat-open", mode: "push" },
+      )
     } catch (err: any) {
       toast({
         title: 'Error',
@@ -120,7 +199,7 @@ export function TeamDetailsPage({ teamId }: TeamDetailsPageProps) {
     }
   }
 
-  if (profileLoading) {
+  if (profileLoading && !teamProfile) {
     return (
       <div className="flex items-center justify-center h-full">
         <Loader2 className="w-6 h-6 animate-spin text-gray-400" />
@@ -138,27 +217,95 @@ export function TeamDetailsPage({ teamId }: TeamDetailsPageProps) {
     )
   }
 
+  const mobileTeamActions: MobileDetailAction[] = [
+    {
+      id: 'team-chat',
+      label: 'Team Chat',
+      icon: <MessageSquare className="h-4 w-4" />,
+      onSelect: () => {
+        void handleChatWithTeam()
+      },
+    },
+  ]
+
   return (
     <div className="flex flex-col h-full">
-      {/* Header */}
+      {/* Mobile header: stable title + top-right "..." overflow with team actions. */}
+      {isMobile ? (
+        <MobileDetailHeader
+          onBack={onStackBack ?? onClose}
+          backLabel={onStackBack ? 'Back to user profile' : 'Close details'}
+          title={teamProfile.title}
+          subtitle={teamProfile.full_name}
+          actions={mobileTeamActions}
+        />
+      ) : (
+      /* Header */
       <div className="flex items-center justify-between px-6 py-4 bg-white border-t-0">
-        <div>
-          <h1 className="text-xl font-semibold text-gray-900">
+        <div className="flex min-w-0 flex-1 items-start gap-2">
+          {onStackBack ? (
+            <Button
+              type="button"
+              variant="ghost"
+              size="sm"
+              className="mt-0.5 h-8 w-8 shrink-0 p-0 text-gray-600 hover:bg-gray-100 hover:text-gray-900"
+              onClick={onStackBack}
+              aria-label="Back to user profile"
+              title="Back to user profile"
+            >
+              <ChevronLeft className="h-5 w-5" />
+            </Button>
+          ) : null}
+          <div className="min-w-0">
+          <h1 className="flex items-center gap-2 text-xl font-semibold text-gray-900">
             {teamProfile.title}
+            {profileFetching && (teamProfile as { __partial?: boolean }).__partial ? (
+              <Loader2 className="w-3.5 h-3.5 animate-spin text-gray-400" aria-label="Loading full details" />
+            ) : null}
           </h1>
           <p className="text-sm text-gray-500 mt-1">
             {teamProfile.full_name}
           </p>
+          </div>
         </div>
-        <Button
-          onClick={handleChatWithTeam}
-          size="sm"
-          className="gap-2"
-        >
-          <MessageSquare className="w-4 h-4" />
-          Team Chat
-        </Button>
+        <div className="flex items-center gap-1">
+          <Button
+            onClick={handleChatWithTeam}
+            size="sm"
+            className="gap-2"
+          >
+            <MessageSquare className="w-4 h-4" />
+            Team Chat
+          </Button>
+          {onFocusToggle ? (
+            <Button
+              type="button"
+              variant="ghost"
+              size="sm"
+              onClick={onFocusToggle}
+              className="h-8 w-8 p-0 text-gray-500 hover:bg-gray-100 hover:text-gray-700"
+              aria-label={isDetailsFocused ? "Restore details pane" : "Expand details pane"}
+              title={isDetailsFocused ? "Restore details pane" : "Expand details pane"}
+            >
+              {isDetailsFocused ? <Minimize2 className="w-4 h-4" /> : <Maximize2 className="w-4 h-4" />}
+            </Button>
+          ) : null}
+          {onClose ? (
+            <Button
+              type="button"
+              variant="ghost"
+              size="sm"
+              onClick={onClose}
+              className="h-8 w-8 p-0 text-gray-500 hover:bg-gray-100 hover:text-gray-700"
+              aria-label="Close details"
+              title="Close details"
+            >
+              <X className="w-4 h-4" />
+            </Button>
+          ) : null}
+        </div>
       </div>
+      )}
 
       {/* Tabs */}
       <div className="flex-1 overflow-hidden flex flex-col">
@@ -843,10 +990,23 @@ function TeamProjectsTab({ teamId }: { teamId: number }) {
               onClick={() => handleProjectClick(project.project_id)}
             >
               <div className="flex items-center gap-3">
-                <div
-                  className="w-3 h-3 rounded-full flex-shrink-0"
-                  style={{ backgroundColor: project.color || '#6b7280' }}
-                />
+                {project.logo ? (
+                  <img
+                    src={project.logo}
+                    alt={project.name}
+                    className="w-5 h-5 rounded-md object-cover flex-shrink-0"
+                  />
+                ) : project.color ? (
+                  <div
+                    className="w-5 h-5 rounded-md flex-shrink-0"
+                    style={{ backgroundColor: project.color }}
+                    aria-hidden="true"
+                  />
+                ) : (
+                  <div className="w-5 h-5 rounded-md flex items-center justify-center bg-gray-100 text-gray-500 flex-shrink-0">
+                    <FolderKanban className="w-3 h-3" />
+                  </div>
+                )}
                 <div>
                   <div className="font-medium text-sm text-gray-900">
                     {project.name}
@@ -914,10 +1074,23 @@ function TeamProjectsTab({ teamId }: { teamId: number }) {
                   {availableProjects?.map((project) => (
                     <SelectItem key={project.id} value={String(project.id)}>
                       <div className="flex items-center gap-2">
-                        <div
-                          className="w-2 h-2 rounded-full"
-                          style={{ backgroundColor: project.color || '#6b7280' }}
-                        />
+                        {(project as { logo?: string | null }).logo ? (
+                          <img
+                            src={(project as { logo?: string | null }).logo!}
+                            alt={project.name}
+                            className="w-3 h-3 rounded-sm object-cover flex-shrink-0"
+                          />
+                        ) : project.color ? (
+                          <div
+                            className="w-3 h-3 rounded-sm flex-shrink-0"
+                            style={{ backgroundColor: project.color }}
+                            aria-hidden="true"
+                          />
+                        ) : (
+                          <div className="w-3 h-3 rounded-sm flex items-center justify-center bg-gray-100 text-gray-500 flex-shrink-0">
+                            <FolderKanban className="w-2 h-2" />
+                          </div>
+                        )}
                         {project.name}
                       </div>
                     </SelectItem>
@@ -1262,10 +1435,13 @@ function TeamActivityTab({ teamId }: { teamId: number }) {
   }
 
   const handleTaskClick = (taskId: number) => {
-    const params = new URLSearchParams(searchParams.toString())
-    params.set('rightView', 'task-details')
-    params.set('rightTaskId', String(taskId))
-    router.push(`${pathname}?${params.toString()}`)
+    mergeWorkspaceUrlState(
+      {
+        rightView: "task-details",
+        rightTaskId: String(taskId),
+      },
+      { source: "team-activity-open-task", mode: "push" },
+    )
   }
 
   return (

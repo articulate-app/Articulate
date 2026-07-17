@@ -58,10 +58,14 @@ export interface UserTask {
   publication_date: string | null
   project_status_id: number | null
   project_status_name: string | null
+  /** When present on `v_user_tasks_i_can_see`, drives status pill color. */
+  project_status_color?: string | null
   is_overdue: boolean | null
   is_publication_overdue: boolean | null
   assigned_to_id: number | null
   assigned_to_name: string | null
+  /** Storage path or URL when exposed by the tasks view */
+  assigned_to_photo?: string | null
   updated_at: string
 }
 
@@ -320,11 +324,11 @@ export async function searchUserDmMentions(
  * Get users for a specific project (project watchers)
  * Returns users in the format { value: string, label: string, photo?: string | null }
  */
-export async function getUsersForProject(projectId: string | number): Promise<{ value: string; label: string; photo?: string | null }[]> {
+export async function getUsersForProject(projectId: string | number): Promise<{ value: string; label: string; photo?: string | null; email?: string | null }[]> {
   try {
     const { data, error } = await supabase
       .from('v_project_watchers_with_user')
-      .select('user_id, full_name, photo')
+      .select('user_id, full_name, email, photo')
       .eq('project_id', projectId)
       .order('full_name')
 
@@ -339,6 +343,7 @@ export async function getUsersForProject(projectId: string | number): Promise<{ 
         value: String(user.user_id),
         label: user.full_name || 'Unnamed User',
         photo: user.photo ?? null,
+        email: user.email ?? null,
       }))
   } catch (error) {
     console.error('Error in getUsersForProject:', error)

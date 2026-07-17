@@ -24,6 +24,23 @@ interface UseKeywordPlannerOptions {
   pageSize?: number;
 }
 
+function normalizeKeywordIdeasRegionId(regionId: unknown): string | undefined {
+  if (regionId == null) return undefined;
+
+  const value = typeof regionId === "string" ? regionId.trim() : String(regionId).trim();
+
+  if (!value || value === "0" || value.toLowerCase() === "all") {
+    return undefined;
+  }
+
+  const numeric = Number(value);
+  if (!Number.isFinite(numeric) || numeric <= 0) {
+    return undefined;
+  }
+
+  return String(numeric);
+}
+
 export function useKeywordPlanner(
   filters: KeywordPlannerFilters,
   options: UseKeywordPlannerOptions = {}
@@ -68,6 +85,7 @@ export function useKeywordPlanner(
 
       // Create new abort controller
       abortControllerRef.current = new AbortController();
+      const normalizedRegionId = normalizeKeywordIdeasRegionId(filters.regionId);
 
       const response = await fetch('/api/keyword-ideas', {
         method: 'POST',
@@ -76,8 +94,8 @@ export function useKeywordPlanner(
         },
         body: JSON.stringify({
           keyword: debouncedKeyword,
-          regionId: filters.regionId || undefined,
           languageId: filters.languageId || undefined,
+          ...(normalizedRegionId ? { regionId: normalizedRegionId } : {}),
           pageSize,
         }),
         signal: abortControllerRef.current.signal,

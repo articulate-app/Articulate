@@ -43,6 +43,7 @@ export interface TeamProject {
   project_id: number
   name: string
   color: string | null
+  logo?: string | null
   status: string | null
   start_date: string | null
   due_date: string | null
@@ -219,7 +220,7 @@ export async function removeUserFromTeam(userId: number, teamId: number) {
 export async function getTeamProjects(teamId: number) {
   const { data, error } = await supabase
     .from('v_team_projects')
-    .select('project_id, name, color, status, start_date, due_date')
+    .select('project_id, name, color, logo, status, start_date, due_date')
     .eq('team_id', teamId)
     .order('updated_at', { ascending: false })
 
@@ -314,7 +315,7 @@ export async function getAvailableUsers(search?: string) {
 export async function getAvailableProjects(search?: string) {
   let query = supabase
     .from('v_projects_minimal')
-    .select('id, name, color')
+    .select('id, name, color, logo')
     .eq('is_deleted', false)
     .order('name')
 

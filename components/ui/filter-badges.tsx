@@ -25,7 +25,7 @@ export function FilterBadges({ badges, className, onClearAll }: FilterBadgesProp
     'inline-flex items-center gap-1 px-4 py-1 rounded-full border border-gray-300 text-gray-700 text-sm font-medium bg-white hover:bg-gray-100 transition shadow-none focus:ring-2 focus:ring-blue-200 focus:outline-none';
 
   return (
-    <div className={cn('flex flex-wrap gap-2 pl-4', className)}>
+    <div className={cn('flex flex-wrap gap-2', className)}>
       {badges.map((badge) => (
         <button
           key={badge.id}

@@ -214,7 +214,7 @@ export function KeywordPlannerPane({ isOpen, onClose }: KeywordPlannerPaneProps)
     : false;
 
   return (
-    <div className="fixed top-0 right-0 w-[1100px] max-w-[95vw] bg-white border-l border-gray-200 flex flex-col h-screen z-50 shadow-lg">
+    <div className="fixed inset-x-0 bottom-0 h-[88dvh] w-full rounded-t-2xl border-t border-gray-200 bg-white flex flex-col z-50 shadow-lg md:inset-x-auto md:top-0 md:right-0 md:bottom-auto md:h-screen md:w-[1100px] md:max-w-[95vw] md:rounded-t-none md:border-t-0 md:border-l">
       {/* Header */}
       <div className="flex items-center justify-between p-4 border-b border-gray-200 flex-shrink-0">
         <div className="flex items-center gap-2">

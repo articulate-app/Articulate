@@ -27,9 +27,21 @@ interface StickyAddCommentInputProps {
   handleDeleteThread?: (threadId: number) => void
   replyTo?: { id: number; author?: string; preview: string } | null
   onClearReply?: () => void
+  pendingOutputAnchor?: {
+    taskComponentOutputId: string
+    attachmentId: string | null
+    anchorType: "image_point"
+    anchorX: number
+    anchorY: number
+    anchorData?: unknown
+  } | null
+  onConsumePendingOutputAnchor?: () => void
+  focusComposerToken?: number
+  /** Flush layout for task comments panel (no side padding). */
+  embedded?: boolean
 }
 
-export function StickyAddCommentInput({ taskId, onCommentAdded, pendingParticipants = [], setPendingParticipants, removedParticipants = [], setRemovedParticipants, threads = [], latestMentions = {}, activeThreadId: propActiveThreadId = null, handleDeleteThread, replyTo, onClearReply }: StickyAddCommentInputProps) {
+export function StickyAddCommentInput({ taskId, onCommentAdded, pendingParticipants = [], setPendingParticipants, removedParticipants = [], setRemovedParticipants, threads = [], latestMentions = {}, activeThreadId: propActiveThreadId = null, handleDeleteThread, replyTo, onClearReply, pendingOutputAnchor = null, onConsumePendingOutputAnchor, focusComposerToken = 0, embedded = false }: StickyAddCommentInputProps) {
   // Remove all local fetching state
   // const [threads, setThreads] = useState<Thread[]>([])
   // const [latestMentions, setLatestMentions] = useState<Record<number, Mention | null>>({})
@@ -53,7 +65,7 @@ export function StickyAddCommentInput({ taskId, onCommentAdded, pendingParticipa
   if (!activeThreadId) {
     // Pending mode: show chat input, then pendingParticipants avatars and add/search UI below
     return (
-      <div className="sticky bottom-0 left-0 right-0 bg-white border-t z-20" style={{ boxShadow: "0 -2px 8px rgba(0,0,0,0.03)" }}>
+      <div className="bg-white">
         <AddCommentInput
           key={String(activeThreadId)}
           taskId={taskId}
@@ -66,13 +78,17 @@ export function StickyAddCommentInput({ taskId, onCommentAdded, pendingParticipa
           setPendingParticipants={setPendingParticipants}
           replyTo={replyTo}
           onClearReply={onClearReply}
+          pendingOutputAnchor={pendingOutputAnchor}
+          onConsumePendingOutputAnchor={onConsumePendingOutputAnchor}
+          focusComposerToken={focusComposerToken}
+          embedded={embedded}
         />
       </div>
     )
   }
 
   return (
-    <div className="sticky bottom-0 left-0 right-0 bg-white border-t z-20" style={{ boxShadow: "0 -2px 8px rgba(0,0,0,0.03)" }}>
+    <div className="bg-white">
       <AddCommentInput
         key={String(activeThreadId)}
         taskId={taskId}
@@ -83,6 +99,10 @@ export function StickyAddCommentInput({ taskId, onCommentAdded, pendingParticipa
         }}
         replyTo={replyTo}
         onClearReply={onClearReply}
+        pendingOutputAnchor={pendingOutputAnchor}
+        onConsumePendingOutputAnchor={onConsumePendingOutputAnchor}
+        focusComposerToken={focusComposerToken}
+        embedded={embedded}
       />
       
     </div>

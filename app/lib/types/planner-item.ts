@@ -3,6 +3,8 @@ import type { TaskListRow } from './task-list-view'
 export type PlannerEntityType = 'task' | 'suggestion'
 
 export type PlannerEntityFields = {
+  /** Stable mixed-entity row id (`task:123` / `suggestion:456`). */
+  board_item_id?: string
   /**
    * Disambiguates which table this row belongs to.
    * NOTE: Do not rely on a generic `id` field for cross-entity identity.
@@ -20,12 +22,16 @@ export type PlannerEntityFields = {
 
 export type SuggestionItem = TaskListRow & {
   kind: 'suggestion'
+  suggestion_id: number
   /**
    * AI suggestion details (not present on task_list_view rows).
    * These are used by the right-side details pane in Suggestion mode.
    */
   briefing: string | null
   channel_ids: number[]
+  planned_for_date?: string | null
+  created_at?: string | null
+  raw_suggestion?: unknown
 } & PlannerEntityFields
 
 export type TaskItem = TaskListRow & {

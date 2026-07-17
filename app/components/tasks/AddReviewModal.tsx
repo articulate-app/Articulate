@@ -8,6 +8,7 @@ import { Input } from "../ui/input"
 import { NewReviewPayload } from "../../lib/types/tasks"
 import { createClientComponentClient } from "@supabase/auth-helpers-nextjs"
 import { toast } from "../ui/use-toast"
+import { submitTaskReview } from "./review-submit"
 
 interface AddReviewModalProps {
   taskId: number | null;
@@ -125,9 +126,7 @@ export function AddReviewModal({ taskId, isOpen, onClose, onSuccess }: AddReview
         negative_feedback: formData.negative_feedback.trim() || null
       };
 
-      const { error } = await supabase
-        .from('reviews')
-        .insert(payload);
+      const { error } = await submitTaskReview(supabase, payload);
 
       if (error) {
         if (error.code === '42501' || error.message.includes('permission') || error.message.includes('403')) {

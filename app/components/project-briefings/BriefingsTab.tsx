@@ -171,6 +171,7 @@ export function BriefingsTab({
       setIsAddDialogOpen(false)
       setSelectedTypes([])
       queryClient.invalidateQueries({ queryKey: ['projBriefings:list', projectId] })
+      queryClient.invalidateQueries({ queryKey: ['projBriefings:available', projectId] })
       onRefresh()
     } catch (error: any) {
       toast({
@@ -281,9 +282,7 @@ export function BriefingsTab({
 
   return (
     <div className="space-y-8">
-      <div>
-        <div className="flex items-center justify-between mb-4">
-          <h2 className="text-lg font-semibold text-gray-900">Briefing Types</h2>
+      <div className="mb-4 flex justify-end">
           <Dialog open={isAddDialogOpen} onOpenChange={setIsAddDialogOpen}>
             <DialogTrigger asChild>
               <Button size="sm" className="gap-2">
@@ -322,7 +321,7 @@ export function BriefingsTab({
               </DialogFooter>
             </DialogContent>
           </Dialog>
-        </div>
+      </div>
 
         {briefingTypes.length === 0 ? (
           <div className="flex flex-col items-center justify-center text-center py-12">
@@ -357,7 +356,6 @@ export function BriefingsTab({
             </SortableContext>
           </DndContext>
         )}
-      </div>
 
       {/* Channels per Content Type Section */}
       <div className="border-t pt-8">

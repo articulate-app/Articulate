@@ -256,7 +256,7 @@ export async function getRoles() {
 export async function getMinimalProjects() {
   const { data, error } = await supabase
     .from('projects')
-    .select('id, name, color, active')
+    .select('id, name, color, logo, active')
     .eq('active', true)
     .order('name')
 

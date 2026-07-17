@@ -6,6 +6,11 @@ declare module 'docx' {
   export const Paragraph: any
   export const TextRun: any
   export const HeadingLevel: any
+  export const Header: any
+  export const ExternalHyperlink: any
+  export const LevelFormat: any
+  export const AlignmentType: any
+  export const ImageRun: any
 }
 
 

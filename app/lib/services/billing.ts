@@ -1,6 +1,7 @@
 import { createClientComponentClient } from '@supabase/auth-helpers-nextjs'
 import type { SupabaseClient } from '@supabase/supabase-js'
 import { updateItemInStore } from '../../../hooks/use-infinite-query'
+import { invokeEdgeFunctionFetch } from '@/lib/edge-functions'
 import type { 
   InvoiceOrder, 
   InvoiceLine, 
@@ -27,22 +28,20 @@ export async function syncInvoiceWithTOC(invoiceId: number): Promise<{ success: 
       throw new Error('Missing NEXT_PUBLIC_SUPABASE_URL')
     }
 
-    // Get the current session for authentication
-    const { data: { session } } = await supabase.auth.getSession()
-    if (!session?.access_token) {
-      throw new Error('No access token available')
-    }
-
     // Call the toc_invoice edge function
-    const response = await fetch(`${supabaseUrl}/functions/v1/toc_invoice`, {
-      method: 'POST',
+    const response = await invokeEdgeFunctionFetch({
+      supabase,
+      url: `${supabaseUrl}/functions/v1/toc_invoice`,
+      debugLabel: "toc_invoice",
+      init: {
+        method: 'POST',
+        body: JSON.stringify({
+          invoice_id: invoiceId
+        })
+      },
       headers: {
-        'Authorization': `Bearer ${session.access_token}`,
         'Content-Type': 'application/json',
       },
-      body: JSON.stringify({
-        invoice_id: invoiceId
-      })
     })
 
     if (!response.ok) {

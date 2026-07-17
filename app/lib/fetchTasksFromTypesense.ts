@@ -1,4 +1,5 @@
 import { supabase } from './supabase';
+import { invokeEdgeFunctionFetch } from "./edge-functions"
 
 // Map Typesense hit to your existing task format, including nested objects for table compatibility
 function mapTypesenseTask(hit: any) {
@@ -132,13 +133,17 @@ export async function fetchTasksFromTypesense({ q, project, filters = {}, page =
     
     console.log('[Supabase Edge Function] Making request to:', edgeFunctionUrl);
     
-    const response = await fetch(edgeFunctionUrl, {
-      method: 'GET',
+    const response = await invokeEdgeFunctionFetch({
+      supabase,
+      url: edgeFunctionUrl,
+      debugLabel: "search_tasks_with_acl",
+      init: {
+        method: 'GET',
+      },
       headers: {
-        'Authorization': `Bearer ${session.access_token}`,
         'Content-Type': 'application/json',
       },
-    });
+    })
 
     if (!response.ok) {
       const errorText = await response.text();

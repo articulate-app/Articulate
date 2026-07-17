@@ -8,6 +8,7 @@ import { usePathname, useRouter, useSearchParams } from "next/navigation"
 import { Button } from "../../ui/button"
 import { toast } from "../../ui/use-toast"
 import { ToastAction } from "../../ui/toast"
+import { cn } from "@/lib/utils"
 import { getCurrentUserId } from "../../../lib/services/auth"
 import {
   getProjectPlanMode,
@@ -28,7 +29,13 @@ function plannerButtonCopy(planMode: PlanMode) {
   }
 }
 
-export function PlanningRunButton({ projectId }: { projectId: number }) {
+export function PlanningRunButton({
+  projectId,
+  variant = "default",
+}: {
+  projectId: number
+  variant?: "default" | "subtle-text"
+}) {
   const queryClient = useQueryClient()
   const router = useRouter()
   const pathname = usePathname()
@@ -112,7 +119,16 @@ export function PlanningRunButton({ projectId }: { projectId: number }) {
 
   return (
     <div className="flex flex-col items-start gap-1">
-      <Button type="button" className="gap-2" disabled={isDisabled} onClick={() => runMutation.mutate()}>
+      <Button
+        type="button"
+        variant={variant === "subtle-text" ? "ghost" : "default"}
+        className={cn(
+          "gap-2",
+          variant === "subtle-text" && "px-0 text-gray-500 hover:text-gray-700 hover:bg-transparent",
+        )}
+        disabled={isDisabled}
+        onClick={() => runMutation.mutate()}
+      >
         {runMutation.isPending ? <Loader2 className="h-4 w-4 animate-spin" /> : <RefreshCw className="h-4 w-4" />}
         {runMutation.isPending ? "Running…" : copy.label}
       </Button>

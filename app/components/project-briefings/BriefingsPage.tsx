@@ -2,118 +2,210 @@
 
 import React, { useMemo, useRef, useState, useCallback, useEffect } from 'react'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
-import { useSearchParams, useRouter, usePathname } from 'next/navigation'
+import { useSearchParams } from 'next/navigation'
+import dynamic from 'next/dynamic'
 import { Button } from '../ui/button'
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '../ui/tabs'
-import { ExpandableBriefingsList } from './ExpandableBriefingsList'
-import { LibraryTab } from './LibraryTab'
-import { Edit, X, Loader2 } from 'lucide-react'
+import { X, Loader2, Maximize2, Minimize2, MoreVertical, Settings } from 'lucide-react'
 import { OverviewTab } from '../projects/OverviewTab'
-import { BillingTab } from '../projects/BillingTab'
-import { ActivityTab } from '../projects/ActivityTab'
 import { CommentsTab } from '../projects/CommentsTab'
-import { FilesTab } from '../projects/FilesTab'
-import { getProjectOverview, type ProjectOverview } from '../../lib/services/projects-briefing'
+import { getProjectOverview, type ProjectOverview, uploadProjectFile } from '../../lib/services/projects-briefing'
 import { ProjectAnalyticsTab } from '../projects/ProjectAnalyticsTab'
 import { ProjectKeywordTrackingTab } from '../projects/ProjectKeywordTrackingTab'
 import { ProjectAiVisibilityTab } from '../projects/ProjectAiVisibilityTab'
-import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "../ui/dialog"
-import { Input } from "../ui/input"
-import { Label } from "../ui/label"
-import { Textarea } from "../ui/textarea"
-import { PUBLIC_MEDIA_BUCKET, getImageUrl, uploadImage } from "../../lib/public-media"
-import { updateProjectOverview } from "../../lib/services/projects-briefing"
-import { toast } from "../ui/use-toast"
+import { ProjectHeaderWatchers } from '../projects/ProjectHeaderWatchers'
 import {
-  fetchProjectBriefingTypes,
-  type ProjectBriefingType,
-} from '../../lib/services/project-briefings'
+  ProjectSettingsPanel,
+  type ProjectSettingsCategory,
+} from '../projects/ProjectSettingsPanel'
+import { getImageUrl } from "../../lib/public-media"
+import { toast } from "../ui/use-toast"
+import { usePrefetchProjectSharedQueries } from '../../hooks/use-project-shared-queries'
+import { TASKS_SHALLOW_NAV_EVENT } from '../../lib/tasks-shallow-nav'
+import { mergeWorkspaceUrlState } from '../../lib/workspace-url-state'
+import { useMobileDetection } from '../../hooks/use-mobile-detection'
+import { MobileDetailHeader, type MobileDetailAction } from '../ui/mobile-detail-header'
 
 interface BriefingsPageProps {
   projectId: number
   onClose?: () => void
+  isDetailsFocused?: boolean
+  onFocusToggle?: () => void
 }
 
 const ALLOWED_TABS = [
   'overview',
-  'billing',
   'activity',
   'comments',
-  'files',
   'analytics',
   'ai-visibility',
   'keywords',
-  'briefings',
-  'library',
+  'tasks',
 ] as const
 
 type TabValue = (typeof ALLOWED_TABS)[number]
 
-export function BriefingsPage({ projectId, onClose }: BriefingsPageProps) {
+function getTabValueFromParams(params: URLSearchParams): TabValue {
+  const rawTab = params.get('centerTab') ?? params.get('rightTab') ?? params.get('tab')
+  if (
+    rawTab === "files"
+    || rawTab === "briefings"
+    || rawTab === "billing"
+    || rawTab === "library"
+  ) {
+    return "overview"
+  }
+  return ALLOWED_TABS.includes(rawTab as any) ? (rawTab as TabValue) : 'overview'
+}
+
+function TabPanelFallback() {
+  return (
+    <div className="flex items-center justify-center h-full p-6 text-sm text-gray-500">
+      Loading tab...
+    </div>
+  )
+}
+
+const ActivityTab = dynamic(
+  () => import('../projects/ActivityTab').then((module) => ({ default: module.ActivityTab })),
+  { loading: () => <TabPanelFallback /> }
+)
+
+const ProjectTasksTabContent = dynamic(
+  () => import('../tasks/ProjectTasksTabContent').then((module) => ({ default: module.ProjectTasksTabContent })),
+  { loading: () => <TabPanelFallback /> }
+)
+
+export function BriefingsPage({ projectId, onClose, isDetailsFocused = false, onFocusToggle }: BriefingsPageProps) {
+  const isMobile = useMobileDetection()
   const queryClient = useQueryClient()
-  const router = useRouter()
-  const pathname = usePathname()
   const searchParams = useSearchParams()
-  const [selectedBriefingTypeId, setSelectedBriefingTypeId] = useState<number | null>(null)
-  const [showEditProjectDialog, setShowEditProjectDialog] = useState(false)
-  const [isLogoUploading, setIsLogoUploading] = useState(false)
-  const logoInputRef = useRef<HTMLInputElement | null>(null)
-  const [editProjectForm, setEditProjectForm] = useState({
-    name: "",
-    description: "",
-  })
+  const [projectMiddlePaneHost, setProjectMiddlePaneHost] = useState<HTMLDivElement | null>(null)
+  const [showProjectSettings, setShowProjectSettings] = useState(false)
+  const [settingsCategory, setSettingsCategory] = useState<ProjectSettingsCategory>("details")
+  const [isTabsHovered, setIsTabsHovered] = useState(false)
+  const [isDropzoneActive, setIsDropzoneActive] = useState(false)
+  const tabsScrollRef = useRef<HTMLDivElement | null>(null)
+  const openedLegacySettingsRef = useRef(false)
   
-  // Read tab from URL, default to 'overview'
-  const rawTab = searchParams.get('tab')
-  const tabFromUrl: TabValue = ALLOWED_TABS.includes(rawTab as any) ? (rawTab as TabValue) : 'overview'
-  const [activeTab, setActiveTab] = useState<TabValue>(tabFromUrl)
+  const [activeTab, setActiveTab] = useState<TabValue>(() =>
+    getTabValueFromParams(new URLSearchParams(searchParams.toString()))
+  )
 
-  // Initialize URL with default tab if none specified
+  // Keep local tab state synced when Next searchParams updates.
   useEffect(() => {
-    const current = searchParams.get('tab')
-    if (!current || !ALLOWED_TABS.includes(current as any)) {
-      const params = new URLSearchParams(searchParams.toString())
-      params.set('tab', 'overview')
-      router.replace(`${pathname}?${params.toString()}`, { scroll: false })
-    }
-  }, []) // Run only once on mount
+    setActiveTab(getTabValueFromParams(new URLSearchParams(searchParams.toString())))
+  }, [searchParams])
 
-  // Sync state with URL changes
+  // Keep local tab state synced for shallow history updates.
   useEffect(() => {
-    const current = searchParams.get('tab')
-    const urlTab: TabValue = ALLOWED_TABS.includes(current as any) ? (current as TabValue) : 'overview'
-    if (urlTab !== activeTab) {
-      setActiveTab(urlTab)
+    const syncFromWindow = () => {
+      if (typeof window === 'undefined') return
+      setActiveTab(getTabValueFromParams(new URLSearchParams(window.location.search)))
     }
-    if (current && !ALLOWED_TABS.includes(current as any)) {
-      const params = new URLSearchParams(searchParams.toString())
-      params.set('tab', 'overview')
-      router.replace(`${pathname}?${params.toString()}`, { scroll: false })
+    window.addEventListener(TASKS_SHALLOW_NAV_EVENT, syncFromWindow)
+    window.addEventListener('popstate', syncFromWindow)
+    return () => {
+      window.removeEventListener(TASKS_SHALLOW_NAV_EVENT, syncFromWindow)
+      window.removeEventListener('popstate', syncFromWindow)
     }
-  }, [searchParams, activeTab, pathname, router])
+  }, [])
+
+  useEffect(() => {
+    console.log("[project-detail] active tab from URL", activeTab)
+  }, [activeTab])
+
+  // Warm project/global data once in the page shell so tab switches do not refetch shared resources.
+  usePrefetchProjectSharedQueries(projectId)
+
+  // Preload heavy tab modules in idle time to reduce click-to-content delay.
+  const warmTabModule = useCallback((tab: TabValue) => {
+    switch (tab) {
+      case 'activity':
+        void import('../projects/ActivityTab')
+        break
+      case 'tasks':
+        void import('../tasks/ProjectTasksTabContent')
+        break
+      default:
+        break
+    }
+  }, [])
+
+  const openProjectSettings = useCallback((category: ProjectSettingsCategory = "details") => {
+    setSettingsCategory(category)
+    setShowProjectSettings(true)
+  }, [])
+
+  useEffect(() => {
+    if (typeof window === 'undefined') return
+    const warmHeavyTabs = () => {
+      warmTabModule('activity')
+      warmTabModule('tasks')
+    }
+    if ('requestIdleCallback' in window) {
+      const idleId = (window as any).requestIdleCallback(warmHeavyTabs, { timeout: 1200 })
+      return () => (window as any).cancelIdleCallback?.(idleId)
+    }
+    const timerId = setTimeout(warmHeavyTabs, 300)
+    return () => clearTimeout(timerId)
+  }, [warmTabModule])
+
+  useEffect(() => {
+    const el = tabsScrollRef.current
+    if (!el) return
+    const onWheel = (e: WheelEvent) => {
+      if (!isTabsHovered) return
+      if (el.scrollWidth <= el.clientWidth) return
+      let deltaX = e.deltaX
+      let deltaY = e.deltaY
+      if (e.deltaMode === WheelEvent.DOM_DELTA_LINE) {
+        deltaX *= 16
+        deltaY *= 16
+      } else if (e.deltaMode === WheelEvent.DOM_DELTA_PAGE) {
+        deltaX *= el.clientWidth
+        deltaY *= el.clientHeight
+      }
+      const delta = e.shiftKey ? deltaY : Math.abs(deltaX) > Math.abs(deltaY) ? deltaX : deltaY
+      if (delta === 0) return
+      e.preventDefault()
+      el.scrollLeft += delta
+    }
+    el.addEventListener('wheel', onWheel, { passive: false, capture: true })
+    return () => el.removeEventListener('wheel', onWheel, true)
+  }, [isTabsHovered])
 
   // Handle tab change and update URL
   const handleTabChange = (value: string) => {
     const newTab = value as TabValue
+    if (!ALLOWED_TABS.includes(newTab)) return
+    if (newTab === activeTab) return
+    console.log("[project-detail] tab click", newTab)
+    warmTabModule(newTab)
     setActiveTab(newTab)
-    
-    const params = new URLSearchParams(searchParams.toString())
-    params.set('tab', newTab)
-    router.replace(`${pathname}?${params.toString()}`, { scroll: false })
+
+    const params = new URLSearchParams(
+      typeof window !== 'undefined' ? window.location.search : searchParams.toString()
+    )
+    const isAiRightPane = params.get('rightView') === 'ai'
+    mergeWorkspaceUrlState(
+      isAiRightPane
+        ? {
+            centerTab: newTab === "overview" ? null : newTab,
+            rightTab: null,
+            tab: null,
+          }
+        : {
+            rightTab: newTab === "overview" ? null : newTab,
+            centerTab: null,
+            tab: null,
+          },
+      { source: "project-tab-change" },
+    )
   }
 
-  // Fetch project briefing types
-  const { data: briefingTypes, isLoading, error } = useQuery({
-    queryKey: ['projBriefings:list', projectId],
-    queryFn: async () => {
-      const { data, error } = await fetchProjectBriefingTypes(projectId)
-      if (error) throw error
-      return data || []
-    },
-  })
-
   // Fetch project overview to get project name for header
-  const { data: projectOverview } = useQuery<ProjectOverview | null>({
+  const { data: projectOverview, isFetching: projectOverviewFetching } = useQuery<ProjectOverview | null>({
     queryKey: ['project-overview', projectId],
     queryFn: async () => {
       const result = await getProjectOverview(projectId)
@@ -123,315 +215,241 @@ export function BriefingsPage({ projectId, onClose }: BriefingsPageProps) {
       }
       return result.data
     },
+    initialData: () => queryClient.getQueryData<ProjectOverview | null>(['project-overview', projectId]),
+    staleTime: 0,
   })
 
   const logoUrl = useMemo(() => getImageUrl(projectOverview?.logo ?? null), [projectOverview?.logo])
 
-  const handleOpenEditProject = () => {
-    setEditProjectForm({
-      name: projectOverview?.name || "",
-      description: projectOverview?.description || "",
-    })
-    setShowEditProjectDialog(true)
-  }
-
-  const handleSaveProjectEdits = async () => {
-    if (!editProjectForm.name.trim()) {
-      toast({
-        title: "Error",
-        description: "Label is required",
-        variant: "destructive",
-      })
-      return
+  // Legacy deep-links to billing/components tabs open the settings modal instead.
+  useEffect(() => {
+    if (openedLegacySettingsRef.current) return
+    const rawTab = searchParams.get('centerTab') ?? searchParams.get('rightTab') ?? searchParams.get('tab')
+    if (rawTab === 'billing') {
+      openedLegacySettingsRef.current = true
+      openProjectSettings('billing')
+    } else if (rawTab === 'library') {
+      openedLegacySettingsRef.current = true
+      openProjectSettings('components')
+    } else if (rawTab === 'files') {
+      openedLegacySettingsRef.current = true
+      openProjectSettings('files')
     }
+  }, [searchParams, openProjectSettings])
 
-    try {
-      const { error } = await updateProjectOverview(projectId, {
-        name: editProjectForm.name.trim(),
-        description: editProjectForm.description.trim() ? editProjectForm.description.trim() : null,
-      })
-      if (error) throw error
+  const tabTriggerClassName =
+    "relative rounded-none border-b-2 border-transparent data-[state=active]:bg-transparent data-[state=active]:shadow-none after:pointer-events-none after:absolute after:inset-x-0 after:bottom-[-5px] after:h-px after:bg-transparent data-[state=active]:after:bg-black"
 
-      toast({
-        title: "Success",
-        description: "Project updated successfully",
-      })
-      queryClient.invalidateQueries({ queryKey: ["project-overview", projectId] })
-      setShowEditProjectDialog(false)
-    } catch (err: any) {
-      toast({
-        title: "Error",
-        description: err?.message || "Failed to update project",
-        variant: "destructive",
-      })
-    }
-  }
+  const handleProjectDrop = useCallback(
+    async (event: React.DragEvent<HTMLDivElement>) => {
+      event.preventDefault()
+      setIsDropzoneActive(false)
+      const dropped = event.dataTransfer?.files
+      if (!dropped || dropped.length === 0) return
 
-  const handleRefresh = useCallback(() => {
-    queryClient.invalidateQueries({ queryKey: ['projBriefings:list', projectId] })
-    queryClient.invalidateQueries({ 
-      queryKey: ['projBriefings:components'] 
-    })
-  }, [queryClient, projectId])
+      const files = Array.from(dropped)
+      let uploaded = 0
+      for (const file of files) {
+        try {
+          await uploadProjectFile(projectId, file)
+          uploaded += 1
+        } catch (error: any) {
+          toast({
+            title: "Upload failed",
+            description: error?.message || `Failed to upload ${file.name}`,
+            variant: "destructive",
+          })
+        }
+      }
 
-  if (isLoading) {
-    return (
-      <div className="flex items-center justify-center h-full">
-        <Loader2 className="w-6 h-6 animate-spin text-gray-400" />
-      </div>
-    )
-  }
-
-  if (error) {
-    return (
-      <div className="p-6">
-        <div className="text-red-600">Error loading briefings: {String(error)}</div>
-      </div>
-    )
-  }
+      if (uploaded > 0) {
+        queryClient.invalidateQueries({ queryKey: ["project-files", projectId] })
+        toast({
+          title: "Files uploaded",
+          description: `${uploaded} file${uploaded === 1 ? "" : "s"} uploaded to this project.`,
+        })
+      }
+    },
+    [projectId, queryClient],
+  )
 
   return (
-    <div className="flex flex-col h-full">
-      {/* Header */}
-      <div className="flex items-center justify-between px-6 py-4 bg-white border-t-0">
-        <div className="flex items-center gap-4">
-          <div className="h-12 w-12 rounded-md border bg-gray-50 overflow-hidden flex items-center justify-center">
+    <div
+      className="relative flex h-full flex-col"
+      onDragOver={(event) => {
+        event.preventDefault()
+        setIsDropzoneActive(true)
+      }}
+      onDragLeave={(event) => {
+        if (!event.currentTarget.contains(event.relatedTarget as Node)) {
+          setIsDropzoneActive(false)
+        }
+      }}
+      onDrop={handleProjectDrop}
+    >
+      {isDropzoneActive ? (
+        <div className="pointer-events-none absolute inset-0 z-50 flex items-center justify-center border-2 border-dashed border-blue-400 bg-blue-50/70">
+          <div className="rounded-md bg-white/90 px-4 py-2 text-sm font-medium text-blue-700 shadow">
+            Drop files to upload to this project
+          </div>
+        </div>
+      ) : null}
+      {/* Mobile header: stable title + top-right "..." overflow with project actions. */}
+      {isMobile ? (
+        <MobileDetailHeader
+          onBack={onClose}
+          backLabel="Close details"
+          title={projectOverview?.name || 'Project'}
+          rightSlot={<ProjectHeaderWatchers projectId={projectId} />}
+          actions={(
+            [
+              {
+                id: 'project-settings',
+                label: 'Project settings',
+                icon: <Settings className="h-4 w-4" />,
+                onSelect: () => openProjectSettings('details'),
+              },
+            ] as MobileDetailAction[]
+          )}
+        />
+      ) : (
+      /* Header */
+      <div className="flex min-w-0 items-center justify-between gap-2 border-t-0 bg-white px-6 py-2.5">
+        <div className="flex min-w-0 flex-1 items-center gap-2.5">
+          <div className="flex h-8 w-8 shrink-0 items-center justify-center overflow-hidden rounded border border-gray-200 bg-gray-50">
             {logoUrl ? (
               // eslint-disable-next-line @next/next/no-img-element
               <img src={logoUrl} alt="Project logo" className="h-full w-full object-cover" />
             ) : (
-              <div className="text-xs text-gray-400">Logo</div>
+              <div className="text-[10px] text-gray-400">Logo</div>
             )}
           </div>
 
-          <div>
-            <div className="flex items-center gap-2">
-              <h1 className="text-xl font-semibold text-gray-900">
-                {projectOverview?.name || 'Project'}
-              </h1>
-              <Button
-                variant="ghost"
-                size="sm"
-                onClick={handleOpenEditProject}
-                className="h-6 w-6 p-0"
-                disabled={!projectOverview}
-                title="Edit project"
-              >
-                <Edit className="w-3 h-3" />
-              </Button>
-            </div>
-          <p className="text-sm text-gray-500 mt-1">
-            Manage briefings, files, activity, and performance for this project
-          </p>
+          <div className="flex min-w-0 items-center gap-2">
+            <h1 className="truncate text-sm font-semibold text-gray-900">
+              {projectOverview?.name || 'Project'}
+            </h1>
+            {projectOverviewFetching && (projectOverview as ProjectOverview & { __partial?: boolean })?.__partial ? (
+              <Loader2 className="h-3 w-3 shrink-0 animate-spin text-gray-400" aria-label="Loading full details" />
+            ) : null}
+            <ProjectHeaderWatchers projectId={projectId} />
           </div>
         </div>
-        {onClose && (
-          <Button variant="ghost" size="sm" onClick={onClose}>
-            <X className="w-4 h-4" />
+        <div className="flex shrink-0 items-center gap-1">
+          <Button
+            variant="ghost"
+            size="sm"
+            className="h-8 w-8 p-0"
+            title="Project settings"
+            aria-label="Project settings"
+            onClick={() => openProjectSettings('details')}
+          >
+            <MoreVertical className="h-4 w-4" />
           </Button>
-        )}
-      </div>
-
-      {/* Edit Project Dialog (styled like user edit modal) */}
-      <Dialog open={showEditProjectDialog} onOpenChange={setShowEditProjectDialog}>
-        <DialogContent>
-          <DialogHeader>
-            <DialogTitle>Edit Project</DialogTitle>
-            <DialogDescription>
-              Update the project's logo, label, and description
-            </DialogDescription>
-          </DialogHeader>
-
-          <div className="space-y-4 py-4">
-            <div className="space-y-2">
-              <Label>Logo</Label>
-              <div className="flex items-center gap-3">
-                <div className="h-12 w-12 rounded-md border bg-gray-50 overflow-hidden flex items-center justify-center">
-                  {logoUrl ? (
-                    // eslint-disable-next-line @next/next/no-img-element
-                    <img src={logoUrl} alt="Project logo" className="h-full w-full object-cover" />
-                  ) : (
-                    <div className="text-xs text-gray-400">Logo</div>
-                  )}
-                </div>
-
-                <input
-                  ref={logoInputRef}
-                  type="file"
-                  accept="image/png,image/jpeg,image/webp"
-                  className="hidden"
-                  disabled={isLogoUploading}
-                  onChange={async (e) => {
-                    const file = e.target.files?.[0]
-                    if (!file) return
-
-                    setIsLogoUploading(true)
-                    try {
-                      const { storagePath, error: uploadError } = await uploadImage({
-                        bucket: PUBLIC_MEDIA_BUCKET,
-                        path: `projects/${projectId}`,
-                        file,
-                        upsert: true,
-                      })
-                      if (uploadError || !storagePath) throw uploadError ?? new Error("Upload failed")
-
-                      const { error: updateError } = await updateProjectOverview(projectId, {
-                        logo: storagePath,
-                      })
-                      if (updateError) throw updateError
-
-                      queryClient.setQueryData(["project-overview", projectId], (prev: ProjectOverview | null | undefined) =>
-                        prev ? { ...prev, logo: storagePath } : prev
-                      )
-                      queryClient.invalidateQueries({ queryKey: ["project-overview", projectId] })
-
-                      toast({
-                        title: "Logo updated",
-                        description: "Project logo uploaded successfully",
-                      })
-                    } catch (err: any) {
-                      toast({
-                        title: "Upload failed",
-                        description: err?.message || "Failed to upload logo",
-                        variant: "destructive",
-                      })
-                    } finally {
-                      setIsLogoUploading(false)
-                      if (logoInputRef.current) logoInputRef.current.value = ""
-                    }
-                  }}
-                />
-
-                <Button
-                  type="button"
-                  variant="outline"
-                  size="sm"
-                  onClick={() => logoInputRef.current?.click()}
-                  disabled={isLogoUploading}
-                  className="gap-2"
-                >
-                  {isLogoUploading ? <Loader2 className="w-4 h-4 animate-spin" /> : null}
-                  Change logo
-                </Button>
-              </div>
-            </div>
-
-            <div className="space-y-2">
-              <Label htmlFor="edit-project-name">Label</Label>
-              <Input
-                id="edit-project-name"
-                value={editProjectForm.name}
-                onChange={(e) => setEditProjectForm((prev) => ({ ...prev, name: e.target.value }))}
-                placeholder="Enter project label"
-              />
-            </div>
-
-            <div className="space-y-2">
-              <Label htmlFor="edit-project-description">Description</Label>
-              <Textarea
-                id="edit-project-description"
-                value={editProjectForm.description}
-                onChange={(e) => setEditProjectForm((prev) => ({ ...prev, description: e.target.value }))}
-                placeholder="Enter description"
-                rows={3}
-              />
-            </div>
-          </div>
-
-          <DialogFooter>
-            <Button variant="outline" onClick={() => setShowEditProjectDialog(false)}>
-              Cancel
+          {onFocusToggle ? (
+            <Button
+              variant="ghost"
+              size="sm"
+              onClick={() => {
+                console.log("[project-detail] focus click", { focused: !isDetailsFocused })
+                onFocusToggle()
+              }}
+              title={isDetailsFocused ? "Restore details pane" : "Expand details pane"}
+              aria-label={isDetailsFocused ? "Restore details pane" : "Expand details pane"}
+            >
+              {isDetailsFocused ? <Minimize2 className="w-4 h-4" /> : <Maximize2 className="w-4 h-4" />}
             </Button>
-            <Button onClick={handleSaveProjectEdits}>Save Changes</Button>
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
+          ) : null}
+          {onClose ? (
+            <Button variant="ghost" size="sm" onClick={onClose}>
+              <X className="w-4 h-4" />
+            </Button>
+          ) : null}
+        </div>
+      </div>
+      )}
+
+      <ProjectSettingsPanel
+        open={showProjectSettings}
+        onClose={() => setShowProjectSettings(false)}
+        projectId={projectId}
+        initialCategory={settingsCategory}
+      />
 
       {/* Main content with tabs */}
-      <div className="flex-1 overflow-hidden flex flex-col">
+      <div ref={setProjectMiddlePaneHost} className="relative flex flex-1 flex-col overflow-hidden">
         <Tabs value={activeTab} onValueChange={handleTabChange} className="h-full flex flex-col">
-          <TabsList className="px-6 bg-transparent border-b border-gray-200 rounded-none justify-start border-t-0 h-auto overflow-x-auto overflow-y-hidden whitespace-nowrap flex-nowrap">
+          <div
+            ref={tabsScrollRef}
+            className="ai-chat-tabs-scroll min-h-0 min-w-0 overflow-x-auto overflow-y-hidden border-b border-gray-200"
+            onMouseEnter={() => setIsTabsHovered(true)}
+            onMouseLeave={() => setIsTabsHovered(false)}
+          >
+            <TabsList className="px-6 bg-transparent rounded-none justify-start border-t-0 h-auto whitespace-nowrap flex-nowrap">
             <TabsTrigger 
               value="overview"
-              className="data-[state=active]:border-b-2 data-[state=active]:border-black data-[state=active]:bg-transparent data-[state=active]:shadow-none data-[state=active]:-mb-px rounded-none relative"
+              className={tabTriggerClassName}
             >
               Overview
             </TabsTrigger>
             <TabsTrigger 
-              value="billing"
-              className="data-[state=active]:border-b-2 data-[state=active]:border-black data-[state=active]:bg-transparent data-[state=active]:shadow-none data-[state=active]:-mb-px rounded-none relative"
-            >
-              Billing
-            </TabsTrigger>
-            <TabsTrigger 
               value="activity"
-              className="data-[state=active]:border-b-2 data-[state=active]:border-black data-[state=active]:bg-transparent data-[state=active]:shadow-none data-[state=active]:-mb-px rounded-none relative"
+              onMouseEnter={() => warmTabModule('activity')}
+              onFocus={() => warmTabModule('activity')}
+              className={tabTriggerClassName}
             >
               Activity
             </TabsTrigger>
             <TabsTrigger 
               value="comments"
-              className="data-[state=active]:border-b-2 data-[state=active]:border-black data-[state=active]:bg-transparent data-[state=active]:shadow-none data-[state=active]:-mb-px rounded-none relative"
+              className={tabTriggerClassName}
             >
               Comments
             </TabsTrigger>
             <TabsTrigger 
-              value="files"
-              className="data-[state=active]:border-b-2 data-[state=active]:border-black data-[state=active]:bg-transparent data-[state=active]:shadow-none data-[state=active]:-mb-px rounded-none relative"
-            >
-              Files
-            </TabsTrigger>
-            <TabsTrigger 
               value="analytics"
-              className="data-[state=active]:border-b-2 data-[state=active]:border-black data-[state=active]:bg-transparent data-[state=active]:shadow-none data-[state=active]:-mb-px rounded-none relative"
+              className={tabTriggerClassName}
             >
               Analytics
             </TabsTrigger>
             <TabsTrigger 
               value="ai-visibility"
-              className="data-[state=active]:border-b-2 data-[state=active]:border-black data-[state=active]:bg-transparent data-[state=active]:shadow-none data-[state=active]:-mb-px rounded-none relative"
+              className={tabTriggerClassName}
             >
               AI Visibility
             </TabsTrigger>
             <TabsTrigger 
               value="keywords"
-              className="data-[state=active]:border-b-2 data-[state=active]:border-black data-[state=active]:bg-transparent data-[state=active]:shadow-none data-[state=active]:-mb-px rounded-none relative"
+              className={tabTriggerClassName}
             >
               Keyword Tracking
             </TabsTrigger>
             <TabsTrigger 
-              value="briefings"
-              className="data-[state=active]:border-b-2 data-[state=active]:border-black data-[state=active]:bg-transparent data-[state=active]:shadow-none data-[state=active]:-mb-px rounded-none relative"
+              value="tasks"
+              onMouseEnter={() => warmTabModule('tasks')}
+              onFocus={() => warmTabModule('tasks')}
+              className={tabTriggerClassName}
             >
-              Briefings
+              Tasks
             </TabsTrigger>
-            <TabsTrigger 
-              value="library"
-              className="data-[state=active]:border-b-2 data-[state=active]:border-black data-[state=active]:bg-transparent data-[state=active]:shadow-none data-[state=active]:-mb-px rounded-none relative"
-            >
-              Components
-            </TabsTrigger>
-          </TabsList>
+            </TabsList>
+          </div>
 
           <div className="flex-1 overflow-auto">
             <TabsContent value="overview" className="h-full m-0 mt-0 p-6">
-              <OverviewTab projectId={projectId} />
-            </TabsContent>
-
-            <TabsContent value="billing" className="h-full m-0 mt-0 p-6">
-              <BillingTab projectId={projectId} />
+              <OverviewTab
+                projectId={projectId}
+                briefingOverlayContainer={projectMiddlePaneHost}
+                onNavigateTab={(tab) => handleTabChange(tab)}
+              />
             </TabsContent>
 
             <TabsContent value="activity" className="h-full m-0 mt-0 p-0 overflow-hidden">
               <ActivityTab projectId={projectId} />
             </TabsContent>
 
-            <TabsContent value="comments" className="h-full m-0 mt-0 p-6">
+            <TabsContent value="comments" className="h-full m-0 mt-0 p-0">
               <CommentsTab projectId={projectId} />
-            </TabsContent>
-
-            <TabsContent value="files" className="h-full m-0 mt-0 p-6">
-              <FilesTab projectId={projectId} />
             </TabsContent>
 
             <TabsContent value="analytics" className="h-full m-0 mt-0 p-6">
@@ -446,20 +464,8 @@ export function BriefingsPage({ projectId, onClose }: BriefingsPageProps) {
               <ProjectKeywordTrackingTab projectId={projectId} />
             </TabsContent>
 
-            <TabsContent value="briefings" className="h-full m-0 mt-0 p-6">
-              <ExpandableBriefingsList
-                projectId={projectId}
-                briefingTypes={briefingTypes || []}
-                onRefresh={handleRefresh}
-              />
-            </TabsContent>
-
-            <TabsContent value="library" className="h-full m-0 mt-0 p-6">
-              <LibraryTab
-                projectId={projectId}
-                selectedBriefingTypeId={selectedBriefingTypeId}
-                onRefresh={handleRefresh}
-              />
+            <TabsContent value="tasks" className="h-full m-0 mt-0 p-0 overflow-hidden">
+              <ProjectTasksTabContent projectId={projectId} />
             </TabsContent>
           </div>
         </Tabs>

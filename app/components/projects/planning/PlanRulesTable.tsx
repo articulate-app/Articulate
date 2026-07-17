@@ -1,11 +1,11 @@
 "use client"
 
-import { useMemo, useState } from "react"
+import { useEffect, useMemo, useState } from "react"
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query"
-import { Edit2, Plus, Trash2 } from "lucide-react"
+import { Edit2, Trash2 } from "lucide-react"
 
+import { AddComponentButton } from "../../task/AddComponentButton"
 import { Button } from "../../ui/button"
-import { Card } from "../../ui/card"
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "../../ui/dialog"
 import { Input } from "../../ui/input"
 import { Label } from "../../ui/label"
@@ -28,7 +28,6 @@ type PlanFormState = {
   contentTypeId: string // "any" | number as string
   productionTypeId: string
   languageId: string
-  briefingTypeId: string
   frequencyCount: string
   frequencyUnit: FrequencyUnit
   channelsMode: ChannelsMode
@@ -57,7 +56,6 @@ function defaultFormState(): PlanFormState {
     contentTypeId: ANY,
     productionTypeId: ANY,
     languageId: ANY,
-    briefingTypeId: ANY,
     frequencyCount: "1",
     frequencyUnit: "week",
     channelsMode: "project_default",
@@ -75,6 +73,7 @@ export function PlanRulesTable({
 }) {
   const queryClient = useQueryClient()
   const [isModalOpen, setIsModalOpen] = useState(false)
+  const [isInlineCreateOpen, setIsInlineCreateOpen] = useState(false)
   const [editingPlan, setEditingPlan] = useState<ProjectTaskPlanRow | null>(null)
   const [form, setForm] = useState<PlanFormState>(() => defaultFormState())
 
@@ -87,10 +86,25 @@ export function PlanRulesTable({
     },
   })
 
+  const projectProductionTypeIds = useMemo(
+    () =>
+      new Set(
+        (plans ?? [])
+          .map((row) => row.production_type_id)
+          .filter((id): id is number => Number.isFinite(Number(id))),
+      ),
+    [plans],
+  )
+
+  const scopedProductionTypes = useMemo(() => {
+    // Keep existing behavior as fallback when the project has no persisted production associations yet.
+    if (projectProductionTypeIds.size === 0) return lookups.productionTypes
+    return lookups.productionTypes.filter((row) => projectProductionTypeIds.has(row.id))
+  }, [lookups.productionTypes, projectProductionTypeIds])
+
   const idToContentType = useMemo(() => new Map(lookups.contentTypes.map((r) => [r.id, r.title])), [lookups.contentTypes])
-  const idToProductionType = useMemo(() => new Map(lookups.productionTypes.map((r) => [r.id, r.title])), [lookups.productionTypes])
+  const idToProductionType = useMemo(() => new Map(scopedProductionTypes.map((r) => [r.id, r.title])), [scopedProductionTypes])
   const idToLanguage = useMemo(() => new Map(lookups.languages.map((r) => [r.id, r.code])), [lookups.languages])
-  const idToBriefingType = useMemo(() => new Map(lookups.briefingTypes.map((r) => [r.id, r.title])), [lookups.briefingTypes])
   const idToChannel = useMemo(() => new Map(lookups.channels.map((r) => [r.id, r.name])), [lookups.channels])
 
   const channelOptions = useMemo(
@@ -113,7 +127,7 @@ export function PlanRulesTable({
         content_type_id: toNullableId(form.contentTypeId),
         production_type_id: toNullableId(form.productionTypeId),
         language_id: toNullableId(form.languageId),
-        briefing_type_id: toNullableId(form.briefingTypeId),
+        briefing_type_id: null,
         frequency_count: frequencyCount,
         frequency_unit: form.frequencyUnit,
         channels_mode: form.channelsMode,
@@ -142,6 +156,9 @@ export function PlanRulesTable({
       queryClient.invalidateQueries({ queryKey: ["planning:plans", projectId] })
       queryClient.invalidateQueries({ queryKey: ["planning:preview", projectId] })
       setIsModalOpen(false)
+      if (mode === "create") {
+        setIsInlineCreateOpen(false)
+      }
       setEditingPlan(null)
       setForm(defaultFormState())
     },
@@ -174,19 +191,19 @@ export function PlanRulesTable({
     },
   })
 
-  const openCreate = () => {
+  const openCreateInline = () => {
     setEditingPlan(null)
     setForm(defaultFormState())
-    setIsModalOpen(true)
+    setIsInlineCreateOpen(true)
   }
 
   const openEdit = (row: ProjectTaskPlanRow) => {
+    setIsInlineCreateOpen(false)
     setEditingPlan(row)
     setForm({
       contentTypeId: row.content_type_id ? String(row.content_type_id) : ANY,
       productionTypeId: row.production_type_id ? String(row.production_type_id) : ANY,
       languageId: row.language_id ? String(row.language_id) : ANY,
-      briefingTypeId: row.briefing_type_id ? String(row.briefing_type_id) : ANY,
       frequencyCount: String(row.frequency_count ?? 1),
       frequencyUnit: (row.frequency_unit as FrequencyUnit) ?? "week",
       channelsMode: (row.channels_mode as ChannelsMode) ?? "project_default",
@@ -205,101 +222,227 @@ export function PlanRulesTable({
     return names && names.length ? names.join(", ") : "—"
   }
 
+  useEffect(() => {
+    if (isModalOpen) return
+
+    // Defensive cleanup for occasional Radix body pointer lock lingering after close.
+    const unlockPointerEvents = () => {
+      if (document.body.style.pointerEvents === "none") {
+        document.body.style.pointerEvents = ""
+      }
+    }
+
+    unlockPointerEvents()
+    const timeoutId = window.setTimeout(unlockPointerEvents, 0)
+    return () => window.clearTimeout(timeoutId)
+  }, [isModalOpen])
+
+  const renderPlanRuleCardField = (label: string, value: string) => (
+    <div className="min-w-0">
+      <dt className="text-xs font-medium text-gray-500">{label}</dt>
+      <dd className="mt-0.5 truncate text-sm text-gray-900">{value}</dd>
+    </div>
+  )
+
   return (
-    <Card className="p-4 md:p-6">
-      <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
-        <div>
-          <div className="text-sm font-semibold text-gray-900">Plan rules</div>
-          <div className="text-xs text-gray-500">
-            Define recurring planning rules for this project.
+    <div className="pt-2">
+      <h3 className="mb-2 text-sm font-medium text-gray-900">Plan rules</h3>
+      <div className="space-y-3">
+        {!isLoading && (plans?.length ?? 0) === 0 ? (
+          <div className="rounded-md border border-dashed border-gray-200 px-3 py-6 text-sm text-gray-500">
+            No plan rules yet. Add your first rule to get started.
+          </div>
+        ) : null}
+
+        {(plans ?? []).map((row) => (
+          <div key={row.id} className="rounded-md border border-gray-200 bg-white p-3">
+            <dl className="grid grid-cols-1 gap-3">
+              {renderPlanRuleCardField(
+                "Content",
+                renderAny(row.content_type_id ? idToContentType.get(row.content_type_id) : null),
+              )}
+              {renderPlanRuleCardField(
+                "Production",
+                renderAny(row.production_type_id ? idToProductionType.get(row.production_type_id) : null),
+              )}
+              {renderPlanRuleCardField(
+                "Language",
+                renderAny(row.language_id ? idToLanguage.get(row.language_id) : null),
+              )}
+              {renderPlanRuleCardField("Frequency", `${row.frequency_count} / ${row.frequency_unit}`)}
+              {renderPlanRuleCardField("Channels", formatChannels(row))}
+            </dl>
+            <div className="mt-3 flex flex-wrap justify-end gap-2 border-t border-gray-100 pt-3">
+              <Button
+                type="button"
+                variant="outline"
+                size="sm"
+                className="gap-2"
+                onClick={() => openEdit(row)}
+              >
+                <Edit2 className="h-4 w-4" />
+                Edit
+              </Button>
+              <Button
+                type="button"
+                variant="outline"
+                size="sm"
+                className="gap-2 text-red-600 hover:text-red-700"
+                disabled={deleteMutation.isPending}
+                onClick={() => {
+                  const ok = window.confirm("Delete this plan rule? This cannot be undone.")
+                  if (!ok) return
+                  deleteMutation.mutate(row.id)
+                }}
+              >
+                <Trash2 className="h-4 w-4" />
+                Delete
+              </Button>
+            </div>
+          </div>
+        ))}
+
+        <AddComponentButton label="Add rule" onClick={openCreateInline} />
+      </div>
+
+      {isInlineCreateOpen ? (
+        <div className="mt-3 rounded-md border border-gray-200 p-4">
+          <div className="mb-3 text-sm font-medium text-gray-900">New plan rule</div>
+          <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
+            <div className="space-y-2">
+              <Label>Content type</Label>
+              <Select value={form.contentTypeId} onValueChange={(v) => setForm((p) => ({ ...p, contentTypeId: v }))}>
+                <SelectTrigger>
+                  <SelectValue placeholder="Any" />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value={ANY}>Any</SelectItem>
+                  {lookups.contentTypes.map((r) => (
+                    <SelectItem key={r.id} value={String(r.id)}>
+                      {r.title}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </div>
+
+            <div className="space-y-2">
+              <Label>Production type</Label>
+              <Select value={form.productionTypeId} onValueChange={(v) => setForm((p) => ({ ...p, productionTypeId: v }))}>
+                <SelectTrigger>
+                  <SelectValue placeholder="Any" />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value={ANY}>Any</SelectItem>
+                  {scopedProductionTypes.map((r) => (
+                    <SelectItem key={r.id} value={String(r.id)}>
+                      {r.title}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </div>
+
+            <div className="space-y-2">
+              <Label>Language</Label>
+              <Select value={form.languageId} onValueChange={(v) => setForm((p) => ({ ...p, languageId: v }))}>
+                <SelectTrigger>
+                  <SelectValue placeholder="Any" />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value={ANY}>Any</SelectItem>
+                  {lookups.languages.map((r) => (
+                    <SelectItem key={r.id} value={String(r.id)}>
+                      {r.code}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </div>
+
+            <div className="space-y-2">
+              <Label>Frequency</Label>
+              <div className="grid grid-cols-2 gap-2">
+                <Input
+                  inputMode="numeric"
+                  value={form.frequencyCount}
+                  onChange={(e) => setForm((p) => ({ ...p, frequencyCount: e.target.value }))}
+                  placeholder="Count"
+                />
+                <Select
+                  value={form.frequencyUnit}
+                  onValueChange={(v) => setForm((p) => ({ ...p, frequencyUnit: v as FrequencyUnit }))}
+                >
+                  <SelectTrigger>
+                    <SelectValue placeholder="Unit" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="week">Week</SelectItem>
+                    <SelectItem value="month">Month</SelectItem>
+                  </SelectContent>
+                </Select>
+              </div>
+            </div>
+
+            <div className="space-y-2">
+              <Label>Channels</Label>
+              <Select
+                value={form.channelsMode}
+                onValueChange={(v) => setForm((p) => ({ ...p, channelsMode: v as ChannelsMode }))}
+              >
+                <SelectTrigger>
+                  <SelectValue placeholder="Project default" />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="project_default">Project default</SelectItem>
+                  <SelectItem value="explicit">Explicit</SelectItem>
+                </SelectContent>
+              </Select>
+            </div>
+
+            {form.channelsMode === "explicit" ? (
+              <div className="space-y-2 md:col-span-2">
+                <Label>
+                  Channels <span className="text-red-500">*</span>
+                </Label>
+                <MultiSelect
+                  options={channelOptions}
+                  value={form.channelIds}
+                  onChange={(value) => setForm((p) => ({ ...p, channelIds: value }))}
+                  placeholder="Select channels..."
+                />
+              </div>
+            ) : null}
+
+            <div className="flex items-center justify-between gap-3 rounded-md border p-3 md:col-span-2">
+              <div>
+                <div className="text-sm font-medium text-gray-900">Active</div>
+                <div className="text-xs text-gray-500">Inactive rules won’t generate suggestions.</div>
+              </div>
+              <Switch
+                checked={form.isActive}
+                onCheckedChange={(checked) => setForm((p) => ({ ...p, isActive: checked }))}
+              />
+            </div>
+          </div>
+          <div className="mt-4 flex justify-end gap-2">
+            <Button
+              type="button"
+              variant="outline"
+              onClick={() => {
+                setIsInlineCreateOpen(false)
+                setForm(defaultFormState())
+              }}
+              disabled={upsertMutation.isPending}
+            >
+              Cancel
+            </Button>
+            <Button type="button" onClick={() => upsertMutation.mutate()} disabled={upsertMutation.isPending}>
+              Create
+            </Button>
           </div>
         </div>
-        <Button type="button" onClick={openCreate} className="gap-2">
-          <Plus className="h-4 w-4" />
-          Add rule
-        </Button>
-      </div>
-
-      <div className="mt-4 overflow-x-auto">
-        <table className="min-w-full text-left text-sm">
-          <thead className="border-b bg-gray-50 text-xs font-medium uppercase text-gray-500">
-            <tr>
-              <th className="px-3 py-2">Active</th>
-              <th className="px-3 py-2">Content</th>
-              <th className="px-3 py-2">Production</th>
-              <th className="px-3 py-2">Language</th>
-              <th className="px-3 py-2">Briefing</th>
-              <th className="px-3 py-2">Frequency</th>
-              <th className="px-3 py-2">Channels</th>
-              <th className="px-3 py-2 text-right">Actions</th>
-            </tr>
-          </thead>
-          <tbody>
-            {!isLoading && (plans?.length ?? 0) === 0 && (
-              <tr>
-                <td className="px-3 py-6 text-sm text-gray-500" colSpan={8}>
-                  No plan rules yet. Add your first rule to get started.
-                </td>
-              </tr>
-            )}
-
-            {(plans ?? []).map((row) => (
-              <tr key={row.id} className="border-b last:border-0">
-                <td className="px-3 py-3">
-                  <span className={row.is_active ? "text-emerald-700" : "text-gray-400"}>
-                    {row.is_active ? "Yes" : "No"}
-                  </span>
-                </td>
-                <td className="px-3 py-3">
-                  {renderAny(row.content_type_id ? idToContentType.get(row.content_type_id) : null)}
-                </td>
-                <td className="px-3 py-3">
-                  {renderAny(row.production_type_id ? idToProductionType.get(row.production_type_id) : null)}
-                </td>
-                <td className="px-3 py-3">
-                  {renderAny(row.language_id ? idToLanguage.get(row.language_id) : null)}
-                </td>
-                <td className="px-3 py-3">
-                  {renderAny(row.briefing_type_id ? idToBriefingType.get(row.briefing_type_id) : null)}
-                </td>
-                <td className="px-3 py-3">
-                  {row.frequency_count} / {row.frequency_unit}
-                </td>
-                <td className="px-3 py-3">{formatChannels(row)}</td>
-                <td className="px-3 py-3">
-                  <div className="flex justify-end gap-2">
-                    <Button
-                      type="button"
-                      variant="outline"
-                      size="sm"
-                      className="gap-2"
-                      onClick={() => openEdit(row)}
-                    >
-                      <Edit2 className="h-4 w-4" />
-                      Edit
-                    </Button>
-                    <Button
-                      type="button"
-                      variant="outline"
-                      size="sm"
-                      className="gap-2 text-red-600 hover:text-red-700"
-                      disabled={deleteMutation.isPending}
-                      onClick={() => {
-                        const ok = window.confirm("Delete this plan rule? This cannot be undone.")
-                        if (!ok) return
-                        deleteMutation.mutate(row.id)
-                      }}
-                    >
-                      <Trash2 className="h-4 w-4" />
-                      Delete
-                    </Button>
-                  </div>
-                </td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
-      </div>
+      ) : null}
 
       <Dialog
         open={isModalOpen}
@@ -313,7 +456,7 @@ export function PlanRulesTable({
       >
         <DialogContent className="sm:max-w-[720px]">
           <DialogHeader>
-            <DialogTitle>{editingPlan ? "Edit plan rule" : "Add plan rule"}</DialogTitle>
+            <DialogTitle>Edit plan rule</DialogTitle>
             <DialogDescription>
               Define what to plan, how often, and where it should be published.
             </DialogDescription>
@@ -345,7 +488,7 @@ export function PlanRulesTable({
                 </SelectTrigger>
                 <SelectContent>
                   <SelectItem value={ANY}>Any</SelectItem>
-                  {lookups.productionTypes.map((r) => (
+                  {scopedProductionTypes.map((r) => (
                     <SelectItem key={r.id} value={String(r.id)}>
                       {r.title}
                     </SelectItem>
@@ -365,23 +508,6 @@ export function PlanRulesTable({
                   {lookups.languages.map((r) => (
                     <SelectItem key={r.id} value={String(r.id)}>
                       {r.code}
-                    </SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
-            </div>
-
-            <div className="space-y-2">
-              <Label>Briefing type</Label>
-              <Select value={form.briefingTypeId} onValueChange={(v) => setForm((p) => ({ ...p, briefingTypeId: v }))}>
-                <SelectTrigger>
-                  <SelectValue placeholder="Any" />
-                </SelectTrigger>
-                <SelectContent>
-                  <SelectItem value={ANY}>Any</SelectItem>
-                  {lookups.briefingTypes.map((r) => (
-                    <SelectItem key={r.id} value={String(r.id)}>
-                      {r.title}
                     </SelectItem>
                   ))}
                 </SelectContent>
@@ -467,24 +593,13 @@ export function PlanRulesTable({
               type="button"
               onClick={() => upsertMutation.mutate()}
               disabled={upsertMutation.isPending}
-              className="gap-2"
             >
-              {editingPlan ? (
-                <>
-                  <Edit2 className="h-4 w-4" />
-                  Save
-                </>
-              ) : (
-                <>
-                  <Plus className="h-4 w-4" />
-                  Create
-                </>
-              )}
+              Save
             </Button>
           </DialogFooter>
         </DialogContent>
       </Dialog>
-    </Card>
+    </div>
   )
 }
 

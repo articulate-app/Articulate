@@ -1,6 +1,6 @@
 "use client"
 
-import { useEffect, useState, useMemo, useRef, useCallback } from "react"
+import { useEffect, useLayoutEffect, useState, useMemo, useRef, useCallback } from "react"
 import {
   useReactTable,
   getCoreRowModel,
@@ -16,18 +16,20 @@ import {
 } from "@tanstack/react-table"
 import { useVirtualizer, VirtualItem } from "@tanstack/react-virtual"
 import { cn } from "@/lib/utils"
-import { ChevronDown, ChevronRight, Trash2 } from "lucide-react"
+import { ChevronDown, ChevronRight, Trash2, Zap } from "lucide-react"
 import dynamic from "next/dynamic"
 import { Button } from "../ui/button"
-import { getFilterOptions } from "../../lib/services/filters"
 import React from "react"
 import { useDebounce } from "use-debounce"
 import { InfiniteList } from "../ui/infinite-list"
 import { useSearchParams, useRouter, usePathname } from 'next/navigation'
+import { TASKS_SHALLOW_NAV_EVENT, dispatchTasksShallowNavigation } from '../../lib/tasks-shallow-nav'
+import { getDefaultGroupOrderForGroupBy } from '@/lib/tasks-grouping-url'
 import { UnifiedGroupedTaskList } from './unified-grouped-task-list'
+import { CompactEditableRowContent } from './compact-task-row'
 import { useTaskGrouping } from '../../store/task-grouping'
 import type { GroupByField } from '../../store/task-grouping'
-import { TaskTableHeader, getColumnLabel, stopDnd } from './task-table-header'
+import { TaskTableHeader, CompactTaskTableHeader, getColumnLabel, stopDnd } from './task-table-header'
 import {
   DndContext,
   DragOverlay,
@@ -43,7 +45,8 @@ import { createClientComponentClient } from '@supabase/auth-helpers-nextjs'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { toast } from '../ui/use-toast'
 import { removeItemFromStore } from '../../../hooks/use-infinite-query'
-import { removeTaskFromAllStores } from './task-cache-utils'
+import { removeTaskFromAllStores, removeTaskIdFromTasksQueryArrays } from './task-cache-utils'
+import { useTasksListLegendStore } from '../../store/tasks-list-legend'
 import { useTaskRealtime } from '../../../hooks/use-task-realtime'
 import { updateTaskInCaches } from './task-cache-utils';
 import { useTaskListViewQuery } from '../../hooks/use-task-list-view-query';
@@ -52,6 +55,7 @@ import { useMobileDetection } from '../../hooks/use-mobile-detection';
 import { updateTaskInCachesWithOverdue } from './task-cache-utils';
 import { BulkActionBar, type BulkAction } from '../ui/bulk-action-bar';
 import { useTasksUI } from '../../store/tasks-ui'
+import { useTasksScopeProjectParam } from '../../contexts/tasks-scope-context'
 import { useTaskSuggestionsQuery } from '../../hooks/use-task-suggestions-query'
 import { usePlannerOptimisticTasks } from '../../store/planner-optimistic-tasks'
 import type { PlannerItem } from '../../lib/types/planner-item'
@@ -68,10 +72,17 @@ import {
 import { UserAvatar } from "@/components/UserAvatar";
 import { ProjectBadge } from "@/components/ProjectBadge";
 import { getImageUrl } from "../../lib/public-media";
-import { formatDateDisplay, toISODate } from "../../lib/utils";
+import { formatDateDisplay, formatCompactDateDisplay, toISODate } from "../../lib/utils";
 import { InlineDateEditor } from "./InlineDateEditor";
 import { InlineSelect } from "./InlineSelect";
 import { patchTaskInGroupTasksCaches } from '../../../src/hooks/use-task-group-tasks-query';
+import type { TaskCardColorMode } from '@/lib/task-card-colors';
+import {
+  getStablePaletteBarClass,
+  getTaskColorKey,
+  getTaskInlineStyle,
+  getTaskListRowAccentColor,
+} from '@/lib/task-card-colors';
 
 interface TaskListProps {
   onTaskSelect?: (task: any) => void
@@ -82,6 +93,9 @@ interface TaskListProps {
   editFields?: any // Task edit fields data from useTaskEditFields hook
   isMultiselectMode?: boolean
   onToggleMultiselect?: () => void
+  /** Compact embedded list (e.g. project overview preview). */
+  embed?: boolean
+  pageSize?: number
 }
 
 // Shared date display: dd/mm/yyyy (pt-PT locale) for consistency between hover and edit
@@ -173,7 +187,7 @@ function calculateOverdueStatus(
 }
 
 // Mobile Task Card Component
-function MobileTaskCard({ task, isSelected, isMainTask, isExpanded, onTaskSelect, onToggleExpand, isMultiselectMode, isTaskSelected, onTaskToggle }: {
+function MobileTaskCard({ task, isSelected, isMainTask, isExpanded, onTaskSelect, onToggleExpand, isMultiselectMode, isTaskSelected, onTaskToggle, listColorMode }: {
   task: any;
   isSelected: boolean;
   isMainTask: boolean;
@@ -183,7 +197,12 @@ function MobileTaskCard({ task, isSelected, isMainTask, isExpanded, onTaskSelect
   isMultiselectMode?: boolean;
   isTaskSelected?: boolean;
   onTaskToggle?: (taskId: number) => void;
+  listColorMode?: TaskCardColorMode | null;
 }) {
+  const listAccentColor =
+    listColorMode
+      ? getTaskListRowAccentColor(task, listColorMode)
+      : null
   const getInitials = (name: string) => {
     return name.split(' ').map(n => n[0]).join('').toUpperCase().slice(0, 2);
   };
@@ -191,7 +210,8 @@ function MobileTaskCard({ task, isSelected, isMainTask, isExpanded, onTaskSelect
   return (
     <div 
       className={cn(
-        'p-3 border-b border-gray-100 cursor-pointer transition-colors',
+        'relative p-3 border-b border-gray-100 cursor-pointer transition-colors',
+        listAccentColor && 'pl-7',
         isMultiselectMode 
           ? isTaskSelected ? 'bg-gray-100 border-l-4 border-l-gray-300' : 'hover:bg-gray-50'
           : isSelected ? 'bg-gray-100 border-l-4 border-l-gray-300' : 'hover:bg-gray-50'
@@ -205,6 +225,13 @@ function MobileTaskCard({ task, isSelected, isMainTask, isExpanded, onTaskSelect
         }
       }}
     >
+      {listAccentColor ? (
+        <span
+          aria-hidden
+          className="pointer-events-none absolute left-2 top-1.5 bottom-1.5 w-1.5 rounded-sm"
+          style={{ backgroundColor: listAccentColor }}
+        />
+      ) : null}
       <div className="flex items-center justify-between">
         <div className="flex items-center gap-3 flex-1 min-w-0">
           {/* Checkbox for multiselect mode */}
@@ -298,7 +325,7 @@ async function fetchSubtasksForParent(parentId: number) {
 }
 
 // SubtaskRows component for rendering subtasks for a main task
-export function SubtaskRows({ parentId, taskColumns, gridTemplateColumns, onTaskSelect, selectedTaskId, isMobile, isMultiselectMode, selectedTasks, onTaskToggle }: { 
+export function SubtaskRows({ parentId, taskColumns, gridTemplateColumns, onTaskSelect, selectedTaskId, isMobile, isMultiselectMode, selectedTasks, onTaskToggle, listColorMode, compact = false, compactDateField = 'delivery_date' }: { 
   parentId: number, 
   taskColumns: any[], 
   gridTemplateColumns?: string,
@@ -307,7 +334,10 @@ export function SubtaskRows({ parentId, taskColumns, gridTemplateColumns, onTask
   isMobile?: boolean,
   isMultiselectMode?: boolean,
   selectedTasks?: Set<number>,
-  onTaskToggle?: (taskId: number) => void
+  onTaskToggle?: (taskId: number) => void,
+  listColorMode?: TaskCardColorMode | null,
+  compact?: boolean,
+  compactDateField?: 'delivery_date' | 'publication_date',
 }) {
   const { data, isFetching } = useQuery({
     queryKey: ['subtasks', parentId],
@@ -320,7 +350,7 @@ export function SubtaskRows({ parentId, taskColumns, gridTemplateColumns, onTask
       <div className="text-center text-gray-400 py-4 text-sm">Loading subtasks...</div>
     ) : (
       <tr key={`loading-${parentId}`}>
-        <td colSpan={taskColumns.length} className="text-center text-gray-400 py-4 border-b border-r border-gray-100">Loading subtasks...</td>
+        <td colSpan={taskColumns.length} className={cn('text-center text-gray-400 py-4 border-b border-r border-gray-100', compact && 'task-cell-span-full border-r-0')}>Loading subtasks...</td>
       </tr>
     )
   }
@@ -329,7 +359,7 @@ export function SubtaskRows({ parentId, taskColumns, gridTemplateColumns, onTask
       <div className="text-center text-gray-400 py-4 text-sm">No subtasks</div>
     ) : (
       <tr key={`empty-${parentId}`}>
-        <td colSpan={taskColumns.length} className="text-center text-gray-400 py-4 border-b border-r border-gray-100">No subtasks</td>
+        <td colSpan={taskColumns.length} className={cn('text-center text-gray-400 py-4 border-b border-r border-gray-100', compact && 'task-cell-span-full border-r-0')}>No subtasks</td>
       </tr>
     )
   }
@@ -348,6 +378,7 @@ export function SubtaskRows({ parentId, taskColumns, gridTemplateColumns, onTask
               isMultiselectMode={isMultiselectMode}
               isTaskSelected={selectedTasks?.has(subtask.id) || false}
               onTaskToggle={onTaskToggle}
+              listColorMode={listColorMode}
             />
           </div>
         ))}
@@ -355,6 +386,52 @@ export function SubtaskRows({ parentId, taskColumns, gridTemplateColumns, onTask
     )
   }
   
+  // Compact (narrow left-pane): render subtasks as single-line compact rows (no column grid) so the
+  // expanded subtask list never causes horizontal scroll. Subtasks have no further nesting toggle.
+  if (compact) {
+    return (
+      <>
+        {data && data.map(subtask => {
+          const isSelected = !!(selectedTaskId && String(subtask.id) === String(selectedTaskId))
+          const isChecked = !!selectedTasks?.has(subtask.id)
+          return (
+            <tr
+              key={subtask.id}
+              data-row-type="task"
+              className={cn(
+                'task-row hover:bg-gray-50 cursor-pointer border-b',
+                (isSelected || (isMultiselectMode && isChecked)) && 'bg-gray-100',
+              )}
+              // Match the compact parent row's single-column grid so the full-span cell fills the row
+              // width. Without this, `display: grid` has no explicit columns and `grid-column: 1 / -1`
+              // collapses to content width — making subtasks appear narrower than parent rows.
+              style={{ gridTemplateColumns: gridTemplateColumns ?? 'minmax(0, 1fr)' }}
+              onClick={(e) => {
+                if ((e.target as Element)?.closest?.('[data-inline-editor]')) return
+                if (isMultiselectMode && onTaskToggle) {
+                  onTaskToggle(subtask.id)
+                } else {
+                  onTaskSelect(subtask)
+                }
+              }}
+            >
+              <td className="task-cell task-cell-span-full px-3 py-1 pl-7">
+                <CompactEditableRowContent
+                  task={subtask}
+                  columns={taskColumns}
+                  dateField={compactDateField}
+                  isMultiselectMode={isMultiselectMode}
+                  isTaskSelected={isChecked}
+                  onTaskToggle={onTaskToggle}
+                />
+              </td>
+            </tr>
+          )
+        })}
+      </>
+    )
+  }
+
   const effectiveGridTemplateColumns =
     gridTemplateColumns ??
     (() => {
@@ -368,7 +445,12 @@ export function SubtaskRows({ parentId, taskColumns, gridTemplateColumns, onTask
 
   return (
     <>
-      {data && data.map(subtask => (
+      {data && data.map(subtask => {
+        const listAccentColor =
+          listColorMode
+            ? getTaskListRowAccentColor(subtask, listColorMode)
+            : null
+        return (
         <tr
           key={subtask.id}
           data-row-type="task"
@@ -393,6 +475,7 @@ export function SubtaskRows({ parentId, taskColumns, gridTemplateColumns, onTask
             const colId = c.id ?? c.accessorKey
             const isSpacer = colId === '__spacer'
             const isLastRealBeforeSpacer = !isSpacer && spacerColumns.length > 0 && idx === realColumns.length - 1
+            const isFirstDataCell = !isSpacer && idx === 0
             return (
               <td
                 key={colId ?? idx}
@@ -401,11 +484,19 @@ export function SubtaskRows({ parentId, taskColumns, gridTemplateColumns, onTask
                   'task-cell text-sm border-b align-middle',
                   colId !== 'project_statuses' && 'truncate',
                   isSpacer && 'task-spacer-cell p-0 border-transparent',
-                  !isSpacer && 'px-3 py-2',
+                  !isSpacer && 'px-3 py-1',
+                  isFirstDataCell && listAccentColor && 'relative pl-7',
                   !isSpacer && !isLastRealBeforeSpacer && 'border-r border-gray-100',
                   colId === 'title' && 'task-cell--sticky',
                 )}
               >
+                {isFirstDataCell && listAccentColor ? (
+                  <span
+                    aria-hidden
+                    className="pointer-events-none absolute left-2 top-1.5 bottom-1.5 w-1.5 rounded-sm"
+                    style={{ backgroundColor: listAccentColor }}
+                  />
+                ) : null}
                 {!isSpacer && (c.cell
                   ? flexRender(c.cell, {
                       row: { original: subtask },
@@ -416,17 +507,70 @@ export function SubtaskRows({ parentId, taskColumns, gridTemplateColumns, onTask
             )
           })}
         </tr>
-      ))}
+        )
+      })}
     </>
   )
 }
 
+/**
+ * Hysteresis margin (px) for leaving compact mode: once compact, the pane must grow this much past
+ * the compact threshold before we restore the full table. Prevents flicker at the boundary.
+ */
+const COMPACT_EXIT_MARGIN = 32
+
+/**
+ * Upper bound (px) on the compact-mode trigger width. Compact rows are a *narrow-pane* fallback only:
+ * the normal table has its own horizontal scroll, so once the left pane is at least this wide we
+ * always show the full table (scrolling horizontally if needed) rather than staying compact. Without
+ * this cap, the trigger would be the full table width (sum of every column ≈ 1800px+), which a left
+ * pane almost never reaches even when maximized — so compact would never turn off after expanding the
+ * pane or closing the middle/right panes. Sized to comfortably show the title + a couple of columns.
+ */
+const COMPACT_MAX_ENTER_WIDTH = 720
+
 export function TaskList({ onTaskSelect, expandMainTaskId, selectedTaskId, editFields, isMultiselectMode: externalIsMultiselectMode, onToggleMultiselect }: TaskListProps) {
   console.log('[TaskList] RENDER');
-  const params = useSearchParams()
+  const routerParams = useSearchParams()
+  /** Keeps list URL-driven state in sync with the address bar when using shallow history updates (no RSC navigation). */
+  const [addressSearch, setAddressSearch] = useState<string | null>(null)
+  useLayoutEffect(() => {
+    if (typeof window === 'undefined') return
+    setAddressSearch(window.location.search)
+  }, [])
+  useEffect(() => {
+    if (typeof window === 'undefined') return
+    setAddressSearch(window.location.search)
+  }, [routerParams.toString()])
+  useEffect(() => {
+    if (typeof window === 'undefined') return
+    const onAddrChange = () => setAddressSearch(window.location.search)
+    window.addEventListener(TASKS_SHALLOW_NAV_EVENT, onAddrChange)
+    window.addEventListener('popstate', onAddrChange)
+    return () => {
+      window.removeEventListener(TASKS_SHALLOW_NAV_EVENT, onAddrChange)
+      window.removeEventListener('popstate', onAddrChange)
+    }
+  }, [])
+  const params = useMemo(() => {
+    let raw = ''
+    if (addressSearch !== null) {
+      raw = addressSearch.startsWith('?') ? addressSearch.slice(1) : addressSearch
+    } else if (typeof window !== 'undefined') {
+      const w = window.location.search
+      raw = w.startsWith('?') ? w.slice(1) : w
+    } else {
+      raw = routerParams.toString()
+    }
+    return new URLSearchParams(raw)
+  }, [addressSearch, routerParams.toString()])
   const router = useRouter()
   const pathname = usePathname()
   const { selectedGroupBy, setGroupBy } = useTaskGrouping();
+  const shallowReplaceUrl = useCallback((url: string) => {
+    if (typeof window === 'undefined') return
+    window.history.replaceState({}, '', url)
+  }, [])
   
   // Determine if we should show grouped or ungrouped view
   // Ungrouped view only when sortBy or sortOrder URL params are present
@@ -442,13 +586,17 @@ export function TaskList({ onTaskSelect, expandMainTaskId, selectedTaskId, editF
       const currentHasSortParams = params.get('sortBy') || params.get('sortOrder');
       const currentHasGroupByParam = params.get('groupBy');
       const currentSelectedGroupBy = selectedGroupBy;
+      // Respect an explicit ungrouped/list mode — don't seed a default groupBy that would re-group
+      // a deliberately ungrouped view on load.
+      const currentMode = params.get('mode');
+      const isUngroupedMode = currentMode === 'list' || currentMode === 'ungrouped';
       
-      if (!currentHasSortParams && !currentHasGroupByParam && !currentSelectedGroupBy) {
+      if (!isUngroupedMode && !currentHasSortParams && !currentHasGroupByParam && !currentSelectedGroupBy) {
         setGroupBy('delivery_date');
         // Also set in URL for consistency
         const newParams = new URLSearchParams(params.toString());
         newParams.set('groupBy', 'delivery_date');
-        router.replace(`${pathname}?${newParams.toString()}`, { scroll: false });
+        shallowReplaceUrl(`${pathname}?${newParams.toString()}`);
       } else if (currentHasGroupByParam) {
         // Sync from URL if present
         const groupByValue = currentHasGroupByParam as any;
@@ -542,9 +690,55 @@ export function TaskList({ onTaskSelect, expandMainTaskId, selectedTaskId, editF
   const sortBy = rowSortBy
   const sortOrder = rowSortOrder
 
+  const listColorByParam = params.get('list_color_by')
+  const listColorOff = listColorByParam === 'off'
+  const listColorExplicit: TaskCardColorMode | null =
+    listColorByParam === 'contentType' ||
+    listColorByParam === 'assignedTo' ||
+    listColorByParam === 'project' ||
+    listColorByParam === 'status'
+      ? listColorByParam
+      : null
+  /** Left accent + legend: default Content type when param absent; `off` disables coloring. */
+  const listColorModeForRows: TaskCardColorMode | null = listColorOff
+    ? null
+    : (listColorExplicit ?? 'contentType')
+
+  const setListToolbarLegend = useTasksListLegendStore((s) => s.setListToolbarLegend)
+  const clearListToolbarLegend = useTasksListLegendStore((s) => s.clearListToolbarLegend)
+
+  const listColorLegendTitle =
+    listColorModeForRows === 'contentType'
+      ? 'Content type'
+      : listColorModeForRows === 'assignedTo'
+        ? 'Assignee'
+        : listColorModeForRows === 'project'
+          ? 'Project'
+          : listColorModeForRows === 'status'
+            ? 'Status'
+            : ''
+
+  const onListColorLegendChange = useCallback(
+    (entries: { key: string; label: string; colorClass: string }[]) => {
+      if (!listColorModeForRows) {
+        clearListToolbarLegend()
+        return
+      }
+      setListToolbarLegend(entries, listColorLegendTitle)
+    },
+    [listColorModeForRows, listColorLegendTitle, setListToolbarLegend, clearListToolbarLegend],
+  )
+
+  useEffect(() => {
+    if (!listColorModeForRows) {
+      clearListToolbarLegend()
+    }
+  }, [listColorModeForRows, clearListToolbarLegend])
+
   // --- Column Sizing State (persisted in localStorage) ---
   const COLUMN_WIDTHS_KEY = 'tasklist-column-widths-v1'
   const defaultColumnWidths: ColumnSizingState = {
+    list_color: 22,
     title: 200,
     users: 180,
     projects: 180,
@@ -559,6 +753,7 @@ export function TaskList({ onTaskSelect, expandMainTaskId, selectedTaskId, editF
   // Min width = default width so resize cannot trim headers
   const COLUMN_MIN_WIDTHS: Record<string, number> = {
     select: 50,
+    list_color: 18,
     title: 200,
     assigned_user: 180,
     users: 180,
@@ -662,6 +857,13 @@ export function TaskList({ onTaskSelect, expandMainTaskId, selectedTaskId, editF
     return () => ro.disconnect()
   }, [scrollContainerEl])
 
+  // Compact single-line rows kick in only when the normal table would need horizontal scroll, i.e.
+  // its natural min width (sum of column sizes) can't fit the available scroll-container width.
+  // Derivation lives after the table is built (see `normalTableMinWidth` / overflow effect below) so
+  // it reads real column sizes and stays mode-independent (no flip-flop). Reacts to middle/right pane
+  // open-close, left-pane expand, layout changes, and window resize via the container ResizeObserver.
+  const [isCompact, setIsCompact] = useState(false)
+
   // On mount: load columnSizing from localStorage if present, else keep defaultColumnWidths
   useEffect(() => {
     if (!hasHydrated) return
@@ -713,7 +915,9 @@ export function TaskList({ onTaskSelect, expandMainTaskId, selectedTaskId, editF
       const saved = localStorage.getItem(COLUMN_ORDER_KEY)
       if (saved) {
         const parsed = JSON.parse(saved) as string[]
-        return Array.isArray(parsed) && parsed.length > 0 ? parsed : DEFAULT_COLUMN_ORDER
+        return Array.isArray(parsed) && parsed.length > 0
+          ? parsed.filter((id) => id !== 'list_color')
+          : DEFAULT_COLUMN_ORDER
       }
     } catch {}
     return DEFAULT_COLUMN_ORDER
@@ -745,7 +949,9 @@ export function TaskList({ onTaskSelect, expandMainTaskId, selectedTaskId, editF
   const lastPointerXRef = useRef<number | null>(null)
 
   const sortableColumnIds = useMemo(() => {
-    return columnOrder.filter((id) => id !== '__spacer' && id !== 'select' && id !== 'title')
+    return columnOrder.filter(
+      (id) => id !== '__spacer' && id !== 'select' && id !== 'title' && id !== 'list_color',
+    )
   }, [columnOrder])
 
   const sensors = useSensors(
@@ -756,7 +962,14 @@ export function TaskList({ onTaskSelect, expandMainTaskId, selectedTaskId, editF
 
   const handleColumnDragStart = useCallback((event: DragStartEvent) => {
     const id = event.active?.id
-    if (id && typeof id === 'string' && id !== 'title' && id !== 'select' && id !== '__spacer') {
+    if (
+      id &&
+      typeof id === 'string' &&
+      id !== 'title' &&
+      id !== 'select' &&
+      id !== 'list_color' &&
+      id !== '__spacer'
+    ) {
       setActiveColId(id)
       setIsColumnDragging(true)
     }
@@ -777,8 +990,10 @@ export function TaskList({ onTaskSelect, expandMainTaskId, selectedTaskId, editF
       if (!over || active.id === over.id) return
       const fromId = String(active.id)
       const overId = String(over.id)
-      if (fromId === 'title' || fromId === 'select' || fromId === '__spacer') return
-      if (overId === 'title' || overId === 'select' || overId === '__spacer') return
+      if (fromId === 'title' || fromId === 'select' || fromId === 'list_color' || fromId === '__spacer')
+        return
+      if (overId === 'title' || overId === 'select' || overId === 'list_color' || overId === '__spacer')
+        return
 
       const ids = columnOrder.filter((id) => id !== '__spacer')
       const activeIndex = ids.indexOf(fromId)
@@ -843,14 +1058,16 @@ export function TaskList({ onTaskSelect, expandMainTaskId, selectedTaskId, editF
 
     if (isGroupedView && selectedGroupBy && isGroupColumn) {
       // Toggle group order
-      const current = urlGroupOrder || (selectedGroupBy === 'delivery_date' || selectedGroupBy === 'publication_date' ? 'desc' : 'asc')
+      const current =
+        urlGroupOrder ?? (selectedGroupBy ? getDefaultGroupOrderForGroupBy(selectedGroupBy) : 'asc')
       const next = current === 'asc' ? 'desc' : 'asc'
       const newParams = new URLSearchParams(Array.from(params.entries()))
       newParams.set('groupBy', selectedGroupBy)
       newParams.set('groupOrder', next)
       // Reset pagination on group sort change
       newParams.delete('page')
-      router.replace(`${pathname}?${newParams.toString()}`, { scroll: false })
+      shallowReplaceUrl(`${pathname}?${newParams.toString()}`)
+      dispatchTasksShallowNavigation()
     } else {
       // Update row-level sort (inside groups or ungrouped)
       const currentSortBy = rowSortBy
@@ -869,7 +1086,8 @@ export function TaskList({ onTaskSelect, expandMainTaskId, selectedTaskId, editF
       // Keep existing groupBy / groupOrder as-is (do not ungroup)
       // Reset pagination on sort change
       newParams.delete('page')
-      router.replace(`${pathname}?${newParams.toString()}`, { scroll: false })
+      shallowReplaceUrl(`${pathname}?${newParams.toString()}`)
+      dispatchTasksShallowNavigation()
     }
   }
 
@@ -928,31 +1146,24 @@ export function TaskList({ onTaskSelect, expandMainTaskId, selectedTaskId, editF
 
     const taskIds = Array.from(selectedTasks)
     setIsBulkDeleting(true)
+    taskIds.forEach((taskId) => removeTaskFromAllStores(taskId))
+    setSelectedTasks(new Set())
+    setIsBulkDeleteDialogOpen(false)
 
     try {
       const supabase = createClientComponentClient()
       const { error } = await supabase.from('tasks').delete().in('id', taskIds)
       if (error) throw error
 
-      // Remove tasks from all caches
-      taskIds.forEach(taskId => {
-        removeTaskFromAllStores(taskId)
-      })
-
-      // Clear selection
-      setSelectedTasks(new Set())
-
-      // Invalidate queries
-      queryClient.invalidateQueries({ queryKey: ['tasks'] })
-      queryClient.invalidateQueries({ queryKey: ['subtasks'] })
-
       toast({
         title: 'Tasks deleted',
         description: `Successfully deleted ${taskIds.length} task${taskIds.length !== 1 ? 's' : ''}.`,
       })
-
-      setIsBulkDeleteDialogOpen(false)
     } catch (err: any) {
+      queryClient.invalidateQueries({
+        predicate: (query) => Array.isArray(query.queryKey) && query.queryKey[0] === 'tasks',
+      })
+      queryClient.invalidateQueries({ queryKey: ['subtasks'] })
       toast({
         title: 'Failed to delete tasks',
         description: err?.message || 'An error occurred while deleting the tasks.',
@@ -1164,6 +1375,14 @@ export function TaskList({ onTaskSelect, expandMainTaskId, selectedTaskId, editF
           optimisticTask.language_id = null
           optimisticTask.language_code = null
         }
+        break
+      case 'delivery_date':
+        updateData.delivery_date = toISODate(value) || null
+        optimisticTask.delivery_date = toISODate(value) || null
+        break
+      case 'publication_date':
+        updateData.publication_date = toISODate(value) || null
+        optimisticTask.publication_date = toISODate(value) || null
         break
       default:
         // Restore previous value if field not handled
@@ -1726,7 +1945,7 @@ export function TaskList({ onTaskSelect, expandMainTaskId, selectedTaskId, editF
     (!editingCell || (editingCell.taskId === taskId && editingCell.field === field))
 
   const handleCellHoverEnter = useCallback(
-    (taskId: number, field: string, currentValue: any) => {
+    (taskId: number, field: string, currentValue: any, options?: { openOnHover?: boolean }) => {
       if (isScrollingRef.current) return
       // Close any other cell in edit mode so it doesn't stay stuck
       const current = editingCellRef.current
@@ -1734,6 +1953,9 @@ export function TaskList({ onTaskSelect, expandMainTaskId, selectedTaskId, editF
         handleCellCancel()
       }
       setActiveHoverId(cellId(taskId, field))
+      // Some fields (e.g. delivery/publication date) keep the visual hover affordance but must NOT
+      // auto-open their editor/calendar on hover — they open only via click or keyboard activation.
+      if (options?.openOnHover === false) return
       scheduleHoverEdit(taskId, field, currentValue)
     },
     [scheduleHoverEdit, handleCellCancel],
@@ -1906,30 +2128,35 @@ export function TaskList({ onTaskSelect, expandMainTaskId, selectedTaskId, editF
         
         const isSubtask = !!task.parent_task_id_int
         const titleContentIndent = isSubtask ? 'pl-3' : ''
+        // Compact rows keep the project logo/color as the far-left identity marker, so the subtask
+        // chevron must sit AFTER the title (not in a leading slot). Same toggle/state as expanded.
+        const isCompactTitle = !!(info as any)?.compact
+
+        const subtaskChevron = isMainTask ? (
+          <button
+            type="button"
+            aria-label={isExpanded ? 'Collapse subtasks' : 'Expand subtasks'}
+            onClick={e => { e.stopPropagation(); handleToggleMainTask(taskId) }}
+            onMouseDown={e => e.stopPropagation()}
+            className={cn(
+              'flex h-5 w-5 flex-shrink-0 items-center justify-center rounded transition',
+              isExpanded ? 'text-blue-600' : 'text-gray-400 hover:bg-gray-100 hover:text-blue-600'
+            )}
+            tabIndex={0}
+          >
+            {isExpanded ? <ChevronDown size={14} /> : <ChevronRight size={14} />}
+          </button>
+        ) : null
 
         if (isEditing) {
           const measuredW = getMeasuredWidth(taskId, 'title')
           return (
-            <div className="flex items-center min-w-0" data-active-editor data-inline-editor style={measuredW ? { minWidth: measuredW, maxWidth: measuredW } : undefined}>
-              <div className="w-6 shrink-0 flex items-center justify-center">
-                {isMainTask ? (
-                  <button
-                    type="button"
-                    aria-label={isExpanded ? 'Collapse subtasks' : 'Expand subtasks'}
-                    onClick={e => { e.stopPropagation(); handleToggleMainTask(taskId) }}
-                    onMouseDown={e => e.stopPropagation()}
-                    className={cn(
-                      'w-6 h-6 flex items-center justify-center rounded transition flex-shrink-0',
-                      isExpanded ? 'text-blue-600' : 'text-gray-400 hover:text-blue-600 hover:bg-gray-100'
-                    )}
-                    tabIndex={0}
-                  >
-                    {isExpanded ? <ChevronDown size={16} /> : <ChevronRight size={16} />}
-                  </button>
-                ) : (
-                  <span className="w-6 block" aria-hidden />
-                )}
-              </div>
+            <div className={cn('flex min-w-0 items-center', isCompactTitle && 'gap-1')} data-active-editor data-inline-editor style={measuredW ? { minWidth: measuredW, maxWidth: measuredW } : undefined}>
+              {!isCompactTitle && (
+                <div className="flex h-5 w-5 shrink-0 items-center justify-center">
+                  {subtaskChevron ?? <span className="block h-5 w-5" aria-hidden />}
+                </div>
+              )}
               <div className={cn('min-w-0 flex-1 overflow-visible', titleContentIndent)}>
                 <input
                   type="text"
@@ -1944,43 +2171,44 @@ export function TaskList({ onTaskSelect, expandMainTaskId, selectedTaskId, editF
                     }
                   }}
                   onClick={(e) => e.stopPropagation()}
-                  className="w-full min-w-0 px-1 py-0.5 bg-white border border-gray-500 rounded focus:outline-none focus:ring-1 focus:ring-gray-500 overflow-visible"
+                  className="w-full min-w-0 rounded border border-gray-500 bg-white px-1 py-0 text-sm leading-none focus:outline-none focus:ring-1 focus:ring-gray-500 overflow-visible"
                   style={{ textOverflow: 'clip' }}
                   autoFocus={editIntent !== 'hover' && !isScrolling}
                 />
               </div>
+              {isCompactTitle ? subtaskChevron : null}
             </div>
           )
         }
         
         return (
-          <div className="flex items-center min-w-0" ref={(el) => measureCellWidth(taskId, 'title', el)}>
-            <div className="w-6 shrink-0 flex items-center justify-center">
-              {!isSuggestion && isMainTask ? (
-                <button
-                  type="button"
-                  aria-label={isExpanded ? 'Collapse subtasks' : 'Expand subtasks'}
-                  onClick={e => { e.stopPropagation(); handleToggleMainTask(task.id) }}
-                  onMouseDown={e => e.stopPropagation()}
-                  className={cn(
-                    'w-6 h-6 flex items-center justify-center rounded transition flex-shrink-0',
-                    isExpanded ? 'text-blue-600' : 'text-gray-400 hover:text-blue-600 hover:bg-gray-100'
-                  )}
-                  tabIndex={0}
-                >
-                  {isExpanded ? <ChevronDown size={16} /> : <ChevronRight size={16} />}
-                  </button>
-                ) : (
-                  <span className="w-6 block" aria-hidden />
-                )}
+          <div
+            className={cn(
+              'flex min-w-0 items-center',
+              isCompactTitle && 'w-full max-w-full gap-1 overflow-hidden',
+            )}
+            ref={(el) => measureCellWidth(taskId, 'title', el)}
+          >
+            {!isCompactTitle && (
+              <div className="flex h-5 w-5 shrink-0 items-center justify-center">
+                {!isSuggestion && subtaskChevron ? subtaskChevron : <span className="block h-5 w-5" aria-hidden />}
               </div>
-            <div className={cn('min-w-0 flex-1 flex items-center gap-2', titleContentIndent)}>
+            )}
+            <div
+              className={cn(
+                'flex min-w-0 flex-1 items-center gap-2',
+                isCompactTitle && 'overflow-hidden',
+                titleContentIndent,
+              )}
+            >
               <span
                 data-editable-cell
                 className={cn(
-                  'truncate block min-w-0 flex-1 whitespace-nowrap overflow-hidden text-ellipsis',
-                  'cursor-text border border-transparent hover:bg-white hover:border-gray-300 px-1 py-0.5 rounded transition-colors',
-                  isHoverActive(taskId, 'title') && 'bg-white border border-gray-300'
+                  'min-w-0 flex-1 truncate text-sm leading-none select-text',
+                  'cursor-text rounded border border-transparent px-1 py-0 transition-colors hover:border-gray-300 hover:bg-white',
+                  isHoverActive(taskId, 'title') && 'bg-white border border-gray-300',
+                  // Compact rows distinguish AI suggestions by subtly muting the title (no icon) instead.
+                  isCompactTitle && isSuggestion && 'text-muted-foreground'
                 )}
                 {...(isHoverActive(taskId, 'title') && {
                   'data-hover-overlay': '',
@@ -1997,11 +2225,16 @@ export function TaskList({ onTaskSelect, expandMainTaskId, selectedTaskId, editF
               >
                 {task.title}
               </span>
-              {isSuggestion && (
-                <span className="shrink-0 inline-flex items-center rounded-full border border-dashed border-gray-300 bg-gray-50 px-2 py-0.5 text-[10px] font-medium text-gray-700">
-                  AI suggestion
+              {isSuggestion && !isCompactTitle && (
+                <span
+                  className="shrink-0 inline-flex h-4 w-4 items-center justify-center text-gray-400"
+                  title="AI suggestion"
+                  aria-label="AI suggestion"
+                >
+                  <Zap className="h-3 w-3" />
                 </span>
               )}
+              {isCompactTitle ? subtaskChevron : null}
             </div>
           </div>
         )
@@ -2031,24 +2264,27 @@ export function TaskList({ onTaskSelect, expandMainTaskId, selectedTaskId, editF
       cell: info => {
         const task = info.row.original
         const isEditing = editingCell?.taskId === task.id && editingCell?.field === 'assigned_user'
+        // Compact rows show the avatar only (no name) to preserve the narrow layout; the avatar itself
+        // is the click target that opens the same assignee editor used by the expanded list.
+        const isCompactAssignee = !!(info as any)?.compact
         const displayName =
           task.assigned_user?.full_name ??
           task.assigned_to_name ??
           ""
 
-        const photoUrl = task.assignedToPhotoUrl ?? null
+        const photoUrl = task.assignedToPhotoUrl ?? getImageUrl(task.assigned_to_photo ?? task.assigned_user?.photo) ?? null
         
         const leadingSlot = (
-          <div className="leading-slot flex-shrink-0 w-8 h-8 flex items-center justify-center">
+          <div className="leading-slot flex h-5 w-5 shrink-0 items-center justify-center">
             {task.assigned_to_id ? (
-              <UserAvatar name={displayName} photoUrl={photoUrl} size="sm" />
+              <UserAvatar name={displayName} photoUrl={photoUrl} size="xs" className="!h-5 !w-5 !min-h-5 !min-w-5" />
             ) : (
-              <span className="w-8 h-8 block" aria-hidden />
+              <span className="block h-5 w-5" aria-hidden />
             )}
           </div>
         )
 
-        if (isEditing) {
+        if (isEditing && !isCompactAssignee) {
           const filteredWatchers = getFilteredWatchersForTask(task)
           const currentUserId = editingValue ?? (task?.assigned_to_id ? String(task.assigned_to_id) : '')
           const measuredW = getMeasuredWidth(task.id, 'assigned_user')
@@ -2058,7 +2294,7 @@ export function TaskList({ onTaskSelect, expandMainTaskId, selectedTaskId, editF
             photo: w.users?.photo ?? null,
           }))
           return (
-            <div className="task-cell relative flex items-center min-h-[36px] shrink-0" data-active-editor data-inline-editor style={measuredW ? { width: measuredW, minWidth: 160, maxWidth: measuredW } : { minWidth: 160 }}>
+            <div className="task-cell relative flex shrink-0 items-center" data-active-editor data-inline-editor style={measuredW ? { width: measuredW, minWidth: 160, maxWidth: measuredW } : { minWidth: 160 }}>
               <div className="absolute inset-0 flex items-center" style={{ paddingLeft: 8, paddingRight: 8 }}>
                 <InlineSelect
                   options={assigneeOptions}
@@ -2071,21 +2307,58 @@ export function TaskList({ onTaskSelect, expandMainTaskId, selectedTaskId, editF
                   autoFocus={editIntent !== 'hover' && !isScrolling}
                 />
               </div>
-              <div className="invisible flex items-center gap-2 min-w-0 flex-1 min-h-[36px]" aria-hidden>
+              <div className="invisible flex min-w-0 flex-1 items-center gap-2" aria-hidden>
                 {leadingSlot}
-                <span className="truncate">{displayName || '\u00A0'}</span>
+                <span className="truncate text-sm">{displayName || '\u00A0'}</span>
               </div>
             </div>
           )
         }
 
+        if (isCompactAssignee) {
+          const filteredWatchers = getFilteredWatchersForTask(task)
+          const assigneeOptions = filteredWatchers.map((w: any) => ({
+            value: String(w.user_id),
+            label: w.users?.full_name || '',
+            photo: w.users?.photo ?? null,
+          }))
+          return (
+            <div className="flex items-center" ref={(el) => measureCellWidth(task.id, 'assigned_user', el)}>
+              <InlineSelect
+                variant="compact"
+                options={assigneeOptions}
+                value={task.assigned_to_id ? String(task.assigned_to_id) : ''}
+                onChange={(val) => handleCellSaveWithValue(task.id, 'assigned_user', String(val), task)}
+                onBlur={() => handleCellCancel()}
+                placeholder="Select assignee"
+                emptyOption={{ value: '', label: 'Unassigned' }}
+                showMedia="avatar"
+                assigneeDisplayName={displayName}
+                assigneePhotoUrl={photoUrl}
+                triggerClassName={cn(
+                  isHoverActive(task.id, 'assigned_user') && 'border-gray-300',
+                )}
+                onTriggerPointerEnter={() =>
+                  handleCellHoverEnter(
+                    task.id,
+                    'assigned_user',
+                    task.assigned_to_id ? String(task.assigned_to_id) : '',
+                    { openOnHover: false },
+                  )
+                }
+                onTriggerPointerLeave={() => handleCellHoverLeave(task.id, 'assigned_user')}
+              />
+            </div>
+          )
+        }
+
         return (
-          <div className="task-cell flex items-center gap-2 min-w-0 min-h-[36px]" ref={(el) => measureCellWidth(task.id, 'assigned_user', el)}>
+          <div className="task-cell flex min-w-0 items-center gap-2" ref={(el) => measureCellWidth(task.id, 'assigned_user', el)}>
             {leadingSlot}
             <span
               data-editable-cell
               className={cn(
-                "flex-1 min-w-0 cursor-text border border-transparent hover:bg-white hover:border-gray-300 px-1 py-0.5 rounded transition-colors flex items-center",
+                "flex min-w-0 flex-1 cursor-text items-center rounded border border-transparent px-1 py-0.5 text-sm transition-colors hover:border-gray-300 hover:bg-white",
                 isHoverActive(task.id, 'assigned_user') && 'bg-white border-gray-300'
               )}
               {...(isHoverActive(task.id, 'assigned_user') && {
@@ -2134,25 +2407,25 @@ export function TaskList({ onTaskSelect, expandMainTaskId, selectedTaskId, editF
           task.project_color ??
           null
 
-        const projectLogoUrl = task.projectLogoUrl ?? null
+        const projectLogoUrl = task.projectLogoUrl ?? getImageUrl(task.project_logo ?? task.projects?.logo) ?? null
 
         const leadingSlot = (
-          <div className="leading-slot flex-shrink-0 w-8 h-8 flex items-center justify-center">
+          <div className="leading-slot flex h-4 w-4 shrink-0 items-center justify-center">
             {projectName ? (
               projectLogoUrl ? (
                 <img
                   src={projectLogoUrl}
                   alt={projectName}
-                  className="h-8 w-8 rounded-full object-cover"
+                  className="h-4 w-4 rounded-sm object-cover"
                 />
               ) : (
                 <span
-                  className="h-2 w-2 rounded-full flex-shrink-0"
+                  className="h-3 w-3 shrink-0 rounded-full"
                   style={{ backgroundColor: projectColor || '#e5e7eb' }}
                 />
               )
             ) : (
-              <span className="w-8 h-8 block" aria-hidden />
+              <span className="block h-4 w-4" aria-hidden />
             )}
           </div>
         )
@@ -2169,7 +2442,7 @@ export function TaskList({ onTaskSelect, expandMainTaskId, selectedTaskId, editF
           const currentProjectId = editingValue ?? (task?.project_id_int ?? (Array.isArray(task?.projects) ? task.projects[0]?.id : task?.projects?.id) ?? '')
           const measuredW = getMeasuredWidth(task.id, 'projects')
           return (
-            <div className="task-cell relative flex items-center min-h-[36px] shrink-0" data-active-editor data-inline-editor style={measuredW ? { width: measuredW, minWidth: 160, maxWidth: measuredW } : { minWidth: 160 }}>
+            <div className="task-cell relative flex shrink-0 items-center" data-active-editor data-inline-editor style={measuredW ? { width: measuredW, minWidth: 160, maxWidth: measuredW } : { minWidth: 160 }}>
               <div className="absolute inset-0 flex items-center" style={{ paddingLeft: 8, paddingRight: 8 }}>
                 <InlineSelect
                   options={projectOptions}
@@ -2183,21 +2456,21 @@ export function TaskList({ onTaskSelect, expandMainTaskId, selectedTaskId, editF
                   debugLabel="project"
                 />
               </div>
-              <div className="invisible flex items-center gap-2 min-w-0 flex-1 min-h-[36px]" aria-hidden>
+              <div className="invisible flex min-w-0 flex-1 items-center gap-2" aria-hidden>
                 {leadingSlot}
-                <span className="truncate">{projectName || '\u00A0'}</span>
+                <span className="truncate text-sm">{projectName || '\u00A0'}</span>
               </div>
             </div>
           )
         }
 
         return (
-          <div className="task-cell flex items-center gap-2 min-w-0 min-h-[36px]" ref={(el) => measureCellWidth(task.id, 'projects', el)}>
+          <div className="task-cell flex min-w-0 items-center gap-2" ref={(el) => measureCellWidth(task.id, 'projects', el)}>
             {leadingSlot}
             <span
               data-editable-cell
               className={cn(
-                "flex-1 min-w-0 cursor-text border border-transparent hover:bg-white hover:border-gray-300 px-1 py-0.5 rounded transition-colors flex items-center",
+                "flex min-w-0 flex-1 cursor-text items-center rounded border border-transparent px-1 py-0.5 text-sm transition-colors hover:border-gray-300 hover:bg-white",
                 isHoverActive(task.id, 'projects') && 'bg-white border-gray-300'
               )}
               {...(isHoverActive(task.id, 'projects') && {
@@ -2251,7 +2524,7 @@ export function TaskList({ onTaskSelect, expandMainTaskId, selectedTaskId, editF
           const measuredW = getMeasuredWidth(task.id, 'project_statuses')
           return (
             <div
-              className="task-cell relative inline-flex min-h-[36px] shrink-0"
+              className="task-cell relative inline-flex shrink-0"
               data-active-editor
               data-inline-editor
               style={measuredW ? { width: measuredW, minWidth: 160, maxWidth: measuredW } : { minWidth: 160 }}
@@ -2267,7 +2540,7 @@ export function TaskList({ onTaskSelect, expandMainTaskId, selectedTaskId, editF
                   autoFocus={editIntent !== 'hover' && !isScrolling}
                 />
               </div>
-              <span className="invisible status-pill inline-flex items-center justify-center px-2 py-0.5 rounded-full text-[11px] min-h-[22px] h-[22px]" aria-hidden>
+              <span className="status-pill invisible inline-flex h-5 items-center justify-center rounded-full px-2 text-[11px] leading-none" aria-hidden>
                 {name || '\u00A0'}
               </span>
             </div>
@@ -2279,7 +2552,7 @@ export function TaskList({ onTaskSelect, expandMainTaskId, selectedTaskId, editF
             <span
               data-editable-cell
               className={cn(
-                "task-cell block min-h-[24px] cursor-text border border-transparent hover:bg-white hover:border-gray-300 rounded transition-colors",
+                "task-cell block h-5 cursor-text rounded border border-transparent transition-colors hover:border-gray-300 hover:bg-white",
                 isHoverActive(task.id, 'project_statuses') && 'bg-white border-gray-300'
               )}
               {...(isHoverActive(task.id, 'project_statuses') && {
@@ -2302,7 +2575,7 @@ export function TaskList({ onTaskSelect, expandMainTaskId, selectedTaskId, editF
             ref={(el) => measureCellWidth(task.id, 'project_statuses', el)}
             data-editable-cell
             className={cn(
-              "task-cell status-pill inline-flex shrink-0 items-center justify-center w-fit whitespace-nowrap px-2 py-0.5 rounded-full text-[11px] font-normal leading-none cursor-text box-border min-h-[22px] h-[22px]",
+              "task-cell status-pill inline-flex h-5 w-fit shrink-0 cursor-text items-center justify-center whitespace-nowrap rounded-full px-2 text-[11px] font-normal leading-none box-border",
               "ring-2 transition-colors",
               isHoverActive(task.id, 'project_statuses') ? 'ring-gray-300' : 'ring-transparent'
             )}
@@ -2339,20 +2612,57 @@ export function TaskList({ onTaskSelect, expandMainTaskId, selectedTaskId, editF
       accessorKey: 'delivery_date',
       header: () => (
         <button type="button" data-no-dnd onPointerDown={stopDnd} onMouseDown={stopDnd} onTouchStart={stopDnd} className={cn('truncate block max-w-full whitespace-nowrap overflow-hidden text-ellipsis font-medium', 'bg-transparent border-0 p-0 m-0 cursor-pointer flex items-center', sortBy === 'delivery_date' ? 'text-black' : 'text-gray-500 hover:text-black')} onClick={() => handleHeaderClick('delivery_date')}>
-          Delivery Date
+          Due date
           {sortBy === 'delivery_date' && <Arrow direction={sortOrder} />}
         </button>
       ),
       cell: info => {
         const task = info.row.original;
         const isEditing = editingCell?.taskId === task.id && editingCell?.field === 'delivery_date'
-        const date = formatDateWithYear(task.delivery_date);
+        const isCompactDate = !!(info as any)?.compact
+        const date = isCompactDate
+          ? formatCompactDateDisplay(task.delivery_date)
+          : formatDateWithYear(task.delivery_date);
+
+        if (isCompactDate) {
+          const isoValue = task.delivery_date
+            ? new Date(task.delivery_date).toISOString().split('T')[0]
+            : ''
+          return (
+            <div
+              className="inline-flex shrink-0 items-center"
+              data-inline-editor
+              ref={(el) => measureCellWidth(task.id, 'delivery_date', el)}
+              onPointerEnter={() =>
+                handleCellHoverEnter(task.id, 'delivery_date', isoValue, { openOnHover: false })
+              }
+              onPointerLeave={() => handleCellHoverLeave(task.id, 'delivery_date')}
+            >
+              <InlineDateEditor
+                compact
+                value={isoValue}
+                onChange={() => {}}
+                onBlur={() => handleCellCancel()}
+                onKeyDown={(e) => {
+                  e.stopPropagation()
+                  if (e.key === 'Escape') handleCellCancel()
+                }}
+                onSave={(savedIso) =>
+                  handleCellSaveWithValue(task.id, 'delivery_date', savedIso, task)
+                }
+                openCalendarOnMount={false}
+                isActive={isHoverActive(task.id, 'delivery_date')}
+                className={cn(task.is_overdue ? 'font-medium text-red-600' : 'text-gray-500')}
+              />
+            </div>
+          )
+        }
         
         if (isEditing) {
           const isoValue = editingValue || (task.delivery_date ? new Date(task.delivery_date).toISOString().split('T')[0] : '')
           const measuredW = getMeasuredWidth(task.id, 'delivery_date')
           return (
-            <div className="task-cell min-h-[36px] shrink-0" data-active-editor data-inline-editor style={measuredW ? { width: measuredW, minWidth: 160, maxWidth: measuredW } : { minWidth: 160 }}>
+            <div className="task-cell shrink-0" data-active-editor data-inline-editor style={measuredW ? { width: measuredW, minWidth: 160, maxWidth: measuredW } : { minWidth: 160 }}>
               <InlineDateEditor
                 value={isoValue}
                 onChange={(v) => setEditingValue(v)}
@@ -2372,8 +2682,11 @@ export function TaskList({ onTaskSelect, expandMainTaskId, selectedTaskId, editF
         return (
           <span
             data-editable-cell
+            role="button"
+            tabIndex={0}
+            aria-label={`Edit delivery date${date ? `, ${date}` : ''}`}
             className={cn(
-              "task-cell truncate block max-w-full whitespace-nowrap overflow-hidden text-ellipsis cursor-text border border-transparent hover:bg-white hover:border-gray-300 px-1 py-0.5 rounded transition-colors min-h-[32px] flex items-center",
+              "task-cell flex max-w-full cursor-pointer items-center truncate whitespace-nowrap overflow-hidden text-ellipsis rounded border border-transparent px-1 py-0 text-sm leading-none transition-colors hover:border-gray-300 hover:bg-white focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-gray-400",
               task.is_overdue && "text-red-600 font-medium",
               isHoverActive(task.id, 'delivery_date') && 'bg-white border border-gray-300'
             )}
@@ -2386,11 +2699,20 @@ export function TaskList({ onTaskSelect, expandMainTaskId, selectedTaskId, editF
               const dateValue = task.delivery_date ? new Date(task.delivery_date).toISOString().split('T')[0] : ''
               handleCellEdit(task.id, 'delivery_date', dateValue)
             }}
+            onKeyDown={(e) => {
+              if (e.key === 'Enter' || e.key === ' ') {
+                e.preventDefault()
+                e.stopPropagation()
+                const dateValue = task.delivery_date ? new Date(task.delivery_date).toISOString().split('T')[0] : ''
+                handleCellEdit(task.id, 'delivery_date', dateValue)
+              }
+            }}
+            // Hover shows the visual affordance only; the calendar opens on click / keyboard, not hover.
             onPointerEnter={() => {
               const dateValue = task.delivery_date
                 ? new Date(task.delivery_date).toISOString().split('T')[0]
                 : ''
-              handleCellHoverEnter(task.id, 'delivery_date', dateValue)
+              handleCellHoverEnter(task.id, 'delivery_date', dateValue, { openOnHover: false })
             }}
             onPointerLeave={() => handleCellHoverLeave(task.id, 'delivery_date')}
             ref={(el) => measureCellWidth(task.id, 'delivery_date', el)}
@@ -2408,20 +2730,59 @@ export function TaskList({ onTaskSelect, expandMainTaskId, selectedTaskId, editF
       accessorKey: 'publication_date',
       header: () => (
         <button type="button" data-no-dnd onPointerDown={stopDnd} onMouseDown={stopDnd} onTouchStart={stopDnd} className={cn('truncate block max-w-full whitespace-nowrap overflow-hidden text-ellipsis font-medium', 'bg-transparent border-0 p-0 m-0 cursor-pointer flex items-center', sortBy === 'publication_date' ? 'text-black' : 'text-gray-500 hover:text-black')} onClick={() => handleHeaderClick('publication_date')}>
-          Publication Date
+          Publish date
           {sortBy === 'publication_date' && <Arrow direction={sortOrder} />}
         </button>
       ),
       cell: info => {
         const task = info.row.original;
         const isEditing = editingCell?.taskId === task.id && editingCell?.field === 'publication_date'
-        const date = formatDateWithYear(task.publication_date);
+        const isCompactDate = !!(info as any)?.compact
+        const date = isCompactDate
+          ? formatCompactDateDisplay(task.publication_date)
+          : formatDateWithYear(task.publication_date);
+
+        if (isCompactDate) {
+          const isoValue = task.publication_date
+            ? new Date(task.publication_date).toISOString().split('T')[0]
+            : ''
+          return (
+            <div
+              className="inline-flex shrink-0 items-center"
+              data-inline-editor
+              ref={(el) => measureCellWidth(task.id, 'publication_date', el)}
+              onPointerEnter={() =>
+                handleCellHoverEnter(task.id, 'publication_date', isoValue, { openOnHover: false })
+              }
+              onPointerLeave={() => handleCellHoverLeave(task.id, 'publication_date')}
+            >
+              <InlineDateEditor
+                compact
+                value={isoValue}
+                onChange={() => {}}
+                onBlur={() => handleCellCancel()}
+                onKeyDown={(e) => {
+                  e.stopPropagation()
+                  if (e.key === 'Escape') handleCellCancel()
+                }}
+                onSave={(savedIso) =>
+                  handleCellSaveWithValue(task.id, 'publication_date', savedIso, task)
+                }
+                openCalendarOnMount={false}
+                isActive={isHoverActive(task.id, 'publication_date')}
+                className={cn(
+                  task.is_publication_overdue ? 'font-medium text-red-600' : 'text-gray-500',
+                )}
+              />
+            </div>
+          )
+        }
         
         if (isEditing) {
           const isoValue = editingValue || (task.publication_date ? new Date(task.publication_date).toISOString().split('T')[0] : '')
           const measuredW = getMeasuredWidth(task.id, 'publication_date')
           return (
-            <div className="task-cell min-h-[36px] shrink-0" data-active-editor data-inline-editor style={measuredW ? { width: measuredW, minWidth: 160, maxWidth: measuredW } : { minWidth: 160 }}>
+            <div className="task-cell shrink-0" data-active-editor data-inline-editor style={measuredW ? { width: measuredW, minWidth: 160, maxWidth: measuredW } : { minWidth: 160 }}>
               <InlineDateEditor
                 value={isoValue}
                 onChange={(v) => setEditingValue(v)}
@@ -2441,8 +2802,11 @@ export function TaskList({ onTaskSelect, expandMainTaskId, selectedTaskId, editF
         return (
           <span
             data-editable-cell
+            role="button"
+            tabIndex={0}
+            aria-label={`Edit publication date${date ? `, ${date}` : ''}`}
             className={cn(
-              "task-cell truncate block max-w-full whitespace-nowrap overflow-hidden text-ellipsis cursor-text border border-transparent hover:bg-white hover:border-gray-300 px-1 py-0.5 rounded transition-colors min-h-[32px] flex items-center",
+              "task-cell flex max-w-full cursor-pointer items-center truncate whitespace-nowrap overflow-hidden text-ellipsis rounded border border-transparent px-1 py-0 text-sm leading-none transition-colors hover:border-gray-300 hover:bg-white focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-gray-400",
               task.is_publication_overdue && "text-red-600 font-medium",
               isHoverActive(task.id, 'publication_date') && 'bg-white border border-gray-300'
             )}
@@ -2455,11 +2819,20 @@ export function TaskList({ onTaskSelect, expandMainTaskId, selectedTaskId, editF
               const dateValue = task.publication_date ? new Date(task.publication_date).toISOString().split('T')[0] : ''
               handleCellEdit(task.id, 'publication_date', dateValue)
             }}
+            onKeyDown={(e) => {
+              if (e.key === 'Enter' || e.key === ' ') {
+                e.preventDefault()
+                e.stopPropagation()
+                const dateValue = task.publication_date ? new Date(task.publication_date).toISOString().split('T')[0] : ''
+                handleCellEdit(task.id, 'publication_date', dateValue)
+              }
+            }}
+            // Hover shows the visual affordance only; the calendar opens on click / keyboard, not hover.
             onPointerEnter={() => {
               const dateValue = task.publication_date
                 ? new Date(task.publication_date).toISOString().split('T')[0]
                 : ''
-              handleCellHoverEnter(task.id, 'publication_date', dateValue)
+              handleCellHoverEnter(task.id, 'publication_date', dateValue, { openOnHover: false })
             }}
             onPointerLeave={() => handleCellHoverLeave(task.id, 'publication_date')}
             ref={(el) => measureCellWidth(task.id, 'publication_date', el)}
@@ -2508,7 +2881,7 @@ export function TaskList({ onTaskSelect, expandMainTaskId, selectedTaskId, editF
           const currentValue = editingValue ?? task.content_type_title ?? ''
           const measuredW = getMeasuredWidth(task.id, 'content_type_title')
           return (
-            <div className="task-cell relative min-h-[36px] shrink-0" data-active-editor data-inline-editor style={measuredW ? { width: measuredW, minWidth: 160, maxWidth: measuredW } : { minWidth: 160 }}>
+            <div className="task-cell relative shrink-0" data-active-editor data-inline-editor style={measuredW ? { width: measuredW, minWidth: 160, maxWidth: measuredW } : { minWidth: 160 }}>
               <div className="absolute inset-0 flex items-center px-1">
                 <InlineSelect
                   options={contentTypeOptions}
@@ -2521,7 +2894,7 @@ export function TaskList({ onTaskSelect, expandMainTaskId, selectedTaskId, editF
                   autoFocus={editIntent !== 'hover' && !isScrolling}
                 />
               </div>
-              <span className="invisible truncate block min-h-[32px] flex items-center" aria-hidden>
+              <span className="invisible truncate block flex items-center" aria-hidden>
                 {task.content_type_title || '\u00A0'}
               </span>
             </div>
@@ -2533,7 +2906,7 @@ export function TaskList({ onTaskSelect, expandMainTaskId, selectedTaskId, editF
             ref={(el) => measureCellWidth(task.id, 'content_type_title', el)}
             data-editable-cell
             className={cn(
-              "task-cell truncate block max-w-full min-w-0 whitespace-nowrap overflow-hidden text-ellipsis cursor-text border border-transparent hover:bg-white hover:border-gray-300 px-1 py-0.5 rounded transition-colors min-h-[32px] flex items-center",
+              "task-cell truncate block max-w-full min-w-0 whitespace-nowrap overflow-hidden text-ellipsis cursor-text border border-transparent hover:bg-white hover:border-gray-300 px-1 py-0.5 rounded transition-colors flex items-center",
               isHoverActive(task.id, 'content_type_title') && 'bg-white border border-gray-300'
             )}
             title={task.content_type_title || undefined}
@@ -2580,7 +2953,7 @@ export function TaskList({ onTaskSelect, expandMainTaskId, selectedTaskId, editF
           const currentValue = editingValue ?? task.production_type_title ?? ''
           const measuredW = getMeasuredWidth(task.id, 'production_type_title')
           return (
-            <div className="task-cell relative min-h-[36px] shrink-0" data-active-editor data-inline-editor style={measuredW ? { width: measuredW, minWidth: 160, maxWidth: measuredW } : { minWidth: 160 }}>
+            <div className="task-cell relative shrink-0" data-active-editor data-inline-editor style={measuredW ? { width: measuredW, minWidth: 160, maxWidth: measuredW } : { minWidth: 160 }}>
               <div className="absolute inset-0 flex items-center px-1">
                 <InlineSelect
                   options={productionTypeOptions}
@@ -2593,7 +2966,7 @@ export function TaskList({ onTaskSelect, expandMainTaskId, selectedTaskId, editF
                   autoFocus={editIntent !== 'hover' && !isScrolling}
                 />
               </div>
-              <span className="invisible truncate block min-h-[32px] flex items-center" aria-hidden>
+              <span className="invisible truncate block flex items-center" aria-hidden>
                 {task.production_type_title || '\u00A0'}
               </span>
             </div>
@@ -2605,7 +2978,7 @@ export function TaskList({ onTaskSelect, expandMainTaskId, selectedTaskId, editF
             ref={(el) => measureCellWidth(task.id, 'production_type_title', el)}
             data-editable-cell
             className={cn(
-              "task-cell truncate block max-w-full min-w-0 whitespace-nowrap overflow-hidden text-ellipsis cursor-text border border-transparent hover:bg-white hover:border-gray-300 px-1 py-0.5 rounded transition-colors min-h-[32px] flex items-center",
+              "task-cell truncate block max-w-full min-w-0 whitespace-nowrap overflow-hidden text-ellipsis cursor-text border border-transparent hover:bg-white hover:border-gray-300 px-1 py-0.5 rounded transition-colors flex items-center",
               isHoverActive(task.id, 'production_type_title') && 'bg-white border border-gray-300'
             )}
             title={task.production_type_title || undefined}
@@ -2652,7 +3025,7 @@ export function TaskList({ onTaskSelect, expandMainTaskId, selectedTaskId, editF
           const currentLanguageId = editingValue ?? (task.language_id ? String(task.language_id) : '')
           const measuredW = getMeasuredWidth(task.id, 'language_code')
           return (
-            <div className="task-cell relative min-h-[36px] shrink-0" data-active-editor data-inline-editor style={measuredW ? { width: measuredW, minWidth: 160, maxWidth: measuredW } : { minWidth: 160 }}>
+            <div className="task-cell relative shrink-0" data-active-editor data-inline-editor style={measuredW ? { width: measuredW, minWidth: 160, maxWidth: measuredW } : { minWidth: 160 }}>
               <div className="absolute inset-0 flex items-center px-1">
                 <InlineSelect
                   options={languageOptions}
@@ -2665,7 +3038,7 @@ export function TaskList({ onTaskSelect, expandMainTaskId, selectedTaskId, editF
                   autoFocus={editIntent !== 'hover' && !isScrolling}
                 />
               </div>
-              <span className="invisible truncate block min-h-[32px] flex items-center" aria-hidden>
+              <span className="invisible truncate block flex items-center" aria-hidden>
                 {task.language_code || '\u00A0'}
               </span>
             </div>
@@ -2676,7 +3049,7 @@ export function TaskList({ onTaskSelect, expandMainTaskId, selectedTaskId, editF
           <span
             data-editable-cell
             className={cn(
-              "task-cell truncate block max-w-full whitespace-nowrap overflow-hidden text-ellipsis cursor-text border border-transparent hover:bg-white hover:border-gray-300 px-1 py-0.5 rounded transition-colors min-h-[32px] flex items-center",
+              "task-cell truncate block max-w-full whitespace-nowrap overflow-hidden text-ellipsis cursor-text border border-transparent hover:bg-white hover:border-gray-300 px-1 py-0.5 rounded transition-colors flex items-center",
               isHoverActive(task.id, 'language_code') && 'bg-white border border-gray-300'
             )}
             {...(isHoverActive(task.id, 'language_code') && {
@@ -2800,9 +3173,10 @@ export function TaskList({ onTaskSelect, expandMainTaskId, selectedTaskId, editF
   const infiniteListKey = `${rowSortBy}-${rowSortOrder}-${filterParamsString}`;
 
   // --- Typesense Search Integration (ungrouped view only) ---
-  // Use URL param for search (inline search updates URL)
+  // Use URL param for search (inline search updates URL). When in project scope, project comes from scope.
   const q = params.get('q') || '';
-  const project = params.get('project') || undefined;
+  const urlProject = params.get('project') || undefined;
+  const project = useTasksScopeProjectParam(urlProject) ?? urlProject;
   const filters: Record<string, string | string[]> = {};
   
   // Handle assignedTo filter - convert from user IDs to names using editFields
@@ -2993,10 +3367,29 @@ export function TaskList({ onTaskSelect, expandMainTaskId, selectedTaskId, editF
 
   const suggestionsQuery = useTaskSuggestionsQuery({
     projectIds: projectIdsForSuggestions,
+    contentTypeIds: (() => {
+      const raw = params.get('contentType')
+      if (!raw) return null
+      const ids = raw
+        .split(',')
+        .map((value) => Number.parseInt(value.trim(), 10))
+        .filter((value) => Number.isFinite(value))
+      return ids.length > 0 ? ids : null
+    })(),
+    channelIds: (() => {
+      const raw = params.get('channels')
+      if (!raw) return null
+      const ids = raw
+        .split(',')
+        .map((value) => Number.parseInt(value.trim(), 10))
+        .filter((value) => Number.isFinite(value))
+      return ids.length > 0 ? ids : null
+    })(),
+    q,
     from: suggestionsRange.from,
     to: suggestionsRange.to,
     enabled: groupingReady && !isGroupedView && plannerVisibility.showSuggestions,
-    cacheKeyParts: ['list'],
+    cacheKeyParts: ['list', JSON.stringify(filters)],
   })
 
   // IMPORTANT: select a stable snapshot from Zustand (avoid returning a freshly created array).
@@ -3017,6 +3410,8 @@ export function TaskList({ onTaskSelect, expandMainTaskId, selectedTaskId, editF
         kind: kind === 'suggestion' ? ('suggestion' as const) : ('task' as const),
         entity_type: entityType,
         entity_id: Number.isFinite(entityId) ? entityId : Number(item?.id) || 0,
+        board_item_id: `${entityType}:${Number.isFinite(entityId) ? entityId : Number(item?.id) || 0}`,
+        id: kind === 'suggestion' ? `suggestion:${Number.isFinite(entityId) ? entityId : Number(item?.id) || 0}` : Number.isFinite(entityId) ? entityId : Number(item?.id) || 0,
         source_key: item?.source_key ?? null,
       } as PlannerItem
     }
@@ -3049,8 +3444,18 @@ export function TaskList({ onTaskSelect, expandMainTaskId, selectedTaskId, editF
     }
 
     const compare = (a: any, b: any) => {
-      const av = a?.[sortKey]
-      const bv = b?.[sortKey]
+      const av =
+        (a?.kind === 'suggestion' && (sortKey === 'delivery_date' || sortKey === 'publication_date'))
+          ? (a?.planned_for_date ?? a?.delivery_date ?? a?.publication_date)
+          : (a?.kind === 'suggestion' && sortKey === 'updated_at')
+            ? (a?.updated_at ?? a?.created_at)
+            : a?.[sortKey]
+      const bv =
+        (b?.kind === 'suggestion' && (sortKey === 'delivery_date' || sortKey === 'publication_date'))
+          ? (b?.planned_for_date ?? b?.delivery_date ?? b?.publication_date)
+          : (b?.kind === 'suggestion' && sortKey === 'updated_at')
+            ? (b?.updated_at ?? b?.created_at)
+            : b?.[sortKey]
       if (av == null && bv == null) return 0
       if (av == null) return 1
       if (bv == null) return -1
@@ -3067,7 +3472,11 @@ export function TaskList({ onTaskSelect, expandMainTaskId, selectedTaskId, editF
 
       const as = String(av)
       const bs = String(bv)
-      return ascending ? as.localeCompare(bs) : bs.localeCompare(as)
+      const primary = ascending ? as.localeCompare(bs) : bs.localeCompare(as)
+      if (primary !== 0) return primary
+      const aid = Number(a?.entity_id ?? a?.id ?? 0)
+      const bid = Number(b?.entity_id ?? b?.id ?? 0)
+      return ascending ? aid - bid : bid - aid
     }
 
     merged.sort(compare)
@@ -3101,7 +3510,7 @@ export function TaskList({ onTaskSelect, expandMainTaskId, selectedTaskId, editF
     add('select')
     add('title')
     for (const id of columnOrder) {
-      if (id !== 'select' && id !== 'title' && id !== '__spacer') add(id)
+      if (id !== 'select' && id !== 'title' && id !== '__spacer' && id !== 'list_color') add(id)
     }
     Array.from(byId.entries()).forEach(([id, col]) => {
       if (id !== '__spacer' && !seen.has(id)) ordered.push(col)
@@ -3132,6 +3541,32 @@ export function TaskList({ onTaskSelect, expandMainTaskId, selectedTaskId, editF
     onColumnSizingChange: handleColumnSizingChange,
     debugTable: false,
   })
+
+  // Natural minimum width of the normal table = sum of real column sizes (excludes the flexible
+  // spacer track). Derived from react-table column state, so it's independent of whether we're
+  // currently rendering compact — this is what prevents compact/normal flip-flop.
+  const normalTableMinWidth = groupedTable.getAllLeafColumns()
+    .filter((col) => col.id !== '__spacer')
+    .reduce((sum, col) => sum + col.getSize(), 0)
+
+  // Compact mode is a narrow-pane fallback, re-derived purely from the live container width — so it
+  // recalculates whenever the pane resizes (left-pane expand/maximize, middle/right panes opening or
+  // closing, window resize) via the ResizeObserver above. It is never persisted as a sticky UI mode.
+  //
+  // Trigger = min(normal table's natural width, COMPACT_MAX_ENTER_WIDTH):
+  //  - narrow tables (few columns): compact only when the table would actually overflow;
+  //  - wide tables (every column): the cap ensures a comfortably wide pane shows the full table
+  //    (with its own horizontal scroll) instead of being stuck compact forever.
+  // Hysteresis (COMPACT_EXIT_MARGIN) avoids oscillation right at the boundary.
+  const compactEnterWidth = Math.min(normalTableMinWidth, COMPACT_MAX_ENTER_WIDTH)
+  useEffect(() => {
+    if (containerWidth <= 0 || compactEnterWidth <= 0) return
+    setIsCompact((prev) =>
+      prev
+        ? containerWidth < compactEnterWidth + COMPACT_EXIT_MARGIN
+        : containerWidth < compactEnterWidth,
+    )
+  }, [containerWidth, compactEnterWidth])
 
   // Populate default widths once per column (for double-click reset)
   useEffect(() => {
@@ -3292,20 +3727,11 @@ export function TaskList({ onTaskSelect, expandMainTaskId, selectedTaskId, editF
   const handleOptimisticDelete = async (taskId: number) => {
     // Remove the task from all InfiniteList caches immediately
     removeTaskFromAllStores(taskId)
-    queryClient.setQueryData(['tasks'], (old: any) => {
-      if (!old) return old;
-      if (Array.isArray(old)) {
-        return old.filter((t: any) => t.id !== taskId);
-      }
-      // If paginated, adjust as needed
-      return old;
-    });
+    removeTaskIdFromTasksQueryArrays(queryClient, taskId)
     try {
       const supabase = createClientComponentClient();
       const { error } = await supabase.from('tasks').delete().eq('id', taskId);
       if (error) throw error;
-      queryClient.invalidateQueries({ queryKey: ['tasks'] });
-      queryClient.invalidateQueries({ queryKey: ['subtasks'] });
     } catch (err: any) {
       // Rollback: refetch tasks
       queryClient.invalidateQueries({ queryKey: ['tasks'] });
@@ -3327,9 +3753,7 @@ export function TaskList({ onTaskSelect, expandMainTaskId, selectedTaskId, editF
   console.log('[TaskList] isGroupedView:', isGroupedView);
   if (!hasHydrated || !hasMeasured) return null
 
-  const totalSizeWithoutSpacer = groupedTable.getAllLeafColumns()
-    .filter(col => col.id !== '__spacer')
-    .reduce((sum, col) => sum + col.getSize(), 0)
+  const totalSizeWithoutSpacer = normalTableMinWidth
   const isResizing =
     !!table.getState().columnSizingInfo?.isResizingColumn ||
     !!groupedTable.getState().columnSizingInfo?.isResizingColumn
@@ -3338,10 +3762,14 @@ export function TaskList({ onTaskSelect, expandMainTaskId, selectedTaskId, editF
   // Grid layout: real columns first, spacer track at far right (leftover space invisible)
   const leafColumns = groupedTable.getAllLeafColumns()
   const realColumns = leafColumns.filter(col => col.id !== '__spacer')
-  const gridTemplateColumns = [
-    ...realColumns.map(col => `${col.getSize()}px`),
-    'minmax(0px, 1fr)',
-  ].join(' ')
+  const gridTemplateColumns = isCompact
+    ? 'minmax(0, 1fr)'
+    : [
+        ...realColumns.map(col => `${col.getSize()}px`),
+        'minmax(0px, 1fr)',
+      ].join(' ')
+  const compactDateField: 'delivery_date' | 'publication_date' =
+    routerParams.get('calendar_date_field') === 'publication' ? 'publication_date' : 'delivery_date'
 
   // Mobile view
   if (isMobile) {
@@ -3355,10 +3783,12 @@ export function TaskList({ onTaskSelect, expandMainTaskId, selectedTaskId, editF
           entityName="task"
         />
         {bulkDeleteDialog}
-        
         <div
           ref={scrollContainerRef}
-          className="relative flex-1 overflow-y-auto overflow-x-auto"
+          className={cn(
+            'relative flex-1 overflow-y-auto',
+            isCompact ? 'overflow-x-hidden' : 'overflow-x-auto',
+          )}
           data-task-scroll-container
           style={{ width: '100%' }}
           onScroll={markScrolling}
@@ -3374,10 +3804,17 @@ export function TaskList({ onTaskSelect, expandMainTaskId, selectedTaskId, editF
           >
             <SortableContext items={sortableColumnIds} strategy={horizontalListSortingStrategy}>
               <table
-                className="task-list-grid relative z-10 border-collapse text-sm"
+                className={cn(
+                  'task-list-grid relative z-10 border-collapse text-sm',
+                  isCompact && 'task-list-grid--compact',
+                )}
                 style={{ tableLayout: 'fixed', background: 'transparent' }}
               >
-                <TaskTableHeader table={groupedTable} columns={orderedTaskColumns} gridTemplateColumns={gridTemplateColumns} onColumnOrderChange={handleColumnOrderChange} overColId={overColId} isColumnDragging={isColumnDragging} onResizeHandleDoubleClick={handleResizeHandleDoubleClick} defaultWidthsRef={defaultWidthsRef} />
+                {isCompact ? (
+                  <CompactTaskTableHeader dateField={compactDateField} />
+                ) : (
+                  <TaskTableHeader table={groupedTable} columns={orderedTaskColumns} gridTemplateColumns={gridTemplateColumns} onColumnOrderChange={handleColumnOrderChange} overColId={overColId} isColumnDragging={isColumnDragging} onResizeHandleDoubleClick={handleResizeHandleDoubleClick} defaultWidthsRef={defaultWidthsRef} />
+                )}
             <tbody>
               <UnifiedGroupedTaskList<any>
                 columns={orderedTaskColumns}
@@ -3394,6 +3831,9 @@ export function TaskList({ onTaskSelect, expandMainTaskId, selectedTaskId, editF
                 isMultiselectMode={isMultiselectMode}
                 selectedTasks={selectedTasks}
                 onTaskToggle={handleTaskToggle}
+                listColorMode={listColorModeForRows}
+                onListColorLegendChange={onListColorLegendChange}
+                compact={isCompact}
               />
             </tbody>
           </table>
@@ -3427,7 +3867,10 @@ export function TaskList({ onTaskSelect, expandMainTaskId, selectedTaskId, editF
         <div
           ref={desktopScrollRef}
           data-task-scroll-container
-          className="relative flex-1 overflow-y-auto overflow-x-auto"
+          className={cn(
+            'relative flex-1 overflow-y-auto',
+            isCompact ? 'overflow-x-hidden' : 'overflow-x-auto',
+          )}
           style={{ width: '100%', padding: 0, margin: 0 }}
           onScroll={markScrolling}
           onWheel={markScrolling}
@@ -3442,10 +3885,17 @@ export function TaskList({ onTaskSelect, expandMainTaskId, selectedTaskId, editF
           >
             <SortableContext items={sortableColumnIds} strategy={horizontalListSortingStrategy}>
               <table
-                className="task-list-grid relative z-10 border-collapse text-sm md:text-base"
+                className={cn(
+                  'task-list-grid relative z-10 border-collapse text-sm',
+                  isCompact && 'task-list-grid--compact',
+                )}
                 style={{ tableLayout: 'fixed', background: 'transparent' }}
               >
-                <TaskTableHeader table={groupedTable} columns={orderedTaskColumns} gridTemplateColumns={gridTemplateColumns} onColumnOrderChange={handleColumnOrderChange} overColId={overColId} isColumnDragging={isColumnDragging} onResizeHandleDoubleClick={handleResizeHandleDoubleClick} defaultWidthsRef={defaultWidthsRef} />
+                {isCompact ? (
+                  <CompactTaskTableHeader dateField={compactDateField} />
+                ) : (
+                  <TaskTableHeader table={groupedTable} columns={orderedTaskColumns} gridTemplateColumns={gridTemplateColumns} onColumnOrderChange={handleColumnOrderChange} overColId={overColId} isColumnDragging={isColumnDragging} onResizeHandleDoubleClick={handleResizeHandleDoubleClick} defaultWidthsRef={defaultWidthsRef} />
+                )}
             <tbody>
               <UnifiedGroupedTaskList<any>
                 columns={orderedTaskColumns}
@@ -3462,6 +3912,9 @@ export function TaskList({ onTaskSelect, expandMainTaskId, selectedTaskId, editF
                 isMultiselectMode={isMultiselectMode}
                 selectedTasks={selectedTasks}
                 onTaskToggle={handleTaskToggle}
+                listColorMode={listColorModeForRows}
+                onListColorLegendChange={onListColorLegendChange}
+                compact={isCompact}
               />
             </tbody>
           </table>
@@ -3475,20 +3928,22 @@ export function TaskList({ onTaskSelect, expandMainTaskId, selectedTaskId, editF
             </DragOverlay>
           </DndContext>
         </div>
-        <div
-          ref={handlePinnedScrollRef}
-          className="overflow-x-auto"
-          style={{
-            width: '100%',
-            height: 16,
-            position: 'sticky',
-            bottom: 0,
-            background: 'white',
-            zIndex: 10,
-          }}
-        >
-          <div style={{ width: tableScrollRef.current?.scrollWidth ?? totalSizeWithoutSpacer + spacerWidth, height: 1 }} />
-        </div>
+        {!isCompact && (
+          <div
+            ref={handlePinnedScrollRef}
+            className="overflow-x-auto"
+            style={{
+              width: '100%',
+              height: 16,
+              position: 'sticky',
+              bottom: 0,
+              background: 'white',
+              zIndex: 10,
+            }}
+          >
+            <div style={{ width: tableScrollRef.current?.scrollWidth ?? totalSizeWithoutSpacer + spacerWidth, height: 1 }} />
+          </div>
+        )}
       </div>
     </div>
   )

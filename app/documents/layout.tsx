@@ -23,6 +23,14 @@ export default function DocumentsLayout({ children }: DocumentsLayoutProps) {
     setIsMobileMenuOpen(!isMobileMenuOpen)
   }
 
+  const handleHeaderSidebarToggle = () => {
+    if (typeof window !== 'undefined' && window.matchMedia('(max-width: 767px)').matches) {
+      handleMobileMenuToggle()
+      return
+    }
+    handleSidebarToggle()
+  }
+
   const handleMobileMenuClose = () => {
     setIsMobileMenuOpen(false)
   }
@@ -52,7 +60,7 @@ export default function DocumentsLayout({ children }: DocumentsLayoutProps) {
           // Dispatch filter event for pages to listen to
           window.dispatchEvent(new CustomEvent('documents:filter-click'))
         }}
-        onSidebarToggle={handleMobileMenuToggle}
+        onSidebarToggle={handleHeaderSidebarToggle}
         placeholder="Search documents..."
         title="Financials"
       />

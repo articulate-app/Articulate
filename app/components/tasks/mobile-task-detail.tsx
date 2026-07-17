@@ -12,6 +12,8 @@ interface MobileTaskDetailProps {
   className?: string;
   onTaskUpdate?: (updatedFields: Partial<Task>) => void;
   onAddSubtask?: (parentTaskId: number, projectId: number) => void;
+  /** "suggestion" renders the task-suggestion detail; the suggestion object is already adapted. */
+  mode?: "task" | "suggestion";
 }
 
 // Helper function to convert Task type to TaskDetails expected type
@@ -43,8 +45,10 @@ export function MobileTaskDetail({
   className,
   onTaskUpdate,
   onAddSubtask,
+  mode = "task",
 }: MobileTaskDetailProps) {
   const [mounted, setMounted] = useState(false);
+  const isSuggestionMode = mode === "suggestion";
 
   useEffect(() => {
     setMounted(true);
@@ -54,7 +58,10 @@ export function MobileTaskDetail({
     return null;
   }
 
-  if (!task) {
+  // In suggestion mode the suggestion object is already adapted for TaskDetails (and may briefly be
+  // null while loading). Render the detail shell rather than the "No task selected" empty state so a
+  // direct suggestion URL opens the detail UI immediately and TaskDetails owns the loading state.
+  if (!task && !isSuggestionMode) {
     return (
       <div className={cn(
         "flex flex-col h-full bg-white",
@@ -84,27 +91,16 @@ export function MobileTaskDetail({
       "md:hidden", // Only show on mobile
       className
     )}>
-      {/* Mobile Header with Back Button */}
-      <div className="flex items-center px-4 py-3 border-b border-gray-200 bg-white sticky top-0 z-10">
-        <button
-          onClick={onBack}
-          className="flex items-center justify-center p-2 rounded-lg hover:bg-gray-100 focus:outline-none focus:ring-2 focus:ring-blue-500"
-          aria-label="Go back"
-        >
-          <ChevronLeft className="w-5 h-5" />
-        </button>
-        <h1 className="ml-3 text-lg font-semibold text-gray-900 truncate flex-1">
-          {task.title}
-        </h1>
-      </div>
-
-      {/* Task Details Content */}
+      {/* TaskDetails renders its own mobile header (back + title + "..." overflow menu) via
+          onMobileBack, so the wrapper no longer adds a second header (avoids a duplicate title). */}
       <div className="flex-1 overflow-y-auto">
         <TaskDetails
           isCollapsed={false}
-          selectedTask={adaptTaskForTaskDetails(task)}
+          // Suggestion payloads are already shaped for TaskDetails; only adapt real tasks.
+          selectedTask={isSuggestionMode ? (task as any) : (task ? adaptTaskForTaskDetails(task) : null)}
           onClose={onBack}
           onCollapse={onBack}
+          onMobileBack={onBack}
           isExpanded={true}
           onExpand={() => {}}
           onRestore={() => {}}
@@ -118,6 +114,7 @@ export function MobileTaskDetail({
           subtasks={[]}
           project_watchers={[]}
           accessToken={null}
+          mode={mode}
         />
       </div>
     </div>

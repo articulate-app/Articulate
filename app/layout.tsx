@@ -3,7 +3,9 @@ import { Inter } from 'next/font/google';
 import './globals.css';
 import { ClientProviders } from './components/providers/client-providers';
 import { Toaster } from './components/ui/toaster';
+import { TooltipProvider } from './components/ui/tooltip';
 import { CurrentUserProvider } from './components/providers/current-user-provider';
+import { WorkspaceRouteSwitch } from './components/shell/WorkspaceRouteSwitch';
 
 // Disable static generation for the entire app
 export const dynamic = 'force-dynamic';
@@ -13,6 +15,11 @@ const inter = Inter({ subsets: ['latin'] });
 export const metadata: Metadata = {
   title: 'Authentication App',
   description: 'A simple authentication app with Supabase',
+  icons: {
+    icon: [{ url: '/brand-mark.png', type: 'image/png' }],
+    shortcut: ['/brand-mark.png'],
+    apple: [{ url: '/brand-mark.png', type: 'image/png' }],
+  },
 };
 
 export default function RootLayout({
@@ -25,8 +32,10 @@ export default function RootLayout({
       <body className={inter.className}>
         <CurrentUserProvider>
           <ClientProviders>
-            <Toaster />
-            {children}
+            <TooltipProvider>
+              <Toaster />
+              <WorkspaceRouteSwitch>{children}</WorkspaceRouteSwitch>
+            </TooltipProvider>
           </ClientProviders>
         </CurrentUserProvider>
       </body>

@@ -13,6 +13,7 @@ import { MultiSelect } from '../ui/multi-select'
 import { DateRangePicker } from '../ui/date-range-picker'
 import { SlidePanel } from '../ui/slide-panel'
 import { useEffect, useMemo, useRef, useState } from 'react'
+import { usePathname, useSearchParams } from 'next/navigation'
 import { Plus } from 'lucide-react'
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from '../ui/dialog'
 import { Button } from '../ui/button'
@@ -20,6 +21,7 @@ import { useCurrentUserStore } from '../../store/current-user'
 import { useQueryClient } from '@tanstack/react-query'
 import { RichTextEditor } from '../ui/rich-text-editor'
 import { differenceInCalendarDays, isToday, isYesterday } from 'date-fns'
+import { createThreadWithFirstMessage } from '../../lib/services/threads'
 
 function getInitials(name: string | null | undefined): string {
   if (!name) return '?'
@@ -90,12 +92,26 @@ export function InboxThreadList({
   const currentUserName = useCurrentUserStore((s) => s.fullName)
   const currentUserEmail = useCurrentUserStore((s) => s.userMetadata?.email)
   const currentUserPhoto = useCurrentUserStore((s) => s.userMetadata?.avatar_url)
+  const pathname = usePathname()
+  const searchParams = useSearchParams()
 
   useEffect(() => {
     const onOpen = () => setIsFiltersOpen(true)
     window.addEventListener('inbox:filter-click', onOpen as any)
     return () => window.removeEventListener('inbox:filter-click', onOpen as any)
   }, [])
+
+  useEffect(() => {
+    const onCreateThread = () => setIsNewThreadOpen(true)
+    window.addEventListener("inbox:new-thread-open", onCreateThread as EventListener)
+    return () => window.removeEventListener("inbox:new-thread-open", onCreateThread as EventListener)
+  }, [])
+
+  useEffect(() => {
+    if (pathname !== '/inbox') return
+    if (searchParams.get('openComposer') !== 'thread') return
+    setIsNewThreadOpen(true)
+  }, [pathname, searchParams])
 
   // Infinite scroll: reuse the same sentinel IntersectionObserver pattern as Tasks list.
   useEffect(() => {
@@ -244,50 +260,16 @@ export function InboxThreadList({
         return
       }
 
-      const { data: thread, error: threadError } = await supabase
-        .from('threads')
-        .insert([
-          {
-            title: newThreadTitle.trim() ? newThreadTitle.trim() : null,
-            created_by: currentUserId,
-          },
-        ])
-        .select('id')
-        .single()
-
-      if (threadError) throw threadError
-      if (!thread?.id) throw new Error('Failed to create thread')
-
-      // Add watchers (excluding creator; creator is auto-watched by trigger)
-      const watcherRows = uniqueOtherParticipantIds
-        .map((id) => Number(id))
-        .filter((id) => Number.isFinite(id))
-        .map((id) => ({
-          thread_id: thread.id,
-          watcher_id: id,
-          added_by: currentUserId,
-        }))
-      if (watcherRows.length > 0) {
-        const { error: watchersError } = await supabase.from('thread_watchers').insert(watcherRows)
-        if (watchersError) throw watchersError
-      }
-
-      // Insert the first message (required so the thread shows in inbox views)
-      const { data: insertedMention, error: mentionError } = await supabase
-        .from('mentions')
-        .insert({
-          thread_id: thread.id,
-          comment: newThreadMessage,
-          created_by: currentUserId,
-          created_at: new Date().toISOString(),
-        })
-        .select('id, created_at')
-        .single()
-      if (mentionError) throw mentionError
+      const createdThread = await createThreadWithFirstMessage(supabase as any, {
+        createdBy: currentUserId,
+        title: newThreadTitle.trim() ? newThreadTitle.trim() : null,
+        participantIds: uniqueOtherParticipantIds.map((id) => Number(id)),
+        firstMessageHtml: newThreadMessage,
+      })
 
       // Patch inbox cache in-place (avoid refetching watcher data)
       const stripHtml = (html: string) => html.replace(/<[^>]*>/g, '').trim()
-      const nowIso = insertedMention?.created_at || new Date().toISOString()
+      const nowIso = createdThread.createdAt || new Date().toISOString()
       const nextTitle = newThreadTitle.trim() ? newThreadTitle.trim() : null
 
       const selectedUsersById = new Map<number, any>()
@@ -310,7 +292,7 @@ export function InboxThreadList({
           : []
 
       const newRow: InboxThread = {
-        thread_id: thread.id,
+        thread_id: createdThread.threadId,
         thread_title: nextTitle,
         project_id: null,
         task_id: null,
@@ -319,7 +301,7 @@ export function InboxThreadList({
         is_private: null,
         pinned: false,
         thread_created_at: nowIso,
-        last_mention_id: insertedMention?.id ?? null,
+        last_mention_id: createdThread.mentionId ?? null,
         last_mention_at: nowIso,
         last_mention_by: currentUserId ?? null,
         last_mention_snippet: stripHtml(newThreadMessage).slice(0, 160),
@@ -375,7 +357,7 @@ export function InboxThreadList({
       setNewThreadTitle('')
       setNewThreadParticipantIds([])
       setNewThreadMessage('')
-      onThreadCreatedNavigate?.(thread.id)
+      onThreadCreatedNavigate?.(createdThread.threadId)
     } catch (e: any) {
       setCreateThreadError(e?.message || 'Failed to create thread')
     } finally {

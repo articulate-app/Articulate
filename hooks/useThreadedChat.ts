@@ -26,27 +26,44 @@ export function useThreadedChat(threadId: number, currentUserId?: number, curren
   const [oldestLoaded, setOldestLoaded] = useState<string | null>(null)
   const [isLoadingMore, setIsLoadingMore] = useState(false)
 
-  // Helper to fetch a page of mentions (for infinite scroll)
-  const fetchMentionsPage = useCallback(async (before?: string) => {
-    setIsLoadingMore(true)
-    let query = supabase
-      .from('mentions')
-      .select('*, users:created_by(full_name, email, photo, id)')
-      .eq('thread_id', threadId)
-      .order('created_at', { ascending: false })
-      .limit(pageSize)
-    if (before) {
-      query = query.lt('created_at', before)
-    }
-    const { data, error } = await query
+  // Load thread mentions via batch RPC (single-thread use uses one-item batch).
+  const fetchMentionsBatch = useCallback(async () => {
+    const { data, error } = await supabase.rpc('get_thread_mentions_batch', {
+      p_thread_ids: [threadId],
+    })
     if (error) {
       setError('Failed to load messages')
-      setIsLoadingMore(false)
       return []
     }
+    const rows = Array.isArray(data) ? data : []
+    return rows
+      .filter((row: any) => Number(row?.thread_id) === Number(threadId))
+      .map((row: any) => ({
+        id: row.id,
+        comment: row.comment ?? '',
+        attachment: row.attachment ?? null,
+        created_by: row.created_by ?? null,
+        created_at: row.created_at ?? null,
+        reply_to_id: row.reply_to_id ?? null,
+        thread_id: row.thread_id,
+        users: {
+          id: row.user_id ?? row.created_by ?? null,
+          full_name: row.user_full_name ?? null,
+          email: row.user_email ?? null,
+          photo: row.user_photo ?? null,
+        },
+      }))
+      .sort((a: any, b: any) => new Date(a.created_at ?? 0).getTime() - new Date(b.created_at ?? 0).getTime())
+  }, [supabase, threadId])
+
+  // Kept for API compatibility with existing UI; this now returns the full batch-loaded thread.
+  const fetchMentionsPage = useCallback(async (before?: string) => {
+    setIsLoadingMore(true)
+    const data = await fetchMentionsBatch()
     setIsLoadingMore(false)
-    return data || []
-  }, [supabase, threadId, pageSize])
+    if (!before) return data || []
+    return (data || []).filter((row: any) => new Date(row.created_at ?? 0).getTime() < new Date(before).getTime())
+  }, [fetchMentionsBatch])
 
   // Initial load: fetch most recent N messages
   useEffect(() => {
@@ -91,7 +108,7 @@ export function useThreadedChat(threadId: number, currentUserId?: number, curren
     if (!oldestLoaded || isLoadingMore || !hasMore) return
     const older = await fetchMentionsPage(oldestLoaded)
     setMentions(prev => [...prev, ...older])
-    setHasMore(older.length === pageSize)
+    setHasMore(false)
     setOldestLoaded(older.length > 0 ? older[older.length - 1].created_at : oldestLoaded)
     // Update user map
     const userMap: Record<number, any> = {}
@@ -103,24 +120,15 @@ export function useThreadedChat(threadId: number, currentUserId?: number, curren
 
   // Helper to refresh mentions
   const refreshMentions = useCallback(async () => {
-    const { data, error } = await supabase
-      .from('mentions')
-      .select('*, users:created_by(full_name, email, photo, id)')
-      .eq('thread_id', threadId)
-      .order('created_at', { ascending: true })
-    if (error) {
-      setError('Failed to load messages')
-      setMentions([])
-    } else {
-      setMentions(data || [])
-      // Build user map
-      const userMap: Record<number, any> = {}
-      for (const m of data || []) {
-        if (m.users) userMap[m.created_by] = m.users
-      }
-      setUsersById(userMap)
+    const data = await fetchMentionsBatch()
+    setMentions(data || [])
+    // Build user map
+    const userMap: Record<number, any> = {}
+    for (const m of data || []) {
+      if (m.users) userMap[m.created_by] = m.users
     }
-  }, [supabase, threadId])
+    setUsersById(userMap)
+  }, [fetchMentionsBatch])
 
   // Real-time subscription for new messages only
   useEffect(() => {

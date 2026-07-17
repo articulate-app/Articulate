@@ -9,11 +9,12 @@ import { cn } from '@/lib/utils'
 
 /** Column id -> display label for DragOverlay */
 export const COLUMN_LABELS: Record<string, string> = {
+  list_color: 'Color',
   users: 'Assignee',
   projects: 'Project',
   project_statuses: 'Status',
-  delivery_date: 'Delivery Date',
-  publication_date: 'Publication Date',
+  delivery_date: 'Due date',
+  publication_date: 'Publish date',
   updated_at: 'Last Update',
   content_type_title: 'Content Type',
   production_type_title: 'Production Type',
@@ -131,7 +132,7 @@ function SortableHeaderCell({
       className={cn(
         'task-cell',
         isSpacer && 'task-spacer-cell p-0 border-transparent',
-        !isSpacer && 'px-3 py-2 text-left font-medium text-gray-500 group select-none relative',
+        !isSpacer && 'task-header-cell px-3 py-1.5 text-left text-xs font-medium text-gray-500 group select-none relative',
         !isSpacer && !isLastRealBeforeSpacer && 'border-r border-gray-200',
         colId === 'title' && 'task-cell--sticky',
         isDraggable && 'cursor-grab active:cursor-grabbing',
@@ -151,7 +152,7 @@ function SortableHeaderCell({
                 isDragging && 'task-header-dragging opacity-60',
               )}
             >
-              <GripVertical size={14} />
+              <GripVertical size={12} />
             </div>
           )}
           <div className="flex-1 min-w-0 flex items-center">
@@ -204,7 +205,8 @@ export function TaskTableHeader<T>({ table, columns, gridTemplateColumns, onColu
           {orderedHeaders.map((header, idx) => {
             const isSpacer = header.column.id === '__spacer'
             const colId = header.column.id
-            const isDraggable = !!onColumnOrderChange && !isSpacer && colId !== 'title' && colId !== 'select'
+            const isDraggable =
+              !!onColumnOrderChange && !isSpacer && colId !== 'title' && colId !== 'select' && colId !== 'list_color'
             const isLastRealBeforeSpacer =
               !isSpacer &&
               orderedHeaders.some((h) => h.column.id === '__spacer') &&
@@ -229,6 +231,30 @@ export function TaskTableHeader<T>({ table, columns, gridTemplateColumns, onColu
           })}
         </tr>
       ))}
+    </thead>
+  )
+}
+
+/** Sticky header for compact (single-column) task list — mirrors compact row fields. */
+export function CompactTaskTableHeader({
+  dateField = 'delivery_date',
+}: {
+  dateField?: 'delivery_date' | 'publication_date'
+}) {
+  const dateLabel = dateField === 'publication_date' ? 'Publish date' : 'Due date'
+  return (
+    <thead className="task-header sticky top-0 z-40 bg-white border-b shadow-sm">
+      <tr data-row-type="header" className="task-row" style={{ gridTemplateColumns: 'minmax(0, 1fr)' }}>
+        <th className="task-cell task-cell-span-full task-header-cell px-3 py-1.5 text-left text-xs font-medium text-gray-500">
+          <div className="flex w-full min-w-0 items-center gap-2">
+            <span className="min-w-0 flex-1 truncate">Title</span>
+            <div className="ml-2 flex shrink-0 items-center justify-end gap-3">
+              <span className="shrink-0">Assignee</span>
+              <span className="w-[5.5rem] shrink-0 text-right">{dateLabel}</span>
+            </div>
+          </div>
+        </th>
+      </tr>
     </thead>
   )
 }

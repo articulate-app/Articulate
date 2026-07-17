@@ -1,4 +1,4 @@
-import React, { useState, useMemo, useCallback, useRef, useEffect, ReactNode } from 'react';
+import React, { useState, useMemo, useCallback, useRef, useEffect, useLayoutEffect, ReactNode } from 'react';
 import { useQueryClient } from '@tanstack/react-query';
 import { DndContext, closestCenter, PointerSensor, useSensor, useSensors, useDroppable, rectIntersection, pointerWithin } from '@dnd-kit/core';
 import { SortableContext, useSortable, horizontalListSortingStrategy } from '@dnd-kit/sortable';
@@ -9,30 +9,45 @@ import { createClientComponentClient } from '@supabase/auth-helpers-nextjs';
 import { toast } from '../ui/use-toast';
 import { updateTaskInCaches } from '../tasks/task-cache-utils';
 import { useTaskRealtime } from '../../../hooks/use-task-realtime';
-import { useFilterOptions } from '../../hooks/use-filter-options';
-import { useSearchParams, useRouter } from 'next/navigation';
-import { DropdownMenu, DropdownMenuTrigger, DropdownMenuContent, DropdownMenuItem } from '@/components/ui/dropdown-menu';
+import { usePathname, useSearchParams } from 'next/navigation';
+import {
+  DropdownMenu,
+  DropdownMenuTrigger,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuSeparator,
+  DropdownMenuSub,
+  DropdownMenuSubTrigger,
+  DropdownMenuSubContent,
+} from '@/components/ui/dropdown-menu';
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { ResizableBottomSheet } from '@/components/ui/resizable-bottom-sheet';
-import { ChevronDown, Zap, Search, Plus } from 'lucide-react';
+import { ChevronDown, ChevronRight, Zap, Search, Plus } from 'lucide-react';
 import { Tooltip, TooltipContent, TooltipTrigger, TooltipProvider } from '@/components/ui/tooltip';
-import { DropdownMenuSeparator } from '@/components/ui/dropdown-menu';
 import { getTaskInlineStyle, getTaskColorKey, getTaskColorLabel, getStablePaletteClass, getStablePaletteBarClass, type TaskCardColorMode } from '@/lib/task-card-colors';
 import { getImageUrl } from '@/lib/public-media';
-import { flushSync } from 'react-dom';
+import { flushSync, createPortal } from 'react-dom';
 import { useTypesenseInfiniteQuery } from '../../hooks/use-typesense-infinite-query';
 import { getTypesenseUpdater } from '../../store/typesense-tasks';
 import { readKanbanOptions, writeParam } from '../../lib/utils';
+import { shallowReplaceSearchParams } from '../../lib/tasks-shallow-nav';
+
+function parseSharedListColorMode(raw: string | null): TaskCardColorMode {
+  if (raw === 'contentType' || raw === 'assignedTo' || raw === 'project' || raw === 'status') return raw
+  return 'contentType'
+}
 import { useDebounce } from '../../hooks/use-debounce';
 import { useTaskGroupMetaAllQuery } from '@/hooks/use-task-group-meta-all-query';
 import type { TaskListRow } from '@/lib/types/task-list-view';
 import { useTasksUI } from '../../store/tasks-ui'
+import { useTasksScopeProjectParam } from '../../contexts/tasks-scope-context'
 import { useTaskSuggestionsQuery } from '../../hooks/use-task-suggestions-query'
 import { usePlannerOptimisticTasks } from '../../store/planner-optimistic-tasks'
 import { computeGroupKeyForTask } from '@/hooks/use-task-group-tasks-query'
 import { useTaskComposerStore } from '@/store/task-composer-store'
 import { useMobileDetection } from '../../hooks/use-mobile-detection'
+import { useTasksToolbarFitForPane } from '@/contexts/tasks-toolbar-fit-context'
 
 // Group-by options for Kanban (URL-based values)
 const GROUP_BY_OPTIONS = [
@@ -131,9 +146,20 @@ function extractGroups(tasks: any[], groupBy: string) {
 const clipTruncate = 'overflow-hidden whitespace-nowrap text-clip';
 
 // Compact Kanban card: white bg, left color bar, project logo, user photo
-function KanbanTaskCard({ task, isSelected, onClick, colorMode, barColorClass, barInlineStyle }: {
+function KanbanTaskCard({
+  task,
+  isSelected,
+  isBulkSelected,
+  isMultiselectMode,
+  onClick,
+  colorMode,
+  barColorClass,
+  barInlineStyle,
+}: {
   task: any;
   isSelected: boolean;
+  isBulkSelected?: boolean;
+  isMultiselectMode?: boolean;
   onClick: () => void;
   colorMode: TaskCardColorMode;
   barColorClass?: string;
@@ -148,7 +174,8 @@ function KanbanTaskCard({ task, isSelected, onClick, colorMode, barColorClass, b
       className={cn(
         'w-full rounded-lg border border-gray-100 bg-white shadow-sm cursor-pointer transition-all relative flex overflow-hidden',
         'hover:shadow-md hover:-translate-y-[1px]',
-        isSelected && 'ring-2 ring-blue-400 border-blue-200',
+        isBulkSelected && isMultiselectMode && 'ring-2 ring-gray-700 border-gray-300',
+        isSelected && !(isMultiselectMode && isBulkSelected) && 'ring-2 ring-blue-400 border-blue-200',
       )}
       onClick={onClick}
       tabIndex={0}
@@ -289,16 +316,63 @@ interface KanbanViewProps {
   onOptimisticUpdate?: (task: any) => void;
   expandButton?: ReactNode;
   enabled?: boolean; // New prop to control when queries should run
+  /** When true, do not render the toolbar row; use toolbarContainerRef to portal it instead (e.g. shared toolbar in Project > Tasks) */
+  hideToolbar?: boolean;
+  /** When hideToolbar is true, portal the toolbar content into this container */
+  toolbarContainerRef?: React.RefObject<HTMLDivElement | null>;
+  /** Portals group/sort/color/subtasks controls into Tasks overflow menu. */
+  overflowToolbarContainerRef?: React.RefObject<HTMLDivElement | null>;
+  /** Bumps when the overflow slot mounts so the portal re-renders. */
+  overflowToolbarSlotVersion?: number;
+  inlineOptionalToolbarRef?: React.RefObject<HTMLDivElement | null>;
+  inlineOptionalToolbarSlotVersion?: number;
+  tasksToolbarOptionalPlacement?: 'inline' | 'overflow';
+  toolbarPaneKey?: string
+  registerPaneOverflowMenu?: (fn: (() => React.ReactNode) | null) => void
+  /** When in project scope, pass ['project'] so Project is not shown as a group-by option. */
+  hiddenGroupByOptions?: string[];
+  isMultiselectMode?: boolean
+  bulkSelectedTaskKey?: string
+  onKanbanBulkTaskToggle?: (taskId: number) => void
 }
 
-export function KanbanView({ searchValue, filters, selectedTaskId, onTaskSelect, onOptimisticUpdate, expandButton, enabled = true }: KanbanViewProps) {
+export function KanbanView({
+  searchValue,
+  filters,
+  selectedTaskId,
+  onTaskSelect,
+  onOptimisticUpdate,
+  expandButton,
+  enabled = true,
+  hideToolbar = false,
+  toolbarContainerRef,
+  overflowToolbarContainerRef,
+  overflowToolbarSlotVersion = 0,
+  inlineOptionalToolbarRef,
+  inlineOptionalToolbarSlotVersion = 0,
+  tasksToolbarOptionalPlacement = 'overflow',
+  toolbarPaneKey = '__kanban_standalone__',
+  registerPaneOverflowMenu,
+  hiddenGroupByOptions,
+  isMultiselectMode = false,
+  bulkSelectedTaskKey = '',
+  onKanbanBulkTaskToggle,
+}: KanbanViewProps) {
+  void overflowToolbarContainerRef
+  void overflowToolbarSlotVersion
+  void tasksToolbarOptionalPlacement
+
   const [perBucketPageSize, setPerBucketPageSize] = useState<number>(50);
   const queryClient = useQueryClient();
   const supabase = createClientComponentClient();
   const columnsContainerRef = useRef<HTMLDivElement>(null);
   const params = useSearchParams();
-  const router = useRouter();
+  const pathname = usePathname();
 
+  const visibleGroupByOptions = useMemo(
+    () => GROUP_BY_OPTIONS.filter((o) => !hiddenGroupByOptions?.includes(o.value)),
+    [hiddenGroupByOptions],
+  );
   // Read kanban options from URL
   const kanbanOptions = readKanbanOptions(new URLSearchParams(params.toString()));
   const groupOrder = (params.get('groupOrder') as 'asc' | 'desc' | null) ?? 'asc';
@@ -323,9 +397,10 @@ export function KanbanView({ searchValue, filters, selectedTaskId, onTaskSelect,
   // Canonical groupBy value for RPC hooks (must match list view)
   const rpcGroupBy = (kanbanGroupByToRpcGroupBy[groupField] ?? null) as string | null;
 
-  // Query-shape inputs
+  // Query-shape inputs (project from scope when in project-scoped tasks tab)
   const q = searchValue ?? params.get('q') ?? '';
-  const project = params.get('project') || undefined;
+  const urlProject = params.get('project') || undefined;
+  const project = useTasksScopeProjectParam(urlProject) ?? urlProject;
 
   const plannerVisibility = useTasksUI((s) => s.plannerVisibility)
 
@@ -406,8 +481,23 @@ export function KanbanView({ searchValue, filters, selectedTaskId, onTaskSelect,
 
   const showSubtasks = kanbanOptions.showSubtasks;
 
-  // Color mode (same as Calendar)
-  const [colorMode, setColorMode] = useState<TaskCardColorMode>('contentType');
+  // Color mode: shared with list/calendar via `list_color_by`
+  const [colorMode, setColorModeState] = useState<TaskCardColorMode>(() =>
+    parseSharedListColorMode(params.get('list_color_by')),
+  )
+
+  useEffect(() => {
+    setColorModeState(parseSharedListColorMode(params.get('list_color_by')))
+  }, [params.get('list_color_by')])
+
+  const setColorMode = useCallback(
+    (mode: TaskCardColorMode) => {
+      setColorModeState(mode)
+      const p = writeParam(new URLSearchParams(params.toString()), 'list_color_by', mode)
+      shallowReplaceSearchParams(pathname, p)
+    },
+    [params, pathname],
+  )
 
   // Group/Sort panel + Add task composer (must be before onAddTaskForColumn)
   const [groupPanelOpen, setGroupPanelOpen] = useState(false);
@@ -970,6 +1060,39 @@ export function KanbanView({ searchValue, filters, selectedTaskId, onTaskSelect,
     return list.slice(0, 20);
   }, [groupedTasksForColumns, colorMode]);
 
+  const kanbanOverflowGroupLabel =
+    visibleGroupByOptions.find((o) => o.value === kanbanOptions.groupBy)?.label ?? '—'
+
+  const kanbanOverflowSortLabel = useMemo(() => {
+    const label =
+      rowSortBy === 'delivery_date'
+        ? 'Delivery date'
+        : rowSortBy === 'publication_date'
+          ? 'Publication date'
+          : rowSortBy === 'title'
+            ? 'Title'
+            : rowSortBy === 'assigned_to_name'
+              ? 'Assignee'
+              : rowSortBy === 'project_status_name'
+                ? 'Status'
+                : rowSortBy === 'updated_at'
+                  ? 'Updated'
+                  : rowSortBy ?? '—'
+    return `${label} · ${rowSortOrder === 'asc' ? 'Asc' : 'Desc'}`
+  }, [rowSortBy, rowSortOrder])
+
+  const kanbanOverflowColorLabel =
+    colorMode === 'contentType'
+      ? 'Content Type'
+      : colorMode === 'assignedTo'
+        ? 'Assignee'
+        : colorMode === 'project'
+          ? 'Project'
+          : 'Status'
+
+  const toolbarFit = useTasksToolbarFitForPane(toolbarPaneKey)
+  const kanbanSegVisible = Math.min(toolbarFit.kanbanInlineCount, 5)
+
   // --- Render columns and cards as before, using deduplicated columns if needed ---
   const sensors = useSensors(
     useSensor(PointerSensor, { activationConstraint: { distance: 5 } })
@@ -1218,114 +1341,437 @@ export function KanbanView({ searchValue, filters, selectedTaskId, onTaskSelect,
 
   // --- Calendar/Kanban pill button style ---
   const pillButton =
-    'inline-flex items-center gap-1 px-3 py-1 rounded-full border border-gray-200 text-gray-700 text-sm font-medium hover:bg-gray-50 transition shadow-none focus:ring-2 focus:ring-blue-200 focus:outline-none shrink-0';
+    'inline-flex items-center gap-1 px-4 py-1 rounded-full border border-gray-200 text-gray-700 text-sm font-medium hover:bg-gray-50 transition shadow-none focus:ring-2 focus:ring-blue-200 focus:outline-none shrink-0';
 
   // No scroll sync needed - we'll use CSS to hide the inner scrollbar
 
   // --- Render ---
-  // Let the browser calculate the natural width
+  const kanbanToolbarSegments = useMemo(() => {
+    const groupTriggerClass = pillButton + ' gap-1 min-w-[140px]';
+    const sortTriggerClass = pillButton + ' gap-1 min-w-[160px]';
+    const colorTriggerClass = pillButton + ' gap-1 min-w-[120px]';
+    const subtasksClass = pillButton + (showSubtasks ? ' bg-blue-600 text-white border-blue-600' : '');
+    return [
+      <GroupSortPanel
+        key="kb-group"
+        type="group"
+        groupBy={kanbanOptions.groupBy}
+        groupOrder={groupOrder}
+        rowSortBy={rowSortBy}
+        rowSortOrder={rowSortOrder}
+        onGroupByChange={(v) => {
+          const p = writeParam(new URLSearchParams(params.toString()), 'kanban_group_by', v);
+          shallowReplaceSearchParams(pathname, p);
+        }}
+        onGroupOrderChange={(v) => {
+          const p = new URLSearchParams(params.toString());
+          p.set('groupOrder', v);
+          shallowReplaceSearchParams(pathname, p);
+        }}
+        onSortByChange={() => {}}
+        onSortOrderChange={() => {}}
+        open={groupPanelOpen}
+        onOpenChange={setGroupPanelOpen}
+        trigger={
+          <button type="button" className={groupTriggerClass}>
+            Group by: {visibleGroupByOptions.find((o) => o.value === kanbanOptions.groupBy)?.label ?? 'Status'}
+            <ChevronDown size={16} />
+          </button>
+        }
+        isMobile={isMobile}
+        groupByOptions={visibleGroupByOptions}
+      />,
+      <GroupSortPanel
+        key="kb-sort"
+        type="sort"
+        groupBy={kanbanOptions.groupBy}
+        groupOrder={groupOrder}
+        rowSortBy={rowSortBy}
+        rowSortOrder={rowSortOrder}
+        onGroupByChange={() => {}}
+        onGroupOrderChange={() => {}}
+        onSortByChange={(v) => {
+          const p = writeParam(new URLSearchParams(params.toString()), 'kanban_task_sort', v);
+          shallowReplaceSearchParams(pathname, p);
+        }}
+        onSortOrderChange={(v) => {
+          const p = writeParam(new URLSearchParams(params.toString()), 'kanban_task_sort_dir', v);
+          shallowReplaceSearchParams(pathname, p);
+        }}
+        open={sortPanelOpen}
+        onOpenChange={setSortPanelOpen}
+        trigger={
+          <button type="button" className={sortTriggerClass}>
+            Sort by:{' '}
+            {rowSortBy === 'delivery_date'
+              ? 'Delivery date'
+              : rowSortBy === 'publication_date'
+                ? 'Publication date'
+                : rowSortBy === 'title'
+                  ? 'Title'
+                  : rowSortBy === 'assigned_to_name'
+                    ? 'Assignee'
+                    : rowSortBy === 'project_status_name'
+                      ? 'Status'
+                      : 'Updated'}
+            <ChevronDown size={16} />
+          </button>
+        }
+        isMobile={isMobile}
+        groupByOptions={visibleGroupByOptions}
+      />,
+      <DropdownMenu key="kb-color">
+        <DropdownMenuTrigger asChild>
+          <button type="button" className={colorTriggerClass}>
+            Color:{' '}
+            {colorMode === 'contentType'
+              ? 'Content Type'
+              : colorMode === 'assignedTo'
+                ? 'Assigned To'
+                : colorMode === 'project'
+                  ? 'Project'
+                  : 'Status'}
+            <ChevronDown size={16} />
+          </button>
+        </DropdownMenuTrigger>
+        <DropdownMenuContent align="start" className="min-w-[200px]">
+          <div className="px-2 py-1.5 text-[11px] text-gray-500 border-b border-gray-100">Color by</div>
+          <DropdownMenuItem onSelect={() => setColorMode('contentType')} className={colorMode === 'contentType' ? 'font-semibold bg-muted' : ''}>
+            Content Type
+          </DropdownMenuItem>
+          <DropdownMenuItem onSelect={() => setColorMode('assignedTo')} className={colorMode === 'assignedTo' ? 'font-semibold bg-muted' : ''}>
+            Assigned To
+          </DropdownMenuItem>
+          <DropdownMenuItem onSelect={() => setColorMode('project')} className={colorMode === 'project' ? 'font-semibold bg-muted' : ''}>
+            Project
+          </DropdownMenuItem>
+          <DropdownMenuItem onSelect={() => setColorMode('status')} className={colorMode === 'status' ? 'font-semibold bg-muted' : ''}>
+            Status
+          </DropdownMenuItem>
+        </DropdownMenuContent>
+      </DropdownMenu>,
+      <DropdownMenu key="kb-legend">
+        <DropdownMenuTrigger asChild>
+          <button type="button" className={pillButton + ' gap-1 shrink-0 whitespace-nowrap'}>
+            Legend
+            <ChevronDown size={16} />
+          </button>
+        </DropdownMenuTrigger>
+        <DropdownMenuContent align="start" className="min-w-[240px] max-h-[min(60vh,420px)] overflow-y-auto">
+          <div className="px-2 py-1.5 text-[11px] text-gray-500 border-b border-gray-100">
+            Legend:{' '}
+            {colorMode === 'contentType'
+              ? 'Content Type'
+              : colorMode === 'assignedTo'
+                ? 'Assigned To'
+                : colorMode === 'project'
+                  ? 'Project'
+                  : 'Status'}
+          </div>
+          {colorLegendEntries.length === 0 ? (
+            <div className="px-2 py-3 text-gray-400 text-sm">No items yet</div>
+          ) : (
+            <div className="py-1">
+              {colorLegendEntries.map(({ key, label, colorClass }) => (
+                <div key={key} className="flex items-center justify-between gap-2 px-2 py-1.5 hover:bg-gray-50">
+                  <span className="truncate text-sm">{label}</span>
+                  <span className={`inline-block w-3 h-3 shrink-0 rounded-sm ${colorClass}`} aria-hidden />
+                </div>
+              ))}
+            </div>
+          )}
+        </DropdownMenuContent>
+      </DropdownMenu>,
+      <React.Fragment key="kb-tail">
+        <span className="mx-2 text-gray-200 select-none shrink-0">|</span>
+        <button
+          className={subtasksClass}
+          onClick={() => {
+            const newParams = writeParam(new URLSearchParams(params.toString()), 'kanban_show_subtasks', !showSubtasks);
+            shallowReplaceSearchParams(pathname, newParams);
+          }}
+          type="button"
+        >
+          Subtasks: {showSubtasks ? 'On' : 'Off'}
+        </button>
+      </React.Fragment>,
+    ];
+  }, [
+    pillButton,
+    kanbanOptions.groupBy,
+    groupOrder,
+    rowSortBy,
+    rowSortOrder,
+    groupPanelOpen,
+    sortPanelOpen,
+    isMobile,
+    visibleGroupByOptions,
+    colorMode,
+    colorLegendEntries,
+    showSubtasks,
+    params,
+    pathname,
+  ]);
+
+  // When hideToolbar + toolbarContainerRef, portal header into parent's shared toolbar; otherwise render in place
+  const headerBar = (
+    <div
+      className="flex items-center gap-2 px-4 py-2 min-h-[56px] border-b border-transparent bg-transparent z-10 flex-shrink-0 overflow-x-auto overflow-y-hidden"
+      style={{ WebkitOverflowScrolling: 'touch' }}
+    >
+      <div className="flex items-center gap-2 flex-nowrap w-max flex-shrink-0">
+        {kanbanToolbarSegments}
+        {expandButton}
+      </div>
+    </div>
+  );
+
+  const toolbarPortaled = hideToolbar && toolbarContainerRef?.current ? createPortal(headerBar, toolbarContainerRef.current) : null;
+
+  const kanbanOverflowMenuSubs = useMemo(
+    () => (
+    <>
+      <DropdownMenuSub>
+        <DropdownMenuSubTrigger className="gap-2">
+          <span className="min-w-0 truncate">Group by</span>
+          <span className="ml-auto flex max-w-[11rem] shrink-0 items-center gap-1.5">
+            <span className="truncate text-right text-xs text-muted-foreground">{kanbanOverflowGroupLabel}</span>
+            <ChevronRight className="h-4 w-4 shrink-0 opacity-60" />
+          </span>
+        </DropdownMenuSubTrigger>
+        <DropdownMenuSubContent className="max-h-[min(60vh,360px)] overflow-y-auto">
+          {visibleGroupByOptions.map((opt) => (
+            <DropdownMenuItem
+              key={opt.value}
+              className={kanbanOptions.groupBy === opt.value ? 'font-semibold bg-muted' : ''}
+              onSelect={(e) => {
+                e.preventDefault();
+                const p = writeParam(new URLSearchParams(params.toString()), 'kanban_group_by', opt.value);
+                shallowReplaceSearchParams(pathname, p);
+              }}
+            >
+              {opt.label}
+            </DropdownMenuItem>
+          ))}
+          <DropdownMenuSeparator />
+          <div className="px-2 py-1 text-xs font-medium text-muted-foreground">Group order</div>
+          <DropdownMenuItem
+            className={groupOrder === 'asc' ? 'font-semibold bg-muted' : ''}
+            onSelect={(e) => {
+              e.preventDefault();
+              const p = new URLSearchParams(params.toString());
+              p.set('groupOrder', 'asc');
+              shallowReplaceSearchParams(pathname, p);
+            }}
+          >
+            A–Z
+          </DropdownMenuItem>
+          <DropdownMenuItem
+            className={groupOrder === 'desc' ? 'font-semibold bg-muted' : ''}
+            onSelect={(e) => {
+              e.preventDefault();
+              const p = new URLSearchParams(params.toString());
+              p.set('groupOrder', 'desc');
+              shallowReplaceSearchParams(pathname, p);
+            }}
+          >
+            Z–A
+          </DropdownMenuItem>
+        </DropdownMenuSubContent>
+      </DropdownMenuSub>
+
+      <DropdownMenuSub>
+        <DropdownMenuSubTrigger className="gap-2">
+          <span className="min-w-0 truncate">Sort by</span>
+          <span className="ml-auto flex max-w-[12rem] shrink-0 items-center gap-1.5">
+            <span className="truncate text-right text-xs text-muted-foreground">{kanbanOverflowSortLabel}</span>
+            <ChevronRight className="h-4 w-4 shrink-0 opacity-60" />
+          </span>
+        </DropdownMenuSubTrigger>
+        <DropdownMenuSubContent>
+          {(
+            [
+              { value: 'delivery_date', label: 'Delivery date' },
+              { value: 'publication_date', label: 'Publication date' },
+              { value: 'title', label: 'Title' },
+              { value: 'assigned_to_name', label: 'Assignee' },
+              { value: 'project_status_name', label: 'Status' },
+              { value: 'updated_at', label: 'Updated' },
+            ] as const
+          ).map(({ value, label }) => (
+            <DropdownMenuItem
+              key={value}
+              className={rowSortBy === value ? 'font-semibold bg-muted' : ''}
+              onSelect={(e) => {
+                e.preventDefault();
+                const p = writeParam(new URLSearchParams(params.toString()), 'kanban_task_sort', value);
+                shallowReplaceSearchParams(pathname, p);
+              }}
+            >
+              {label}
+            </DropdownMenuItem>
+          ))}
+          <DropdownMenuSeparator />
+          <div className="px-2 py-1 text-xs font-medium text-muted-foreground">Sort order</div>
+          <DropdownMenuItem
+            className={rowSortOrder === 'asc' ? 'font-semibold bg-muted' : ''}
+            onSelect={(e) => {
+              e.preventDefault();
+              const p = writeParam(new URLSearchParams(params.toString()), 'kanban_task_sort_dir', 'asc');
+              shallowReplaceSearchParams(pathname, p);
+            }}
+          >
+            Ascending
+          </DropdownMenuItem>
+          <DropdownMenuItem
+            className={rowSortOrder === 'desc' ? 'font-semibold bg-muted' : ''}
+            onSelect={(e) => {
+              e.preventDefault();
+              const p = writeParam(new URLSearchParams(params.toString()), 'kanban_task_sort_dir', 'desc');
+              shallowReplaceSearchParams(pathname, p);
+            }}
+          >
+            Descending
+          </DropdownMenuItem>
+        </DropdownMenuSubContent>
+      </DropdownMenuSub>
+
+      <DropdownMenuSub>
+        <DropdownMenuSubTrigger className="gap-2">
+          <span className="min-w-0 truncate">Color</span>
+          <span className="ml-auto flex max-w-[10rem] shrink-0 items-center gap-1.5">
+            <span className="truncate text-right text-xs text-muted-foreground">{kanbanOverflowColorLabel}</span>
+            <ChevronRight className="h-4 w-4 shrink-0 opacity-60" />
+          </span>
+        </DropdownMenuSubTrigger>
+        <DropdownMenuSubContent>
+          <DropdownMenuItem
+            className={colorMode === 'contentType' ? 'font-semibold bg-muted' : ''}
+            onSelect={(e) => {
+              e.preventDefault();
+              setColorMode('contentType');
+            }}
+          >
+            Content Type
+          </DropdownMenuItem>
+          <DropdownMenuItem
+            className={colorMode === 'assignedTo' ? 'font-semibold bg-muted' : ''}
+            onSelect={(e) => {
+              e.preventDefault();
+              setColorMode('assignedTo');
+            }}
+          >
+            Assigned To
+          </DropdownMenuItem>
+          <DropdownMenuItem
+            className={colorMode === 'project' ? 'font-semibold bg-muted' : ''}
+            onSelect={(e) => {
+              e.preventDefault();
+              setColorMode('project');
+            }}
+          >
+            Project
+          </DropdownMenuItem>
+          <DropdownMenuItem
+            className={colorMode === 'status' ? 'font-semibold bg-muted' : ''}
+            onSelect={(e) => {
+              e.preventDefault();
+              setColorMode('status');
+            }}
+          >
+            Status
+          </DropdownMenuItem>
+        </DropdownMenuSubContent>
+      </DropdownMenuSub>
+
+      <DropdownMenuSub>
+        <DropdownMenuSubTrigger className="gap-2">
+          Legend
+          <ChevronRight className="ml-auto h-4 w-4 shrink-0 opacity-60" />
+        </DropdownMenuSubTrigger>
+        <DropdownMenuSubContent className="min-w-[240px] max-h-[min(60vh,420px)] overflow-y-auto p-1">
+          <div className="px-2 py-1.5 text-[11px] text-gray-500">
+            {colorMode === 'contentType'
+              ? 'Content Type'
+              : colorMode === 'assignedTo'
+                ? 'Assigned To'
+                : colorMode === 'project'
+                  ? 'Project'
+                  : 'Status'}
+          </div>
+          {colorLegendEntries.length === 0 ? (
+            <div className="px-2 py-3 text-sm text-gray-400">No items yet</div>
+          ) : (
+            colorLegendEntries.map(({ key, label, colorClass }) => (
+              <div key={key} className="flex items-center justify-between gap-2 rounded-sm px-2 py-1.5 text-sm">
+                <span className="truncate">{label}</span>
+                <span className={`inline-block h-3 w-3 shrink-0 rounded-sm ${colorClass}`} aria-hidden />
+              </div>
+            ))
+          )}
+        </DropdownMenuSubContent>
+      </DropdownMenuSub>
+
+      <DropdownMenuItem
+        className="justify-between gap-2"
+        onSelect={(e) => {
+          e.preventDefault();
+          const newParams = writeParam(new URLSearchParams(params.toString()), 'kanban_show_subtasks', !showSubtasks);
+          shallowReplaceSearchParams(pathname, newParams);
+        }}
+      >
+        <span className="min-w-0 truncate">Subtasks</span>
+        <span className="shrink-0 pl-2 text-xs text-muted-foreground">{showSubtasks ? 'On' : 'Off'}</span>
+      </DropdownMenuItem>
+    </>
+    ),
+    [
+      visibleGroupByOptions,
+      kanbanOptions.groupBy,
+      groupOrder,
+      rowSortBy,
+      rowSortOrder,
+      colorMode,
+      colorLegendEntries,
+      showSubtasks,
+      params,
+      pathname,
+      kanbanOverflowGroupLabel,
+      kanbanOverflowSortLabel,
+      kanbanOverflowColorLabel,
+    ],
+  );
+
+  const kanbanOverflowMenuSubsRef = useRef(kanbanOverflowMenuSubs)
+  kanbanOverflowMenuSubsRef.current = kanbanOverflowMenuSubs
+  const kanbanOverflowRenderStableRef = useRef<(() => ReactNode) | null>(null)
+  if (kanbanOverflowRenderStableRef.current == null) {
+    kanbanOverflowRenderStableRef.current = () => kanbanOverflowMenuSubsRef.current
+  }
+
+  useLayoutEffect(() => {
+    if (!hideToolbar || !registerPaneOverflowMenu) return
+    registerPaneOverflowMenu(kanbanOverflowRenderStableRef.current!)
+    return () => registerPaneOverflowMenu(null)
+  }, [hideToolbar, registerPaneOverflowMenu])
+
+  const inlineOptionalEl = inlineOptionalToolbarRef?.current ?? null;
+  const inlineOptionalPortaled =
+    hideToolbar &&
+    inlineOptionalEl &&
+    createPortal(
+      <div key={inlineOptionalToolbarSlotVersion} className="flex shrink-0 flex-nowrap items-center gap-2">
+        {kanbanToolbarSegments.slice(0, kanbanSegVisible)}
+      </div>,
+      inlineOptionalEl,
+    );
 
   return (
     <TooltipProvider>
     <div className="flex flex-col h-full">
-      {/* Header Bar: single row, horizontal scroll on mobile (like list/calendar) */}
-      <div
-        className="flex items-center gap-2 px-4 py-2 min-h-[56px] border-b bg-white z-10 flex-shrink-0 overflow-x-auto overflow-y-hidden"
-        style={{ WebkitOverflowScrolling: 'touch' }}
-      >
-        <div className="flex items-center gap-2 flex-nowrap w-max flex-shrink-0">
-        {/* Group by pill → modal */}
-        <GroupSortPanel
-          type="group"
-          groupBy={kanbanOptions.groupBy}
-          groupOrder={groupOrder}
-          rowSortBy={rowSortBy}
-          rowSortOrder={rowSortOrder}
-          onGroupByChange={(v) => { const p = writeParam(new URLSearchParams(params.toString()), 'kanban_group_by', v); router.replace(`?${p}`); }}
-          onGroupOrderChange={(v) => { const p = new URLSearchParams(params.toString()); p.set('groupOrder', v); router.replace(`?${p}`); }}
-          onSortByChange={() => {}}
-          onSortOrderChange={() => {}}
-          open={groupPanelOpen}
-          onOpenChange={setGroupPanelOpen}
-          trigger={<button type="button" className={pillButton + ' gap-1 min-w-[140px]'}>Group by: {GROUP_BY_OPTIONS.find(o => o.value === kanbanOptions.groupBy)?.label ?? 'Status'}
-            <ChevronDown size={16} />
-          </button>}
-          isMobile={isMobile}
-        />
-        {/* Sort by pill → modal */}
-        <GroupSortPanel
-          type="sort"
-          groupBy={kanbanOptions.groupBy}
-          groupOrder={groupOrder}
-          rowSortBy={rowSortBy}
-          rowSortOrder={rowSortOrder}
-          onGroupByChange={() => {}}
-          onGroupOrderChange={() => {}}
-          onSortByChange={(v) => { const p = writeParam(new URLSearchParams(params.toString()), 'kanban_task_sort', v); router.replace(`?${p}`); }}
-          onSortOrderChange={(v) => { const p = writeParam(new URLSearchParams(params.toString()), 'kanban_task_sort_dir', v); router.replace(`?${p}`); }}
-          open={sortPanelOpen}
-          onOpenChange={setSortPanelOpen}
-          trigger={<button type="button" className={pillButton + ' gap-1 min-w-[160px]'}>Sort by: {rowSortBy === 'delivery_date' ? 'Delivery date' : rowSortBy === 'publication_date' ? 'Publication date' : rowSortBy === 'title' ? 'Title' : rowSortBy === 'assigned_to_name' ? 'Assignee' : rowSortBy === 'project_status_name' ? 'Status' : 'Updated'}
-            <ChevronDown size={16} />
-          </button>}
-          isMobile={isMobile}
-        />
-        {/* Color mode pill (same as Calendar) */}
-        <DropdownMenu>
-          <DropdownMenuTrigger asChild>
-            <button type="button" className={pillButton + ' gap-1 min-w-[120px]'}>
-              Color: {colorMode === 'contentType' ? 'Content Type' : colorMode === 'assignedTo' ? 'Assigned To' : colorMode === 'project' ? 'Project' : 'Status'}
-              <ChevronDown size={16} />
-            </button>
-          </DropdownMenuTrigger>
-          <DropdownMenuContent align="start">
-            <DropdownMenuItem onSelect={() => setColorMode('contentType')} className={colorMode === 'contentType' ? 'font-semibold bg-muted' : ''}>Content Type</DropdownMenuItem>
-            <DropdownMenuItem onSelect={() => setColorMode('assignedTo')} className={colorMode === 'assignedTo' ? 'font-semibold bg-muted' : ''}>Assigned To</DropdownMenuItem>
-            <DropdownMenuItem onSelect={() => setColorMode('project')} className={colorMode === 'project' ? 'font-semibold bg-muted' : ''}>Project</DropdownMenuItem>
-            <DropdownMenuItem onSelect={() => setColorMode('status')} className={colorMode === 'status' ? 'font-semibold bg-muted' : ''}>Status</DropdownMenuItem>
-          </DropdownMenuContent>
-        </DropdownMenu>
-        {/* Legend pill (label + swatch, from loaded tasks) */}
-        <DropdownMenu>
-          <DropdownMenuTrigger asChild>
-            <button type="button" className={pillButton + ' gap-1 min-w-[5rem]'}>
-              Legend <ChevronDown size={16} />
-            </button>
-          </DropdownMenuTrigger>
-          <DropdownMenuContent align="start" className="min-w-[220px] max-h-[min(60vh,400px)] overflow-y-auto">
-            <div className="px-2 py-1.5 text-[11px] text-gray-500 border-b border-gray-100">
-              Colors = {colorMode === 'contentType' ? 'Content Type' : colorMode === 'assignedTo' ? 'Assigned To' : colorMode === 'project' ? 'Project' : 'Status'}
-            </div>
-            {colorLegendEntries.length === 0 ? (
-              <div className="px-2 py-3 text-gray-400 text-sm">No items yet</div>
-            ) : (
-              <div className="py-1">
-                {colorLegendEntries.map(({ key, label, colorClass }) => (
-                  <div key={key} className="flex items-center gap-2 px-2 py-1.5 hover:bg-gray-50">
-                    <span className={`inline-block w-3 h-3 rounded-sm shrink-0 ${colorClass}`} aria-hidden />
-                    <span className="truncate text-sm">{label}</span>
-                  </div>
-                ))}
-              </div>
-            )}
-          </DropdownMenuContent>
-        </DropdownMenu>
-        {/* Subtasks toggle */}
-        <span className="mx-2 text-gray-200 select-none shrink-0">|</span>
-        <button
-          className={pillButton + (showSubtasks ? ' bg-blue-600 text-white border-blue-600' : '')}
-          onClick={() => {
-            const newParams = writeParam(new URLSearchParams(params.toString()), 'kanban_show_subtasks', !showSubtasks);
-            router.replace(`?${newParams.toString()}`);
-          }}
-          type="button"
-                  >
-            Subtasks
-          </button>
-        {/* Expand/restore button slot (right-aligned) */}
-        {expandButton}
-        </div>
-      </div>
+      {!hideToolbar && headerBar}
+      {toolbarPortaled}
+      {inlineOptionalPortaled}
       {/* Kanban Columns - horizontal scroll area below header */}
       <div className="flex-1 min-h-0">
         <DndContext 
@@ -1366,6 +1812,9 @@ export function KanbanView({ searchValue, filters, selectedTaskId, onTaskSelect,
                       onGroupSearchChange={(v) => setGroupSearchInputByKey(prev => ({ ...prev, [col.key]: v }))}
                       colorMode={colorMode}
                       onAddTask={onAddTaskForColumn}
+                      isMultiselectMode={isMultiselectMode}
+                      bulkSelectedTaskKey={bulkSelectedTaskKey}
+                      onKanbanBulkTaskToggle={onKanbanBulkTaskToggle}
                     />
                   </div>
             ))}
@@ -1394,6 +1843,7 @@ function GroupSortPanel({
   onOpenChange,
   trigger,
   isMobile,
+  groupByOptions,
 }: {
   type: 'group' | 'sort';
   groupBy: string;
@@ -1408,6 +1858,7 @@ function GroupSortPanel({
   onOpenChange: (v: boolean) => void;
   trigger: React.ReactNode;
   isMobile: boolean;
+  groupByOptions: { value: string; label: string }[];
 }) {
   const rowClass = 'flex items-center gap-4 p-3';
   const labelClass = 'text-xs font-medium text-gray-500 shrink-0';
@@ -1423,7 +1874,7 @@ function GroupSortPanel({
               <SelectValue />
             </SelectTrigger>
             <SelectContent>
-              {GROUP_BY_OPTIONS.map(opt => (
+              {groupByOptions.map((opt: { value: string; label: string }) => (
                 <SelectItem key={opt.value} value={opt.value}>{opt.label}</SelectItem>
               ))}
             </SelectContent>
@@ -1521,6 +1972,8 @@ function kanbanColumnPropsEqual(prev: any, next: any): boolean {
     if (prevBucket.isFetching !== nextBucket.isFetching) return false;
   }
   if (prev.onAddTask !== next.onAddTask) return false;
+  if (prev.isMultiselectMode !== next.isMultiselectMode) return false;
+  if (prev.bulkSelectedTaskKey !== next.bulkSelectedTaskKey) return false;
   return true;
 }
 
@@ -1541,6 +1994,9 @@ const KanbanColumn = React.memo(function KanbanColumn({
   onGroupSearchChange,
   colorMode,
   onAddTask,
+  isMultiselectMode = false,
+  bulkSelectedTaskKey = '',
+  onKanbanBulkTaskToggle,
 }: {
   col: string;
   label: string;
@@ -1563,6 +2019,9 @@ const KanbanColumn = React.memo(function KanbanColumn({
   onGroupSearchChange?: (value: string) => void;
   colorMode: TaskCardColorMode;
   onAddTask?: (colKey: string) => void;
+  isMultiselectMode?: boolean;
+  bulkSelectedTaskKey?: string;
+  onKanbanBulkTaskToggle?: (taskId: number) => void;
 }) {
   const { setNodeRef: setColumnNodeRef, isOver } = useDroppable({ id: col });
 
@@ -1642,6 +2101,11 @@ const KanbanColumn = React.memo(function KanbanColumn({
     tasksForColumn.length,
   ]);
 
+  const bulkIdSet = useMemo(
+    () => new Set(bulkSelectedTaskKey.split(',').filter((s) => s.length > 0)),
+    [bulkSelectedTaskKey],
+  );
+
   return (
     <div
       key={col}
@@ -1702,11 +2166,22 @@ const KanbanColumn = React.memo(function KanbanColumn({
             const inlineStyle = getTaskInlineStyle(task, colorMode);
             const barColorClass = inlineStyle ? '' : getStablePaletteBarClass(key);
             const barInlineStyle = inlineStyle ? { backgroundColor: inlineStyle.background } : undefined;
+            const idStr = String(task.id ?? task.entity_id ?? '');
+            const isBulkCard = Boolean(isMultiselectMode && !isSuggestion && idStr && bulkIdSet.has(idStr));
             const card = (
               <KanbanTaskCard
                 task={task}
                 isSelected={!!selectedTaskId && String(task.id) === String(selectedTaskId)}
-                onClick={() => onTaskSelect && onTaskSelect(task)}
+                isBulkSelected={isBulkCard}
+                isMultiselectMode={isMultiselectMode}
+                onClick={() => {
+                  if (isMultiselectMode && !isSuggestion && onKanbanBulkTaskToggle) {
+                    const tid = Number(task.id ?? task.entity_id);
+                    if (Number.isFinite(tid)) onKanbanBulkTaskToggle(tid);
+                    return;
+                  }
+                  onTaskSelect?.(task);
+                }}
                 colorMode={colorMode}
                 barColorClass={barColorClass}
                 barInlineStyle={barInlineStyle}

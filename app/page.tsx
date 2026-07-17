@@ -1,18 +1,8 @@
-"use client"
+import { UnifiedShellPage } from "./components/shell/UnifiedShellPage"
 
-import { useEffect } from "react"
-import { useRouter } from "next/navigation"
+// Disable static generation for the shell page.
+export const dynamic = "force-dynamic"
 
 export default function HomePage() {
-  const router = useRouter()
-
-  useEffect(() => {
-    router.push("/tasks")
-  }, [router])
-
-  return (
-    <div className="flex items-center justify-center min-h-screen">
-      <div className="animate-pulse">Redirecting to tasks...</div>
-    </div>
-  )
-} 
+  return <UnifiedShellPage />
+}

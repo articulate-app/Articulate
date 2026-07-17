@@ -1,6 +1,8 @@
 import React, { useRef, useEffect, useState } from "react";
 import { InfiniteList } from "../ui/infinite-list";
-import { format, isToday, isYesterday, differenceInDays } from 'date-fns';
+import { format } from 'date-fns';
+import { getImageUrl } from '../../lib/public-media';
+import { TaskMentionCard } from "../../../components/task-mention-card";
 
 function getFileIcon(ext) {
   if (!ext) return null;
@@ -28,20 +30,33 @@ function getFileExt(url) {
   return parts.length > 1 ? parts.pop().toLowerCase() : '';
 }
 
-function getFriendlyDate(createdAt) {
-  if (!createdAt) return '';
-  const date = new Date(createdAt);
-  if (isToday(date)) {
-    const diff = (Date.now() - date.getTime()) / 1000;
-    if (diff < 60) return 'just now';
-    return format(date, 'HH:mm');
-  } else if (isYesterday(date)) {
-    return 'yesterday';
-  } else {
-    const daysAgo = differenceInDays(new Date(), date);
-    if (daysAgo < 10) return `${daysAgo} days ago`;
-    return format(date, 'yyyy-MM-dd');
-  }
+/** Relative time like activity timeline (e.g. "5 mins ago", "2 weeks ago"). */
+function getRelativeTimeLabel(dateString) {
+  if (!dateString) return '';
+  const date = new Date(dateString);
+  const now = new Date();
+  const diffMs = now.getTime() - date.getTime();
+  const diffMins = Math.floor(diffMs / 60000);
+  const diffHours = Math.floor(diffMs / 3600000);
+  const diffDays = Math.floor(diffMs / 86400000);
+  if (diffMins < 1) return 'Just now';
+  if (diffMins < 60) return `${diffMins} min${diffMins !== 1 ? 's' : ''} ago`;
+  if (diffHours < 24) return `${diffHours} hour${diffHours !== 1 ? 's' : ''} ago`;
+  if (diffDays < 7) return `${diffDays} day${diffDays !== 1 ? 's' : ''} ago`;
+  if (diffDays < 30) return `${Math.floor(diffDays / 7)} week${Math.floor(diffDays / 7) !== 1 ? 's' : ''} ago`;
+  if (diffDays < 365) return `${Math.floor(diffDays / 30)} month${Math.floor(diffDays / 30) !== 1 ? 's' : ''} ago`;
+  return `${Math.floor(diffDays / 365)} year${Math.floor(diffDays / 365) !== 1 ? 's' : ''} ago`;
+}
+
+/** Short date + time like activity (e.g. "14:32 · 02/25"). */
+function formatDateShort(dateString) {
+  if (!dateString) return '';
+  const date = new Date(dateString);
+  const mm = String(date.getMonth() + 1).padStart(2, '0');
+  const yy = String(date.getFullYear()).slice(-2);
+  const h = String(date.getHours()).padStart(2, '0');
+  const m = String(date.getMinutes()).padStart(2, '0');
+  return `${h}:${m} · ${mm}/${yy}`;
 }
 
 export function MentionsInfiniteList({
@@ -84,7 +99,7 @@ export function MentionsInfiniteList({
         <div className="text-center text-muted-foreground py-10">No comments yet.</div>
       )}
       renderSkeleton={(count) => (
-        <div className="flex flex-col gap-2 px-4">
+        <div className="flex flex-col gap-2 pl-0 pr-4">
           {Array.from({ length: count }).map((_, i) => (
             <div key={i} className="h-8 w-full bg-muted animate-pulse rounded" />
           ))}
@@ -97,36 +112,33 @@ export function MentionsInfiniteList({
           setLatestMentions(mentions);
         }, [mentions]);
         return (
-          <div className="flex flex-col gap-4 p-4">
+          <div className="flex flex-col gap-4 pt-4 pr-4 pb-4 pl-0">
             {mentions.map((mention) => {
               // User info
               const user = mention.users || {};
               const displayName = user.full_name || user.email || mention.created_by;
-              // Avatar: colored circle with initials
+              const photoUrl = getImageUrl(user.photo ?? null);
               const initials = (user.full_name || user.email || '?')
                 .split(' ')
                 .map((n) => n[0])
                 .join('')
                 .toUpperCase()
                 .slice(0, 2);
-              // Date formatting
-              const friendlyDate = getFriendlyDate(mention.created_at);
+              const relativeTime = getRelativeTimeLabel(mention.created_at);
+              const shortDate = formatDateShort(mention.created_at);
               const exactDate = mention.created_at ? format(new Date(mention.created_at), 'yyyy-MM-dd HH:mm:ss') : '';
               return (
                 <div key={mention.id} className="flex flex-col gap-1 items-start">
-                  {/* 1st line: avatar, name, date */}
-                  <div className="flex items-center gap-2">
-                    <div className="w-8 h-8 rounded-full bg-yellow-200 flex items-center justify-center text-xs font-bold uppercase text-gray-900 border border-gray-300" title={displayName}>
-                      {initials}
+                  <TaskMentionCard
+                    mention={mention}
+                    author={{ ...user, photo: user.photo ?? photoUrl, full_name: displayName }}
+                  />
+                  <div className="w-full pl-9">
+                    <div className="text-[11px] text-muted-foreground" title={exactDate}>
+                      {relativeTime}{shortDate ? ` · ${shortDate}` : ''}
                     </div>
-                    <span className="font-medium text-gray-900 text-sm">{displayName}</span>
-                    <span className="text-xs text-muted-foreground" title={exactDate}>{friendlyDate}</span>
-                  </div>
-                  {/* 2nd line: message and attachments */}
-                  <div className="pl-10 w-full">
-                    <div className="text-sm text-gray-900" style={{ wordBreak: 'break-word' }} dangerouslySetInnerHTML={{ __html: mention.comment }} />
                     {mention.attachment && (
-                      <div className="mt-2 flex items-center gap-2 bg-gray-50 border rounded px-3 py-2 w-fit">
+                      <div className="mt-2 flex w-fit items-center gap-2 rounded border bg-gray-50 px-3 py-2">
                         {getFileIcon(getFileExt(mention.attachment))}
                         <div className="flex flex-col">
                           <span className="text-xs font-medium text-gray-900">{getFileName(mention.attachment)}</span>

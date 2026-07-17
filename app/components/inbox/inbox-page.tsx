@@ -38,6 +38,7 @@ export function InboxPage() {
   const detailTaskId = detailTaskIdParam ? Number(detailTaskIdParam) : null
   const detailProjectIdParam = searchParams.get('detailProject')
   const detailProjectId = detailProjectIdParam ? Number(detailProjectIdParam) : null
+  const focusComposer = searchParams.get('focusComposer') === '1'
 
   const setParams = (patch: Record<string, string | null | undefined>, mode: 'replace' | 'push' = 'replace') => {
     const params = new URLSearchParams(searchParams.toString())
@@ -69,8 +70,14 @@ export function InboxPage() {
 
   // Handle thread selection
   const handleSelectThread = (threadId: number) => {
-    setParams({ thread: String(threadId) }, 'push')
+    setParams({ thread: String(threadId), focusComposer: null }, 'push')
   }
+
+  useEffect(() => {
+    if (!focusComposer) return
+    if (!selectedThreadId) return
+    setParams({ focusComposer: null }, 'replace')
+  }, [focusComposer, selectedThreadId])
 
   // Note: we intentionally do NOT auto-clear ?thread when the current list doesn't contain it
   // because the list can be filtered (box/filters) while a thread is still a valid selection.
@@ -123,6 +130,7 @@ export function InboxPage() {
           threadTitle={selectedThread?.thread_title || null}
           projectId={selectedThread?.project_id || null}
           taskId={selectedThread?.task_id || null}
+          autoFocusComposer={focusComposer}
           onOpenTaskDetails={(id) => setParams({ detailTask: String(id), detailProject: null }, 'push')}
           onOpenProjectDetails={(id) => setParams({ detailProject: String(id), detailTask: null }, 'push')}
         />

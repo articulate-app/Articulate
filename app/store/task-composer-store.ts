@@ -15,6 +15,7 @@ export interface TaskComposer {
   id: string;
   isMinimized: boolean;
   draft: TaskComposerDraft;
+  initialDraft: TaskComposerDraft;
   dirty: boolean;
   createdAt: number;
   /** Optional: pre-fill project when opened from project/calendar context */
@@ -24,6 +25,7 @@ export interface TaskComposer {
   parentTaskTitle?: string;
   parentProjectName?: string;
   parentProjectId?: string | number;
+  onSuccess?: (task: any) => void | Promise<void>;
 }
 
 const MAX_VISIBLE = 3;
@@ -32,7 +34,7 @@ interface TaskComposerState {
   composers: TaskComposer[];
   /** Pending close: id of composer awaiting discard confirmation */
   pendingCloseId: string | null;
-  openComposer: (initial?: Partial<TaskComposerDraft> & { defaultProjectId?: number; parentTaskId?: string; parentTaskTitle?: string; parentProjectName?: string; parentProjectId?: string | number }) => string;
+  openComposer: (initial?: Partial<TaskComposerDraft> & { defaultProjectId?: number; parentTaskId?: string; parentTaskTitle?: string; parentProjectName?: string; parentProjectId?: string | number; onSuccess?: (task: any) => void | Promise<void> }) => string;
   closeComposer: (id: string) => void;
   /** Force close without confirm (after user confirms discard) */
   forceCloseComposer: (id: string) => void;
@@ -53,30 +55,50 @@ function generateId() {
   return "composer-" + Date.now() + "-" + Math.random().toString(36).slice(2, 9);
 }
 
+function normalizeDraftValue(value: unknown): string {
+  return String(value ?? "").trim();
+}
+
+function hasMeaningfulDraftChanges(composer: TaskComposer): boolean {
+  const fields: Array<keyof TaskComposerDraft> = ["title", "project_id_int", "project_status_id", "briefing"];
+  return fields.some((field) => normalizeDraftValue(composer.draft[field]) !== normalizeDraftValue(composer.initialDraft[field]));
+}
+
 export const useTaskComposerStore = create<TaskComposerState>((set, get) => ({
   composers: [],
   pendingCloseId: null,
 
   openComposer: (initial) => {
+    const {
+      defaultProjectId,
+      parentTaskId,
+      parentTaskTitle,
+      parentProjectName,
+      parentProjectId,
+      onSuccess,
+      ...initialDraft
+    } = initial ?? {};
     const id = generateId();
     const draft: TaskComposerDraft = {
       title: "",
-      project_id_int: initial?.defaultProjectId ? String(initial.defaultProjectId) : initial?.project_id_int ?? "",
-      project_status_id: initial?.project_status_id ?? "",
-      briefing: initial?.briefing ?? "",
-      ...initial,
+      project_id_int: defaultProjectId ? String(defaultProjectId) : initialDraft.project_id_int ?? "",
+      project_status_id: initialDraft.project_status_id ?? "",
+      briefing: initialDraft.briefing ?? "",
+      ...initialDraft,
     };
     const composer: TaskComposer = {
       id,
       isMinimized: false,
       draft,
+      initialDraft: { ...draft },
       dirty: false,
       createdAt: Date.now(),
-      defaultProjectId: initial?.defaultProjectId,
-      parentTaskId: initial?.parentTaskId,
-      parentTaskTitle: initial?.parentTaskTitle,
-      parentProjectName: initial?.parentProjectName,
-      parentProjectId: initial?.parentProjectId,
+      defaultProjectId,
+      parentTaskId,
+      parentTaskTitle,
+      parentProjectName,
+      parentProjectId,
+      onSuccess,
     };
     set((s) => ({
       composers: [...s.composers, composer],
@@ -87,7 +109,7 @@ export const useTaskComposerStore = create<TaskComposerState>((set, get) => ({
   closeComposer: (id) => {
     const composer = get().composers.find((c) => c.id === id);
     if (!composer) return;
-    if (composer.dirty) {
+    if (composer.dirty && hasMeaningfulDraftChanges(composer)) {
       set({ pendingCloseId: id });
     } else {
       get().forceCloseComposer(id);

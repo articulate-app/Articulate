@@ -24,11 +24,12 @@ interface RealtimeChatProps {
   onDelete?: (id: string) => void | Promise<void>
   hideInput?: boolean
   currentPublicUserId?: number | null
-  focusedMentionId?: number | null
+  focusedMentionId?: number | string | null
   onReplyMessage?: (messageId: string) => void
   replyTo?: { id: string; author?: string; preview: string } | null
   onClearReply?: () => void
   groupByDate?: boolean
+  autoFocusInput?: boolean
 }
 
 /**
@@ -54,6 +55,7 @@ export const RealtimeChat = ({
   replyTo,
   onClearReply,
   groupByDate = false,
+  autoFocusInput = false,
 }: RealtimeChatProps) => {
   const { containerRef, scrollToBottom } = useChatScroll()
 
@@ -119,7 +121,7 @@ export const RealtimeChat = ({
   return (
     <div className="flex flex-col h-full w-full bg-background text-foreground antialiased">
       {/* Messages */}
-      <div ref={containerRef} className="flex-1 overflow-y-auto p-4 space-y-4">
+      <div ref={containerRef} className="flex-1 overflow-y-auto pt-2 pr-4 pb-4 pl-0 space-y-4">
         {allMessages.length === 0 ? (
           <div className="text-center text-sm text-muted-foreground">
             No messages found.
@@ -133,8 +135,10 @@ export const RealtimeChat = ({
             const isOwnMessage = currentPublicUserId != null && message.created_by === currentPublicUserId;
 
             // Check if this message should be highlighted (focusedMentionId matches message.id)
-            const isFocused = focusedMentionId !== null && focusedMentionId !== undefined && 
-              (message.id === focusedMentionId.toString() || Number(message.id) === focusedMentionId)
+            const isFocused =
+              focusedMentionId !== null &&
+              focusedMentionId !== undefined &&
+              String(message.id) === String(focusedMentionId)
 
             const thisBucket = groupByDate ? getBucketLabel(message.createdAt) : null
             const prevBucket = groupByDate ? getBucketLabel(prevMessage?.createdAt) : null
@@ -202,7 +206,7 @@ export const RealtimeChat = ({
           {replyTo ? (
             <div className="flex items-start justify-between gap-3 rounded-md border bg-gray-50 px-3 py-2">
               <div className="min-w-0">
-                <div className="text-xs font-medium text-gray-700">Replying to {replyTo.author || 'message'}</div>
+                <div className="text-xs font-normal text-gray-700">Replying to {replyTo.author || 'message'}</div>
                 <div className="text-xs text-gray-600 truncate">{replyTo.preview}</div>
               </div>
               <button
@@ -227,6 +231,7 @@ export const RealtimeChat = ({
             onChange={(e) => setNewMessage(e.target.value)}
             placeholder="Type a message..."
             disabled={!isConnected}
+            autoFocus={autoFocusInput}
           />
           {isConnected && newMessage.trim() && (
             <Button

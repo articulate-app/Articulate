@@ -23,6 +23,19 @@ export function calculateKeywordDensity(text: string, keyword: string): number {
   return totalWords > 0 ? (occurrences / totalWords) * 100 : 0
 }
 
+/** Count keyword occurrences in plain text (whole words only). */
+export function countKeywordOccurrences(text: string, keyword: string): number {
+  if (!text || !keyword) return 0
+
+  const textLower = text.toLowerCase().trim()
+  const keywordLower = keyword.toLowerCase().trim()
+  if (!textLower || !keywordLower) return 0
+
+  const keywordRegex = new RegExp(`\\b${keywordLower.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\b`, 'gi')
+  const matches = textLower.match(keywordRegex)
+  return matches ? matches.length : 0
+}
+
 /**
  * Get color class for keyword density
  */

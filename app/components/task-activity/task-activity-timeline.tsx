@@ -1,13 +1,26 @@
-import React, { useEffect, useState, useMemo, useCallback } from "react"
+import React, { useMemo, useCallback, useState } from "react"
 import { InfiniteList } from "../ui/infinite-list"
 import { SupabaseTableData } from "../../../hooks/use-infinite-query"
-import { createClientComponentClient } from "@supabase/auth-helpers-nextjs"
 import { z } from "zod"
 import { cn } from "@/lib/utils"
+import { getImageUrl } from "@/lib/public-media"
+import { useViewUsersCanSee } from "../../hooks/use-view-users-can-see"
+import { useQuery } from "@tanstack/react-query"
+import { createClientComponentClient } from "@supabase/auth-helpers-nextjs"
+import {
+  type OverviewFeedSort,
+  sortByUserLabel,
+} from "../tasks/overview-feed-sort"
+import { ActivityRowTimestamp } from "../activity-row-timestamp"
 
 export interface TaskActivityTimelineProps {
   taskId: number
   className?: string
+  /** Overview preview: cap visible rows and hide expand toggle. */
+  compact?: boolean
+  previewLimit?: number
+  /** Client-side sort only — does not change the fetch query. */
+  clientSort?: OverviewFeedSort
 }
 
 // Zod schema for validation (optional, for future extensibility)
@@ -23,16 +36,88 @@ const activitySchema = z.object({
 
 type TaskActivity = z.infer<typeof activitySchema>
 
+function parseJsonObject(value: string | null): Record<string, unknown> | null {
+  if (!value) return null
+  try {
+    const parsed = JSON.parse(value)
+    if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
+      return parsed as Record<string, unknown>
+    }
+    return null
+  } catch {
+    return null
+  }
+}
+
+function formatTaskActivityLogEntry(
+  activity: TaskActivity,
+  userName: string | null,
+  componentTitleById: Map<string, string>
+): string | null {
+  const user = userName || `User #${activity.created_by}`
+
+  if (activity.action === "ai_autopilot_component_generated") {
+    const payload = parseJsonObject(activity.new_value)
+    const rawCount = payload?.component_count
+    const parsedCount = typeof rawCount === "number" ? rawCount : Number(rawCount)
+    const safeCount = Number.isFinite(parsedCount) && parsedCount > 0 ? Math.floor(parsedCount) : 1
+    if (safeCount > 1) {
+      return `${user} AI created ${safeCount} components`
+    }
+
+    const inlineTitleRaw = payload?.component_title ?? payload?.title ?? payload?.component_name
+    const inlineTitle = typeof inlineTitleRaw === "string" ? inlineTitleRaw.trim() : ""
+    if (inlineTitle) {
+      return `${user} AI created component: "${inlineTitle}"`
+    }
+
+    const componentIdRaw = payload?.task_component_id
+    const componentId = typeof componentIdRaw === "string" ? componentIdRaw.trim() : ""
+    const resolvedTitle = componentId ? componentTitleById.get(componentId) : null
+    if (resolvedTitle) {
+      return `${user} AI created component: "${resolvedTitle}"`
+    }
+
+    const contentLabel = activity.task_parameter?.trim() || "content"
+    return `${user} AI created 1 ${contentLabel} component`
+  }
+
+  if (activity.action === "ai_component_suggestions_generated") {
+    const payload = parseJsonObject(activity.new_value)
+    const rawCount = payload?.generated_count ?? payload?.normalized_count ?? payload?.inserted_count
+    const parsedCount = typeof rawCount === "number" ? rawCount : Number(rawCount)
+    const safeCount = Number.isFinite(parsedCount) && parsedCount > 0 ? Math.floor(parsedCount) : 0
+    return `${user} AI generated ${safeCount} component suggestion${safeCount === 1 ? "" : "s"}`
+  }
+
+  if (activity.action === "ai_task_related_ideas_generated") {
+    const payload = parseJsonObject(activity.new_value)
+    const rawCount = payload?.generated_count
+    const parsedCount = typeof rawCount === "number" ? rawCount : Number(rawCount)
+    const safeCount = Number.isFinite(parsedCount) && parsedCount >= 0 ? Math.floor(parsedCount) : 0
+    return `${user} AI generated ${safeCount} related idea${safeCount === 1 ? "" : "s"}`
+  }
+
+  return null
+}
+
 /**
  * Helper to format the action description for a timeline entry.
  */
-function formatActionDescription(activity: TaskActivity, userName: string | null): string {
+function formatActionDescription(
+  activity: TaskActivity,
+  userName: string | null,
+  componentTitleById: Map<string, string>
+): string {
   const { action, task_parameter, new_value } = activity
-  // Example: "John Doe updated Status to 'In Review'"
-  // Fallbacks for missing data
   const user = userName || `User #${activity.created_by}`
+  const formattedKnownAction = formatTaskActivityLogEntry(activity, userName, componentTitleById)
+  if (formattedKnownAction) {
+    return formattedKnownAction
+  }
+  const parsedPayload = parseJsonObject(new_value)
   const param = task_parameter ? task_parameter.replace(/_/g, ' ').replace(/\b\w/g, c => c.toUpperCase()) : ''
-  const value = new_value ? `'${new_value}'` : ''
+  const value = new_value && !parsedPayload ? `'${new_value}'` : ''
 
   if (action === 'updated status' && param && value) {
     return `${user} updated ${param} to ${value}`
@@ -52,47 +137,69 @@ function formatActionDescription(activity: TaskActivity, userName: string | null
   return `${user} performed an action`
 }
 
-/**
- * Helper to format the timestamp.
- */
-function formatTimestamp(dateString: string): string {
-  const date = new Date(dateString)
-  return date.toLocaleString(undefined, {
-    year: 'numeric', month: 'short', day: 'numeric',
-    hour: '2-digit', minute: '2-digit', hour12: false
-  })
+function UserAvatar({ userId, name, photoUrl }: { userId: number; name: string; photoUrl: string | null }) {
+  const initials = name
+    ? name.split(/\s+/).map((n) => n[0]).slice(0, 2).join('').toUpperCase()
+    : String(userId).slice(-2)
+  if (photoUrl) {
+    return (
+      <img
+        src={photoUrl}
+        alt=""
+        className="h-7 w-7 rounded-full object-cover shrink-0 border border-gray-200"
+      />
+    )
+  }
+  return (
+    <div
+      className="h-7 w-7 rounded-full shrink-0 flex items-center justify-center text-xs text-gray-600 bg-gray-100 border border-gray-200"
+      aria-hidden
+    >
+      {initials}
+    </div>
+  )
 }
 
-/**
- * Helper to fetch user names by ID and cache them locally.
- */
-function useUserNames(userIds: number[]) {
-  const [userMap, setUserMap] = useState<Record<number, string>>({})
-  useEffect(() => {
-    if (userIds.length === 0) return
-    let isMounted = true
-    const controller = new AbortController()
-    async function fetchUsers() {
-      const supabase = createClientComponentClient()
+export function TaskActivityTimeline({
+  taskId,
+  className,
+  compact = false,
+  previewLimit = 5,
+  clientSort = "newest",
+}: TaskActivityTimelineProps) {
+  const supabase = useMemo(() => createClientComponentClient(), [])
+  const [showAllLogs, setShowAllLogs] = useState(false)
+  const visibleLimit = compact ? previewLimit : 5
+  // Same query as tasks layout (view_users_i_can_see with id, full_name, photo) – one shared call
+  const { data: users = [] } = useViewUsersCanSee(true)
+  const userMap = useMemo(() => {
+    const map: Record<number, { name: string; photoUrl: string | null }> = {}
+    users.forEach((u) => {
+      map[u.id] = { name: u.full_name ?? '', photoUrl: getImageUrl(u.photo) }
+    })
+    return map
+  }, [users])
+  const { data: componentTitleById = new Map<string, string>() } = useQuery({
+    queryKey: ["task-activity-component-titles", taskId],
+    enabled: Number.isFinite(taskId) && taskId > 0,
+    queryFn: async () => {
       const { data, error } = await supabase
-        .from('view_users_i_can_see')
-        .select('id, full_name')
-        .in('id', userIds)
-        .abortSignal(controller.signal)
-      if (!error && data && isMounted) {
-        const map: Record<number, string> = {}
-        data.forEach(u => { map[u.id] = u.full_name })
-        setUserMap(map)
+        .from("task_channel_components")
+        .select("id, custom_title")
+        .eq("task_id", taskId)
+      if (error || !Array.isArray(data)) return new Map<string, string>()
+      const map = new Map<string, string>()
+      for (const row of data) {
+        const id = typeof row?.id === "string" ? row.id.trim() : ""
+        const title = typeof row?.custom_title === "string" ? row.custom_title.trim() : ""
+        if (!id || !title) continue
+        map.set(id, title)
       }
-    }
-    fetchUsers()
-    return () => { isMounted = false; controller.abort() }
-  }, [JSON.stringify(userIds.sort())])
-  return userMap
-}
+      return map
+    },
+    staleTime: 60_000,
+  })
 
-export function TaskActivityTimeline({ taskId, className }: TaskActivityTimelineProps) {
-  // Memoize trailingQuery so it only changes when taskId changes
   const trailingQuery = useCallback(
     (query: any) =>
       query
@@ -105,12 +212,14 @@ export function TaskActivityTimeline({ taskId, className }: TaskActivityTimeline
       tableName="task_activity_logs"
       columns="*"
       pageSize={20}
+      requireUserScrollForNextPage
       trailingQuery={trailingQuery}
       queryKey={`taskId:${taskId}`}
       className={cn("h-full", className)}
       renderNoResults={() => (
         <div className="text-center text-muted-foreground py-10">No activity recorded for this task yet.</div>
       )}
+      renderEndMessage={() => null}
       renderSkeleton={count => (
         <div className="flex flex-col gap-4 px-4">
           {Array.from({ length: count }).map((_, i) => (
@@ -123,31 +232,47 @@ export function TaskActivityTimeline({ taskId, className }: TaskActivityTimeline
       )}
     >
       {(data: TaskActivity[], _meta) => {
-        const userIds = useMemo(
-          () => Array.from(new Set(data.map(a => a.created_by))).sort((a, b) => a - b),
-          [data]
-        );
-        const userMap = useUserNames(userIds)
+        const sorted = sortByUserLabel(
+          data,
+          (item) => userMap[item.created_by]?.name ?? `User #${item.created_by}`,
+          clientSort,
+          (item) => item.created_at,
+        )
+        const visibleData = compact ? sorted.slice(0, visibleLimit) : showAllLogs ? sorted : sorted.slice(0, visibleLimit)
+        const hasMoreLogs = !compact && sorted.length > visibleLimit
         return (
-          <ol className="relative border-s border-gray-200 dark:border-gray-700 flex flex-col gap-6 px-4 py-4">
-            {data.map((item, idx) => (
-              <li key={item.id} className="ms-4 flex items-start gap-3">
-                {/* Timeline dot */}
-                <span className={cn(
-                  "absolute -start-1.5 flex items-center justify-center w-3 h-3 bg-white border-2 border-primary rounded-full z-10",
-                  idx === 0 ? "border-primary bg-primary" : "border-gray-300"
-                )} />
-                <div className="flex-1">
-                  <div className="text-sm font-medium text-gray-900 dark:text-white">
-                    {formatActionDescription(item, userMap[item.created_by] || null)}
+          <div className="flex flex-col py-1">
+            <ul className="flex flex-col">
+            {visibleData.map((item, idx) => {
+              const info = userMap[item.created_by]
+              const name = info?.name ?? null
+              const photoUrl = info?.photoUrl ?? null
+              return (
+                <li key={item.id}>
+                  {idx > 0 && <div className="border-t border-gray-200" />}
+                  <div className="flex items-center gap-2 py-1.5 min-h-0">
+                    <UserAvatar userId={item.created_by} name={name ?? ''} photoUrl={photoUrl} />
+                    <div className="flex-1 min-w-0 overflow-hidden text-sm text-gray-700 dark:text-gray-300">
+                      <span className="block truncate overflow-hidden whitespace-nowrap">
+                      {formatActionDescription(item, name, componentTitleById)}
+                      </span>
+                    </div>
+                    <ActivityRowTimestamp value={item.created_at} />
                   </div>
-                  <div className="text-xs text-muted-foreground mt-1">
-                    {formatTimestamp(item.created_at)}
-                  </div>
-                </div>
-              </li>
-            ))}
-          </ol>
+                </li>
+              )
+            })}
+            </ul>
+            {hasMoreLogs ? (
+              <button
+                type="button"
+                className="mt-1 self-start text-xs text-gray-500 hover:text-gray-700"
+                onClick={() => setShowAllLogs((prev) => !prev)}
+              >
+                {showAllLogs ? "Show latest" : "Show older"}
+              </button>
+            ) : null}
+          </div>
         )
       }}
     </InfiniteList>

@@ -1,6 +1,6 @@
 "use client"
 
-import { useState, useEffect, useCallback } from "react"
+import { useState, useEffect, useCallback, useMemo } from "react"
 import { useQueryClient } from "@tanstack/react-query"
 import {
   DndContext,
@@ -19,28 +19,16 @@ import {
   verticalListSortingStrategy,
 } from "@dnd-kit/sortable"
 import { CSS } from "@dnd-kit/utilities"
-import { GripVertical, Plus, Trash2, Loader2, Info } from "lucide-react"
+import { GripVertical, Loader2, Plus, Trash2 } from "lucide-react"
+import { AddComponentButton } from "../task/AddComponentButton"
 import { Button } from "../ui/button"
+import { Command, CommandEmpty, CommandGroup, CommandInput, CommandItem, CommandList } from "../ui/command"
 import { Input } from "../ui/input"
 import { Textarea } from "../ui/textarea"
 import { Label } from "../ui/label"
+import { Popover, PopoverContent, PopoverTrigger } from "../ui/popover"
 import { Switch } from "../ui/switch"
 import { toast } from "../ui/use-toast"
-import {
-  Dialog,
-  DialogContent,
-  DialogDescription,
-  DialogFooter,
-  DialogHeader,
-  DialogTitle,
-  DialogTrigger,
-} from "../ui/dialog"
-import {
-  DropdownMenu,
-  DropdownMenuContent,
-  DropdownMenuItem,
-  DropdownMenuTrigger,
-} from "../ui/dropdown-menu"
 import {
   Tooltip,
   TooltipContent,
@@ -78,9 +66,18 @@ interface StatusRowProps {
   onUpdate: (status: ProjectStatusWithTemplate) => void
   onDelete: (statusId: number) => void
   isSaving: boolean
+  isExpanded: boolean
+  onToggleExpanded: () => void
 }
 
-function StatusRow({ status, onUpdate, onDelete, isSaving }: StatusRowProps) {
+function StatusRow({
+  status,
+  onUpdate,
+  onDelete,
+  isSaving,
+  isExpanded,
+  onToggleExpanded,
+}: StatusRowProps) {
   const {
     attributes,
     listeners,
@@ -139,121 +136,152 @@ function StatusRow({ status, onUpdate, onDelete, isSaving }: StatusRowProps) {
 
   return (
     <>
-      <div
-        ref={setNodeRef}
-        style={style}
-        className="flex items-center gap-3 p-3 bg-white border border-gray-200 rounded-lg hover:bg-gray-50 transition-colors"
-      >
-        {/* Drag Handle */}
-        <div
-          {...attributes}
-          {...listeners}
-          className="cursor-grab active:cursor-grabbing text-gray-400 hover:text-gray-600"
+      <div ref={setNodeRef} style={style} className="bg-white">
+        <button
+          type="button"
+          className={[
+            "flex w-full cursor-pointer items-center gap-2 px-3 py-2.5 text-left transition-colors hover:bg-gray-50",
+            isExpanded ? "bg-gray-50" : "",
+          ].join(" ")}
+          onClick={onToggleExpanded}
         >
-          <GripVertical className="w-5 h-5" />
-        </div>
+          <div
+            {...attributes}
+            {...listeners}
+            className="cursor-grab active:cursor-grabbing text-gray-400 hover:text-gray-600"
+            aria-label="Reorder status"
+            onClick={(e) => e.stopPropagation()}
+            onPointerDown={(e) => e.stopPropagation()}
+          >
+            <GripVertical className="h-4 w-4" />
+          </div>
 
-        {/* Color Input */}
-        <div className="flex items-center gap-2">
-          <input
-            type="color"
-            value={localColor}
-            onChange={(e) => setLocalColor(e.target.value)}
-            onBlur={() => handleBlur("color")}
-            disabled={isSaving}
-            className="w-10 h-10 rounded border border-gray-300 cursor-pointer disabled:opacity-50"
-            title="Status color"
+          <span
+            className="h-2.5 w-2.5 shrink-0 rounded-full"
+            style={{ backgroundColor: localColor || "#9ca3af" }}
+            aria-hidden
           />
-        </div>
+          <span className="min-w-0 flex-1 truncate text-sm font-medium text-gray-900">
+            {localName}
+          </span>
+        </button>
 
-        {/* Name Input */}
-        <div className="flex-1 min-w-0">
-          <Input
-            value={localName}
-            onChange={(e) => setLocalName(e.target.value)}
-            onBlur={() => handleBlur("name")}
-            disabled={isSaving}
-            className="h-9"
-            placeholder="Status name"
-          />
-        </div>
+        {isExpanded ? (
+          <div className="space-y-3 border-t border-gray-100 px-3 py-3">
+            <div className="space-y-2">
+              <Label htmlFor={`name-${status.id}`} className="text-xs text-gray-500">
+                Title
+              </Label>
+              <Input
+                id={`name-${status.id}`}
+                value={localName}
+                onChange={(e) => setLocalName(e.target.value)}
+                onBlur={() => handleBlur("name")}
+                disabled={isSaving}
+                className="h-9"
+                placeholder="Status name"
+              />
+            </div>
 
-        {/* Description */}
-        <div className="flex-1 min-w-0">
-          <Textarea
-            value={localDescription}
-            onChange={(e) => setLocalDescription(e.target.value)}
-            onBlur={() => handleBlur("description")}
-            disabled={isSaving}
-            className="min-h-[36px] resize-none"
-            placeholder="Description (optional)"
-            rows={1}
-          />
-        </div>
-
-        {/* Is Closed Toggle */}
-        <TooltipProvider>
-          <Tooltip>
-            <TooltipTrigger asChild>
-              <div className="flex items-center gap-2">
-                <Label htmlFor={`closed-${status.id}`} className="text-xs whitespace-nowrap cursor-pointer">
-                  Closes Delivery
-                </Label>
-                <Switch
-                  id={`closed-${status.id}`}
-                  checked={status.is_closed || false}
-                  onCheckedChange={(checked) => handleToggle("is_closed", checked)}
+            <div className="space-y-2">
+              <Label htmlFor={`color-${status.id}`} className="text-xs text-gray-500">
+                Color
+              </Label>
+              <label
+                htmlFor={`color-${status.id}`}
+                className="relative inline-flex h-9 w-9 cursor-pointer rounded-full"
+                style={{ backgroundColor: localColor || "#9ca3af" }}
+              >
+                <input
+                  id={`color-${status.id}`}
+                  type="color"
+                  value={localColor}
+                  onChange={(e) => setLocalColor(e.target.value)}
+                  onBlur={() => handleBlur("color")}
                   disabled={isSaving}
+                  className="absolute inset-0 h-full w-full cursor-pointer rounded-full opacity-0 disabled:cursor-not-allowed"
                 />
-              </div>
-            </TooltipTrigger>
-            <TooltipContent className="max-w-xs">
-              <p>
-                If enabled, tasks moved to this status will count as delivered, and
-                we'll mark them as overdue if their delivery date is past.
-              </p>
-            </TooltipContent>
-          </Tooltip>
-        </TooltipProvider>
+              </label>
+            </div>
 
-        {/* Is Publication Closed Toggle */}
-        <TooltipProvider>
-          <Tooltip>
-            <TooltipTrigger asChild>
-              <div className="flex items-center gap-2">
-                <Label htmlFor={`pub-closed-${status.id}`} className="text-xs whitespace-nowrap cursor-pointer">
-                  Closes Publication
-                </Label>
-                <Switch
-                  id={`pub-closed-${status.id}`}
-                  checked={status.is_publication_closed || false}
-                  onCheckedChange={(checked) =>
-                    handleToggle("is_publication_closed", checked)
-                  }
-                  disabled={isSaving}
-                />
-              </div>
-            </TooltipTrigger>
-            <TooltipContent className="max-w-xs">
-              <p>
-                If enabled, tasks moved to this status will count as published, and
-                we'll mark them as publication-overdue if their publication date is past.
-              </p>
-            </TooltipContent>
-          </Tooltip>
-        </TooltipProvider>
+            <div className="space-y-2">
+              <Label htmlFor={`description-${status.id}`} className="text-xs text-gray-500">
+                Description
+              </Label>
+              <Textarea
+                id={`description-${status.id}`}
+                value={localDescription}
+                onChange={(e) => setLocalDescription(e.target.value)}
+                onBlur={() => handleBlur("description")}
+                disabled={isSaving}
+                className="min-h-[68px] resize-none"
+                placeholder="Description (optional)"
+                rows={3}
+              />
+            </div>
 
-        {/* Delete Button */}
-        <Button
-          variant="ghost"
-          size="icon"
-          className="h-9 w-9 text-gray-400 hover:text-red-600 hover:bg-red-50"
-          onClick={() => setShowDeleteDialog(true)}
-          disabled={isSaving}
-          title="Archive status"
-        >
-          <Trash2 className="w-4 h-4" />
-        </Button>
+            <div className="flex flex-wrap items-center gap-4">
+              <TooltipProvider>
+                <Tooltip>
+                  <TooltipTrigger asChild>
+                    <div className="flex items-center gap-2">
+                      <Label htmlFor={`closed-${status.id}`} className="cursor-pointer text-xs whitespace-nowrap">
+                        Closes Delivery
+                      </Label>
+                      <Switch
+                        id={`closed-${status.id}`}
+                        checked={status.is_closed || false}
+                        onCheckedChange={(checked) => handleToggle("is_closed", checked)}
+                        disabled={isSaving}
+                      />
+                    </div>
+                  </TooltipTrigger>
+                  <TooltipContent className="max-w-xs">
+                    <p>
+                      If enabled, tasks moved to this status will count as delivered, and
+                      we'll mark them as overdue if their delivery date is past.
+                    </p>
+                  </TooltipContent>
+                </Tooltip>
+              </TooltipProvider>
+
+              <TooltipProvider>
+                <Tooltip>
+                  <TooltipTrigger asChild>
+                    <div className="flex items-center gap-2">
+                      <Label htmlFor={`pub-closed-${status.id}`} className="cursor-pointer text-xs whitespace-nowrap">
+                        Closes Publication
+                      </Label>
+                      <Switch
+                        id={`pub-closed-${status.id}`}
+                        checked={status.is_publication_closed || false}
+                        onCheckedChange={(checked) => handleToggle("is_publication_closed", checked)}
+                        disabled={isSaving}
+                      />
+                    </div>
+                  </TooltipTrigger>
+                  <TooltipContent className="max-w-xs">
+                    <p>
+                      If enabled, tasks moved to this status will count as published, and
+                      we'll mark them as publication-overdue if their publication date is past.
+                    </p>
+                  </TooltipContent>
+                </Tooltip>
+              </TooltipProvider>
+
+              <Button
+                variant="ghost"
+                size="sm"
+                className="ml-auto h-8 gap-1 text-red-600 hover:bg-red-50 hover:text-red-700"
+                onClick={() => setShowDeleteDialog(true)}
+                disabled={isSaving}
+              >
+                <Trash2 className="h-4 w-4" />
+                Delete
+              </Button>
+            </div>
+          </div>
+        ) : null}
       </div>
 
       {/* Delete Confirmation Dialog */}
@@ -292,14 +320,13 @@ export function ProjectStatusesSection({ projectId }: ProjectStatusesSectionProp
   const [isSaving, setIsSaving] = useState(false)
   const [error, setError] = useState<string | null>(null)
 
-  // Template dialog state
-  const [showTemplateDialog, setShowTemplateDialog] = useState(false)
   const [availableTemplates, setAvailableTemplates] = useState<StatusTemplate[]>([])
-  const [selectedTemplateId, setSelectedTemplateId] = useState<number | null>(null)
   const [isLoadingTemplates, setIsLoadingTemplates] = useState(false)
+  const [expandedIds, setExpandedIds] = useState<Set<number>>(new Set())
+  const [showInlineNewStatus, setShowInlineNewStatus] = useState(false)
+  const [isAddStatusOpen, setIsAddStatusOpen] = useState(false)
+  const [addStatusSearch, setAddStatusSearch] = useState("")
 
-  // Custom status dialog state
-  const [showCustomDialog, setShowCustomDialog] = useState(false)
   const [customForm, setCustomForm] = useState({
     name: "",
     color: "#3b82f6",
@@ -358,6 +385,10 @@ export function ProjectStatusesSection({ projectId }: ProjectStatusesSectionProp
       setIsLoadingTemplates(false)
     }
   }, [projectId])
+
+  useEffect(() => {
+    loadTemplates()
+  }, [loadTemplates])
 
   // Handle drag end
   const handleDragEnd = useCallback(
@@ -465,12 +496,10 @@ export function ProjectStatusesSection({ projectId }: ProjectStatusesSectionProp
   )
 
   // Add from template
-  const handleAddFromTemplate = useCallback(async () => {
-    if (!selectedTemplateId) return
-
+  const handleAddFromTemplate = useCallback(async (templateId: number) => {
     setIsSaving(true)
     try {
-      const { error } = await addStatusFromTemplate(projectId, selectedTemplateId)
+      const { error } = await addStatusFromTemplate(projectId, templateId)
       if (error) throw error
 
       toast({
@@ -480,8 +509,9 @@ export function ProjectStatusesSection({ projectId }: ProjectStatusesSectionProp
 
       // Reload statuses
       await loadStatuses()
-      setShowTemplateDialog(false)
-      setSelectedTemplateId(null)
+      await loadTemplates()
+      setAddStatusSearch("")
+      setIsAddStatusOpen(false)
     } catch (err: any) {
       toast({
         title: "Error",
@@ -491,7 +521,7 @@ export function ProjectStatusesSection({ projectId }: ProjectStatusesSectionProp
     } finally {
       setIsSaving(false)
     }
-  }, [projectId, selectedTemplateId, loadStatuses])
+  }, [projectId, loadStatuses, loadTemplates])
 
   // Add custom status
   const handleAddCustom = useCallback(async () => {
@@ -525,7 +555,7 @@ export function ProjectStatusesSection({ projectId }: ProjectStatusesSectionProp
 
       // Reload statuses
       await loadStatuses()
-      setShowCustomDialog(false)
+      await loadTemplates()
       setCustomForm({
         name: "",
         color: "#3b82f6",
@@ -543,7 +573,33 @@ export function ProjectStatusesSection({ projectId }: ProjectStatusesSectionProp
     } finally {
       setIsSaving(false)
     }
-  }, [projectId, customForm, loadStatuses])
+  }, [projectId, customForm, loadStatuses, loadTemplates])
+
+  const toggleExpanded = useCallback((statusId: number) => {
+    setExpandedIds((prev) => {
+      const next = new Set(prev)
+      if (next.has(statusId)) next.delete(statusId)
+      else next.add(statusId)
+      return next
+    })
+  }, [])
+
+  const unassignedTemplates = useMemo(() => {
+    const assignedTemplateIds = new Set(
+      statuses
+        .map((status) => status.template_id)
+        .filter((templateId): templateId is number => typeof templateId === "number"),
+    )
+    const assignedNames = new Set(
+      statuses
+        .map((status) => status.name?.trim().toLowerCase())
+        .filter((name): name is string => Boolean(name)),
+    )
+    return availableTemplates.filter((template) => {
+      const normalizedTemplateName = template.name?.trim().toLowerCase()
+      return !assignedTemplateIds.has(template.id) && !assignedNames.has(normalizedTemplateName)
+    })
+  }, [availableTemplates, statuses])
 
   if (isLoading) {
     return (
@@ -563,277 +619,150 @@ export function ProjectStatusesSection({ projectId }: ProjectStatusesSectionProp
 
   return (
     <div className="space-y-4">
-      {/* Info Banner */}
-      <div className="flex items-start gap-3 p-4 bg-blue-50 border border-blue-200 rounded-lg">
-        <Info className="w-5 h-5 text-blue-600 flex-shrink-0 mt-0.5" />
-        <div className="text-sm text-blue-900">
-          <p className="font-medium mb-1">About Project Statuses</p>
-          <p>
-            These are project-level statuses based on system templates or custom entries.
-            The toggle flags affect task overdue logic: tasks moved to statuses with these
-            flags will be marked as overdue if their respective dates have passed.
-          </p>
-        </div>
-      </div>
-
-      {/* Action Buttons */}
-      <div className="flex items-center gap-2">
-        <Dialog open={showTemplateDialog} onOpenChange={setShowTemplateDialog}>
-          <DialogTrigger asChild>
-            <Button
-              variant="outline"
-              size="sm"
-              className="gap-2"
-              onClick={loadTemplates}
-            >
-              <Plus className="w-4 h-4" />
-              Add from Template
-            </Button>
-          </DialogTrigger>
-          <DialogContent>
-            <DialogHeader>
-              <DialogTitle>Add Status from Template</DialogTitle>
-              <DialogDescription>
-                Select a system template to add as a project status
-              </DialogDescription>
-            </DialogHeader>
-
-            <div className="space-y-4 py-4">
-              {isLoadingTemplates ? (
-                <div className="flex items-center justify-center py-8">
-                  <Loader2 className="w-5 h-5 animate-spin text-gray-400" />
-                </div>
-              ) : availableTemplates.length === 0 ? (
-                <p className="text-sm text-gray-500 text-center py-4">
-                  No available templates. All system templates are already in use.
-                </p>
-              ) : (
-                <div className="space-y-2 max-h-96 overflow-y-auto">
-                  {availableTemplates.map((template) => (
-                    <div
-                      key={template.id}
-                      className={`flex items-center gap-3 p-3 border rounded-lg cursor-pointer transition-colors ${
-                        selectedTemplateId === template.id
-                          ? "border-blue-500 bg-blue-50"
-                          : "border-gray-200 hover:border-gray-300"
-                      }`}
-                      onClick={() => setSelectedTemplateId(template.id)}
-                    >
-                      <div
-                        className="w-8 h-8 rounded border border-gray-300"
-                        style={{ backgroundColor: template.color }}
-                      />
-                      <div className="flex-1 min-w-0">
-                        <div className="font-medium text-sm">{template.name}</div>
-                        {template.description && (
-                          <div className="text-xs text-gray-500 truncate">
-                            {template.description}
-                          </div>
-                        )}
-                      </div>
-                    </div>
-                  ))}
-                </div>
-              )}
-            </div>
-
-            <DialogFooter>
-              <Button
-                variant="outline"
-                onClick={() => {
-                  setShowTemplateDialog(false)
-                  setSelectedTemplateId(null)
-                }}
-              >
-                Cancel
-              </Button>
-              <Button
-                onClick={handleAddFromTemplate}
-                disabled={!selectedTemplateId || isSaving}
-              >
-                {isSaving ? (
-                  <>
-                    <Loader2 className="w-4 h-4 mr-2 animate-spin" />
-                    Adding...
-                  </>
-                ) : (
-                  "Add Status"
-                )}
-              </Button>
-            </DialogFooter>
-          </DialogContent>
-        </Dialog>
-
-        <Dialog open={showCustomDialog} onOpenChange={setShowCustomDialog}>
-          <DialogTrigger asChild>
-            <Button variant="outline" size="sm" className="gap-2">
-              <Plus className="w-4 h-4" />
-              Add Custom Status
-            </Button>
-          </DialogTrigger>
-          <DialogContent>
-            <DialogHeader>
-              <DialogTitle>Create Custom Status</DialogTitle>
-              <DialogDescription>
-                Create a new project-specific status
-              </DialogDescription>
-            </DialogHeader>
-
-            <div className="space-y-4 py-4">
-              <div className="space-y-2">
-                <Label htmlFor="custom-name">
-                  Name <span className="text-red-500">*</span>
-                </Label>
-                <Input
-                  id="custom-name"
-                  value={customForm.name}
-                  onChange={(e) =>
-                    setCustomForm({ ...customForm, name: e.target.value })
-                  }
-                  placeholder="e.g., In Review"
-                />
-              </div>
-
-              <div className="space-y-2">
-                <Label htmlFor="custom-color">
-                  Color <span className="text-red-500">*</span>
-                </Label>
-                <div className="flex items-center gap-2">
-                  <input
-                    id="custom-color"
-                    type="color"
-                    value={customForm.color}
-                    onChange={(e) =>
-                      setCustomForm({ ...customForm, color: e.target.value })
-                    }
-                    className="w-12 h-10 rounded border border-gray-300 cursor-pointer"
-                  />
-                  <Input
-                    value={customForm.color}
-                    onChange={(e) =>
-                      setCustomForm({ ...customForm, color: e.target.value })
-                    }
-                    placeholder="#3b82f6"
-                  />
-                </div>
-              </div>
-
-              <div className="space-y-2">
-                <Label htmlFor="custom-description">Description</Label>
-                <Textarea
-                  id="custom-description"
-                  value={customForm.description}
-                  onChange={(e) =>
-                    setCustomForm({ ...customForm, description: e.target.value })
-                  }
-                  placeholder="Optional description"
-                  rows={3}
-                />
-              </div>
-
-              <div className="space-y-2">
-                <Label htmlFor="custom-type">Type</Label>
-                <Input
-                  id="custom-type"
-                  value={customForm.type}
-                  onChange={(e) =>
-                    setCustomForm({ ...customForm, type: e.target.value })
-                  }
-                  placeholder="e.g., workflow, milestone"
-                />
-              </div>
-
-              <div className="space-y-3">
-                <div className="flex items-center justify-between">
-                  <Label htmlFor="custom-closed" className="cursor-pointer">
-                    Closes Delivery
-                  </Label>
-                  <Switch
-                    id="custom-closed"
-                    checked={customForm.isClosed}
-                    onCheckedChange={(checked) =>
-                      setCustomForm({ ...customForm, isClosed: checked })
-                    }
-                  />
-                </div>
-                <div className="flex items-center justify-between">
-                  <Label htmlFor="custom-pub-closed" className="cursor-pointer">
-                    Closes Publication
-                  </Label>
-                  <Switch
-                    id="custom-pub-closed"
-                    checked={customForm.isPublicationClosed}
-                    onCheckedChange={(checked) =>
-                      setCustomForm({ ...customForm, isPublicationClosed: checked })
-                    }
-                  />
-                </div>
-              </div>
-            </div>
-
-            <DialogFooter>
-              <Button
-                variant="outline"
-                onClick={() => {
-                  setShowCustomDialog(false)
-                  setCustomForm({
-                    name: "",
-                    color: "#3b82f6",
-                    description: "",
-                    isClosed: false,
-                    isPublicationClosed: false,
-                    type: "",
-                  })
-                }}
-              >
-                Cancel
-              </Button>
-              <Button onClick={handleAddCustom} disabled={isSaving}>
-                {isSaving ? (
-                  <>
-                    <Loader2 className="w-4 h-4 mr-2 animate-spin" />
-                    Creating...
-                  </>
-                ) : (
-                  "Create Status"
-                )}
-              </Button>
-            </DialogFooter>
-          </DialogContent>
-        </Dialog>
-      </div>
-
       {/* Statuses List */}
-      {statuses.length === 0 ? (
-        <div className="text-center py-12 border border-dashed border-gray-300 rounded-lg">
-          <p className="text-sm text-gray-500 mb-4">
-            No statuses yet. Add one to get started.
-          </p>
-        </div>
-      ) : (
-        <DndContext
-          sensors={sensors}
-          collisionDetection={closestCenter}
-          onDragEnd={handleDragEnd}
-        >
-          <SortableContext
-            items={statuses.map((s) => s.id)}
-            strategy={verticalListSortingStrategy}
-          >
-            <div className="space-y-2">
-              {statuses.map((status) => (
-                <StatusRow
-                  key={status.id}
-                  status={status}
-                  onUpdate={handleUpdateStatus}
-                  onDelete={handleDeleteStatus}
-                  isSaving={isSaving}
+      <DndContext
+        sensors={sensors}
+        collisionDetection={closestCenter}
+        onDragEnd={handleDragEnd}
+      >
+        <SortableContext items={statuses.map((s) => s.id)} strategy={verticalListSortingStrategy}>
+          <div className="divide-y divide-gray-100 rounded-md border border-gray-100 bg-white">
+            {statuses.map((status) => (
+              <StatusRow
+                key={status.id}
+                status={status}
+                onUpdate={handleUpdateStatus}
+                onDelete={handleDeleteStatus}
+                isSaving={isSaving}
+                isExpanded={expandedIds.has(status.id)}
+                onToggleExpanded={() => toggleExpanded(status.id)}
+              />
+            ))}
+
+          </div>
+
+          {showInlineNewStatus ? (
+            <div className="mt-3 space-y-3 rounded-md border border-dashed border-gray-200 bg-white px-3 py-3">
+              <div className="grid grid-cols-1 gap-2 sm:grid-cols-[minmax(0,1fr)_auto]">
+                <Input
+                  value={customForm.name}
+                  onChange={(e) => setCustomForm((prev) => ({ ...prev, name: e.target.value }))}
+                  placeholder="Status title"
+                  disabled={isSaving}
                 />
-              ))}
+                <input
+                  type="color"
+                  value={customForm.color}
+                  onChange={(e) => setCustomForm((prev) => ({ ...prev, color: e.target.value }))}
+                  className="h-9 w-9 cursor-pointer rounded-full border-0 bg-transparent p-0"
+                  disabled={isSaving}
+                />
+              </div>
+              <div className="space-y-2">
+                <Label className="text-xs text-gray-500">Description</Label>
+                <Textarea
+                  value={customForm.description}
+                  onChange={(e) => setCustomForm((prev) => ({ ...prev, description: e.target.value }))}
+                  placeholder="Optional description"
+                  rows={2}
+                  disabled={isSaving}
+                />
+              </div>
+              <div className="flex items-center justify-end gap-2">
+                <Button
+                  type="button"
+                  variant="ghost"
+                  size="sm"
+                  onClick={() => {
+                    setShowInlineNewStatus(false)
+                    setCustomForm({
+                      name: "",
+                      color: "#3b82f6",
+                      description: "",
+                      isClosed: false,
+                      isPublicationClosed: false,
+                      type: "",
+                    })
+                  }}
+                  disabled={isSaving}
+                >
+                  Cancel
+                </Button>
+                <Button type="button" size="sm" onClick={handleAddCustom} disabled={isSaving || !customForm.name.trim()}>
+                  {isSaving ? "Creating..." : "Create status"}
+                </Button>
+              </div>
             </div>
-          </SortableContext>
-        </DndContext>
-      )}
+          ) : (
+            <Popover
+              open={isAddStatusOpen}
+              onOpenChange={(open) => {
+                setIsAddStatusOpen(open)
+                if (!open) setAddStatusSearch("")
+              }}
+            >
+              <PopoverTrigger asChild>
+                <AddComponentButton
+                  label="Add status"
+                  disabled={isSaving || isLoadingTemplates}
+                />
+              </PopoverTrigger>
+              <PopoverContent className="w-[min(90vw,26rem)] p-0" align="start">
+                <Command>
+                  <CommandInput
+                    placeholder="Add status..."
+                    value={addStatusSearch}
+                    onValueChange={setAddStatusSearch}
+                  />
+                  <CommandList className="max-h-[260px]">
+                    <CommandEmpty>No template status found.</CommandEmpty>
+                    <CommandGroup>
+                      {unassignedTemplates.map((template) => (
+                        <CommandItem
+                          key={template.id}
+                          value={template.name}
+                          onSelect={() => handleAddFromTemplate(template.id)}
+                          className="cursor-pointer"
+                        >
+                          <span
+                            className="mr-2 h-2.5 w-2.5 rounded-full"
+                            style={{ backgroundColor: template.color || "#9ca3af" }}
+                            aria-hidden
+                          />
+                          <span
+                            className="rounded-full px-2 py-1 text-xs font-medium"
+                            style={{
+                              backgroundColor: `${template.color || "#e5e7eb"}22`,
+                              color: template.color || "#374151",
+                            }}
+                          >
+                            {template.name}
+                          </span>
+                        </CommandItem>
+                      ))}
+                      <CommandItem
+                        value={`create-status ${addStatusSearch.trim().toLowerCase()}`}
+                        onSelect={() => {
+                          setIsAddStatusOpen(false)
+                          setCustomForm((prev) => ({
+                            ...prev,
+                            name: addStatusSearch.trim(),
+                          }))
+                          setShowInlineNewStatus(true)
+                        }}
+                        className="cursor-pointer text-gray-600"
+                      >
+                        <Plus className="mr-2 h-4 w-4" />
+                        {addStatusSearch.trim().length > 0 ? `Add status "${addStatusSearch.trim()}"` : "Add status"}
+                      </CommandItem>
+                    </CommandGroup>
+                  </CommandList>
+                </Command>
+              </PopoverContent>
+            </Popover>
+          )}
+        </SortableContext>
+      </DndContext>
     </div>
   )
 }

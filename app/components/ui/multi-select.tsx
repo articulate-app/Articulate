@@ -17,9 +17,19 @@ import {
   PopoverTrigger,
 } from "@/components/ui/popover"
 import { Badge } from "@/components/ui/badge"
+import { FilterOptionVisual } from "../tasks/task-list-visuals"
+
+export interface MultiSelectOption {
+  id: string
+  label: string
+  color?: string | null
+  logo?: string | null
+  /** When set, used for status/project filter visuals instead of deriving from categoryId. */
+  visualCategory?: 'status' | 'project'
+}
 
 export interface MultiSelectProps {
-  options: { id: string; label: string; color?: string }[]
+  options: MultiSelectOption[]
   value: string[]
   onChange: (value: string[]) => void
   onSearch?: (value: string) => void
@@ -127,6 +137,20 @@ export function MultiSelect({
     )
   }, [options, search])
 
+  const renderOptionLabel = (option: MultiSelectOption) => {
+    if (option.visualCategory === 'status' || option.visualCategory === 'project') {
+      return (
+        <FilterOptionVisual
+          categoryId={option.visualCategory}
+          label={option.label}
+          color={option.color}
+          logo={option.logo}
+        />
+      )
+    }
+    return <span>{option.label}</span>
+  }
+
   const renderSelectedContent = () => {
     if (selectedOptions.length === 0) {
       return <span className="text-gray-500">{placeholder}</span>
@@ -139,7 +163,7 @@ export function MultiSelect({
           variant="secondary"
           className="mr-1 mb-1"
         >
-          {option.label}
+          {option.visualCategory ? renderOptionLabel(option) : option.label}
           {!singleSelect && (
             <button
               type="button"
@@ -162,7 +186,7 @@ export function MultiSelect({
 
     return (
       <Badge variant="secondary" className="mr-1 mb-1">
-        {first.label}
+        {first.visualCategory ? renderOptionLabel(first) : first.label}
         {remainingCount > 0 && (
           <span className="ml-1 text-[11px] text-gray-600">
             +{remainingCount}
@@ -233,7 +257,7 @@ export function MultiSelect({
                           )}
                         />
                       </div>
-                      <span>{option.label}</span>
+                      <div className="min-w-0 flex-1">{renderOptionLabel(option)}</div>
                     </CommandItem>
                   )
                 })
