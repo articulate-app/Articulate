@@ -7,6 +7,7 @@
  * - `__AI_ACTION__{json}` / `__AI_PENDING_ACTION__{json}` — structured UI events (`content_saved`, `clarification_request`, etc.)
  * - `__AI_THREAD_TITLE__{json}` — streamed thread title updates (`started`/`delta`/`completed`)
  * - `__AI_REQUEST_PLAN__{json}` — Request Plan V3 execution-plan audit (`type: "request_plan"`)
+ * - `__AI_EXECUTION_TRACE__{json}` — progressive execution timeline (`type: "execution_trace"`; never assistant text)
  *
  * Parsing is incremental inside `consumeTextStream`; use `onAiAction` / status handlers on `ConsumeTextStreamHandlers`.
  */

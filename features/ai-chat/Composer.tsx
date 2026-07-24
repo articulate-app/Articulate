@@ -22,6 +22,7 @@ import type {
   AiChatComponentLibraryTraceEvent,
   AiChatComponentPlanTraceEvent,
   AiChatRequestPlanEvent,
+  AiChatExecutionTraceEvent,
   AiChatV2RunEvent,
 } from "../../app/lib/ai/chat"
 import type { AiRunTerminalState } from "../../app/lib/ai/ai-chat-v2-types"
@@ -86,6 +87,10 @@ import { useAiChatModelSelection } from "./ai-chat-model-selection"
 import { AiChatModelPicker } from "./AiChatModelPicker"
 import { AiChatUsageIndicator } from "./AiChatUsageIndicator"
 import { chipLabelForSelection, useAiChatTextSelectionStore } from "./ai-chat-text-selection"
+import {
+  chipLabelForArtifactSelection,
+  useArtifactSelectionStore,
+} from "../artifacts/artifact-selection"
 import { sanitizeStorageFileName } from "../../utils/storage"
 
 type ProjectMention = { id: number; name: string; color?: string | null; logo?: string | null }
@@ -241,6 +246,8 @@ interface ComposerProps {
   onComponentPlanTraceEvent?: (tempId: string, event: AiChatComponentPlanTraceEvent) => void
   /** Stream `__AI_REQUEST_PLAN__` execution-plan audit. */
   onRequestPlanEvent?: (tempId: string, event: AiChatRequestPlanEvent) => void
+  /** Stream `__AI_EXECUTION_TRACE__` progressive timeline events. */
+  onExecutionTraceEvent?: (tempId: string, event: AiChatExecutionTraceEvent) => void
   onAiChatV2RunEvent?: (tempId: string, event: AiChatV2RunEvent) => void
   onRunId?: (tempId: string, runId: string) => void
   onRunTerminalState?: (tempId: string, state: AiRunTerminalState) => void
@@ -321,6 +328,7 @@ export function Composer({
   onComponentLibraryTraceEvent,
   onComponentPlanTraceEvent,
   onRequestPlanEvent,
+  onExecutionTraceEvent,
   onAiChatV2RunEvent,
   onRunId,
   onRunTerminalState,
@@ -358,7 +366,10 @@ export function Composer({
   const { modelKey, setModelKey } = useAiChatModelSelection()
   const pendingTextSelection = useAiChatTextSelectionStore((s) => s.pending)
   const clearPendingSelection = useAiChatTextSelectionStore((s) => s.clearPendingSelection)
+  const pendingArtifactSelection = useArtifactSelectionStore((s) => s.pending)
+  const clearPendingArtifactSelection = useArtifactSelectionStore((s) => s.clearPendingSelection)
   const appliedSelectionTokenRef = useRef<number | null>(null)
+  const appliedArtifactSelectionTokenRef = useRef<number | null>(null)
   const editorRef = useRef<HTMLDivElement>(null)
   /** Plain-text offsets for the active `@query` segment; survives focus loss when clicking the picker. */
   const mentionReplaceRangeRef = useRef<{ start: number; end: number } | null>(null)
@@ -487,14 +498,25 @@ export function Composer({
   }, [variant, preFillMessage, refreshEditorEmpty, resizeEditor, syncMentionFromEditor])
 
   const textSelectionChipData = useMemo(() => {
-    if (!pendingTextSelection) return null
-    const text = pendingTextSelection.context.selected_text.trim()
-    if (!text) return null
-    return { text, tooltip: chipLabelForSelection(pendingTextSelection.context) }
-  }, [pendingTextSelection])
+    if (pendingTextSelection) {
+      const text = pendingTextSelection.context.selected_text.trim()
+      if (!text) return null
+      return { text, tooltip: chipLabelForSelection(pendingTextSelection.context) }
+    }
+    if (pendingArtifactSelection) {
+      const context = pendingArtifactSelection.context
+      const text =
+        context.selected_text?.trim()
+        || context.title?.trim()
+        || chipLabelForArtifactSelection(context)
+      return { text, tooltip: chipLabelForArtifactSelection(context) }
+    }
+    return null
+  }, [pendingArtifactSelection, pendingTextSelection])
 
   // Keep an inline chip (styled like an @-mention) at the very top of the composer input,
-  // mirroring the store. The passage itself travels as selected_text_context on send.
+  // mirroring the store. The passage itself travels as selected_text_context /
+  // selected_artifact_context on send.
   useEffect(() => {
     if (variant === "inlineEdit") return
     const el = editorRef.current
@@ -516,6 +538,17 @@ export function Composer({
     focusEnd(el)
     resizeEditor()
   }, [pendingTextSelection, variant, resizeEditor])
+
+  useEffect(() => {
+    if (variant === "inlineEdit") return
+    const token = pendingArtifactSelection?.token ?? null
+    if (token == null || appliedArtifactSelectionTokenRef.current === token) return
+    appliedArtifactSelectionTokenRef.current = token
+    const el = editorRef.current
+    if (!el) return
+    focusEnd(el)
+    resizeEditor()
+  }, [pendingArtifactSelection, variant, resizeEditor])
 
   useEffect(() => {
     const hasExplicitBuildIntent = mode === "build_component" && !!componentId && !autoRun && !!preFillMessage
@@ -686,6 +719,9 @@ export function Composer({
       setAttachmentError(null)
 
       const selectedTextForSend = pendingTextSelection?.context ?? null
+      const selectedArtifactForSend = pendingArtifactSelection?.context ?? null
+      const selectedArtifactContextTypeForSend =
+        pendingArtifactSelection?.selectedContextType ?? null
 
       const {
         tagged_task_ids: taggedTaskIds,
@@ -715,10 +751,13 @@ export function Composer({
       }
       setIsSending(true)
 
-      // The passage is captured in `selectedTextForSend`; drop the chip immediately on send so it
-      // never lingers in the composer (regardless of streaming outcome).
+      // The passage is captured in `selectedTextForSend` / artifact context; drop the chip
+      // immediately on send so it never lingers in the composer (regardless of streaming outcome).
       if (selectedTextForSend) {
         clearPendingSelection()
+      }
+      if (selectedArtifactForSend) {
+        clearPendingArtifactSelection()
       }
 
       const normalizedPreFillMessage = (preFillMessage ?? "").trim()
@@ -900,6 +939,8 @@ export function Composer({
           ambientContext: ambientContext ?? null,
           modelKey,
           selectedTextContext: selectedTextForSend,
+          selectedArtifactContext: selectedArtifactForSend,
+          selectedArtifactContextType: selectedArtifactContextTypeForSend,
           autoRun,
           stream: shouldStreamResponse,
           includeOptimisticUser: false,
@@ -929,6 +970,7 @@ export function Composer({
           onComponentLibraryTraceEvent,
           onComponentPlanTraceEvent,
           onRequestPlanEvent,
+          onExecutionTraceEvent,
           onAiChatV2RunEvent,
           onRunId,
           onRunTerminalState,
@@ -971,6 +1013,7 @@ export function Composer({
       onComponentLibraryTraceEvent,
       onComponentPlanTraceEvent,
       onRequestPlanEvent,
+      onExecutionTraceEvent,
       activeChannelId,
       mode,
       componentId,
@@ -982,6 +1025,8 @@ export function Composer({
       modelKey,
       pendingTextSelection,
       clearPendingSelection,
+      pendingArtifactSelection,
+      clearPendingArtifactSelection,
       taskId,
       refreshEditorEmpty,
       resizeEditor,

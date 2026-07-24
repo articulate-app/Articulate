@@ -28,7 +28,6 @@ import type { TasksToolbarFitSnapshot } from "../../contexts/tasks-toolbar-fit-c
 import { defaultTasksToolbarFit } from "../../contexts/tasks-toolbar-fit-context"
 import type { LeftPaneObject } from "../../lib/left-pane-object"
 import { LeftObjectSwitcher } from "./LeftObjectSwitcher"
-import { HomePaneGreeting } from "../search/home-pane-greeting"
 import { TooltipProvider } from "../ui/tooltip"
 import { IconTooltip } from "../ui/icon-tooltip"
 import { SplitPaneViewDropdown } from "./split-pane-view-dropdown"
@@ -583,7 +582,7 @@ export function TasksPaneToolbar(props: TasksPaneToolbarProps) {
 
   const hasRenderableOverflow = overflowMenuBody != null
   const canShowTaskControls = !minimalMode && isTaskRoute
-  const showHomeGreeting = leftObject === "all" && isTopLikePane
+  const isHomeObject = leftObject === "all"
   const isMobileSplitCompact = compactMode === "mobile-split-bottom"
   const showMoreMenu =
     isMobileSplitCompact
@@ -599,17 +598,19 @@ export function TasksPaneToolbar(props: TasksPaneToolbarProps) {
 
   return (
     <TooltipProvider delayDuration={120}>
-    <div className="flex w-full flex-shrink-0 flex-col border-b border-gray-200 bg-white">
-      {showHomeGreeting && !isMobileSplitCompact ? (
-        <div className="px-4 pt-3">
-          <HomePaneGreeting />
-        </div>
-      ) : null}
+    <div
+      className={cn(
+        "flex w-full flex-shrink-0 flex-col bg-white",
+        // Home: no divider under pills so switching objects doesn't jump / double-stack borders.
+        !isHomeObject && "border-b border-gray-200",
+      )}
+    >
       <div
         ref={containerRef}
         className={cn(
-          "flex w-full min-w-0 items-center gap-2 border-b border-gray-200 bg-white",
-          isMobileSplitCompact ? "h-10 min-h-10 px-4" : "h-14 min-h-14 px-2 py-2",
+          "flex w-full min-w-0 items-center gap-2 bg-white",
+          // pl-4 matches Create button gutter; keep a slightly tighter right inset for controls.
+          isMobileSplitCompact ? "h-10 min-h-10 px-4" : "h-14 min-h-14 py-2 pl-4 pr-2",
         )}
       >
         <div className="flex min-h-8 shrink-0 flex-nowrap items-center gap-2">

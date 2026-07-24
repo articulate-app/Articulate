@@ -4,15 +4,19 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react"
 import { useQuery, useQueryClient } from "@tanstack/react-query"
 import * as DialogPrimitive from "@radix-ui/react-dialog"
 import {
+  BarChart3,
   CreditCard,
   FileText,
   FolderOpen,
   Layers,
   Loader2,
+  Search,
   Settings2,
   Sparkles,
   Target,
+  Users,
   X,
+  Globe2,
 } from "lucide-react"
 
 import { cn } from "@/lib/utils"
@@ -21,6 +25,7 @@ import { Input } from "../ui/input"
 import { Label } from "../ui/label"
 import { Textarea } from "../ui/textarea"
 import { toast } from "../ui/use-toast"
+import { ToastAction } from "../ui/toast"
 import {
   AlertDialog,
   AlertDialogAction,
@@ -43,13 +48,27 @@ import { ProjectOverviewPlanningSection } from "./planning/ProjectOverviewPlanni
 import { BillingTab } from "./BillingTab"
 import { FilesTab } from "./FilesTab"
 import { LibraryTab } from "../project-briefings/LibraryTab"
+import { ProjectTeamSettingsPanel } from "./project-team-settings-panel"
+import { ProjectKeywordTrackingTab } from "./ProjectKeywordTrackingTab"
+import { ProjectAiVisibilityTab } from "./ProjectAiVisibilityTab"
+import { ProjectAiUsageSection } from "./project-ai-usage-section"
+import { ProjectWebsiteIndexSection } from "./project-website-index-section"
+import {
+  PROJECT_SITE_INDEX_STATUS_QUERY_KEY,
+  fetchProjectSiteIndexStatus,
+  refreshProjectSiteIndex,
+} from "@/lib/services/project-site-index"
 
 export type ProjectSettingsCategory =
   | "details"
   | "configuration"
   | "status"
   | "planning"
+  | "tracking"
   | "billing"
+  | "ai-usage"
+  | "website-index"
+  | "team"
   | "components"
   | "files"
 
@@ -58,7 +77,11 @@ const CATEGORIES: { id: ProjectSettingsCategory; label: string; icon: typeof Tar
   { id: "configuration", label: "Configuration", icon: Settings2 },
   { id: "status", label: "Status", icon: FileText },
   { id: "planning", label: "AI planning", icon: Sparkles },
+  { id: "tracking", label: "Tracking", icon: Search },
   { id: "billing", label: "Billing", icon: CreditCard },
+  { id: "ai-usage", label: "AI usage", icon: BarChart3 },
+  { id: "website-index", label: "Website index", icon: Globe2 },
+  { id: "team", label: "Team", icon: Users },
   { id: "components", label: "Components", icon: Layers },
   { id: "files", label: "Files", icon: FolderOpen },
 ]
@@ -238,6 +261,55 @@ export function ProjectSettingsPanel({
         title: "Saved",
         description: "Project preferences updated.",
       })
+
+      // Non-blocking: offer an initial website-index refresh when a URL was just saved
+      // and no index exists yet.
+      const savedUrl = typeof patch.project_url === "string" ? patch.project_url.trim() : ""
+      if (savedUrl) {
+        void (async () => {
+          try {
+            const status = await fetchProjectSiteIndexStatus(projectId)
+            const hasIndex =
+              (status.active_page_count ?? 0) > 0
+              || Boolean(status.latest_run)
+            if (hasIndex) return
+            toast({
+              title: "Index this website?",
+              description: "Map and enrich pages for natural internal linking.",
+              action: (
+                <ToastAction
+                  altText="Refresh website index"
+                  onClick={() => {
+                    setActiveCategory("website-index")
+                    void (async () => {
+                      const result = await refreshProjectSiteIndex({ projectId })
+                      await queryClient.invalidateQueries({
+                        queryKey: [PROJECT_SITE_INDEX_STATUS_QUERY_KEY, projectId],
+                      })
+                      if (!result.ok) {
+                        toast({
+                          title: "Website index refresh failed",
+                          description: result.error ?? "Please try again from Website index.",
+                          variant: "destructive",
+                        })
+                        return
+                      }
+                      toast({
+                        title: "Website index refreshed",
+                        description: `Discovered ${result.discovered_count ?? 0} pages.`,
+                      })
+                    })()
+                  }}
+                >
+                  Refresh now
+                </ToastAction>
+              ),
+            })
+          } catch {
+            /* status check is best-effort; saving already succeeded */
+          }
+        })()
+      }
     } catch (err: any) {
       toast({
         title: "Error",
@@ -247,7 +319,7 @@ export function ProjectSettingsPanel({
     } finally {
       setIsSaving(false)
     }
-  }, [data, formData, isSaving, projectId, queryClient])
+  }, [data, formData, isSaving, projectId, queryClient, setActiveCategory])
 
   const handleLogoUpload = useCallback(
     async (file: File) => {
@@ -453,8 +525,39 @@ export function ProjectSettingsPanel({
         return <ProjectStatusesSection projectId={projectId} />
       case "planning":
         return <ProjectOverviewPlanningSection projectId={projectId} hideTitle />
+      case "tracking":
+        return (
+          <div className="space-y-6">
+            <div className="space-y-1">
+              <h3 className="text-sm font-medium text-gray-900">Keywords & AI prompts</h3>
+              <p className="text-xs text-gray-500">
+                Manage the keywords and AI prompts this project tracks.
+              </p>
+            </div>
+            <ProjectKeywordTrackingTab projectId={projectId} variant="manage" />
+            <ProjectAiVisibilityTab projectId={projectId} variant="manage" />
+          </div>
+        )
       case "billing":
         return <BillingTab projectId={projectId} hideTitle />
+      case "ai-usage":
+        return <ProjectAiUsageSection projectId={projectId} />
+      case "website-index":
+        return (
+          <ProjectWebsiteIndexSection
+            projectId={projectId}
+            projectUrl={formData.project_url ?? data?.project_url ?? null}
+            canEdit
+          />
+        )
+      case "team":
+        return (
+          <ProjectTeamSettingsPanel
+            teamId={data?.team_id ?? null}
+            teamName={data?.team_name ?? null}
+            isLoading={isLoading}
+          />
+        )
       case "components":
         return (
           <div className="-mx-2 min-h-[420px]">
@@ -506,7 +609,11 @@ export function ProjectSettingsPanel({
             <aside className="flex w-52 shrink-0 flex-col border-r border-gray-100 bg-gray-50/60 p-3">
               <div className="px-2 pb-2 pt-1 text-base font-semibold text-gray-900">Project settings</div>
               <nav className="mt-1 space-y-0.5">
-                {CATEGORIES.map(({ id, label, icon: Icon }) => (
+                {CATEGORIES.filter((category) => {
+                  if (category.id !== "website-index") return true
+                  const url = (formData.project_url ?? data?.project_url ?? "").trim()
+                  return url.length > 0
+                }).map(({ id, label, icon: Icon }) => (
                   <button
                     key={id}
                     type="button"
@@ -527,7 +634,7 @@ export function ProjectSettingsPanel({
 
             <div className="flex min-w-0 flex-1 flex-col">
               <div className="flex items-center justify-between border-b border-gray-100 px-6 py-4">
-                <h2 className="text-sm font-medium text-gray-900">{activeLabel}</h2>
+                <h2 className="truncate text-sm font-medium text-gray-900">{activeLabel}</h2>
                 <button
                   type="button"
                   aria-label="Close project settings"

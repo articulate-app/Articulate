@@ -92,6 +92,8 @@ export function ComponentClarificationCard({
   const toggleOption = (option: AiClarificationOption) => {
     if (isLocked || option.disabled) return
     if (!isMulti) {
+      // Keep the chosen option visibly selected while the follow-up is in flight.
+      setSelectedIds([option.id])
       onSubmit({ selectedOptionIds: [option.id], freeText: freeTextTrimmed || null })
       return
     }

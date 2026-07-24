@@ -37,19 +37,19 @@ export default function ProjectBriefingTabs({
         onMouseLeave={() => setIsTabsHovered(false)}
         onWheel={handleWheel}
       >
-        <TabsTrigger value="overview" className="rounded-none border-b-2 border-transparent data-[state=active]:border-gray-900 data-[state=active]:shadow-none">
+        <TabsTrigger value="overview" className="-mb-px rounded-none border-b-0 data-[state=active]:bg-transparent data-[state=active]:shadow-[inset_0_-2px_0_0_#111827]">
           Overview
         </TabsTrigger>
-        <TabsTrigger value="billing" className="rounded-none border-b-2 border-transparent data-[state=active]:border-gray-900 data-[state=active]:shadow-none">
+        <TabsTrigger value="billing" className="-mb-px rounded-none border-b-0 data-[state=active]:bg-transparent data-[state=active]:shadow-[inset_0_-2px_0_0_#111827]">
           Billing
         </TabsTrigger>
-        <TabsTrigger value="activity" className="rounded-none border-b-2 border-transparent data-[state=active]:border-gray-900 data-[state=active]:shadow-none">
+        <TabsTrigger value="activity" className="-mb-px rounded-none border-b-0 data-[state=active]:bg-transparent data-[state=active]:shadow-[inset_0_-2px_0_0_#111827]">
           Activity
         </TabsTrigger>
-        <TabsTrigger value="comments" className="rounded-none border-b-2 border-transparent data-[state=active]:border-gray-900 data-[state=active]:shadow-none">
+        <TabsTrigger value="comments" className="-mb-px rounded-none border-b-0 data-[state=active]:bg-transparent data-[state=active]:shadow-[inset_0_-2px_0_0_#111827]">
           Comments
         </TabsTrigger>
-        <TabsTrigger value="files" className="rounded-none border-b-2 border-transparent data-[state=active]:border-gray-900 data-[state=active]:shadow-none">
+        <TabsTrigger value="files" className="-mb-px rounded-none border-b-0 data-[state=active]:bg-transparent data-[state=active]:shadow-[inset_0_-2px_0_0_#111827]">
           Files
         </TabsTrigger>
       </TabsList>

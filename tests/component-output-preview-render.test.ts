@@ -34,6 +34,24 @@ describe("component-output-preview-render", () => {
     expect(finalHtml).not.toContain("<ol>")
   })
 
+  it("renders completed H2/H3 and natural links from Markdown or HTML", () => {
+    const fromMarkdown = renderComponentOutputPreviewHtml({
+      phase: "completed",
+      contentText: "## Why plastic alternatives?\n\nSee [our guide](https://example.com/guide) for details.\n\n### Materials\n\nBamboo and glass.",
+    })
+    expect(fromMarkdown).toMatch(/<h2[\s>]/i)
+    expect(fromMarkdown).toMatch(/<h3[\s>]/i)
+    expect(fromMarkdown).toContain('href="https://example.com/guide"')
+
+    const fromHtml = renderComponentOutputPreviewHtml({
+      phase: "completed",
+      contentText: '<h2>Why Look for Plastic Alternatives?</h2><p>Read <a href="https://example.com/about">about us</a>.</p><h3>Next steps</h3>',
+    })
+    expect(fromHtml).toMatch(/<h2[\s>]/i)
+    expect(fromHtml).toMatch(/<h3[\s>]/i)
+    expect(fromHtml).toContain('href="https://example.com/about"')
+  })
+
   it("renders final output from content_json once completed", () => {
     const html = renderFinalComponentOutputFromBlocks(
       [{ type: "paragraph", text: "<h3>1. Enhanced Durability</h3><p>Body</p>" }],

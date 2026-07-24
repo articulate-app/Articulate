@@ -31,6 +31,7 @@ import type {
   AiChatComponentLibraryTraceEvent,
   AiChatComponentPlanTraceEvent,
   AiChatRequestPlanEvent,
+  AiChatExecutionTraceEvent,
   AiChatV2RunEvent,
 } from "../../app/lib/ai/chat"
 import type { AiRunTerminalState } from "../../app/lib/ai/ai-chat-v2-types"
@@ -41,6 +42,7 @@ import { AiRunFailureCard } from "./AiRunFailureCard"
 import { useAiChatThreadUsage } from "./use-ai-chat-thread-usage"
 import { AiChatUsageLimitCard } from "./AiChatUsageLimitCard"
 import { canCurrentUserManageAiLimits } from "../../app/lib/services/ai-token-limits"
+import { PROJECT_AI_USAGE_QUERY_KEY } from "../../app/lib/services/project-ai-usage"
 import { isUsageSendBlocked } from "./ai-chat-usage"
 import {
   fetchAiChatRun,
@@ -53,11 +55,13 @@ import { ContentSavedInlineCard } from "./content-saved-inline-card"
 import { ComponentClarificationCard } from "./component-clarification-card"
 import {
   activeFieldContextFromClarification,
+  aliasClarificationMessageIdInContentJson,
   buildClarificationDedupeKey,
   buildClarificationResponsePayload,
   buildClarificationUserMessageContentJson,
   clarificationActionToRequest,
   clarificationHasExplicitComponentContext,
+  findClarificationAnswerForRequest,
   parseClarificationFromMessageContentJson,
   parseClarificationRequestRecord,
   reduceClarificationRequest,
@@ -65,7 +69,15 @@ import {
   resolveClarificationDisplayForMessage,
   serializeClarificationRequestPayload,
   type AiClarificationRequest,
+  type ClarificationAnswerState,
 } from "./ai-clarification"
+import {
+  isPlanComponentStructureOperation,
+  parseRequestPlanFromMessage,
+  requestPlanAllowsOrchestratedBuildCard,
+  extractRequestPlanBuildId,
+  requestPlanOperationLabel,
+} from "./request-plan"
 import { applyPreflightSkipsFromContentJson } from "./orchestrated-build-preflight"
 import { invalidateTaskChannelContentQueries } from "./invalidate-task-channel-content"
 import { applyContentSavedAction } from "./apply-content-saved-action"
@@ -89,11 +101,18 @@ import type { AiAmbientContext } from "./ai-target-context"
 import { useComponentEditStreamStore } from "../../app/store/component-edit-stream"
 import { useComponentPlanTraceStore } from "../../app/store/component-plan-trace-store"
 import { useAiRequestPlanStore } from "../../app/store/ai-request-plan-store"
+import { useAiExecutionTraceStore } from "../../app/store/ai-execution-trace-store"
 import { useAiChangePreviewStreamStore } from "../../app/store/ai-change-preview-stream"
 import { useAiOrchestratedBuildStore } from "../../app/store/ai-orchestrated-build-store"
+import { useAiBuildComponentPreviewStore } from "../../app/store/ai-build-component-preview-store"
 import { ComponentEditStreamPreview } from "./ComponentEditStreamPreview"
 import { AiChangePreviewCard } from "./AiChangePreviewCard"
 import { OrchestratedBuildCard } from "./OrchestratedBuildCard"
+import { ExecutionTimeline } from "./ExecutionTimeline"
+import {
+  shouldSuppressGenericStatusText,
+  type AiExecutionTraceEntity,
+} from "./execution-trace"
 import { applyAiChangePreviewEvent } from "./apply-ai-change-preview-event"
 import {
   buildPersistedAiChangePreviewDescriptorsFromMessages,
@@ -104,10 +123,12 @@ import {
   isOrchestratedBuildChangePreview,
 } from "./discover-orchestrated-build"
 import { useOrchestratedBuildPoll } from "./use-orchestrated-build-poll"
+import { ArtifactWorkspace } from "../artifacts/ArtifactWorkspace"
 import { ComponentPlanTraceCards } from "./ComponentPlanTraceCards"
 import { RequestPlanCard } from "./RequestPlanCard"
+import { buildNextUrlForEntityLink, isTasksShellPath } from "./app-entity-links"
+import { shallowPushSearchParams } from "../../app/lib/tasks-shallow-nav"
 import { parseComponentTracesFromMessage } from "./component-plan-trace"
-import { parseRequestPlanFromMessage } from "./request-plan"
 import {
   buildPersistedPreviewDescriptorsFromMessages,
 } from "./component-edit-previews-from-message"
@@ -122,17 +143,19 @@ import {
 } from "./hydrate-component-edit-previews"
 import {
   buildEditStreamOptimisticOutputBlocks,
-  buildEditStreamMergedPlainText,
-  isLiveComponentEditStream,
-  normalizePreviewContentJson,
   type ComponentEditStreamContext,
 } from "./component-edit-stream-utils"
 import { applyComponentEditPreviewEvent } from "./apply-component-edit-preview-event"
-import { detectComponentLinkedMessageOutput } from "./component-linked-message-output"
+import {
+  detectComponentLinkedMessageOutput,
+  messageOutputHasClarificationRequest,
+  shouldSuppressBuildAckChatBubble,
+} from "./component-linked-message-output"
 import { resolveComponentOutputPlainTextFromQueryCache, resolveComponentTitleFromQueryCache } from "./resolve-component-output-from-cache"
 import { isGenericComponentPreviewTitle } from "./component-edit-preview-guards"
 import { dispatchTasksShallowNavigation } from "../../app/lib/tasks-shallow-nav"
 import { usePathname } from "next/navigation"
+import { isPlaceholderAiThreadTitle } from "./ai-thread-title"
 import { useChatScrollFollow } from "./use-chat-scroll-follow"
 
 interface ChatWindowProps {
@@ -456,10 +479,15 @@ export function ChatWindow({
   const [assistantActivity, setAssistantActivity] = useState<{ tempId: string; text: string } | null>(null)
   const [droppedFiles, setDroppedFiles] = useState<File[]>([])
   const [isDraggingFiles, setIsDraggingFiles] = useState(false)
+  const fileDragDepthRef = useRef(0)
   const [contentSavedCards, setContentSavedCards] = useState<Array<{ id: string; action: AiChatContentSavedAction }>>([])
   const [pendingClarification, setPendingClarification] = useState<AiClarificationRequest | null>(null)
   const [dismissedClarificationId, setDismissedClarificationId] = useState<string | null>(null)
   const [isClarificationResponding, setIsClarificationResponding] = useState(false)
+  /** Optimistic answered state keyed by clarification_message_id (never by option label). */
+  const [submittedClarificationAnswers, setSubmittedClarificationAnswers] = useState<
+    Record<string, ClarificationAnswerState>
+  >({})
   const clarificationFollowUpRef = useRef<null>(null)
   const lastClarificationIdRef = useRef<string | null>(null)
   const streamingAssistantTempIdRef = useRef<string | null>(null)
@@ -573,11 +601,11 @@ export function ChatWindow({
   const runProgressEntries = useAiRunProgressStore((state) => state.entriesByKey)
   const traceBuckets = useComponentPlanTraceStore((state) => state.buckets)
   const requestPlanBuckets = useAiRequestPlanStore((state) => state.buckets)
+  const executionTraceBuckets = useAiExecutionTraceStore((state) => state.buckets)
   const isAssistantStreaming = useMemo(
     () => pendingMsgs.some((m) => m.role === "assistant" && m.status === "streaming"),
     [pendingMsgs]
   )
-  const isComponentBuildingFlow = chatContext?.mode === "build_component" || chatContext?.mode === "build_briefing"
   const patchTaskComponentOutput = useCallback(
     (params: {
       taskId: number
@@ -731,27 +759,6 @@ export function ChatWindow({
     [queryClient]
   )
 
-  const patchComponentEditStreamPreview = useCallback(
-    (ctx: ComponentEditStreamContext) => {
-      const stream = useComponentEditStreamStore.getState().getStream(ctx.key)
-      if (!stream) return
-      const optimisticBlocks = buildEditStreamOptimisticOutputBlocks(stream)
-      const mergedText = buildEditStreamMergedPlainText(stream)
-      if (optimisticBlocks.length === 0 && !mergedText.trim()) return
-      patchTaskComponentOutput({
-        taskId: ctx.taskId,
-        channelId: ctx.channelId,
-        taskComponentOutputId: ctx.taskComponentOutputId ?? stream.taskComponentOutputId,
-        candidateTaskComponentIds: [ctx.componentId],
-        finalBlocks: optimisticBlocks,
-        strategy: "replace",
-        contentText: mergedText,
-        trace: "component-edit-stream-preview",
-      })
-    },
-    [patchTaskComponentOutput],
-  )
-
   const handleOpenComponentEditInContentTab = useCallback((streamKey: string) => {
     const stream = useComponentEditStreamStore.getState().getStream(streamKey)
     if (!stream) return
@@ -877,6 +884,11 @@ export function ChatWindow({
       setAssistantActivity((prev) => (prev?.tempId === tempId ? null : prev))
       return
     }
+    const hasTraceSteps = useAiExecutionTraceStore.getState().hasSteps(tempId)
+    if (shouldSuppressGenericStatusText({ statusText, hasExecutionTraceSteps: hasTraceSteps })) {
+      setAssistantActivity((prev) => (prev?.tempId === tempId ? null : prev))
+      return
+    }
     // Keep only latest transient activity line.
     setAssistantActivity({ tempId, text: statusText })
   }
@@ -971,6 +983,15 @@ export function ChatWindow({
     [handleRunTerminalState, pendingMsgs],
   )
 
+  const invalidateProjectAiUsage = useCallback(() => {
+    const projectIdForUsage = context?.project_id ?? thread.project_id ?? null
+    if (typeof projectIdForUsage !== "number" || projectIdForUsage <= 0) return
+    void queryClient.invalidateQueries({
+      queryKey: [PROJECT_AI_USAGE_QUERY_KEY, projectIdForUsage],
+      refetchType: "active",
+    })
+  }, [context?.project_id, queryClient, thread.project_id])
+
   const handleAiChatV2RunEvent = useCallback(
     (tempId: string, event: AiChatV2RunEvent) => {
       const isTerminalUsageEvent =
@@ -981,6 +1002,7 @@ export function ChatWindow({
         // Merge server usage into quota UI (zero tokens is valid when no provider call ran).
         const usage = "usage" in event ? event.usage ?? null : null
         handleTerminalUsage(usage)
+        invalidateProjectAiUsage()
       } else if ("usage" in event && event.usage) {
         applyUsageSnapshot(event.usage)
       }
@@ -1000,7 +1022,7 @@ export function ChatWindow({
         )
       }
     },
-    [applyClarification, applyUsageSnapshot, handleTerminalUsage],
+    [applyClarification, applyUsageSnapshot, handleTerminalUsage, invalidateProjectAiUsage],
   )
 
   useEffect(() => {
@@ -1067,6 +1089,27 @@ export function ChatWindow({
           id: persistedMessageId,
         }
       })
+      // Keep answered-state restore keyed to the durable assistant message id.
+      setSubmittedClarificationAnswers((prev) => {
+        const answer = prev[tempId]
+        if (!answer || tempId === persistedMessageId) return prev
+        const next = { ...prev }
+        delete next[tempId]
+        next[persistedMessageId] = answer
+        return next
+      })
+      setPendingMsgs((prev) =>
+        prev.map((message) => {
+          if (message.role !== "user") return message
+          const nextJson = aliasClarificationMessageIdInContentJson(
+            message.content_json,
+            tempId,
+            persistedMessageId,
+          )
+          if (nextJson === message.content_json) return message
+          return { ...message, content_json: nextJson }
+        }),
+      )
       for (const [streamKey, stream] of Object.entries(useComponentEditStreamStore.getState().streams)) {
         if (stream.chatArtifactsByAssistantId[tempId]) {
           useComponentEditStreamStore
@@ -1076,15 +1119,27 @@ export function ChatWindow({
       }
       useComponentPlanTraceStore.getState().aliasAssistantMessageId(tempId, payload.messageId)
       useAiRequestPlanStore.getState().aliasAssistantMessageId(tempId, payload.messageId)
+      useAiExecutionTraceStore.getState().aliasAssistantMessageId(tempId, payload.messageId)
       useAiChangePreviewStreamStore.getState().aliasAssistantMessageId(tempId, payload.messageId)
       useAiOrchestratedBuildStore.getState().aliasAssistantMessageId(tempId, payload.messageId)
     }
     useComponentEditStreamStore.getState().finalizeAssistantMessagePreviews(tempId)
     const titleState = threadTitleStreamRef.current
-    if (titleState?.assistantTempId === tempId && !titleState.hasCompleted) {
-      onThreadTitlePreview?.(thread.id, null)
+    const titleStreamMatches = titleState?.assistantTempId === tempId
+    const hasTitleCompleted = Boolean(titleStreamMatches && titleState?.hasCompleted)
+    const existingThreadTitle = thread.title ?? ""
+    // Title frames may still arrive after message.completed (before HTTP close).
+    // Keep the stream ref so late completed/delta events are not dropped.
+    // Fallback when title is still the "New chat" placeholder: refetch once.
+    if (!hasTitleCompleted && isPlaceholderAiThreadTitle(existingThreadTitle)) {
+      void queryClient.invalidateQueries({ queryKey: ["ai-threads"], refetchType: "active" })
+      void queryClient.invalidateQueries({
+        queryKey: ["ai-thread-context", thread.id],
+        refetchType: "active",
+      })
     }
-    threadTitleStreamRef.current = null
+
+    invalidateProjectAiUsage()
   }
 
   const resolvePreviewComponentTitle = useCallback(
@@ -1101,16 +1156,6 @@ export function ChatWindow({
       return bootstrapTitle || args.eventTitle || "Component"
     },
     [queryClient],
-  )
-
-  const syncEditStreamPreviewToContentTab = useCallback(
-    (ctx: ComponentEditStreamContext) => {
-      const stream = useComponentEditStreamStore.getState().getStream(ctx.key)
-      if (!stream || !isLiveComponentEditStream(stream)) return
-      if (!stream.hasPreviewContent && !stream.isStreaming && stream.phase !== "started") return
-      patchComponentEditStreamPreview(ctx)
-    },
-    [patchComponentEditStreamPreview],
   )
 
   const handleComponentEditPreviewEvent = useCallback(
@@ -1141,48 +1186,82 @@ export function ChatWindow({
       })
       if (!ctx) return
       activeComponentEditStreamRef.current = ctx
-      if (event.phase === "saved") {
-        const stream = useComponentEditStreamStore.getState().getStream(ctx.key)
-        if (stream) {
-          const savedBlocks = buildEditStreamOptimisticOutputBlocks({
-            ...stream,
-            operation: "replace",
-            baseContentText: "",
-          })
-          const savedText =
-            typeof event.content_text === "string" && event.content_text.length > 0
-              ? event.content_text
-              : stream.contentText
-          patchTaskComponentOutput({
-            taskId: ctx.taskId,
-            channelId: ctx.channelId,
-            taskComponentOutputId: ctx.taskComponentOutputId ?? stream.taskComponentOutputId,
-            candidateTaskComponentIds: [ctx.componentId],
-            finalBlocks: savedBlocks,
-            strategy: "replace",
-            contentText: savedText,
-            trace: "component-edit-stream-saved",
-          })
-        }
-        invalidateTaskChannelContentQueries(queryClient, {
-          taskId: event.task_id,
-          channelId: event.channel_id,
-          outputId: event.task_component_output_id ?? null,
+      useAiExecutionTraceStore.getState().attachPreviewToActiveStep({
+        assistantMessageId: tempId,
+        editStreamKey: ctx.key,
+        stepId:
+          typeof (event as { step_id?: unknown }).step_id === "string"
+            ? (event as { step_id?: string }).step_id
+            : null,
+      })
+      // Strict contract: only phase === "saved" AND ok === true may mutate the durable
+      // output cache. Live streaming overlays from the edit-stream store in TaskContentTab.
+      if (event.phase !== "saved" || event.ok !== true) return
+      const stream = useComponentEditStreamStore.getState().getStream(ctx.key)
+      if (stream) {
+        const savedBlocks = buildEditStreamOptimisticOutputBlocks({
+          ...stream,
+          operation: "replace",
+          baseContentText: "",
         })
-        return
+        const savedText =
+          typeof event.content_text === "string" && event.content_text.length > 0
+            ? event.content_text
+            : stream.contentText
+        patchTaskComponentOutput({
+          taskId: ctx.taskId,
+          channelId: ctx.channelId,
+          taskComponentOutputId: ctx.taskComponentOutputId ?? stream.taskComponentOutputId,
+          candidateTaskComponentIds: [ctx.componentId],
+          finalBlocks: savedBlocks,
+          strategy: "replace",
+          contentText: savedText,
+          trace: "component-edit-stream-saved",
+        })
       }
-      syncEditStreamPreviewToContentTab(ctx)
+      invalidateTaskChannelContentQueries(queryClient, {
+        taskId: event.task_id,
+        channelId: event.channel_id,
+        outputId: event.task_component_output_id ?? null,
+      })
     },
-    [activeChannelId, patchTaskComponentOutput, queryClient, syncEditStreamPreviewToContentTab, taskId, thread.id],
+    [patchTaskComponentOutput, queryClient, thread.id],
   )
 
   const handleAiChangePreviewEvent = useCallback(
     (tempId: string, event: AiChatChangePreviewEvent) => {
       applyAiChangePreviewEvent(event, tempId, { threadId: thread.id })
+      const previewKey =
+        (typeof event.preview_key === "string" && event.preview_key.trim())
+        || (typeof event.change_id === "string" && event.change_id.trim())
+        || null
+      if (previewKey) {
+        useAiExecutionTraceStore.getState().attachPreviewToActiveStep({
+          assistantMessageId: tempId,
+          previewKey,
+          stepId:
+            typeof (event as { step_id?: unknown }).step_id === "string"
+              ? (event as { step_id?: string }).step_id
+              : null,
+        })
+      }
+      const isStructureApplySaved =
+        event.phase === "saved"
+        && (
+          event.entity_type === "task_component_structure"
+          || event.operation === "apply_component_structure"
+        )
       if (
         event.phase === "saved"
-        && (event.entity_type === "task_channel" || event.entity_type === "task_channel_component" || event.component_id)
+        && (
+          event.entity_type === "task_channel"
+          || event.entity_type === "task_channel_component"
+          || event.entity_type === "task_component_structure"
+          || event.component_id
+          || isStructureApplySaved
+        )
       ) {
+        // Keep thread/scroll; retain structured change preview cards in the stream store.
         invalidateTaskChannelContentQueries(queryClient, {
           taskId: event.task_id,
           channelId: event.channel_id,
@@ -1222,8 +1301,127 @@ export function ChatWindow({
         assistantMessageId: tempId,
         payload: event,
       })
+      const plan = useAiRequestPlanStore.getState().getBucket(tempId)?.plan ?? null
+      const buildId = plan ? extractRequestPlanBuildId(plan) : null
+      if (buildId) {
+        useAiOrchestratedBuildStore.getState().registerBuild({
+          buildId,
+          threadId: thread.id,
+          assistantMessageId: tempId,
+          title: plan?.operation ? requestPlanOperationLabel(plan.operation) : null,
+          summary: null,
+          changeSetId: null,
+          startFailed: false,
+        })
+      }
     },
     [thread.id],
+  )
+
+  const handleExecutionTraceEvent = useCallback(
+    (tempId: string, event: AiChatExecutionTraceEvent) => {
+      useAiExecutionTraceStore.getState().upsertFromStreamEvent({
+        threadId: thread.id,
+        assistantMessageId: tempId,
+        payload: event,
+      })
+      // Specific timeline facts replace generic activity copy for this turn.
+      setAssistantActivity((prev) => {
+        if (!prev || prev.tempId !== tempId) return prev
+        if (shouldSuppressGenericStatusText({
+          statusText: prev.text,
+          hasExecutionTraceSteps: true,
+        })) {
+          return null
+        }
+        return prev
+      })
+    },
+    [thread.id],
+  )
+
+  const handleExecutionTraceEntityClick = useCallback(
+    (entity: AiExecutionTraceEntity) => {
+      if (entity.type === "url") {
+        const href = typeof entity.id === "string" && /^https?:\/\//i.test(entity.id)
+          ? entity.id
+          : /^https?:\/\//i.test(entity.label)
+            ? entity.label
+            : null
+        if (href) window.open(href, "_blank", "noopener,noreferrer")
+        return
+      }
+
+      if (entity.type === "task") {
+        const taskIdValue =
+          typeof entity.id === "number"
+            ? entity.id
+            : typeof entity.id === "string" && /^\d+$/.test(entity.id)
+              ? Number(entity.id)
+              : null
+        if (taskIdValue == null) return
+        const nextUrl = buildNextUrlForEntityLink({
+          currentPathname: pathname,
+          currentSearchParams: new URLSearchParams(searchParams.toString()),
+          parsedLink: { type: "task", id: taskIdValue },
+          fromAiChat: true,
+        })
+        if (!nextUrl) return
+        if (isTasksShellPath(pathname)) {
+          const queryStart = nextUrl.indexOf("?")
+          const nextParams = new URLSearchParams(queryStart >= 0 ? nextUrl.slice(queryStart + 1) : "")
+          shallowPushSearchParams(pathname, nextParams, "ai-execution-trace-task")
+        } else {
+          window.history.pushState({}, "", nextUrl)
+        }
+        return
+      }
+
+      if (entity.type === "component") {
+        const componentId =
+          typeof entity.id === "string"
+            ? entity.id
+            : typeof entity.id === "number"
+              ? String(entity.id)
+              : null
+        if (!componentId) return
+        // Prefer an existing edit-stream match; otherwise open content tab with ambient task/channel.
+        const matchingStream = Object.values(useComponentEditStreamStore.getState().streams).find(
+          (stream) => stream.componentId === componentId,
+        )
+        if (matchingStream) {
+          handleOpenComponentEditInContentTab(matchingStream.key)
+          return
+        }
+        const params = new URLSearchParams(searchParams.toString())
+        if (taskId != null) params.set("taskId", String(taskId))
+        params.set("taskTab", "content")
+        if (activeChannelId != null) params.set("activeChannelId", String(activeChannelId))
+        shallowPushSearchParams(pathname, params, "ai-execution-trace-component")
+        useComponentEditStreamStore.getState().requestFocus({
+          taskId: taskId ?? 0,
+          channelId: activeChannelId ?? 0,
+          componentId,
+          componentTitle: entity.label,
+        })
+        return
+      }
+
+      if (entity.type === "channel") {
+        const channelIdValue =
+          typeof entity.id === "number"
+            ? entity.id
+            : typeof entity.id === "string" && /^\d+$/.test(entity.id)
+              ? Number(entity.id)
+              : null
+        if (channelIdValue == null) return
+        const params = new URLSearchParams(searchParams.toString())
+        params.set("taskTab", "content")
+        params.set("activeChannelId", String(channelIdValue))
+        shallowPushSearchParams(pathname, params, "ai-execution-trace-channel")
+      }
+    },
+    [activeChannelId, handleOpenComponentEditInContentTab, pathname, searchParams, taskId],
   )
 
   const handleAssistantStreamAsset = useCallback((tempId: string, event: AiChatAssetEvent) => {
@@ -1424,36 +1622,21 @@ export function ChatWindow({
       }
     }
 
-    // Component edit/save turns emit both `__AI_COMPONENT_EDIT_PREVIEW__` and `__AI_MESSAGE_OUTPUT__`
-    // carrying the SAME component body. Rendering that body as plain assistant text duplicates the
-    // preview card and causes a flicker. For component-linked outputs we finalize the existing
-    // preview card from this payload and keep only any streamed summary in the bubble.
-    const hasExistingPreviewForMessage = Object.values(
-      useComponentEditStreamStore.getState().streams,
-    ).some((stream) => stream.assistantTempId === tempId)
-    const componentLinked = detectComponentLinkedMessageOutput(payload, {
-      hasExistingPreviewForMessage,
-    })
-
-    if (componentLinked.isComponentLinked) {
-      const card = componentLinked.card
-      if (card) {
-        // Finalize (or create, if a preview event never arrived) the card in-place — never unmount.
-        useComponentEditStreamStore.getState().upsertFromPreviewEvent({
-          threadId: thread.id,
-          taskId: card.taskId,
-          channelId: card.channelId,
-          componentId: card.componentId,
-          taskComponentOutputId: card.taskComponentOutputId,
-          componentTitle: card.componentTitle ?? undefined,
-          assistantTempId: tempId,
-          operation: card.operation ?? undefined,
-          phase: "completed",
-          contentText: card.contentText || undefined,
-          contentJson: normalizePreviewContentJson(card.contentJson),
+    const clarificationAssistantId = messageId ?? tempId
+    const isClarificationMessage = messageOutputHasClarificationRequest(payload)
+    const clarificationFromPayload = isClarificationMessage
+      ? (
+        parseClarificationFromMessageContentJson(payload.content_json, {
+          assistantMessageId: clarificationAssistantId,
         })
-      }
+        ?? parseClarificationRequestRecord(payload, { assistantMessageId: clarificationAssistantId })
+      )
+      : null
 
+    // Clarification message_output is always chat content — never mutate component outputs,
+    // replace a selected output preview, or invalidate as though a save occurred.
+    if (clarificationFromPayload) {
+      applyClarification(clarificationFromPayload)
       setPendingMsgs((prev) =>
         prev.map((message) => {
           if (message.id !== tempId || message.role !== "assistant") return message
@@ -1464,7 +1647,97 @@ export function ChatWindow({
           for (const attachment of mergedAttachments) {
             if (attachment.id) assetByAttachmentIdRef.current[attachment.id] = attachment
           }
-          // Keep any streamed summary/narration; never replace it with the component body.
+          const contentText = typeof payload.content_text === "string" ? payload.content_text : null
+          const existingClarification =
+            message.content_json
+            && typeof message.content_json === "object"
+            && !Array.isArray(message.content_json)
+            && (message.content_json as Record<string, unknown>).clarification_request
+              ? (message.content_json as Record<string, unknown>).clarification_request
+              : null
+          const payloadClarification =
+            payload.content_json
+            && typeof payload.content_json === "object"
+            && !Array.isArray(payload.content_json)
+            && (payload.content_json as Record<string, unknown>).clarification_request
+              ? (payload.content_json as Record<string, unknown>).clarification_request
+              : null
+          const clarificationPayload =
+            payloadClarification
+            ?? existingClarification
+            ?? serializeClarificationRequestPayload(clarificationFromPayload)
+          const questionText =
+            (contentText && contentText.trim())
+            || clarificationFromPayload.question
+            || message.content
+            || ""
+          return {
+            ...message,
+            content: questionText,
+            content_json: {
+              blocks: normalizedBlocks.length > 0 ? normalizedBlocks : [],
+              clarification_request: clarificationPayload,
+            },
+            attachments: mergedAttachments,
+            status: "complete",
+            reconciled_message_id:
+              messageId ?? (message as InFlightAssistantMessage).reconciled_message_id ?? null,
+          } as InFlightAssistantMessage
+        }),
+      )
+      return
+    }
+
+    // Component edit/save turns may still emit `__AI_MESSAGE_OUTPUT__` with the same body as
+    // the preview card. Suppress that body in the bubble when a preview already covers this
+    // turn — but NEVER write message_output into the task-component output cache.
+    // Durable mutations come only from `__AI_COMPONENT_OUTPUT__` and edit_preview phase=saved.
+    // Build acknowledgements (`build_ack` / ui_visibility:hidden) are also suppressed —
+    // the build timeline is the visible acknowledgement.
+    const hasExistingPreviewForMessage = Object.values(
+      useComponentEditStreamStore.getState().streams,
+    ).some((stream) => stream.assistantTempId === tempId)
+    const suppressBuildAck = shouldSuppressBuildAckChatBubble(payload)
+    const componentLinked = detectComponentLinkedMessageOutput(payload, {
+      hasExistingPreviewForMessage,
+    })
+
+    if (suppressBuildAck || componentLinked.isComponentLinked) {
+      setPendingMsgs((prev) =>
+        prev.map((message) => {
+          if (message.id !== tempId || message.role !== "assistant") return message
+          const mergedAttachments = mergeUniqueAttachments(
+            message.attachments as AiAttachmentMeta[] | null | undefined,
+            assetMetas,
+          )
+          for (const attachment of mergedAttachments) {
+            if (attachment.id) assetByAttachmentIdRef.current[attachment.id] = attachment
+          }
+          // Keep any streamed summary/narration; never replace it with the ack/component body.
+          // For build_ack, also clear plain content so no acknowledgement bubble appears.
+          if (suppressBuildAck) {
+            const existingJson =
+              message.content_json
+              && typeof message.content_json === "object"
+              && !Array.isArray(message.content_json)
+                ? (message.content_json as Record<string, unknown>)
+                : {}
+            return {
+              ...message,
+              content: "",
+              content_json: {
+                ...existingJson,
+                blocks: [],
+                output_kind: "build_ack",
+                ui_visibility: "hidden",
+                build_ack: { suppress_chat_bubble: true },
+              },
+              attachments: mergedAttachments,
+              status: "complete",
+              reconciled_message_id:
+                messageId ?? (message as InFlightAssistantMessage).reconciled_message_id ?? null,
+            } as InFlightAssistantMessage
+          }
           return {
             ...message,
             attachments: mergedAttachments,
@@ -1474,16 +1747,6 @@ export function ChatWindow({
           } as InFlightAssistantMessage
         }),
       )
-
-      const clarificationAssistantId = messageId ?? tempId
-      const clarificationFromPayload =
-        parseClarificationFromMessageContentJson(payload.content_json, {
-          assistantMessageId: clarificationAssistantId,
-        })
-        ?? parseClarificationRequestRecord(payload, { assistantMessageId: clarificationAssistantId })
-      if (clarificationFromPayload) {
-        applyClarification(clarificationFromPayload)
-      }
       return
     }
 
@@ -1546,50 +1809,16 @@ export function ChatWindow({
           contentText && contentText.trim()
             ? (buildAssistantContentJsonFromMarkdown(contentText, hydratedBlocks) as StreamingBlock[])
             : (enhanceBlocksWithMarkdownTables(hydratedBlocks, contentText) as StreamingBlock[])
-        const existingClarification =
-          message.content_json
-          && typeof message.content_json === "object"
-          && !Array.isArray(message.content_json)
-          && (message.content_json as Record<string, unknown>).clarification_request
-            ? (message.content_json as Record<string, unknown>).clarification_request
-            : null
-        const payloadClarification =
-          payload.content_json
-          && typeof payload.content_json === "object"
-          && !Array.isArray(payload.content_json)
-          && (payload.content_json as Record<string, unknown>).clarification_request
-            ? (payload.content_json as Record<string, unknown>).clarification_request
-            : null
-        const clarificationPayload = payloadClarification ?? existingClarification
-        const nextContentJson = clarificationPayload
-          ? {
-              blocks: resolvedBlocks.length > 0 ? resolvedBlocks : [],
-              clarification_request: clarificationPayload,
-            }
-          : resolvedBlocks.length > 0
-            ? resolvedBlocks
-            : message.content_json ?? []
         return {
           ...message,
           content: contentText ?? "",
-          content_json: nextContentJson,
+          content_json: resolvedBlocks.length > 0 ? resolvedBlocks : message.content_json ?? [],
           attachments: mergedAttachments,
           status: "complete",
           reconciled_message_id: messageId ?? (message as InFlightAssistantMessage).reconciled_message_id ?? null,
         } as InFlightAssistantMessage
       })
     )
-
-    // Upsert by message_id — stream status + message_output share one card.
-    const clarificationAssistantId = messageId ?? tempId
-    const clarificationFromPayload =
-      parseClarificationFromMessageContentJson(payload.content_json, {
-        assistantMessageId: clarificationAssistantId,
-      })
-      ?? parseClarificationRequestRecord(payload, { assistantMessageId: clarificationAssistantId })
-    if (clarificationFromPayload) {
-      applyClarification(clarificationFromPayload)
-    }
   }, [applyClarification, thread.id])
 
   const handleAssistantComponentOutput = useCallback(
@@ -1620,6 +1849,8 @@ export function ChatWindow({
         ? hydrateBlocksWithAssets(normalizeAiRenderableBlocks(payload.content_json), payload.assets)
         : []
 
+      // Stream body is chat/preview only — never write it into the durable output cache.
+      // Cache updates come from edit_preview(saved+ok) or a persisted bootstrap query response.
       setPendingMsgs((prev) =>
         prev.map((message) => {
           if (message.id !== tempId || message.role !== "assistant") return message
@@ -1632,33 +1863,18 @@ export function ChatWindow({
         })
       )
 
-      if (shouldRefetchBootstrap && candidateTaskComponentIds.length > 0 && finalBlocks.length > 0) {
-        patchTaskComponentOutput({
-          taskId: payloadTaskId!,
-          channelId: payloadChannelId!,
-          taskComponentOutputId: payloadTaskComponentOutputId,
-          candidateTaskComponentIds,
-          finalBlocks,
-          strategy: "replace",
-          contentText: typeof payload.content_text === "string" ? payload.content_text : null,
-          outputKind: typeof payload.output_kind === "string" ? payload.output_kind : null,
-          trace: "component-output-final-event",
-        })
-      }
-
-      if (shouldRefetchBootstrap) {
-        void queryClient.invalidateQueries({
-          queryKey: ["task-channel-bootstrap", payloadTaskId, payloadChannelId],
-        })
-        void queryClient.invalidateQueries({
-          queryKey: ["task-channel-composed-output", payloadTaskId, payloadChannelId],
-        })
-        void queryClient.invalidateQueries({
-          queryKey: ["tc_components_for_task_channel", payloadTaskId, payloadChannelId],
-        })
-      }
-
       if (!shouldRefetchBootstrap) return
+
+      void queryClient.invalidateQueries({
+        queryKey: ["task-channel-bootstrap", payloadTaskId, payloadChannelId],
+      })
+      void queryClient.invalidateQueries({
+        queryKey: ["task-channel-composed-output", payloadTaskId, payloadChannelId],
+      })
+      void queryClient.invalidateQueries({
+        queryKey: ["tc_components_for_task_channel", payloadTaskId, payloadChannelId],
+      })
+
       void (async () => {
         try {
           const bootstrap = await fetchTaskChannelBootstrap(payloadTaskId!, payloadChannelId!, "")
@@ -1676,6 +1892,7 @@ export function ChatWindow({
             block.type === "attachment" ? { ...block, missing_attachment: block.attachment ? false : null } : block
           )
           if (resolvedBlocks.length === 0) return
+          // Authoritative persisted query row — allowed to update the output cache.
           patchTaskComponentOutput({
             taskId: payloadTaskId!,
             channelId: payloadChannelId!,
@@ -1683,21 +1900,10 @@ export function ChatWindow({
             candidateTaskComponentIds,
             finalBlocks: resolvedBlocks,
             strategy: "replace",
-            contentText: typeof payload.content_text === "string" ? payload.content_text : null,
+            contentText: null,
             outputKind: typeof payload.output_kind === "string" ? payload.output_kind : null,
             trace: "component-output-bootstrap-refetch",
           })
-          setPendingMsgs((prev) =>
-            prev.map((message) => {
-              if (message.id !== tempId || message.role !== "assistant") return message
-              return {
-                ...message,
-                content: "",
-                content_json: resolvedBlocks,
-                status: "complete",
-              } as InFlightAssistantMessage
-            })
-          )
         } catch (error) {
           console.error("Failed to refetch task-channel-bootstrap for component output", error)
         }
@@ -1762,7 +1968,6 @@ export function ChatWindow({
 
   const handleThreadTitleEvent = useCallback(
     (tempId: string, event: AiChatThreadTitleEvent) => {
-      if (isComponentBuildingFlow) return
       if (tempId !== threadTitleStreamRef.current?.assistantTempId) return
 
       const current = threadTitleStreamRef.current
@@ -1779,6 +1984,7 @@ export function ChatWindow({
       }
 
       if (event.phase === "delta") {
+        // Open-chat header only — do not reorder sidebar lists on every delta.
         const nextBuffer = `${current.buffer}${event.delta ?? ""}`
         threadTitleStreamRef.current = {
           ...current,
@@ -1789,7 +1995,18 @@ export function ChatWindow({
         return
       }
 
-      const completedTitle = (event.title ?? current.buffer ?? "").trim()
+      // completed: title null/empty means keep any existing title (never clear).
+      if (event.title === null) {
+        threadTitleStreamRef.current = {
+          ...current,
+          hasStarted: true,
+          hasCompleted: true,
+        }
+        onThreadTitlePreview?.(thread.id, null)
+        return
+      }
+
+      const completedTitle = (typeof event.title === "string" ? event.title : current.buffer ?? "").trim()
       threadTitleStreamRef.current = {
         ...current,
         hasStarted: true,
@@ -1803,7 +2020,7 @@ export function ChatWindow({
         onThreadTitlePreview?.(thread.id, null)
       }
     },
-    [isComponentBuildingFlow, onThreadTitlePersist, onThreadTitlePreview, thread.id]
+    [onThreadTitlePersist, onThreadTitlePreview, thread.id]
   )
 
   // Visible UI context only — never used as an explicit write target without a pill/action.
@@ -1894,6 +2111,7 @@ export function ChatWindow({
         onComponentLibraryTraceEvent: handleComponentLibraryTraceEvent,
         onComponentPlanTraceEvent: handleComponentPlanTraceEvent,
         onRequestPlanEvent: handleRequestPlanEvent,
+        onExecutionTraceEvent: handleExecutionTraceEvent,
       })
     },
     [
@@ -1919,6 +2137,7 @@ export function ChatWindow({
       handleComponentLibraryTraceEvent,
       handleComponentPlanTraceEvent,
       handleRequestPlanEvent,
+      handleExecutionTraceEvent,
     ]
   )
 
@@ -1982,6 +2201,7 @@ export function ChatWindow({
         onComponentLibraryTraceEvent: handleComponentLibraryTraceEvent,
         onComponentPlanTraceEvent: handleComponentPlanTraceEvent,
         onRequestPlanEvent: handleRequestPlanEvent,
+        onExecutionTraceEvent: handleExecutionTraceEvent,
         onAiChatV2RunEvent: handleAiChatV2RunEvent,
         onRunId: handleRunId,
         onRunTerminalState: handleRunTerminalState,
@@ -2007,6 +2227,7 @@ export function ChatWindow({
       handleComponentLibraryTraceEvent,
       handleComponentPlanTraceEvent,
       handleRequestPlanEvent,
+      handleExecutionTraceEvent,
       handleAiChangePreviewEvent,
       handleRunId,
       handleRunTerminalState,
@@ -2057,8 +2278,10 @@ export function ChatWindow({
     useComponentEditStreamStore.getState().clearStreamsExceptThread(thread.id)
     useComponentPlanTraceStore.getState().clearBucketsExceptThread(thread.id)
     useAiRequestPlanStore.getState().clearBucketsExceptThread(thread.id)
+    useAiExecutionTraceStore.getState().clearBucketsExceptThread(thread.id)
     useAiChangePreviewStreamStore.getState().clearPreviewsExceptThread(thread.id)
-    useAiOrchestratedBuildStore.getState().clearBuildsExceptThread(thread.id)
+    useAiOrchestratedBuildStore.getState().clearInactiveBuildsExceptThread(thread.id)
+    useAiBuildComponentPreviewStore.getState().clearExceptThread(thread.id)
   }, [thread.id, onThreadTitlePreview])
 
   const headerChips = useMemo(() => {
@@ -2251,10 +2474,22 @@ export function ChatWindow({
         displayMessage,
       })
 
+      // Durably key answered UI by clarification_message_id so the original card stays
+      // visibly selected (Answered) even before history reconcile / reload.
+      if (clarificationMessageId) {
+        setSubmittedClarificationAnswers((prev) => ({
+          ...prev,
+          [clarificationMessageId]: {
+            selectedOptionIds,
+            freeText,
+            value: clarificationResponse.value ?? null,
+          },
+        }))
+      }
+
       setIsClarificationResponding(true)
       clarificationFollowUpPendingClearRef.current = true
       clarificationAppliedDuringFollowUpRef.current = false
-      const respondingClarificationId = clarification.id
       handleOptimistic({
         id: `temp-clarification-${Date.now()}`,
         content: displayMessage,
@@ -2318,6 +2553,7 @@ export function ChatWindow({
           onComponentLibraryTraceEvent: handleComponentLibraryTraceEvent,
           onComponentPlanTraceEvent: handleComponentPlanTraceEvent,
           onRequestPlanEvent: handleRequestPlanEvent,
+          onExecutionTraceEvent: handleExecutionTraceEvent,
           onAiChatV2RunEvent: handleAiChatV2RunEvent,
           onRunId: handleRunId,
           onRunTerminalState: handleRunTerminalState,
@@ -2330,7 +2566,9 @@ export function ChatWindow({
           clarificationFollowUpPendingClearRef.current
           && !clarificationAppliedDuringFollowUpRef.current
         ) {
-          clearClarification(respondingClarificationId)
+          // Drop pending-active state only — do not dismiss the card. Answered
+          // history restore keeps the original card visible with selection locked.
+          setPendingClarification(null)
         }
         clarificationFollowUpPendingClearRef.current = false
         clarificationAppliedDuringFollowUpRef.current = false
@@ -2341,7 +2579,6 @@ export function ChatWindow({
       activeClarification,
       ambientContext,
       chatContext?.mode,
-      clearClarification,
       handleAiChatAction,
       handleAiChatV2RunEvent,
       handleAssistantComponentOutput,
@@ -2357,6 +2594,7 @@ export function ChatWindow({
       handleComponentLibraryTraceEvent,
       handleComponentPlanTraceEvent,
       handleRequestPlanEvent,
+      handleExecutionTraceEvent,
       handleOptimistic,
       handleRunId,
       handleRunTerminalState,
@@ -2414,6 +2652,7 @@ export function ChatWindow({
 
   useLayoutEffect(() => {
     const store = useAiOrchestratedBuildStore.getState()
+    const planStore = useAiRequestPlanStore.getState()
     for (const message of allMessages) {
       if (message.role !== "assistant") continue
       applyPreflightSkipsFromContentJson({
@@ -2421,6 +2660,11 @@ export function ChatWindow({
         threadId: thread.id,
         assistantMessageId: message.id,
       })
+      const planOperation =
+        planStore.getBucket(message.id)?.plan.operation
+        ?? parseRequestPlanFromMessage(message.content_json)?.operation
+        ?? null
+      if (!requestPlanAllowsOrchestratedBuildCard(planOperation)) continue
       const discovered = discoverOrchestratedBuildsFromMessageContentJson(message.content_json)
       for (const build of discovered) {
         store.registerBuild({
@@ -2453,6 +2697,24 @@ export function ChatWindow({
       }
     }
     return map
+  }, [orchestratedBuildEntries, thread.id])
+
+  // Map durable build events into the progressive execution timeline.
+  useEffect(() => {
+    const store = useAiExecutionTraceStore.getState()
+    for (const entry of Object.values(orchestratedBuildEntries)) {
+      if (entry.threadId && entry.threadId !== thread.id) continue
+      const events = Object.values(entry.eventsBySequence)
+      if (events.length === 0) continue
+      for (const assistantMessageId of Object.keys(entry.assistantMessageIds ?? {})) {
+        store.upsertBuildEvents({
+          threadId: thread.id,
+          assistantMessageId,
+          buildId: entry.buildId,
+          events,
+        })
+      }
+    }
   }, [orchestratedBuildEntries, thread.id])
 
   const changePreviewKeysByAssistantId = useMemo(() => {
@@ -2755,31 +3017,61 @@ export function ChatWindow({
     }
   }, [latestUserMessageIndex, scrollLatestUserMessageIntoComfortView])
 
+  useEffect(() => {
+    const clearFileDrag = () => {
+      fileDragDepthRef.current = 0
+      setIsDraggingFiles(false)
+    }
+    // External file drags often end without a drop on this pane; clear any stuck overlay.
+    window.addEventListener("dragend", clearFileDrag)
+    window.addEventListener("drop", clearFileDrag)
+    return () => {
+      window.removeEventListener("dragend", clearFileDrag)
+      window.removeEventListener("drop", clearFileDrag)
+    }
+  }, [])
+
+  const isFileTransfer = (event: React.DragEvent) =>
+    Array.from(event.dataTransfer?.types || []).includes("Files")
+
+  const handleChatDragEnter = (event: React.DragEvent<HTMLDivElement>) => {
+    if (!isFileTransfer(event)) return
+    event.preventDefault()
+    fileDragDepthRef.current += 1
+    setIsDraggingFiles(true)
+  }
+
+  const handleChatDragOver = (event: React.DragEvent<HTMLDivElement>) => {
+    if (!isFileTransfer(event)) return
+    event.preventDefault()
+    if (!isDraggingFiles) setIsDraggingFiles(true)
+  }
+
+  const handleChatDragLeave = (event: React.DragEvent<HTMLDivElement>) => {
+    if (!isFileTransfer(event)) return
+    event.preventDefault()
+    fileDragDepthRef.current = Math.max(0, fileDragDepthRef.current - 1)
+    if (fileDragDepthRef.current === 0) setIsDraggingFiles(false)
+  }
+
+  const handleChatDrop = (event: React.DragEvent<HTMLDivElement>) => {
+    if (!isFileTransfer(event)) return
+    event.preventDefault()
+    fileDragDepthRef.current = 0
+    setIsDraggingFiles(false)
+    const fileList = Array.from(event.dataTransfer.files || [])
+    if (fileList.length > 0) {
+      setDroppedFiles(fileList)
+    }
+  }
+
   return (
     <div
       className="relative h-full flex flex-col"
-      onDragOver={(e) => {
-        e.preventDefault()
-        setIsDraggingFiles(true)
-      }}
-      onDragEnter={(e) => {
-        e.preventDefault()
-        setIsDraggingFiles(true)
-      }}
-      onDragLeave={(e) => {
-        e.preventDefault()
-        if (e.currentTarget === e.target) {
-          setIsDraggingFiles(false)
-        }
-      }}
-      onDrop={(e) => {
-        e.preventDefault()
-        setIsDraggingFiles(false)
-        const fileList = Array.from(e.dataTransfer.files || [])
-        if (fileList.length > 0) {
-          setDroppedFiles(fileList)
-        }
-      }}
+      onDragEnter={handleChatDragEnter}
+      onDragOver={handleChatDragOver}
+      onDragLeave={handleChatDragLeave}
+      onDrop={handleChatDrop}
     >
       {isDraggingFiles ? (
         <div className="pointer-events-none absolute inset-2 z-30 flex items-center justify-center rounded-md border-2 border-dashed border-gray-300 bg-white/90 text-sm text-gray-600">
@@ -2847,6 +3139,18 @@ export function ChatWindow({
                   ? traceReconciledId
                   : null
               : null
+          const executionTraceMessageId =
+            m.role === "assistant"
+              ? executionTraceBuckets[m.id]
+                ? m.id
+                : traceReconciledId && executionTraceBuckets[traceReconciledId]
+                  ? traceReconciledId
+                  : null
+              : null
+          const hasExecutionTimeline = Boolean(
+            executionTraceMessageId
+            && Object.keys(executionTraceBuckets[executionTraceMessageId]?.stepsById ?? {}).length > 0,
+          )
           const clarificationCardId = activeClarification?.id ?? null
           const showsActiveClarificationCard =
             activeClarification != null
@@ -2860,14 +3164,59 @@ export function ChatWindow({
                 : messageIndex === allMessages.length - 1
             )
           const historyClarification =
-            m.role === "assistant" && !showsActiveClarificationCard
+            m.role === "assistant"
               ? resolveClarificationDisplayForMessage(allMessages, messageIndex)
               : null
           const clarificationForCard = showsActiveClarificationCard
             ? activeClarification
             : historyClarification?.request ?? null
-          const clarificationAnswered = Boolean(historyClarification?.answered)
-          const clarificationAnswer = historyClarification?.answer ?? null
+          const clarificationLookupIds = [
+            clarificationForCard?.assistantMessageId,
+            clarificationForCard?.id,
+            m.id,
+            clarificationReconciledId,
+          ].filter((id): id is string => Boolean(id?.trim()))
+          const submittedAnswer =
+            clarificationLookupIds
+              .map((id) => submittedClarificationAnswers[id])
+              .find((answer): answer is ClarificationAnswerState => Boolean(answer))
+            ?? null
+          const clarificationAnswer =
+            historyClarification?.answer
+            ?? submittedAnswer
+            ?? (
+              clarificationForCard
+                ? findClarificationAnswerForRequest(allMessages, clarificationForCard, {
+                    afterMessageIndex: messageIndex,
+                    assistantMessage: m,
+                  })
+                : null
+            )
+          const clarificationAnswered = Boolean(clarificationAnswer)
+          const requestPlanOperation =
+            (requestPlanMessageId
+              ? requestPlanBuckets[requestPlanMessageId]?.plan.operation
+              : null)
+            ?? null
+          const requestPlanBuildId =
+            requestPlanMessageId
+              ? extractRequestPlanBuildId(requestPlanBuckets[requestPlanMessageId]?.plan ?? {
+                  resolvedInputs: {},
+                  buildId: null,
+                  resultSummary: null,
+                })
+              : null
+          const allowOrchestratedBuildCard =
+            requestPlanAllowsOrchestratedBuildCard(requestPlanOperation)
+          const suppressMutationProgress =
+            isPlanComponentStructureOperation(requestPlanOperation)
+          // Keep one card per plan: nest the build inside RequestPlanCard when linked.
+          const visibleOrchestratedBuildIds =
+            allowOrchestratedBuildCard
+              ? orchestratedBuildIds.filter((id) => id !== requestPlanBuildId)
+              : []
+          const visibleChangePreviewGroups =
+            suppressMutationProgress ? [] : changePreviewGroups
           return (
             <div
               key={m.id}
@@ -2886,6 +3235,36 @@ export function ChatWindow({
                 assistantIntroHtml={previewLayout.introHtml}
                 assistantOutroHtml={previewLayout.outroHtml}
                 copyableAssistantText={copyableAssistantText}
+                executionTimeline={
+                  hasExecutionTimeline && executionTraceMessageId ? (
+                    <ExecutionTimeline
+                      assistantMessageId={executionTraceMessageId}
+                      onEntityClick={handleExecutionTraceEntityClick}
+                      changePreviewByKey={Object.fromEntries(
+                        visibleChangePreviewGroups.flatMap((groupKeys) =>
+                          groupKeys.map((key) => [
+                            key,
+                            <AiChangePreviewCard key={`${m.id}:tl:${key}`} previewKeys={[key]} />,
+                          ]),
+                        ),
+                      )}
+                      editPreviewByKey={Object.fromEntries(
+                        editPreviewKeys.map((streamKey) => [
+                          streamKey,
+                          <ComponentEditStreamPreview
+                            key={`${m.id}:tl:${streamKey}`}
+                            streamKey={streamKey}
+                            assistantMessageId={m.id}
+                            assistantMessageContentJson={m.content_json}
+                            resolveComponentTitle={resolvePreviewComponentTitle}
+                            onOpenInContentTab={handleOpenComponentEditInContentTab}
+                            onPatchContentTab={patchTaskComponentOutput as any}
+                          />,
+                        ]),
+                      )}
+                    />
+                  ) : null
+                }
                 traceCards={
                   traceCardsMessageId ? (
                     <ComponentPlanTraceCards assistantMessageId={traceCardsMessageId} />
@@ -2893,13 +3272,18 @@ export function ChatWindow({
                 }
                 requestPlanCard={
                   requestPlanMessageId ? (
-                    <RequestPlanCard assistantMessageId={requestPlanMessageId} />
+                    <RequestPlanCard
+                      assistantMessageId={requestPlanMessageId}
+                      threadId={thread.id}
+                      taskId={taskId}
+                      activeChannelId={activeChannelId}
+                    />
                   ) : null
                 }
                 orchestratedBuild={
-                  orchestratedBuildIds.length > 0 ? (
+                  visibleOrchestratedBuildIds.length > 0 ? (
                     <div className="space-y-2 w-full min-w-0 max-w-full">
-                      {orchestratedBuildIds.map((buildId) => (
+                      {visibleOrchestratedBuildIds.map((buildId) => (
                         <OrchestratedBuildCard
                           key={`${m.id}:${buildId}`}
                           buildId={buildId}
@@ -2913,9 +3297,9 @@ export function ChatWindow({
                   ) : null
                 }
                 changePreview={
-                  changePreviewGroups.length > 0 ? (
+                  !hasExecutionTimeline && visibleChangePreviewGroups.length > 0 ? (
                     <div className="space-y-2 w-full min-w-0 max-w-full">
-                      {changePreviewGroups.map((groupKeys) => (
+                      {visibleChangePreviewGroups.map((groupKeys) => (
                         <AiChangePreviewCard
                           key={`${m.id}:${groupKeys.join("|")}`}
                           previewKeys={groupKeys}
@@ -2925,7 +3309,7 @@ export function ChatWindow({
                   ) : null
                 }
                 componentEditPreview={
-                  editPreviewKeys.length > 0 ? (
+                  !hasExecutionTimeline && editPreviewKeys.length > 0 ? (
                     <div className="space-y-2 w-full min-w-0 max-w-full">
                       {editPreviewKeys.map((streamKey) => (
                         <ComponentEditStreamPreview
@@ -2992,12 +3376,29 @@ export function ChatWindow({
         {contentSavedCards.map(({ id, action }) => (
           <ContentSavedInlineCard key={id} action={action} />
         ))}
-        {assistantActivity || activeRunProgressEntries.length > 0 ? (
-          <AiRunTargetProgressPanel
-            entries={activeRunProgressEntries}
-            summaryLine={assistantActivity?.text ?? null}
-          />
-        ) : null}
+        {(() => {
+          const activityTempId = assistantActivity?.tempId
+          const hasActiveTrace =
+            Boolean(activityTempId)
+            && useAiExecutionTraceStore.getState().hasSteps(activityTempId!)
+          const summaryLine =
+            hasActiveTrace
+            && shouldSuppressGenericStatusText({
+              statusText: assistantActivity?.text,
+              hasExecutionTraceSteps: true,
+            })
+              ? null
+              : (assistantActivity?.text ?? null)
+          if (!summaryLine && activeRunProgressEntries.length === 0) return null
+          // Prefer the progressive timeline when it already covers this turn.
+          if (hasActiveTrace && activeRunProgressEntries.length === 0) return null
+          return (
+            <AiRunTargetProgressPanel
+              entries={activeRunProgressEntries}
+              summaryLine={summaryLine}
+            />
+          )
+        })()}
         <div ref={chatEndRef} />
         </div>
         {showJumpToBottom ? (
@@ -3027,6 +3428,18 @@ export function ChatWindow({
             {isUsageSendBlocked(threadUsage) ? (
               <AiChatUsageLimitCard usage={threadUsage} canReviewLimits={canReviewLimits} />
             ) : null}
+            <details className="mb-2 rounded-md border border-gray-200 bg-white open:shadow-sm">
+              <summary className="cursor-pointer select-none px-3 py-2 text-xs font-medium text-gray-700">
+                Chat artifacts
+              </summary>
+              <div className="max-h-64 overflow-y-auto border-t border-gray-100 px-3 py-2">
+                <ArtifactWorkspace
+                  aiThreadId={thread.id}
+                  defaultChannelId={activeChannelId ?? null}
+                  className="[&>div:first-child]:hidden"
+                />
+              </div>
+            </details>
             <Composer 
             threadId={thread.id} 
             taskId={taskId}
@@ -3046,6 +3459,7 @@ export function ChatWindow({
             onComponentLibraryTraceEvent={handleComponentLibraryTraceEvent}
             onComponentPlanTraceEvent={handleComponentPlanTraceEvent}
             onRequestPlanEvent={handleRequestPlanEvent}
+            onExecutionTraceEvent={handleExecutionTraceEvent}
             onAiChatV2RunEvent={handleAiChatV2RunEvent}
             onRunId={handleRunId}
             onRunTerminalState={handleRunTerminalState}

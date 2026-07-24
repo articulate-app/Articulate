@@ -3,14 +3,17 @@
 import * as React from "react"
 import { cn } from "@/lib/utils"
 
-/** Horizontal inset for section headers — matches `SearchResultRow` (`px-3`). */
-export const OBJECT_PANE_SECTION_X_CLASS = "px-3"
+/**
+ * Shared left gutter for left-pane content — matches the global header Create button
+ * (`TaskHeaderBar` uses the same `pl-4` / `px-4` inset).
+ */
+export const OBJECT_PANE_SECTION_X_CLASS = "px-4"
 
 /** Active search chip row — shared spacing for every object pane shell. */
-export const OBJECT_PANE_CHIP_ROW_CLASS = "mt-1 mb-2 shrink-0 px-2"
+export const OBJECT_PANE_CHIP_ROW_CLASS = "mt-1 mb-2 shrink-0 px-4"
 
 export function objectPaneCenteredStateClass(className?: string) {
-  return cn("flex h-full items-center justify-center px-3 text-sm text-gray-500", className)
+  return cn("flex h-full items-center justify-center px-4 text-sm text-gray-500", className)
 }
 
 /**

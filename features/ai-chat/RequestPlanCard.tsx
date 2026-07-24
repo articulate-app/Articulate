@@ -1,38 +1,57 @@
 "use client"
 
-import React, { useState } from "react"
+import React, { useMemo, useState } from "react"
 import { ChevronDown, ChevronRight } from "lucide-react"
 import { cn } from "../../app/lib/utils"
 import { useAiRequestPlanStore } from "../../app/store/ai-request-plan-store"
+import { useAiOrchestratedBuildStore } from "../../app/store/ai-orchestrated-build-store"
 import {
   collectCandidatesConsidered,
   countResolvedTargets,
   countUnresolvedChoices,
+  extractRequestPlanBuildId,
   formatHumanizedKey,
   formatRequestPlanKeyValueRows,
+  mergeOrchestratedBuildIntoRequestPlan,
   requestPlanOperationLabel,
-  requestPlanStatusLabel,
+  resolveRequestPlanDisplayStatus,
   resultSummaryLabel,
   type AiRequestPlan,
   type RequestPlanCandidate,
   type RequestPlanResolution,
 } from "./request-plan"
+import { OrchestratedBuildCard } from "./OrchestratedBuildCard"
 
 const CARD_CLASS =
   "w-full max-w-full min-w-0 overflow-x-hidden rounded-lg border border-gray-200 bg-white text-left text-sm text-gray-900 shadow-sm"
 
-function StatusBadge({ status }: { status: string }) {
-  const label = requestPlanStatusLabel(status)
+function StatusBadge({
+  status,
+  label,
+  isSuccess,
+  isPartial,
+  isFailed,
+  isCancelled,
+}: {
+  status: string
+  label: string
+  isSuccess?: boolean
+  isPartial?: boolean
+  isFailed?: boolean
+  isCancelled?: boolean
+}) {
   const tone =
-    status === "completed"
-      ? "bg-gray-100 text-gray-800"
-      : status === "failed" || status === "cancelled" || status === "expired"
-        ? "bg-gray-100 text-gray-600"
-        : status === "waiting_for_input"
-          ? "bg-gray-100 text-gray-800"
-          : status === "partially_completed"
-            ? "bg-gray-100 text-gray-700"
-            : "bg-gray-50 text-gray-700"
+    isSuccess
+      ? "bg-emerald-50 text-emerald-800"
+      : isPartial
+        ? "bg-amber-50 text-amber-900"
+        : isFailed
+          ? "bg-red-50 text-red-800"
+          : isCancelled
+            ? "bg-gray-100 text-gray-600"
+            : status === "waiting_for_input"
+              ? "bg-gray-100 text-gray-800"
+              : "bg-gray-50 text-gray-700"
   return (
     <span className={cn("inline-flex shrink-0 rounded px-1.5 py-0.5 text-[10px] font-medium", tone)}>
       {label}
@@ -154,31 +173,95 @@ function ResolutionBlock({ resolution, index }: { resolution: RequestPlanResolut
   )
 }
 
-function RequestPlanCardView({ plan }: { plan: AiRequestPlan }) {
+function RequestPlanCardView({
+  plan,
+  assistantMessageId,
+  threadId,
+  taskId,
+  activeChannelId,
+}: {
+  plan: AiRequestPlan
+  assistantMessageId: string
+  threadId?: string | null
+  taskId?: number | null
+  activeChannelId?: number | null
+}) {
   const [expanded, setExpanded] = useState(false)
-  const resolvedCount = countResolvedTargets(plan)
-  const unresolvedCount = countUnresolvedChoices(plan)
-  const resultLabel = resultSummaryLabel(plan)
-  const interpretation = plan.decisionAudit?.interpretation ?? null
-  const resolutions = plan.decisionAudit?.resolutions ?? []
-  const candidates = collectCandidatesConsidered(plan)
+  const buildId = extractRequestPlanBuildId(plan)
+  const buildEntry = useAiOrchestratedBuildStore((state) =>
+    buildId ? state.builds[buildId] ?? null : null,
+  )
+  const displayPlan = useMemo(
+    () => mergeOrchestratedBuildIntoRequestPlan(plan, buildEntry?.build ?? null),
+    [plan, buildEntry?.build],
+  )
+  const display = resolveRequestPlanDisplayStatus(displayPlan)
+  const resolvedCount = countResolvedTargets(displayPlan)
+  const unresolvedCount = countUnresolvedChoices(displayPlan)
+  const resultLabel = resultSummaryLabel(displayPlan)
+  const interpretation = displayPlan.decisionAudit?.interpretation ?? null
+  const resolutions = displayPlan.decisionAudit?.resolutions ?? []
+  const candidates = collectCandidatesConsidered(displayPlan)
   const hasTargets =
-    Object.keys(plan.mutationTargets).length > 0 || Object.keys(plan.contextRefs).length > 0
-  const hasArguments = Object.keys(plan.arguments).length > 0
-  const hasResult = Boolean(plan.resultSummary || plan.verification)
+    Object.keys(displayPlan.mutationTargets).length > 0
+    || Object.keys(displayPlan.contextRefs).length > 0
+  const hasArguments = Object.keys(displayPlan.arguments).length > 0
+  const hasResult = Boolean(displayPlan.resultSummary || displayPlan.verification)
 
   return (
     <div className={CARD_CLASS}>
+      <div className="flex w-full min-w-0 items-center gap-2 px-3 py-2.5">
+        <div className="min-w-0 flex-1">
+          <div className="truncate text-sm font-medium text-gray-900">
+            {requestPlanOperationLabel(displayPlan.operation)}
+          </div>
+          <p className="mt-0.5 text-xs text-gray-500">
+            {display.isQueued
+              ? "Dispatch: queued successfully"
+              : display.isRunning
+                ? "Build: running"
+                : display.isPartial
+                  ? "Build: partially completed"
+                  : display.isSuccess
+                    ? "Build: completed"
+                    : display.isFailed
+                      ? "Build: failed"
+                      : display.isCancelled
+                        ? "Build: cancelled"
+                        : "Execution plan"}
+          </p>
+        </div>
+        <StatusBadge
+          status={display.status}
+          label={display.label}
+          isSuccess={display.isSuccess}
+          isPartial={display.isPartial}
+          isFailed={display.isFailed}
+          isCancelled={display.isCancelled}
+        />
+      </div>
+
+      {buildId && threadId ? (
+        <div className="border-t border-gray-100 px-2 pb-2 pt-1">
+          <OrchestratedBuildCard
+            buildId={buildId}
+            assistantMessageId={assistantMessageId}
+            threadId={threadId}
+            taskId={taskId}
+            activeChannelId={activeChannelId}
+          />
+        </div>
+      ) : null}
+
       <button
         type="button"
         onClick={() => setExpanded((value) => !value)}
-        className="flex w-full min-w-0 items-center gap-2 px-3 py-2.5 text-left"
+        className="flex w-full min-w-0 items-center gap-2 border-t border-gray-100 px-3 py-2 text-left"
         aria-expanded={expanded}
       >
-        <span className="min-w-0 flex-1 truncate text-sm font-medium text-gray-900">
-          {requestPlanOperationLabel(plan.operation)}
+        <span className="min-w-0 flex-1 truncate text-xs font-medium text-gray-700">
+          Execution details
         </span>
-        <StatusBadge status={plan.status} />
         {expanded ? (
           <ChevronDown className="h-4 w-4 shrink-0 text-gray-500" aria-hidden />
         ) : (
@@ -186,46 +269,60 @@ function RequestPlanCardView({ plan }: { plan: AiRequestPlan }) {
         )}
       </button>
 
-      <div className="border-t border-gray-100 px-3 pb-3 pt-2">
-        <div className="flex flex-wrap gap-x-4 gap-y-1 text-xs text-gray-600">
-          <span>
-            Resolved targets:{" "}
-            <span className="font-medium text-gray-900">{resolvedCount}</span>
-          </span>
-          <span>
-            Unresolved choices:{" "}
-            <span className="font-medium text-gray-900">{unresolvedCount}</span>
-          </span>
-          {plan.executor ? (
+      {expanded ? (
+        <div className="border-t border-gray-100 px-3 pb-3 pt-2">
+          <div className="flex flex-wrap gap-x-4 gap-y-1 text-xs text-gray-600">
             <span>
-              Executor: <span className="font-medium text-gray-900">{formatHumanizedKey(plan.executor)}</span>
+              Operation:{" "}
+              <span className="font-medium text-gray-900">
+                {requestPlanOperationLabel(displayPlan.operation)}
+              </span>
             </span>
-          ) : null}
-          {resultLabel ? (
-            <span className="min-w-0 break-words [overflow-wrap:anywhere]">
-              Result: <span className="font-medium text-gray-900">{resultLabel}</span>
+            <span>
+              Resolved targets:{" "}
+              <span className="font-medium text-gray-900">{resolvedCount}</span>
             </span>
-          ) : null}
-        </div>
+            <span>
+              Unresolved choices:{" "}
+              <span className="font-medium text-gray-900">{unresolvedCount}</span>
+            </span>
+            {buildId ? (
+              <span className="min-w-0 break-all">
+                Build: <span className="font-medium text-gray-900">{buildId}</span>
+              </span>
+            ) : null}
+            {displayPlan.executor ? (
+              <span>
+                Executor:{" "}
+                <span className="font-medium text-gray-900">
+                  {formatHumanizedKey(displayPlan.executor)}
+                </span>
+              </span>
+            ) : null}
+            {resultLabel ? (
+              <span className="min-w-0 break-words [overflow-wrap:anywhere]">
+                Result: <span className="font-medium text-gray-900">{resultLabel}</span>
+              </span>
+            ) : null}
+          </div>
 
-        {expanded ? (
           <div className="mt-3 space-y-2">
-            {plan.requestText ? (
+            {displayPlan.requestText ? (
               <Section title="Request">
                 <p className="text-xs text-gray-700 whitespace-pre-wrap break-words [overflow-wrap:anywhere]">
-                  {plan.requestText}
+                  {displayPlan.requestText}
                 </p>
               </Section>
             ) : null}
 
-            {(plan.operation || hasArguments || interpretation?.summary) ? (
+            {(displayPlan.operation || hasArguments || interpretation?.summary) ? (
               <Section title="Interpreted operation">
-                {plan.operation ? (
+                {displayPlan.operation ? (
                   <p className="text-xs text-gray-700">
                     <span className="font-medium text-gray-900">Operation</span>
                     <span className="text-gray-500"> — </span>
-                    {requestPlanOperationLabel(plan.operation)}
-                    <span className="text-gray-400"> ({plan.operation})</span>
+                    {requestPlanOperationLabel(displayPlan.operation)}
+                    <span className="text-gray-400"> ({displayPlan.operation})</span>
                   </p>
                 ) : null}
                 {interpretation?.summary ? (
@@ -233,41 +330,17 @@ function RequestPlanCardView({ plan }: { plan: AiRequestPlan }) {
                     {interpretation.summary}
                   </p>
                 ) : null}
-                {interpretation?.targetScope || interpretation?.editKind ? (
-                  <p className="text-[11px] text-gray-500">
-                    {[
-                      interpretation.targetScope
-                        ? `Scope: ${formatHumanizedKey(interpretation.targetScope)}`
-                        : null,
-                      interpretation.editKind
-                        ? `Edit: ${formatHumanizedKey(interpretation.editKind)}`
-                        : null,
-                    ]
-                      .filter(Boolean)
-                      .join(" · ")}
-                  </p>
-                ) : null}
-                {hasArguments ? <KeyValueList record={plan.arguments} /> : null}
+                {hasArguments ? <KeyValueList record={displayPlan.arguments} /> : null}
               </Section>
             ) : null}
 
             {hasTargets ? (
               <Section title="Targets">
-                {Object.keys(plan.mutationTargets).length > 0 ? (
-                  <div>
-                    <div className="mb-1 text-[11px] font-semibold uppercase tracking-wide text-gray-500">
-                      Mutation targets
-                    </div>
-                    <KeyValueList record={plan.mutationTargets} />
-                  </div>
+                {Object.keys(displayPlan.mutationTargets).length > 0 ? (
+                  <KeyValueList record={displayPlan.mutationTargets} />
                 ) : null}
-                {Object.keys(plan.contextRefs).length > 0 ? (
-                  <div>
-                    <div className="mb-1 text-[11px] font-semibold uppercase tracking-wide text-gray-500">
-                      Context references
-                    </div>
-                    <KeyValueList record={plan.contextRefs} />
-                  </div>
+                {Object.keys(displayPlan.contextRefs).length > 0 ? (
+                  <KeyValueList record={displayPlan.contextRefs} />
                 ) : null}
               </Section>
             ) : null}
@@ -296,16 +369,12 @@ function RequestPlanCardView({ plan }: { plan: AiRequestPlan }) {
               </Section>
             ) : null}
 
-            {plan.missingInputs.length > 0 ? (
+            {displayPlan.missingInputs.length > 0 ? (
               <Section title="Needs your input">
-                <p className="text-xs text-gray-600">
-                  Use the clarification card below to answer. Outstanding fields:
-                </p>
                 <ul className="list-disc space-y-0.5 pl-4 text-xs text-gray-700">
-                  {plan.missingInputs.map((input, index) => (
+                  {displayPlan.missingInputs.map((input, index) => (
                     <li key={`${input.field ?? "field"}-${index}`}>
                       {input.field ? formatHumanizedKey(input.field) : "Additional input"}
-                      {input.allowMultiple ? " (one or more)" : null}
                     </li>
                   ))}
                 </ul>
@@ -314,14 +383,9 @@ function RequestPlanCardView({ plan }: { plan: AiRequestPlan }) {
 
             {hasResult ? (
               <Section title="Result">
-                {plan.resultSummary ? <KeyValueList record={plan.resultSummary} /> : null}
-                {plan.verification ? (
-                  <div>
-                    <div className="mb-1 text-[11px] font-semibold uppercase tracking-wide text-gray-500">
-                      Verification
-                    </div>
-                    <KeyValueList record={plan.verification} />
-                  </div>
+                {displayPlan.resultSummary ? <KeyValueList record={displayPlan.resultSummary} /> : null}
+                {displayPlan.verification ? (
+                  <KeyValueList record={displayPlan.verification} />
                 ) : null}
               </Section>
             ) : null}
@@ -330,17 +394,35 @@ function RequestPlanCardView({ plan }: { plan: AiRequestPlan }) {
               Execution plan — structured audit of how this request was resolved.
             </p>
           </div>
-        ) : null}
-      </div>
+        </div>
+      ) : null}
     </div>
   )
 }
 
 /** Request Plan V3 card for one assistant message (live stream or persisted snapshot). */
-export function RequestPlanCard({ assistantMessageId }: { assistantMessageId: string }) {
+export function RequestPlanCard({
+  assistantMessageId,
+  threadId,
+  taskId,
+  activeChannelId,
+}: {
+  assistantMessageId: string
+  threadId?: string | null
+  taskId?: number | null
+  activeChannelId?: number | null
+}) {
   const plan = useAiRequestPlanStore(
     (state) => state.buckets[assistantMessageId]?.plan ?? null,
   )
   if (!plan) return null
-  return <RequestPlanCardView plan={plan} />
+  return (
+    <RequestPlanCardView
+      plan={plan}
+      assistantMessageId={assistantMessageId}
+      threadId={threadId}
+      taskId={taskId}
+      activeChannelId={activeChannelId}
+    />
+  )
 }

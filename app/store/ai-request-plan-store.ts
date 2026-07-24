@@ -46,19 +46,25 @@ export const useAiRequestPlanStore = create<AiRequestPlanState>((set, get) => ({
     const plan = event?.plan ?? normalizeRequestPlan(args.payload)
     if (!plan) return
     set((state) => {
-      const prev = state.buckets[args.assistantMessageId]
+      // Continuity: updates for the same plan_id refresh the existing pending-plan UI
+      // instead of spawning an unrelated card on a different assistant message.
+      const existingByPlan = Object.entries(state.buckets).find(
+        ([, bucket]) => bucket.plan.planId === plan.planId,
+      )
+      const prevKey = existingByPlan?.[0] ?? args.assistantMessageId
+      const prev = existingByPlan?.[1] ?? state.buckets[args.assistantMessageId]
       const merged = mergeRequestPlan(prev?.plan ?? null, plan)
-      return {
-        buckets: {
-          ...state.buckets,
-          [args.assistantMessageId]: {
-            threadId: args.threadId ?? prev?.threadId ?? null,
-            assistantMessageId: args.assistantMessageId,
-            plan: merged,
-            updatedAt: new Date().toISOString(),
-          },
-        },
+      const nextBuckets = { ...state.buckets }
+      if (prevKey !== args.assistantMessageId && nextBuckets[prevKey]) {
+        delete nextBuckets[prevKey]
       }
+      nextBuckets[args.assistantMessageId] = {
+        threadId: args.threadId ?? prev?.threadId ?? null,
+        assistantMessageId: args.assistantMessageId,
+        plan: merged,
+        updatedAt: new Date().toISOString(),
+      }
+      return { buckets: nextBuckets }
     })
   },
 
@@ -66,20 +72,36 @@ export const useAiRequestPlanStore = create<AiRequestPlanState>((set, get) => ({
     const plan = args.plan
     if (!plan) return
     set((state) => {
-      const prev = state.buckets[args.assistantMessageId]
+      const existingByPlan = Object.entries(state.buckets).find(
+        ([, bucket]) => bucket.plan.planId === plan.planId,
+      )
+      const prevKey = existingByPlan?.[0] ?? args.assistantMessageId
+      const prev = existingByPlan?.[1] ?? state.buckets[args.assistantMessageId]
       // Never overwrite a live streamed plan with an equivalent persisted snapshot.
-      if (prev?.plan) return state
-      return {
-        buckets: {
-          ...state.buckets,
-          [args.assistantMessageId]: {
-            threadId: args.threadId ?? prev?.threadId ?? null,
-            assistantMessageId: args.assistantMessageId,
-            plan,
-            updatedAt: new Date().toISOString(),
-          },
-        },
+      if (prev?.plan) {
+        if (prevKey === args.assistantMessageId) return state
+        // Same plan_id already tracked under another assistant message — keep continuity.
+        const nextBuckets = { ...state.buckets }
+        if (prevKey !== args.assistantMessageId) delete nextBuckets[prevKey]
+        nextBuckets[args.assistantMessageId] = {
+          ...prev,
+          threadId: args.threadId ?? prev.threadId,
+          assistantMessageId: args.assistantMessageId,
+          updatedAt: new Date().toISOString(),
+        }
+        return { buckets: nextBuckets }
       }
+      const nextBuckets = { ...state.buckets }
+      if (prevKey !== args.assistantMessageId && nextBuckets[prevKey]) {
+        delete nextBuckets[prevKey]
+      }
+      nextBuckets[args.assistantMessageId] = {
+        threadId: args.threadId ?? prev?.threadId ?? null,
+        assistantMessageId: args.assistantMessageId,
+        plan,
+        updatedAt: new Date().toISOString(),
+      }
+      return { buckets: nextBuckets }
     })
   },
 

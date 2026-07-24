@@ -1,7 +1,7 @@
 "use client"
 
 import { usePathname, useRouter, useSearchParams } from "next/navigation"
-import { Home, ListTodo, FolderKanban, Users, User, FileText, ChevronDown, ChevronRight, Plus, AtSign, Settings, LogOut } from "lucide-react"
+import { User, Settings, LogOut } from "lucide-react"
 import { cn } from "@/lib/utils"
 import { invokeEdgeFunctionFetch } from "@/lib/edge-functions"
 import { createClientComponentClient } from '@supabase/auth-helpers-nextjs'
@@ -12,7 +12,7 @@ import { Button } from "./button"
 import { Input } from "./input"
 import { Label } from "./label"
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "./select"
-import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "./tooltip"
+import { TooltipProvider } from "./tooltip"
 import { toast } from "./use-toast"
 import { createProject, createProjectWithTeam } from "../../lib/services/projects"
 import { getRoles } from "../../lib/services/teams"
@@ -20,25 +20,25 @@ import { Checkbox } from "./checkbox"
 import type { AdminCreateUserPayload, AdminCreateUserResponse } from "../../types/users"
 import { useGlobalSearchContext } from "../../contexts/global-search-context"
 import { buildObjectRoute, type SearchObjectRoute } from "../../lib/search-routing"
-import { parseWorkspaceUrlState } from "../../lib/workspace-url-state"
+import { mergeWorkspaceUrlState, parseWorkspaceUrlState } from "../../lib/workspace-url-state"
 import { type GlobalSearchResultTab } from "../../lib/global-search-types"
 import { buildRightPaneSelectionSearchParams } from "../../lib/right-pane-selection-url"
 import { buildCenterPaneSelectionSearchParams } from "../../lib/center-pane-selection-url"
+import { applyAiThreadOpenParams, buildNewAiThreadParams } from "../../lib/ai-thread-route"
 import { getImageUrl } from "../../lib/public-media"
 import { UserAvatar } from "../UserAvatar"
 import { useCurrentUserStore } from "../../store/current-user"
-import { leftPaneObjectLabel } from "../../lib/left-pane-object"
-import { fetchMentionsInbox } from "../../lib/services/global-search"
-
-const navigation = [
-  { name: leftPaneObjectLabel("all"), href: "/", icon: Home, object: "all" as SearchObjectRoute },
-  { name: "Tasks", href: "/", icon: ListTodo, object: "task" as SearchObjectRoute },
-  { name: "Projects", href: "/", icon: FolderKanban, isExpandable: true, object: "project" as SearchObjectRoute },
-  { name: "Mentions", href: "/", icon: AtSign, object: "mention" as SearchObjectRoute },
-  { name: "Teams", href: "/", icon: Users, isExpandable: true, object: "team" as SearchObjectRoute },
-  { name: "Users", href: "/", icon: User, isExpandable: true, object: "user" as SearchObjectRoute },
-  { name: "Financials", href: "/financials", icon: FileText },
-]
+import { fetchMentionsInbox, trackGlobalObjectOpen } from "../../lib/services/global-search"
+import { bumpAndInvalidateHomeSidebarRecent } from "../../lib/home-sidebar-recents-cache"
+import { SidebarHomeFeed } from "./sidebar-home-feed"
+import { ProjectSettingsPanel } from "../projects/ProjectSettingsPanel"
+import { AccountProfileDialog } from "./account-profile-dialog"
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuTrigger,
+} from "./dropdown-menu"
 
 interface SidebarProps {
   isCollapsed: boolean
@@ -60,19 +60,24 @@ export function Sidebar({ isCollapsed, isMobileMenuOpen = false, onClose }: Side
   const supabase = createClientComponentClient();
   const globalSearch = useGlobalSearchContext();
 
-  // Current-user identity (same source/behavior as the desktop TaskHeaderBar account menu, which is
-  // hidden on mobile). Surfaced in the mobile sidebar so the signed-in user/avatar stays visible.
+  // Current-user identity (same source as TaskHeaderBar account menu).
   const fullName = useCurrentUserStore((s) => s.fullName);
+  const photo = useCurrentUserStore((s) => s.photo);
   const userMetadata = useCurrentUserStore((s) => s.userMetadata);
   const accountDisplayName = fullName || userMetadata?.full_name || userMetadata?.email || "User";
-  const accountAvatarUrl = getImageUrl(userMetadata?.photo || userMetadata?.avatar_url || null);
+  const accountAvatarUrl = getImageUrl(photo || userMetadata?.photo || userMetadata?.avatar_url || null);
 
   const handleOpenSettings = useCallback(() => {
-    const next = new URLSearchParams(searchParams.toString());
-    next.set("settings", "open");
-    router.push(`/?${next.toString()}`);
+    mergeWorkspaceUrlState(
+      { settings: "open", settingsCategory: null },
+      { source: "sidebar-open-settings", mode: "push" },
+    );
     onClose?.();
-  }, [router, searchParams, onClose]);
+  }, [onClose]);
+
+  const [isProfileModalOpen, setIsProfileModalOpen] = useState(false);
+  const [definitionsProjectId, setDefinitionsProjectId] = useState<number | null>(null);
+  const showExpandedChrome = !isCollapsed || isMobileMenuOpen;
 
   const handleAccountSignOut = useCallback(async () => {
     await supabase.auth.signOut();
@@ -80,9 +85,6 @@ export function Sidebar({ isCollapsed, isMobileMenuOpen = false, onClose }: Side
     router.push("/auth");
   }, [router, supabase, onClose]);
   
-  const [isProjectsExpanded, setIsProjectsExpanded] = useState(false);
-  const [isTeamsExpanded, setIsTeamsExpanded] = useState(false);
-  const [isUsersExpanded, setIsUsersExpanded] = useState(false);
   const [showNewProjectModal, setShowNewProjectModal] = useState(false);
   const [showNewUserModal, setShowNewUserModal] = useState(false);
   const [newProjectName, setNewProjectName] = useState("");
@@ -124,10 +126,10 @@ export function Sidebar({ isCollapsed, isMobileMenuOpen = false, onClose }: Side
       if (error) throw error;
       return data || [];
     },
-    enabled: isProjectsExpanded && (!isCollapsed || isMobileMenuOpen),
+    enabled: false,
   });
 
-  // Fetch teams (enabled when expanded OR when creating a project/user)
+  // Fetch teams (for create-project / create-user modals)
   const { data: teams } = useQuery({
     queryKey: ['teams-minimal'],
     queryFn: async () => {
@@ -138,7 +140,7 @@ export function Sidebar({ isCollapsed, isMobileMenuOpen = false, onClose }: Side
       if (error) throw error;
       return data || [];
     },
-    enabled: (isTeamsExpanded && (!isCollapsed || isMobileMenuOpen)) || showNewProjectModal || showNewUserModal,
+    enabled: showNewProjectModal || showNewUserModal,
   });
 
   // Fetch users
@@ -152,7 +154,7 @@ export function Sidebar({ isCollapsed, isMobileMenuOpen = false, onClose }: Side
       if (error) throw error;
       return data || [];
     },
-    enabled: isUsersExpanded && (!isCollapsed || isMobileMenuOpen),
+    enabled: showNewUserModal,
   });
 
   // Fetch roles (enabled when creating a user)
@@ -180,6 +182,26 @@ export function Sidebar({ isCollapsed, isMobileMenuOpen = false, onClose }: Side
   })
   const hasUnseenMentions = (mentionCountsQuery.data?.length ?? 0) > 0
   const activeObject = parseWorkspaceUrlState(new URLSearchParams(searchParams.toString())).object
+  const isAiPaneActive =
+    searchParams.get("taskAiOpen") === "true" || searchParams.get("rightView") === "ai"
+  const [isKeywordResearchActive, setIsKeywordResearchActive] = useState(
+    () => searchParams.get("centerView") === "keyword-research",
+  )
+
+  useEffect(() => {
+    if (searchParams.get("centerView") === "keyword-research") {
+      setIsKeywordResearchActive(true)
+    }
+  }, [searchParams])
+
+  useEffect(() => {
+    const onKeywordState = (event: Event) => {
+      const open = Boolean((event as CustomEvent<{ open?: boolean }>).detail?.open)
+      setIsKeywordResearchActive(open)
+    }
+    window.addEventListener("app:keyword-research-state", onKeywordState)
+    return () => window.removeEventListener("app:keyword-research-state", onKeywordState)
+  }, [])
 
   const isObjectActive = useCallback(
     (object: SearchObjectRoute | undefined) => {
@@ -188,12 +210,6 @@ export function Sidebar({ isCollapsed, isMobileMenuOpen = false, onClose }: Side
     },
     [activeObject],
   )
-
-  const toggleExpandedGroup = useCallback((group: "projects" | "teams" | "users") => {
-    if (group === "projects") setIsProjectsExpanded((current) => !current)
-    if (group === "teams") setIsTeamsExpanded((current) => !current)
-    if (group === "users") setIsUsersExpanded((current) => !current)
-  }, [])
 
   const navigateTo = useCallback((href: string, object?: SearchObjectRoute) => {
     const tabByObject: Record<SearchObjectRoute, GlobalSearchResultTab> = {
@@ -265,13 +281,116 @@ export function Sidebar({ isCollapsed, isMobileMenuOpen = false, onClose }: Side
     openSidebarSearchResult("project", projectId);
   };
 
-  const handleTeamClick = (teamId: number) => {
-    openSidebarSearchResult("team", teamId);
-  };
-
   const handleUserClick = (userId: number) => {
     openSidebarSearchResult("user", userId);
   };
+
+  const handleTaskClick = useCallback((taskId: number) => {
+    const currentParams = new URLSearchParams(searchParams.toString())
+    const next = buildCenterPaneSelectionSearchParams({
+      currentSearchParams: currentParams,
+      entity: "task",
+      id: taskId,
+    })
+    const query = next.toString()
+    router.push(query ? `/?${query}` : "/", { scroll: false })
+    bumpAndInvalidateHomeSidebarRecent(queryClient, "tasks", {
+      id: String(taskId),
+      title: `Task ${taskId}`,
+    })
+    void trackGlobalObjectOpen({ entityType: "task", entityId: String(taskId) }).catch(() => {})
+    onClose?.()
+  }, [onClose, queryClient, router, searchParams])
+
+  const handleMentionClick = useCallback((args: { threadId: string; mentionId?: string | null }) => {
+    const currentParams = new URLSearchParams(searchParams.toString())
+    const next = buildCenterPaneSelectionSearchParams({
+      currentSearchParams: currentParams,
+      entity: "thread",
+      id: args.threadId,
+      mentionId: args.mentionId ?? null,
+    })
+    const query = next.toString()
+    router.push(query ? `/?${query}` : "/", { scroll: false })
+    onClose?.()
+  }, [onClose, router, searchParams])
+
+  const handleAiChatClick = useCallback((threadId: string) => {
+    const currentParams = new URLSearchParams(searchParams.toString())
+    const next = applyAiThreadOpenParams(currentParams, threadId)
+    const query = next.toString()
+    router.push(query ? `/?${query}` : "/", { scroll: false })
+    onClose?.()
+  }, [onClose, router, searchParams])
+
+  const handleCreateAiChat = useCallback(() => {
+    const currentParams = new URLSearchParams(searchParams.toString())
+    const next = buildNewAiThreadParams(currentParams)
+    const query = next.toString()
+    router.push(query ? `/?${query}` : "/", { scroll: false })
+    onClose?.()
+  }, [onClose, router, searchParams])
+
+  const handleNavigateObject = useCallback(
+    (object: SearchObjectRoute) => {
+      navigateTo("/", object)
+      onClose?.()
+    },
+    [navigateTo, onClose],
+  )
+
+  const handleProjectDefinitions = useCallback((projectId: number) => {
+    setDefinitionsProjectId(projectId)
+  }, [])
+
+  const accountMenu = (
+    <div className="mt-auto shrink-0 border-t border-gray-100 pt-3">
+      <DropdownMenu>
+        <DropdownMenuTrigger asChild>
+          <button
+            type="button"
+            className={cn(
+              "flex w-full items-center gap-3 rounded-md px-3 py-2 text-left transition-colors hover:bg-gray-100",
+              !showExpandedChrome && "justify-center px-0",
+            )}
+            aria-label="Account menu"
+          >
+            <UserAvatar name={accountDisplayName} photoUrl={accountAvatarUrl} size="sm" />
+            {showExpandedChrome ? (
+              <span className="min-w-0 flex-1 truncate text-sm font-medium text-gray-900">
+                {accountDisplayName}
+              </span>
+            ) : null}
+          </button>
+        </DropdownMenuTrigger>
+        <DropdownMenuContent align="start" side="top" className="min-w-[200px]">
+          <DropdownMenuItem onSelect={() => setIsProfileModalOpen(true)}>
+            <User className="mr-2 h-4 w-4" />
+            Profile
+          </DropdownMenuItem>
+          <DropdownMenuItem onSelect={handleOpenSettings}>
+            <Settings className="mr-2 h-4 w-4" />
+            Preferences
+          </DropdownMenuItem>
+          <DropdownMenuItem
+            onSelect={() => {
+              mergeWorkspaceUrlState(
+                { settings: "open", settingsCategory: "ai-limits" },
+                { source: "sidebar-open-ai-usage", mode: "push" },
+              )
+              onClose?.()
+            }}
+          >
+            AI usage
+          </DropdownMenuItem>
+          <DropdownMenuItem onSelect={() => { void handleAccountSignOut() }}>
+            <LogOut className="mr-2 h-4 w-4" />
+            Sign out
+          </DropdownMenuItem>
+        </DropdownMenuContent>
+      </DropdownMenu>
+    </div>
+  );
 
   const getProjectLogoUrl = (logo: string | null | undefined) => getImageUrl(logo);
   const getTeamLogoUrl = (logo: string | null | undefined) => getImageUrl(logo);
@@ -494,12 +613,36 @@ export function Sidebar({ isCollapsed, isMobileMenuOpen = false, onClose }: Side
   const mobileSidebar =
     'fixed left-0 top-0 z-50 bg-white w-64 shadow-lg p-4 h-[100dvh] min-h-[100dvh]';
 
+  const objectFeed = (
+    <SidebarHomeFeed
+      showExpandedChrome={showExpandedChrome}
+      isObjectActive={isObjectActive}
+      hasUnseenMentions={hasUnseenMentions}
+      onNavigateObject={handleNavigateObject}
+      onOpenProject={(projectId) => {
+        handleProjectClick(projectId)
+        onClose?.()
+      }}
+      onOpenProjectDefinitions={handleProjectDefinitions}
+      onOpenTask={handleTaskClick}
+      onOpenMention={handleMentionClick}
+      onOpenUser={(userId) => {
+        handleUserClick(userId)
+        onClose?.()
+      }}
+      onOpenAiChat={handleAiChatClick}
+      onCreateAiChat={handleCreateAiChat}
+      isAiPaneActive={isAiPaneActive}
+      isKeywordResearchActive={isKeywordResearchActive}
+    />
+  )
+
   return (
     <>
       {/* Mobile Sidebar Overlay */}
       {isMobileMenuOpen && (
         <div className={mobileOverlay}>
-          <div className={cn(mobileSidebar, "flex flex-col")}>
+          <div className={cn(mobileSidebar, "flex flex-col gap-2")}>
             <button
               onClick={onClose}
               className="absolute top-2 right-2 p-2 rounded hover:bg-gray-100"
@@ -507,402 +650,31 @@ export function Sidebar({ isCollapsed, isMobileMenuOpen = false, onClose }: Side
             >
               <svg width="20" height="20" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
             </button>
-            <ul className="space-y-2 mt-8 min-h-0 flex-1 overflow-y-auto overflow-x-hidden">
-              {navigation.map((item) => (
-                <li key={item.name} className="relative">
-                  {item.isExpandable ? (
-                    <div>
-                      <button
-                        onClick={() => {
-                          navigateTo(item.href, item.object);
-                        }}
-                        className={cn(
-                          "flex items-center gap-3 px-3 py-2 rounded-md hover:bg-gray-100 transition-colors w-full text-left",
-                          isObjectActive(item.object) ? "bg-gray-100" : ""
-                        )}
-                      >
-                        <item.icon className="w-5 h-5" />
-                        <span className="flex flex-1 items-center gap-2">
-                          {item.name}
-                          {item.name === "Mentions" && hasUnseenMentions ? <span className="h-2 w-2 rounded-full bg-blue-500" aria-hidden /> : null}
-                        </span>
-                        <span
-                          role="button"
-                          tabIndex={0}
-                          onClick={(event) => {
-                            event.stopPropagation()
-                            event.preventDefault()
-                            if (item.name === "Projects") toggleExpandedGroup("projects")
-                            if (item.name === "Teams") toggleExpandedGroup("teams")
-                            if (item.name === "Users") toggleExpandedGroup("users")
-                          }}
-                          onKeyDown={(event) => {
-                            if (event.key !== "Enter" && event.key !== " ") return
-                            event.stopPropagation()
-                            event.preventDefault()
-                            if (item.name === "Projects") toggleExpandedGroup("projects")
-                            if (item.name === "Teams") toggleExpandedGroup("teams")
-                            if (item.name === "Users") toggleExpandedGroup("users")
-                          }}
-                          className="inline-flex h-5 w-5 items-center justify-center rounded hover:bg-gray-200"
-                          aria-label={`Toggle ${item.name}`}
-                        >
-                          {((item.name === 'Projects' && isProjectsExpanded) || (item.name === 'Teams' && isTeamsExpanded) || (item.name === 'Users' && isUsersExpanded)) ? (
-                            <ChevronDown className="w-4 h-4 stroke-[1.75]" />
-                          ) : (
-                            <ChevronRight className="w-4 h-4 stroke-[1.75]" />
-                          )}
-                        </span>
-                      </button>
-                      {/* Projects list */}
-                      {item.name === 'Projects' && isProjectsExpanded && (
-                        <ul className="ml-8 mt-1 space-y-1">
-                          <li>
-                            <button
-                              onClick={() => setShowNewProjectModal(true)}
-                              className="flex items-center gap-2 px-3 py-1.5 rounded-md hover:bg-blue-50 transition-colors w-full text-left text-sm text-blue-600 font-medium"
-                            >
-                              <Plus className="w-3 h-3 flex-shrink-0" />
-                              <span className="truncate">New Project</span>
-                            </button>
-                          </li>
-                          {projects?.map((project) => (
-                            <li key={project.id}>
-                              <button
-                                onClick={() => handleProjectClick(project.id)}
-                                className="flex items-center gap-2 px-3 py-1.5 rounded-md hover:bg-gray-50 transition-colors w-full text-left text-sm"
-                              >
-                                {getProjectLogoUrl(project.logo) ? (
-                                  <img
-                                    src={getProjectLogoUrl(project.logo) || ""}
-                                    alt={project.name}
-                                    className="w-3 h-3 rounded-full flex-shrink-0 object-cover"
-                                  />
-                                ) : (
-                                  <div
-                                    className="w-3 h-3 rounded-full flex-shrink-0"
-                                    style={{ backgroundColor: project.color || '#d1d5db' }}
-                                  />
-                                )}
-                                <span className="truncate">{project.name}</span>
-                              </button>
-                            </li>
-                          ))}
-                        </ul>
-                      )}
-                      {/* Teams list */}
-                      {item.name === 'Teams' && isTeamsExpanded && (
-                        <ul className="ml-8 mt-1 space-y-1">
-                          {teams?.map((team) => (
-                            <li key={team.id}>
-                              <button
-                                onClick={() => handleTeamClick(team.id)}
-                                className="flex items-center gap-2 px-3 py-1.5 rounded-md hover:bg-gray-50 transition-colors w-full text-left text-sm"
-                              >
-                                {getTeamLogoUrl(team.logo) ? (
-                                  <img 
-                                    src={getTeamLogoUrl(team.logo) || ""} 
-                                    alt={getTeamLabel(team)}
-                                    className="w-3 h-3 rounded-full flex-shrink-0 object-cover"
-                                  />
-                                ) : (
-                                  <div className="w-3 h-3 rounded-full flex-shrink-0 bg-gray-300" />
-                                )}
-                                <span className="truncate">{getTeamLabel(team)}</span>
-                              </button>
-                            </li>
-                          ))}
-                        </ul>
-                      )}
-                      {/* Users list */}
-                      {item.name === 'Users' && isUsersExpanded && (
-                        <ul className="ml-8 mt-1 space-y-1">
-                          <li>
-                            <button
-                              onClick={() => setShowNewUserModal(true)}
-                              className="flex items-center gap-2 px-3 py-1.5 rounded-md hover:bg-blue-50 transition-colors w-full text-left text-sm text-blue-600 font-medium"
-                            >
-                              <Plus className="w-3 h-3 flex-shrink-0" />
-                              <span className="truncate">New User</span>
-                            </button>
-                          </li>
-                          {users?.map((user) => (
-                            <li key={user.id}>
-                              <button
-                                onClick={() => handleUserClick(user.id)}
-                                className="flex items-center gap-2 px-3 py-1.5 rounded-md hover:bg-gray-50 transition-colors w-full text-left text-sm"
-                              >
-                                <UserAvatar
-                                  name={user.full_name || user.email || 'User'}
-                                  photoUrl={getUserPhotoUrl(user.photo)}
-                                  size="xs"
-                                />
-                                <span className="truncate">{user.full_name || user.email}</span>
-                              </button>
-                            </li>
-                          ))}
-                        </ul>
-                      )}
-                    </div>
-                  ) : (
-                    <button
-                      type="button"
-                      onClick={() => navigateTo(item.href, item.object)}
-                      className={cn(
-                        "flex w-full items-center gap-3 px-3 py-2 rounded-md hover:bg-gray-100 transition-colors",
-                        "group relative text-left",
-                        item.object
-                          ? (isObjectActive(item.object) ? "bg-gray-100" : "")
-                          : (pathname === item.href ||
-                              (item.href === "/billing" && pathname.startsWith("/billing")) ||
-                              (item.href === "/expenses/supplier-invoices" && pathname.startsWith("/expenses")))
-                            ? "bg-gray-100"
-                            : ""
-                      )}
-                    >
-                      <item.icon className="w-5 h-5" />
-                      <span className="ml-2">{item.name}</span>
-                    </button>
-                  )}
-                </li>
-              ))}
-            </ul>
-            {/* Current user identity — mirrors the desktop header account menu (avatar + Preferences +
-                Sign out), which is hidden on mobile. Pinned below the scrollable nav so it never crowds it. */}
-            <div className="mt-2 shrink-0 border-t border-gray-100 pt-3">
-              <div className="flex items-center gap-2">
-                <button
-                  type="button"
-                  onClick={handleOpenSettings}
-                  className="flex min-w-0 flex-1 items-center gap-3 rounded-md px-3 py-2 text-left transition-colors hover:bg-gray-100"
-                  aria-label="Open preferences"
-                >
-                  <UserAvatar name={accountDisplayName} photoUrl={accountAvatarUrl} size="sm" />
-                  <span className="min-w-0 flex-1 truncate text-sm font-medium text-gray-900">{accountDisplayName}</span>
-                  <Settings className="h-4 w-4 shrink-0 text-gray-400" />
-                </button>
-                <button
-                  type="button"
-                  onClick={() => { void handleAccountSignOut() }}
-                  className="inline-flex h-9 w-9 shrink-0 items-center justify-center rounded-md text-gray-500 transition-colors hover:bg-gray-100 hover:text-gray-700"
-                  aria-label="Sign out"
-                  title="Sign out"
-                >
-                  <LogOut className="h-4 w-4" />
-                </button>
-              </div>
-            </div>
+            <div className="mt-8 min-h-0 flex-1 overflow-hidden">{objectFeed}</div>
+            {accountMenu}
           </div>
         </div>
       )}
+
       {/* Desktop Sidebar */}
       <TooltipProvider delayDuration={120}>
-      <nav className="relative z-30 hidden h-full md:flex md:flex-col">
-        <div className="absolute inset-0 overflow-x-hidden overflow-y-auto pl-2">
-          <ul className="space-y-1 pt-2 pb-2 overflow-x-hidden">
-          {navigation.map((item) => (
-            <li key={item.name} className="relative z-0 hover:z-[120]">
-              {item.isExpandable ? (
-                <div>
-                  <Tooltip>
-                    <TooltipTrigger asChild>
-                      <button
-                        onClick={() => {
-                          navigateTo(item.href, item.object);
-                        }}
-                        className={cn(
-                          "group relative flex w-full items-center justify-start gap-3 rounded-md py-2 pl-3 pr-3 transition-colors hover:bg-gray-100",
-                          isObjectActive(item.object) ? "bg-gray-100" : ""
-                        )}
-                      >
-                        {/* Icon: always visible with fixed width */}
-                        <div className="w-6 h-6 flex items-center justify-center flex-shrink-0">
-                          <item.icon className="w-5 h-5" />
-                        </div>
-                        <span className={cn(
-                          "transition-all duration-200 flex-1 text-left",
-                          isCollapsed ? "opacity-0 w-0 overflow-hidden absolute" : "opacity-100 w-auto"
-                        )}>
-                          <span className="flex items-center gap-2">
-                            {item.name}
-                            {item.name === "Mentions" && hasUnseenMentions ? <span className="h-2 w-2 rounded-full bg-blue-500" aria-hidden /> : null}
-                          </span>
-                        </span>
-                        {!isCollapsed && (
-                          <div className="w-4 h-4 flex items-center justify-center flex-shrink-0">
-                            <span
-                              role="button"
-                              tabIndex={0}
-                              onClick={(event) => {
-                                event.stopPropagation()
-                                event.preventDefault()
-                                if (item.name === "Projects") toggleExpandedGroup("projects")
-                                if (item.name === "Teams") toggleExpandedGroup("teams")
-                                if (item.name === "Users") toggleExpandedGroup("users")
-                              }}
-                              onKeyDown={(event) => {
-                                if (event.key !== "Enter" && event.key !== " ") return
-                                event.stopPropagation()
-                                event.preventDefault()
-                                if (item.name === "Projects") toggleExpandedGroup("projects")
-                                if (item.name === "Teams") toggleExpandedGroup("teams")
-                                if (item.name === "Users") toggleExpandedGroup("users")
-                              }}
-                              className="inline-flex h-5 w-5 items-center justify-center rounded hover:bg-gray-200"
-                              aria-label={`Toggle ${item.name}`}
-                            >
-                              {((item.name === 'Projects' && isProjectsExpanded) || (item.name === 'Teams' && isTeamsExpanded) || (item.name === 'Users' && isUsersExpanded)) ? (
-                                <ChevronDown className="w-4 h-4 stroke-[1.75]" />
-                              ) : (
-                                <ChevronRight className="w-4 h-4 stroke-[1.75]" />
-                              )}
-                            </span>
-                          </div>
-                        )}
-                      </button>
-                    </TooltipTrigger>
-                    {isCollapsed ? (
-                      <TooltipContent side="right" className="bg-gray-900 text-gray-100">
-                        {item.name}
-                      </TooltipContent>
-                    ) : null}
-                  </Tooltip>
-                  {/* Projects list */}
-                  {item.name === 'Projects' && isProjectsExpanded && !isCollapsed && (
-                    <ul className="ml-8 mt-1 space-y-1">
-                      <li>
-                        <button
-                          onClick={() => setShowNewProjectModal(true)}
-                          className="flex items-center gap-2 px-3 py-1.5 rounded-md hover:bg-blue-50 transition-colors w-full text-left text-sm text-blue-600 font-medium"
-                        >
-                          <Plus className="w-3 h-3 flex-shrink-0" />
-                          <span className="truncate">New Project</span>
-                        </button>
-                      </li>
-                      {projects?.map((project) => (
-                        <li key={project.id}>
-                          <button
-                            onClick={() => handleProjectClick(project.id)}
-                            className="flex items-center gap-2 px-3 py-1.5 rounded-md hover:bg-gray-50 transition-colors w-full text-left text-sm"
-                          >
-                            {getProjectLogoUrl(project.logo) ? (
-                              <img
-                                src={getProjectLogoUrl(project.logo) || ""}
-                                alt={project.name}
-                                className="w-3 h-3 rounded-full flex-shrink-0 object-cover"
-                              />
-                            ) : (
-                              <div
-                                className="w-3 h-3 rounded-full flex-shrink-0"
-                                style={{ backgroundColor: project.color || '#d1d5db' }}
-                              />
-                            )}
-                            <span className="truncate">{project.name}</span>
-                          </button>
-                        </li>
-                      ))}
-                    </ul>
-                  )}
-                  {/* Teams list */}
-                  {item.name === 'Teams' && isTeamsExpanded && !isCollapsed && (
-                    <ul className="ml-8 mt-1 space-y-1">
-                      {teams?.map((team) => (
-                        <li key={team.id}>
-                          <button
-                            onClick={() => handleTeamClick(team.id)}
-                            className="flex items-center gap-2 px-3 py-1.5 rounded-md hover:bg-gray-50 transition-colors w-full text-left text-sm"
-                          >
-                            {getTeamLogoUrl(team.logo) ? (
-                              <img 
-                                src={getTeamLogoUrl(team.logo) || ""} 
-                                alt={getTeamLabel(team)}
-                                className="w-3 h-3 rounded-full flex-shrink-0 object-cover"
-                              />
-                            ) : (
-                              <div className="w-3 h-3 rounded-full flex-shrink-0 bg-gray-300" />
-                            )}
-                            <span className="truncate">{getTeamLabel(team)}</span>
-                          </button>
-                        </li>
-                      ))}
-                    </ul>
-                  )}
-                  {/* Users list */}
-                  {item.name === 'Users' && isUsersExpanded && !isCollapsed && (
-                    <ul className="ml-8 mt-1 space-y-1">
-                      <li>
-                        <button
-                          onClick={() => setShowNewUserModal(true)}
-                          className="flex items-center gap-2 px-3 py-1.5 rounded-md hover:bg-blue-50 transition-colors w-full text-left text-sm text-blue-600 font-medium"
-                        >
-                          <Plus className="w-3 h-3 flex-shrink-0" />
-                          <span className="truncate">New User</span>
-                        </button>
-                      </li>
-                      {users?.map((user) => (
-                        <li key={user.id}>
-                          <button
-                            onClick={() => handleUserClick(user.id)}
-                            className="flex items-center gap-2 px-3 py-1.5 rounded-md hover:bg-gray-50 transition-colors w-full text-left text-sm"
-                          >
-                            <UserAvatar
-                              name={user.full_name || user.email || 'User'}
-                              photoUrl={getUserPhotoUrl(user.photo)}
-                              size="xs"
-                            />
-                            <span className="truncate">{user.full_name || user.email}</span>
-                          </button>
-                        </li>
-                      ))}
-                    </ul>
-                  )}
-                </div>
-              ) : (
-                <Tooltip>
-                  <TooltipTrigger asChild>
-                    <button
-                      type="button"
-                      onClick={() => navigateTo(item.href, item.object)}
-                      className={cn(
-                        "group relative flex w-full items-center justify-start gap-3 rounded-md py-2 pl-3 pr-3 text-left transition-colors hover:bg-gray-100",
-                        item.object
-                          ? (isObjectActive(item.object) ? "bg-gray-100" : "")
-                          : (pathname === item.href ||
-                              (item.href === "/billing" && pathname.startsWith("/billing")) ||
-                              (item.href === "/expenses/supplier-invoices" && pathname.startsWith("/expenses")) ||
-                              (item.href === "/documents" && pathname.startsWith("/documents")))
-                            ? "bg-gray-100"
-                            : ""
-                      )}
-                    >
-                      {/* Icon: always visible with fixed width */}
-                      <div className="w-6 h-6 flex items-center justify-center flex-shrink-0">
-                        <item.icon className="w-5 h-5" />
-                      </div>
-                      <span className={cn(
-                        "transition-all duration-200",
-                        isCollapsed ? "opacity-0 w-0 overflow-hidden absolute" : "opacity-100 w-auto"
-                      )}>
-                        <span className="flex items-center gap-2">
-                          {item.name}
-                          {item.name === "Mentions" && hasUnseenMentions ? <span className="h-2 w-2 rounded-full bg-blue-500" aria-hidden /> : null}
-                        </span>
-                      </span>
-                    </button>
-                  </TooltipTrigger>
-                  {isCollapsed ? (
-                    <TooltipContent side="right" className="bg-gray-900 text-gray-100">
-                      {item.name}
-                    </TooltipContent>
-                  ) : null}
-                </Tooltip>
-              )}
-            </li>
-          ))}
-          </ul>
-        </div>
-      </nav>
+        <nav className="relative z-30 hidden h-full md:flex md:flex-col">
+          <div className="flex h-full min-h-0 flex-col px-1 pt-2">
+            {objectFeed}
+            {accountMenu}
+          </div>
+        </nav>
       </TooltipProvider>
+
+      {definitionsProjectId != null ? (
+        <ProjectSettingsPanel
+          open
+          projectId={definitionsProjectId}
+          initialCategory="details"
+          onClose={() => setDefinitionsProjectId(null)}
+        />
+      ) : null}
+      <AccountProfileDialog open={isProfileModalOpen} onOpenChange={setIsProfileModalOpen} />
 
       {/* New Project Modal */}
       <Dialog open={showNewProjectModal} onOpenChange={setShowNewProjectModal}>

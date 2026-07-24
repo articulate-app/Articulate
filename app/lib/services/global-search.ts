@@ -124,12 +124,17 @@ function normalizeMentionInboxDocument(value: unknown): GlobalSearchDocument | n
   const createdAt = asString(row.created_at)
   const senderRecord =
     asRecord(row.sender) ?? asRecord(row.user) ?? asRecord(row.created_by_user) ?? asRecord(row.author)
+  // list_mentions_inbox returns created_by_name / created_by_photo (not sender_*).
   const senderName =
+    asString(row.created_by_name) ??
     asString(row.sender_name) ??
     asString(senderRecord?.full_name) ??
     asString(senderRecord?.name) ??
     asString(senderRecord?.email)
-  const senderPhoto = asString(row.sender_photo) ?? asString(senderRecord?.photo)
+  const senderPhoto =
+    asString(row.created_by_photo) ??
+    asString(row.sender_photo) ??
+    asString(senderRecord?.photo)
   const rowAvatars = asArray(row.avatars)
     .map((entry) => asRecord(entry))
     .filter(Boolean)
@@ -139,18 +144,17 @@ function normalizeMentionInboxDocument(value: unknown): GlobalSearchDocument | n
       photo: asString(avatar?.photo) ?? null,
     }))
     .filter((avatar) => avatar.name || avatar.photo)
+  // Prefer the message sender for the left avatar; watcher_avatars are participants (not the author).
   const avatars =
-    rowAvatars.length > 0
-      ? rowAvatars
-      : senderName || senderPhoto
+    senderName || senderPhoto
       ? [
           {
-            id: `sender:${mentionId}`,
+            id: asId(row.created_by) ?? `sender:${mentionId}`,
             name: senderName,
             photo: senderPhoto,
           },
         ]
-      : []
+      : rowAvatars
 
   const comment = asString(row.comment) ?? asString(row.message) ?? asString(row.preview)
   const attachment = asString(row.attachment) ?? asString(row.attachment_url)
@@ -312,7 +316,7 @@ function normalizeHistoryItem(value: unknown): GlobalSearchHistoryItem | null {
   return {
     id: (row.id as number | string | null | undefined) ?? null,
     term,
-    created_at: asString(row.created_at),
+    created_at: asString(row.created_at) ?? asString(row.searched_at),
     raw: row,
   }
 }

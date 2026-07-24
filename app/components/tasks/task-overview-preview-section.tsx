@@ -1,9 +1,10 @@
 "use client"
 
 import React, { useEffect } from "react"
-import { ChevronRight, Loader2, Plus, RefreshCw } from "lucide-react"
+import { ChevronRight, Loader2, RefreshCw } from "lucide-react"
 import { cn } from "@/lib/utils"
 import { useInViewport } from "@/hooks/use-in-viewport"
+import { AddDashedButton } from "../ui/add-dashed-button"
 
 type TaskOverviewPreviewSectionProps = {
   title: string
@@ -130,14 +131,11 @@ export function TaskOverviewPreviewSection({
         </div>
       ) : isEmpty ? (
         onEmptyClick ? (
-          <button
-            type="button"
+          <AddDashedButton
+            label={emptyMessage}
+            className="mt-0"
             onClick={onEmptyClick}
-            className="inline-flex items-center gap-1 text-sm text-blue-600 hover:text-blue-700 hover:underline"
-          >
-            <Plus className="h-4 w-4" />
-            {emptyMessage}
-          </button>
+          />
         ) : (
           <p className="text-sm text-gray-500">{emptyMessage}</p>
         )

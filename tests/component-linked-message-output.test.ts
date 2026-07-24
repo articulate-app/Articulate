@@ -1,8 +1,74 @@
 import { describe, expect, it } from "vitest"
-import { detectComponentLinkedMessageOutput } from "../features/ai-chat/component-linked-message-output"
+import {
+  detectComponentLinkedMessageOutput,
+  messageOutputHasClarificationRequest,
+  shouldSuppressBuildAckChatBubble,
+} from "../features/ai-chat/component-linked-message-output"
+
+describe("messageOutputHasClarificationRequest", () => {
+  it("detects clarification_request on content_json", () => {
+    expect(
+      messageOutputHasClarificationRequest({
+        content_text: "Which structure?",
+        content_json: {
+          clarification_request: {
+            type: "clarification_request",
+            question: "Which structure?",
+            options: [{ id: "a", label: "A" }],
+          },
+        },
+        component_id: null,
+        task_component_output_id: null,
+      }),
+    ).toBe(true)
+  })
+
+  it("detects nested message_output.clarification_request", () => {
+    expect(
+      messageOutputHasClarificationRequest({
+        content_json: {
+          message_output: {
+            clarification_request: { question: "Pick one", options: [] },
+          },
+        },
+      }),
+    ).toBe(true)
+  })
+
+  it("is false for ordinary message_output", () => {
+    expect(
+      messageOutputHasClarificationRequest({
+        content_text: "Done.",
+        content_json: [{ type: "paragraph", text: "Done." }],
+      }),
+    ).toBe(false)
+  })
+})
 
 describe("detectComponentLinkedMessageOutput", () => {
-  it("treats a full component identity as component-linked and returns a card", () => {
+  it("never treats clarification message_output as component-linked", () => {
+    const result = detectComponentLinkedMessageOutput(
+      {
+        task_id: 10,
+        channel_id: 2,
+        component_id: "comp-a",
+        task_component_output_id: "output-1",
+        content_text: "Which sections should I rewrite?",
+        content_json: {
+          clarification_request: {
+            type: "clarification_request",
+            question: "Which sections should I rewrite?",
+            options: [{ id: "intro", label: "Introduction" }],
+          },
+        },
+      },
+      { hasExistingPreviewForMessage: true },
+    )
+    expect(result.isComponentLinked).toBe(false)
+    expect(result.card).toBeNull()
+  })
+
+  it("does not treat full component identity alone as linked (message_output is chat)", () => {
     const result = detectComponentLinkedMessageOutput({
       task_id: 10,
       channel_id: 2,
@@ -14,27 +80,29 @@ describe("detectComponentLinkedMessageOutput", () => {
       content_text: "Full component body",
       content_json: [{ type: "paragraph", text: "Full component body" }],
     })
+    expect(result.isComponentLinked).toBe(false)
+    expect(result.card).toBeNull()
+  })
+
+  it("suppresses body only when an existing preview covers this turn", () => {
+    const result = detectComponentLinkedMessageOutput(
+      {
+        task_id: 10,
+        channel_id: 2,
+        component_id: "comp-a",
+        task_component_output_id: "output-1",
+        content_text: "Full component body",
+      },
+      { hasExistingPreviewForMessage: true },
+    )
     expect(result.isComponentLinked).toBe(true)
     expect(result.card).toMatchObject({
       taskId: 10,
       channelId: 2,
       componentId: "comp-a",
       taskComponentOutputId: "output-1",
-      componentTitle: "FAQ",
-      operation: "replace",
-      outputKind: "rich_text",
       contentText: "Full component body",
     })
-  })
-
-  it("treats selected_context_type=component_output as component-linked", () => {
-    const result = detectComponentLinkedMessageOutput({
-      selected_context_type: "component_output",
-      content_text: "Body",
-    })
-    expect(result.isComponentLinked).toBe(true)
-    // No task/channel/component identity → cannot key a card.
-    expect(result.card).toBeNull()
   })
 
   it("treats a message with existing preview events as component-linked", () => {
@@ -71,5 +139,35 @@ describe("detectComponentLinkedMessageOutput", () => {
       content_text: "Body",
     })
     expect(result.isComponentLinked).toBe(false)
+  })
+})
+
+describe("shouldSuppressBuildAckChatBubble", () => {
+  it("suppresses output_kind build_ack", () => {
+    expect(shouldSuppressBuildAckChatBubble({ output_kind: "build_ack", content_text: "Started" })).toBe(true)
+  })
+
+  it("suppresses ui_visibility hidden", () => {
+    expect(shouldSuppressBuildAckChatBubble({ ui_visibility: "hidden", content_text: "Ack" })).toBe(true)
+  })
+
+  it("suppresses persisted build_ack.suppress_chat_bubble", () => {
+    expect(
+      shouldSuppressBuildAckChatBubble({
+        content_json: {
+          build_ack: { suppress_chat_bubble: true },
+          blocks: [{ type: "paragraph", text: "Build started" }],
+        },
+      }),
+    ).toBe(true)
+  })
+
+  it("does not suppress ordinary assistant output", () => {
+    expect(
+      shouldSuppressBuildAckChatBubble({
+        content_text: "Here is the answer.",
+        output_kind: "rich_text",
+      }),
+    ).toBe(false)
   })
 })

@@ -7,7 +7,6 @@ const SECTION_TO_PATH: Record<PrimarySectionKey | "all", string> = {
   projects: "/projects",
   mentions: "/mentions",
   users: "/users",
-  teams: "/teams",
   "ai-threads": "/ai-threads",
 }
 
@@ -17,7 +16,6 @@ const LEFT_OBJECT_TO_SECTION: Record<LeftPaneObject, PrimarySectionKey | "all"> 
   projects: "projects",
   mentions: "mentions",
   users: "users",
-  teams: "teams",
   ai_chats: "ai-threads",
 }
 
@@ -27,7 +25,6 @@ const SECTION_TO_OBJECT_ROUTE: Record<PrimarySectionKey | "all", SearchObjectRou
   projects: "project",
   mentions: "mention",
   users: "user",
-  teams: "team",
   "ai-threads": "ai_thread",
 }
 
@@ -44,7 +41,7 @@ export function buildSectionSwitchUrl(
   next.delete("topView")
   next.delete("bottomView")
   // Switching to a non-task object must not retain a task-only selection (an open task/suggestion
-  // detail, etc.) — those params don't apply to projects/users/teams/mentions/ai-chats and would
+  // detail, etc.) — those params don't apply to projects/users/mentions/ai-chats and would
   // otherwise leave the view in a stale task state. (mode/groupBy/groupOrder/filters are already
   // dropped by buildObjectRoute, which only keeps shared + pane params.)
   if (nextSection !== "tasks") {

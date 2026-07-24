@@ -13,7 +13,6 @@ import {
 import { Calendar as CalendarIcon } from "lucide-react"
 import { DateRange } from "react-day-picker"
 import { cn } from "@/lib/utils"
-import { Button } from "@/components/ui/button"
 import { Calendar } from "@/components/ui/calendar"
 import {
   Popover,
@@ -153,19 +152,20 @@ export function DateRangePicker({
   return (
     <div className={cn("grid gap-2", className)}>
       <Popover>
-        <PopoverTrigger asChild>
-          <Button
-            id="date"
-            type="button"
-            variant={"outline"}
-            className={cn(
-              "w-full justify-start text-left font-normal",
-              !date && "text-muted-foreground",
-            )}
-          >
-            <CalendarIcon className="mr-2 h-4 w-4" />
-            <span className="truncate">{triggerLabel}</span>
-          </Button>
+        {/*
+          Avoid PopoverTrigger asChild + Button: nested compose-refs can infinite-loop
+          under React 18 when many pickers mount together (project overview previews).
+        */}
+        <PopoverTrigger
+          id="date"
+          type="button"
+          className={cn(
+            "inline-flex h-10 w-full items-center justify-start rounded-md border border-input bg-background px-3 py-2 text-sm font-normal ring-offset-background transition-colors hover:bg-accent hover:text-accent-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2",
+            !date && "text-muted-foreground",
+          )}
+        >
+          <CalendarIcon className="mr-2 h-4 w-4" />
+          <span className="truncate">{triggerLabel}</span>
         </PopoverTrigger>
         <PopoverContent className="w-auto p-4" align="start">
           <div className="flex flex-col gap-4 sm:flex-row sm:items-start">

@@ -13,6 +13,7 @@ import { getProjectOverview, type ProjectOverview, uploadProjectFile } from '../
 import { ProjectAnalyticsTab } from '../projects/ProjectAnalyticsTab'
 import { ProjectKeywordTrackingTab } from '../projects/ProjectKeywordTrackingTab'
 import { ProjectAiVisibilityTab } from '../projects/ProjectAiVisibilityTab'
+import { ProjectAiUsageSection } from '../projects/project-ai-usage-section'
 import { ProjectHeaderWatchers } from '../projects/ProjectHeaderWatchers'
 import {
   ProjectSettingsPanel,
@@ -31,6 +32,8 @@ interface BriefingsPageProps {
   onClose?: () => void
   isDetailsFocused?: boolean
   onFocusToggle?: () => void
+  /** When project overview loads, report a friendly label for the middle-pane tab strip. */
+  onResolvedTitle?: (title: string) => void
 }
 
 const ALLOWED_TABS = [
@@ -40,6 +43,7 @@ const ALLOWED_TABS = [
   'analytics',
   'ai-visibility',
   'keywords',
+  'ai-usage',
   'tasks',
 ] as const
 
@@ -76,7 +80,13 @@ const ProjectTasksTabContent = dynamic(
   { loading: () => <TabPanelFallback /> }
 )
 
-export function BriefingsPage({ projectId, onClose, isDetailsFocused = false, onFocusToggle }: BriefingsPageProps) {
+export function BriefingsPage({
+  projectId,
+  onClose,
+  isDetailsFocused = false,
+  onFocusToggle,
+  onResolvedTitle,
+}: BriefingsPageProps) {
   const isMobile = useMobileDetection()
   const queryClient = useQueryClient()
   const searchParams = useSearchParams()
@@ -219,6 +229,12 @@ export function BriefingsPage({ projectId, onClose, isDetailsFocused = false, on
     staleTime: 0,
   })
 
+  useEffect(() => {
+    const resolved =
+      typeof projectOverview?.name === "string" ? projectOverview.name.trim() : ""
+    if (resolved) onResolvedTitle?.(resolved)
+  }, [onResolvedTitle, projectOverview?.name])
+
   const logoUrl = useMemo(() => getImageUrl(projectOverview?.logo ?? null), [projectOverview?.logo])
 
   // Legacy deep-links to billing/components tabs open the settings modal instead.
@@ -238,7 +254,7 @@ export function BriefingsPage({ projectId, onClose, isDetailsFocused = false, on
   }, [searchParams, openProjectSettings])
 
   const tabTriggerClassName =
-    "relative rounded-none border-b-2 border-transparent data-[state=active]:bg-transparent data-[state=active]:shadow-none after:pointer-events-none after:absolute after:inset-x-0 after:bottom-[-5px] after:h-px after:bg-transparent data-[state=active]:after:bg-black"
+    "-mb-px rounded-none border-b-0 data-[state=active]:bg-transparent data-[state=active]:shadow-[inset_0_-2px_0_0_#111827]"
 
   const handleProjectDrop = useCallback(
     async (event: React.DragEvent<HTMLDivElement>) => {
@@ -424,6 +440,12 @@ export function BriefingsPage({ projectId, onClose, isDetailsFocused = false, on
             >
               Keyword Tracking
             </TabsTrigger>
+            <TabsTrigger
+              value="ai-usage"
+              className={tabTriggerClassName}
+            >
+              AI usage
+            </TabsTrigger>
             <TabsTrigger 
               value="tasks"
               onMouseEnter={() => warmTabModule('tasks')}
@@ -462,6 +484,10 @@ export function BriefingsPage({ projectId, onClose, isDetailsFocused = false, on
 
             <TabsContent value="keywords" className="h-full m-0 mt-0 p-6">
               <ProjectKeywordTrackingTab projectId={projectId} />
+            </TabsContent>
+
+            <TabsContent value="ai-usage" className="h-full m-0 mt-0 p-6">
+              <ProjectAiUsageSection projectId={projectId} />
             </TabsContent>
 
             <TabsContent value="tasks" className="h-full m-0 mt-0 p-0 overflow-hidden">

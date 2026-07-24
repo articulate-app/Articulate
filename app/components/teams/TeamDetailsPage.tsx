@@ -1,10 +1,8 @@
 'use client'
 
-import { useState, useMemo, useEffect } from 'react'
-import { useRouter, useSearchParams, usePathname } from 'next/navigation'
+import { useEffect, useState } from 'react'
 import { useQuery, useQueryClient, useMutation } from '@tanstack/react-query'
 import { 
-  Users, 
   MessageSquare, 
   Edit2,
   Save,
@@ -12,8 +10,6 @@ import {
   Loader2,
   Plus,
   Trash2,
-  ChevronRight,
-  FolderKanban,
   Maximize2,
   Minimize2,
   ChevronLeft,
@@ -22,35 +18,8 @@ import { Button } from '../ui/button'
 import { Input } from '../ui/input'
 import { Label } from '../ui/label'
 import { Textarea } from '../ui/textarea'
-import { Tabs, TabsContent, TabsList, TabsTrigger } from '../ui/tabs'
-import { 
-  Dialog,
-  DialogContent,
-  DialogDescription,
-  DialogFooter,
-  DialogHeader,
-  DialogTitle,
-} from '../ui/dialog'
-import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from '../ui/select'
-import {
-  AlertDialog,
-  AlertDialogAction,
-  AlertDialogCancel,
-  AlertDialogContent,
-  AlertDialogDescription,
-  AlertDialogFooter,
-  AlertDialogHeader,
-  AlertDialogTitle,
-} from '../ui/alert-dialog'
 import { toast } from '../ui/use-toast'
 import { mergeWorkspaceUrlState } from '../../lib/workspace-url-state'
-import { TASKS_SHALLOW_NAV_EVENT } from '../../lib/tasks-shallow-nav'
 import { useMobileDetection } from '../../hooks/use-mobile-detection'
 import { MobileDetailHeader, type MobileDetailAction } from '../ui/mobile-detail-header'
 import {
@@ -60,16 +29,16 @@ import {
   getTeamMembersWithDetails,
   addUserToTeam,
   removeUserFromTeam,
-  getTeamProjects,
-  addProjectToTeam,
-  removeProjectFromTeam,
   getTeamActivity,
   getOrCreateTeamThread,
   getRoles,
   getAvailableUsers,
-  getAvailableProjects,
 } from '@/lib/services/teams'
 import { formatDistanceToNow } from 'date-fns'
+import { cn } from '@/lib/utils'
+import { getImageUrl } from '@/lib/public-media'
+import { UserAvatar } from '../UserAvatar'
+import { TeamAiUsageSection } from './team-ai-usage-section'
 
 interface TeamDetailsPageProps {
   teamId: number
@@ -78,18 +47,15 @@ interface TeamDetailsPageProps {
   onFocusToggle?: () => void
   /** Drilled from user profile stack in tasks shell — clears `stackTeamId` only. */
   onStackBack?: () => void
-}
-
-export const TEAM_ALLOWED_TABS = ['overview', 'members', 'projects', 'billing', 'activity'] as const
-type TeamTabValue = (typeof TEAM_ALLOWED_TABS)[number]
-
-/**
- * Team detail tabs share the generic `centerTab`/`rightTab`/`tab` params (the pane
- * that owns the tab depends on whether the AI pane is open). Falls back to `overview`.
- */
-function getTeamTabFromParams(params: URLSearchParams): TeamTabValue {
-  const rawTab = params.get('centerTab') ?? params.get('rightTab') ?? params.get('tab')
-  return TEAM_ALLOWED_TABS.includes(rawTab as TeamTabValue) ? (rawTab as TeamTabValue) : 'overview'
+  /**
+   * Embed inside preferences modals: use local tab state (no URL sync) and a compact chrome
+   * suitable for nested dialogs.
+   */
+  embedded?: boolean
+  /** When true, omit the page header (parent supplies back/title chrome). */
+  hideHeader?: boolean
+  /** When team profile loads, report a friendly label for the middle-pane tab strip. */
+  onResolvedTitle?: (title: string) => void
 }
 
 export function TeamDetailsPage({
@@ -98,38 +64,13 @@ export function TeamDetailsPage({
   isDetailsFocused = false,
   onFocusToggle,
   onStackBack,
+  embedded = false,
+  hideHeader = false,
+  onResolvedTitle,
 }: TeamDetailsPageProps) {
   const isMobile = useMobileDetection()
-  const router = useRouter()
-  const pathname = usePathname()
-  const searchParams = useSearchParams()
   const queryClient = useQueryClient()
 
-  // Active tab from URL. Kept in local state so shallow history updates
-  // (history.pushState via mergeWorkspaceUrlState) re-render the correct tab —
-  // Next's useSearchParams does not update on shallow writes.
-  const [activeTab, setActiveTab] = useState<TeamTabValue>(() =>
-    getTeamTabFromParams(new URLSearchParams(searchParams.toString())),
-  )
-
-  useEffect(() => {
-    setActiveTab(getTeamTabFromParams(new URLSearchParams(searchParams.toString())))
-  }, [searchParams])
-
-  useEffect(() => {
-    const syncFromWindow = () => {
-      if (typeof window === 'undefined') return
-      setActiveTab(getTeamTabFromParams(new URLSearchParams(window.location.search)))
-    }
-    window.addEventListener(TASKS_SHALLOW_NAV_EVENT, syncFromWindow)
-    window.addEventListener('popstate', syncFromWindow)
-    return () => {
-      window.removeEventListener(TASKS_SHALLOW_NAV_EVENT, syncFromWindow)
-      window.removeEventListener('popstate', syncFromWindow)
-    }
-  }, [])
-
-  // Fetch team profile
   const { data: teamProfile, isLoading: profileLoading, isFetching: profileFetching } = useQuery({
     queryKey: ['team-profile', teamId],
     queryFn: async () => {
@@ -142,29 +83,13 @@ export function TeamDetailsPage({
     staleTime: 0,
   })
 
-  const handleTabChange = (value: string) => {
-    const nextTab = TEAM_ALLOWED_TABS.includes(value as TeamTabValue) ? (value as TeamTabValue) : 'overview'
-    // Optimistically switch so the pane renders immediately, before the shallow URL write.
-    setActiveTab(nextTab)
-    const params = new URLSearchParams(
-      typeof window !== "undefined" ? window.location.search : searchParams.toString(),
-    )
-    const isAiRightPane = params.get('rightView') === 'ai'
-    mergeWorkspaceUrlState(
-      isAiRightPane
-        ? {
-            centerTab: value === "overview" ? null : value,
-            rightTab: null,
-            tab: null,
-          }
-        : {
-            rightTab: value === "overview" ? null : value,
-            centerTab: null,
-            tab: null,
-          },
-      { source: "team-tab-change", mode: "push" },
-    )
-  }
+  useEffect(() => {
+    const resolved =
+      (typeof teamProfile?.title === "string" && teamProfile.title.trim()) ||
+      (typeof teamProfile?.full_name === "string" && teamProfile.full_name.trim()) ||
+      ""
+    if (resolved) onResolvedTitle?.(resolved)
+  }, [onResolvedTitle, teamProfile?.full_name, teamProfile?.title])
 
   const handleChatWithTeam = async () => {
     try {
@@ -180,9 +105,6 @@ export function TeamDetailsPage({
         description: 'Opening team chat...',
       })
 
-      const params = new URLSearchParams(searchParams.toString())
-      params.set('rightView', 'thread-chat')
-      params.set('rightThreadId', String(threadId))
       mergeWorkspaceUrlState(
         {
           rightView: "thread-chat",
@@ -229,19 +151,17 @@ export function TeamDetailsPage({
   ]
 
   return (
-    <div className="flex flex-col h-full">
-      {/* Mobile header: stable title + top-right "..." overflow with team actions. */}
-      {isMobile ? (
+    <div className="flex h-full flex-col">
+      {!hideHeader && isMobile ? (
         <MobileDetailHeader
           onBack={onStackBack ?? onClose}
           backLabel={onStackBack ? 'Back to user profile' : 'Close details'}
           title={teamProfile.title}
           subtitle={teamProfile.full_name}
-          actions={mobileTeamActions}
+          actions={embedded ? [] : mobileTeamActions}
         />
-      ) : (
-      /* Header */
-      <div className="flex items-center justify-between px-6 py-4 bg-white border-t-0">
+      ) : !hideHeader ? (
+      <div className="flex items-center justify-between border-t-0 bg-white px-6 py-4">
         <div className="flex min-w-0 flex-1 items-start gap-2">
           {onStackBack ? (
             <Button
@@ -250,8 +170,8 @@ export function TeamDetailsPage({
               size="sm"
               className="mt-0.5 h-8 w-8 shrink-0 p-0 text-gray-600 hover:bg-gray-100 hover:text-gray-900"
               onClick={onStackBack}
-              aria-label="Back to user profile"
-              title="Back to user profile"
+              aria-label="Back"
+              title="Back"
             >
               <ChevronLeft className="h-5 w-5" />
             </Button>
@@ -263,20 +183,22 @@ export function TeamDetailsPage({
               <Loader2 className="w-3.5 h-3.5 animate-spin text-gray-400" aria-label="Loading full details" />
             ) : null}
           </h1>
-          <p className="text-sm text-gray-500 mt-1">
+          <p className="mt-1 text-sm text-gray-500">
             {teamProfile.full_name}
           </p>
           </div>
         </div>
         <div className="flex items-center gap-1">
-          <Button
-            onClick={handleChatWithTeam}
-            size="sm"
-            className="gap-2"
-          >
-            <MessageSquare className="w-4 h-4" />
-            Team Chat
-          </Button>
+          {!embedded ? (
+            <Button
+              onClick={handleChatWithTeam}
+              size="sm"
+              className="gap-2"
+            >
+              <MessageSquare className="w-4 h-4" />
+              Team Chat
+            </Button>
+          ) : null}
           {onFocusToggle ? (
             <Button
               type="button"
@@ -305,95 +227,63 @@ export function TeamDetailsPage({
           ) : null}
         </div>
       </div>
-      )}
+      ) : null}
 
-      {/* Tabs */}
-      <div className="flex-1 overflow-hidden flex flex-col">
-        <Tabs value={activeTab} onValueChange={handleTabChange} className="h-full flex flex-col">
-          <TabsList className="px-6 bg-transparent border-b border-gray-200 rounded-none justify-start border-t-0 h-auto overflow-x-auto overflow-y-hidden whitespace-nowrap flex-nowrap">
-            <TabsTrigger 
-              value="overview"
-              className="data-[state=active]:border-b-2 data-[state=active]:border-black data-[state=active]:bg-transparent data-[state=active]:shadow-none data-[state=active]:-mb-px rounded-none relative"
-            >
-              Overview
-            </TabsTrigger>
-            <TabsTrigger 
-              value="members"
-              className="data-[state=active]:border-b-2 data-[state=active]:border-black data-[state=active]:bg-transparent data-[state=active]:shadow-none data-[state=active]:-mb-px rounded-none relative"
-            >
-              Members
-            </TabsTrigger>
-            <TabsTrigger 
-              value="projects"
-              className="data-[state=active]:border-b-2 data-[state=active]:border-black data-[state=active]:bg-transparent data-[state=active]:shadow-none data-[state=active]:-mb-px rounded-none relative"
-            >
-              Projects
-            </TabsTrigger>
-            <TabsTrigger 
-              value="billing"
-              className="data-[state=active]:border-b-2 data-[state=active]:border-black data-[state=active]:bg-transparent data-[state=active]:shadow-none data-[state=active]:-mb-px rounded-none relative"
-            >
-              Billing
-            </TabsTrigger>
-            <TabsTrigger 
-              value="activity"
-              className="data-[state=active]:border-b-2 data-[state=active]:border-black data-[state=active]:bg-transparent data-[state=active]:shadow-none data-[state=active]:-mb-px rounded-none relative"
-            >
-              Activity
-            </TabsTrigger>
-          </TabsList>
+      <div
+        className={cn(
+          "min-h-0 flex-1",
+          // Embedded team settings: let the parent settings pane own the scrollbar
+          // so it stays aligned with the teams list.
+          embedded ? "overflow-visible px-0 pb-2" : "overflow-auto px-6 py-6",
+        )}
+      >
+        <div className="space-y-8">
+          <section>
+            <TeamOverviewSection teamId={teamId} teamProfile={teamProfile} />
+          </section>
 
-          <div className="flex-1 overflow-auto">
-            <TabsContent value="overview" className="h-full m-0 mt-0 p-6">
-              <TeamOverviewTab teamId={teamId} teamProfile={teamProfile} />
-            </TabsContent>
+          <section className="space-y-4 border-t border-gray-100 pt-6">
+            <TeamMembersSection teamId={teamId} />
+          </section>
 
-            <TabsContent value="members" className="h-full m-0 mt-0 p-6">
-              <TeamMembersTab teamId={teamId} />
-            </TabsContent>
+          <section className="space-y-4 border-t border-gray-100 pt-6">
+            <TeamBillingSection teamId={teamId} teamProfile={teamProfile} />
+          </section>
 
-            <TabsContent value="projects" className="h-full m-0 mt-0 p-6">
-              <TeamProjectsTab teamId={teamId} />
-            </TabsContent>
+          <section className="space-y-4 border-t border-gray-100 pt-6">
+            <TeamAiUsageSection teamId={teamId} />
+          </section>
 
-            <TabsContent value="billing" className="h-full m-0 mt-0 p-6">
-              <TeamBillingTab teamId={teamId} teamProfile={teamProfile} />
-            </TabsContent>
-
-            <TabsContent value="activity" className="h-full m-0 mt-0 p-6">
-              <TeamActivityTab teamId={teamId} />
-            </TabsContent>
-          </div>
-        </Tabs>
+          <section className="space-y-4 border-t border-gray-100 pt-6">
+            <TeamActivitySection teamId={teamId} />
+          </section>
+        </div>
       </div>
     </div>
   )
 }
 
-// Overview Tab Component
-function TeamOverviewTab({ teamId, teamProfile }: { teamId: number; teamProfile: any }) {
+function TeamOverviewSection({ teamId, teamProfile }: { teamId: number; teamProfile: any }) {
   const queryClient = useQueryClient()
   const [isEditing, setIsEditing] = useState(false)
   const [editedProfile, setEditedProfile] = useState({
     title: teamProfile.title,
-    full_name: teamProfile.full_name,
     description: teamProfile.description || '',
-    logo: teamProfile.logo || '',
   })
 
   const updateMutation = useMutation({
     mutationFn: async () => {
-      const { data, error } = await updateTeam(teamId, editedProfile)
+      const { data, error } = await updateTeam(teamId, {
+        title: editedProfile.title,
+        description: editedProfile.description,
+      })
       if (error) throw error
       return data
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['team-profile', teamId] })
       setIsEditing(false)
-      toast({
-        title: 'Success',
-        description: 'Team info updated successfully',
-      })
+      toast({ title: 'Success', description: 'Team info updated successfully' })
     },
     onError: (error: any) => {
       toast({
@@ -404,153 +294,85 @@ function TeamOverviewTab({ teamId, teamProfile }: { teamId: number; teamProfile:
     },
   })
 
-  const handleSave = () => {
-    updateMutation.mutate()
-  }
-
   const handleCancel = () => {
     setEditedProfile({
       title: teamProfile.title,
-      full_name: teamProfile.full_name,
       description: teamProfile.description || '',
-      logo: teamProfile.logo || '',
     })
     setIsEditing(false)
   }
 
   return (
-    <div>
-      <div className="mb-6 flex items-center justify-between">
-        <h2 className="text-xl font-semibold">Team Information</h2>
+    <div className="space-y-4">
+      <div className="flex items-center justify-between gap-3">
+        <h3 className="text-sm font-medium text-gray-900">Overview</h3>
         {!isEditing ? (
           <Button onClick={() => setIsEditing(true)} variant="outline" size="sm">
-            <Edit2 className="w-4 h-4 mr-2" />
+            <Edit2 className="mr-2 h-4 w-4" />
             Edit
           </Button>
         ) : (
           <div className="flex gap-2">
-            <Button 
-              onClick={handleSave} 
-              size="sm" 
-              disabled={updateMutation.isPending}
-            >
-              {updateMutation.isPending ? (
-                <Loader2 className="w-4 h-4 mr-2 animate-spin" />
-              ) : (
-                <Save className="w-4 h-4 mr-2" />
-              )}
+            <Button size="sm" onClick={() => updateMutation.mutate()} disabled={updateMutation.isPending}>
+              {updateMutation.isPending ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <Save className="mr-2 h-4 w-4" />}
               Save
             </Button>
-            <Button 
-              onClick={handleCancel} 
-              variant="outline" 
-              size="sm"
-              disabled={updateMutation.isPending}
-            >
-              <X className="w-4 h-4 mr-2" />
+            <Button variant="outline" size="sm" onClick={handleCancel} disabled={updateMutation.isPending}>
+              <X className="mr-2 h-4 w-4" />
               Cancel
             </Button>
           </div>
         )}
       </div>
-      <div className="grid grid-cols-1 gap-6 md:grid-cols-2">
+
+      <div className="space-y-5">
         <div className="space-y-2">
-          <Label htmlFor="title">Short Name</Label>
+          <Label htmlFor="team-title">Name</Label>
           {isEditing ? (
             <Input
-              id="title"
+              id="team-title"
               value={editedProfile.title}
-              onChange={(e) =>
-                setEditedProfile({ ...editedProfile, title: e.target.value })
-              }
-              placeholder="Team short name"
+              onChange={(e) => setEditedProfile({ ...editedProfile, title: e.target.value })}
+              placeholder="Team name"
             />
           ) : (
-            <p className="text-sm text-gray-900 mt-1">{teamProfile.title}</p>
+            <Input id="team-title" value={teamProfile.title || ''} disabled className="bg-gray-50" />
           )}
         </div>
 
         <div className="space-y-2">
-          <Label htmlFor="full_name">Full Name</Label>
-          {isEditing ? (
-            <Input
-              id="full_name"
-              value={editedProfile.full_name}
-              onChange={(e) =>
-                setEditedProfile({ ...editedProfile, full_name: e.target.value })
-              }
-              placeholder="Team full name"
-            />
-          ) : (
-            <p className="text-sm text-gray-900 mt-1">{teamProfile.full_name}</p>
-          )}
-        </div>
-
-        <div className="space-y-2 md:col-span-2">
-          <Label htmlFor="description">Description</Label>
+          <Label htmlFor="team-description">Description</Label>
           {isEditing ? (
             <Textarea
-              id="description"
+              id="team-description"
               value={editedProfile.description}
-              onChange={(e) =>
-                setEditedProfile({ ...editedProfile, description: e.target.value })
-              }
+              onChange={(e) => setEditedProfile({ ...editedProfile, description: e.target.value })}
               placeholder="Team description"
               rows={3}
             />
           ) : (
-            <p className="text-sm text-gray-700 mt-1">
-              {teamProfile.description || 'No description'}
-            </p>
-          )}
-        </div>
-
-        <div className="space-y-2 md:col-span-2">
-          <Label htmlFor="logo">Logo URL</Label>
-          {isEditing ? (
             <Input
-              id="logo"
-              value={editedProfile.logo}
-              onChange={(e) =>
-                setEditedProfile({ ...editedProfile, logo: e.target.value })
-              }
-              placeholder="https://example.com/logo.png"
+              id="team-description"
+              value={teamProfile.description || ''}
+              disabled
+              className="bg-gray-50"
+              placeholder="—"
             />
-          ) : (
-            <p className="text-sm text-gray-700 mt-1">
-              {teamProfile.logo || 'No logo URL'}
-            </p>
           )}
-        </div>
-
-        <div className="space-y-2">
-          <Label>Created</Label>
-          <p className="text-sm text-gray-900 mt-1">
-            {new Date(teamProfile.created_at).toLocaleDateString()}
-          </p>
-        </div>
-        <div className="space-y-2">
-          <Label>Last Updated</Label>
-          <p className="text-sm text-gray-900 mt-1">
-            {new Date(teamProfile.updated_at).toLocaleDateString()}
-          </p>
         </div>
       </div>
     </div>
   )
 }
 
-// Members Tab Component
-function TeamMembersTab({ teamId }: { teamId: number }) {
+function TeamMembersSection({ teamId }: { teamId: number }) {
   const queryClient = useQueryClient()
-  const [showAddDialog, setShowAddDialog] = useState(false)
-  const [showRemoveDialog, setShowRemoveDialog] = useState(false)
-  const [selectedMember, setSelectedMember] = useState<any>(null)
-  const [selectedUserId, setSelectedUserId] = useState<string>('')
-  const [selectedRoleId, setSelectedRoleId] = useState<string>('')
+  const [showAddPanel, setShowAddPanel] = useState(false)
+  const [memberPendingRemove, setMemberPendingRemove] = useState<any>(null)
+  const [selectedUserId, setSelectedUserId] = useState('')
+  const [selectedRoleId, setSelectedRoleId] = useState('')
   const [userSearch, setUserSearch] = useState('')
 
-  // Fetch members
   const { data: members, isLoading: membersLoading } = useQuery({
     queryKey: ['team-members-details', teamId],
     queryFn: async () => {
@@ -560,7 +382,6 @@ function TeamMembersTab({ teamId }: { teamId: number }) {
     },
   })
 
-  // Fetch roles
   const { data: roles } = useQuery({
     queryKey: ['roles'],
     queryFn: async () => {
@@ -568,10 +389,8 @@ function TeamMembersTab({ teamId }: { teamId: number }) {
       if (error) throw error
       return data
     },
-    enabled: showAddDialog,
   })
 
-  // Fetch available users
   const { data: availableUsers } = useQuery({
     queryKey: ['available-users', userSearch],
     queryFn: async () => {
@@ -579,7 +398,7 @@ function TeamMembersTab({ teamId }: { teamId: number }) {
       if (error) throw error
       return data
     },
-    enabled: showAddDialog,
+    enabled: showAddPanel,
   })
 
   const addMemberMutation = useMutation({
@@ -591,20 +410,14 @@ function TeamMembersTab({ teamId }: { teamId: number }) {
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['team-members-details', teamId] })
       queryClient.invalidateQueries({ queryKey: ['team-profile', teamId] })
-      setShowAddDialog(false)
+      setShowAddPanel(false)
       setSelectedUserId('')
       setSelectedRoleId('')
-      toast({
-        title: 'Success',
-        description: 'Member added successfully',
-      })
+      setUserSearch('')
+      toast({ title: 'Success', description: 'Member added successfully' })
     },
     onError: (error: any) => {
-      toast({
-        title: 'Error',
-        description: error.message || 'Failed to add member',
-        variant: 'destructive',
-      })
+      toast({ title: 'Error', description: error.message || 'Failed to add member', variant: 'destructive' })
     },
   })
 
@@ -617,21 +430,85 @@ function TeamMembersTab({ teamId }: { teamId: number }) {
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['team-members-details', teamId] })
       queryClient.invalidateQueries({ queryKey: ['team-profile', teamId] })
-      setShowRemoveDialog(false)
-      setSelectedMember(null)
-      toast({
-        title: 'Success',
-        description: 'Member removed successfully',
-      })
+      setMemberPendingRemove(null)
+      toast({ title: 'Success', description: 'Member removed successfully' })
     },
     onError: (error: any) => {
-      toast({
-        title: 'Error',
-        description: error.message || 'Failed to remove member',
-        variant: 'destructive',
-      })
+      toast({ title: 'Error', description: error.message || 'Failed to remove member', variant: 'destructive' })
     },
   })
+
+  const addMemberForm = (
+    <div className="space-y-4 rounded-lg border border-gray-200 bg-gray-50/80 p-4">
+      <div className="flex items-center justify-between gap-2">
+        <h4 className="text-sm font-medium text-gray-900">Add member</h4>
+        <Button
+          type="button"
+          variant="ghost"
+          size="sm"
+          className="h-7 px-2"
+          onClick={() => setShowAddPanel(false)}
+          disabled={addMemberMutation.isPending}
+        >
+          Cancel
+        </Button>
+      </div>
+      <div className="space-y-2">
+        <Label htmlFor="user-search">Search user</Label>
+        <Input
+          id="user-search"
+          placeholder="Search by name or email"
+          value={userSearch}
+          onChange={(e) => setUserSearch(e.target.value)}
+        />
+      </div>
+      <div className="space-y-2">
+        <Label htmlFor="add-member-user">User</Label>
+        <select
+          id="add-member-user"
+          value={selectedUserId}
+          onChange={(event) => setSelectedUserId(event.target.value)}
+          className="flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-ring focus:ring-offset-2"
+        >
+          <option value="">Select user</option>
+          {availableUsers?.map((user) => (
+            <option key={user.id} value={String(user.id)}>
+              {user.full_name || user.email}
+            </option>
+          ))}
+        </select>
+      </div>
+      <div className="space-y-2">
+        <Label htmlFor="add-member-role">Role</Label>
+        <select
+          id="add-member-role"
+          value={selectedRoleId}
+          onChange={(event) => setSelectedRoleId(event.target.value)}
+          className="flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-ring focus:ring-offset-2"
+        >
+          <option value="">Select role</option>
+          {roles?.map((role) => (
+            <option key={role.id} value={String(role.id)}>
+              {role.title}
+            </option>
+          ))}
+        </select>
+      </div>
+      <Button
+        type="button"
+        onClick={() =>
+          addMemberMutation.mutate({
+            userId: parseInt(selectedUserId, 10),
+            roleId: parseInt(selectedRoleId, 10),
+          })
+        }
+        disabled={!selectedUserId || !selectedRoleId || addMemberMutation.isPending}
+      >
+        {addMemberMutation.isPending ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : null}
+        Add member
+      </Button>
+    </div>
+  )
 
   const updateRoleMutation = useMutation({
     mutationFn: async ({ userId, roleId }: { userId: number; roleId: number }) => {
@@ -641,519 +518,134 @@ function TeamMembersTab({ teamId }: { teamId: number }) {
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['team-members-details', teamId] })
-      toast({
-        title: 'Success',
-        description: 'Role updated successfully',
-      })
+      toast({ title: 'Success', description: 'Role updated successfully' })
     },
     onError: (error: any) => {
-      toast({
-        title: 'Error',
-        description: error.message || 'Failed to update role',
-        variant: 'destructive',
-      })
+      toast({ title: 'Error', description: error.message || 'Failed to update role', variant: 'destructive' })
     },
   })
 
-  const handleAddMember = () => {
-    if (!selectedUserId || !selectedRoleId) return
-    addMemberMutation.mutate({
-      userId: parseInt(selectedUserId),
-      roleId: parseInt(selectedRoleId),
-    })
-  }
-
-  const handleRemoveMember = () => {
-    if (!selectedMember) return
-    removeMemberMutation.mutate(selectedMember.user_id)
-  }
-
-  const handleRoleChange = (userId: number, newRoleId: string) => {
-    updateRoleMutation.mutate({
-      userId,
-      roleId: parseInt(newRoleId),
-    })
-  }
-
   return (
-    <div>
-      <div className="flex items-center justify-between mb-6">
-        <h2 className="text-xl font-semibold">Team Members</h2>
-        <Button onClick={() => setShowAddDialog(true)} size="sm" className="gap-2">
-          <Plus className="w-4 h-4" />
-          Add Member
-        </Button>
+    <div className="space-y-4">
+      <div className="flex items-center justify-between gap-3">
+        <h3 className="text-sm font-medium text-gray-900">Members</h3>
+        {!showAddPanel ? (
+          <Button
+            type="button"
+            onClick={() => setShowAddPanel(true)}
+            size="sm"
+            variant="outline"
+            className="gap-2"
+          >
+            <Plus className="h-4 w-4" />
+            Add
+          </Button>
+        ) : null}
       </div>
+
+      {showAddPanel ? addMemberForm : null}
+
+      {memberPendingRemove ? (
+        <div className="space-y-3 rounded-lg border border-red-100 bg-red-50/70 p-4">
+          <div>
+            <h4 className="text-sm font-medium text-gray-900">Remove member?</h4>
+            <p className="mt-1 text-sm text-gray-600">
+              Remove {memberPendingRemove.full_name || 'this member'} from the team.
+            </p>
+          </div>
+          <div className="flex flex-wrap gap-2">
+            <Button
+              type="button"
+              variant="outline"
+              size="sm"
+              onClick={() => setMemberPendingRemove(null)}
+              disabled={removeMemberMutation.isPending}
+            >
+              Cancel
+            </Button>
+            <Button
+              type="button"
+              size="sm"
+              className="bg-red-600 hover:bg-red-700"
+              onClick={() => removeMemberMutation.mutate(memberPendingRemove.user_id)}
+              disabled={removeMemberMutation.isPending}
+            >
+              {removeMemberMutation.isPending ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : null}
+              Remove
+            </Button>
+          </div>
+        </div>
+      ) : null}
+
       {membersLoading ? (
         <div className="flex items-center justify-center py-8">
-          <Loader2 className="w-5 h-5 animate-spin text-gray-400" />
+          <Loader2 className="h-5 w-5 animate-spin text-gray-400" />
         </div>
       ) : members && members.length > 0 ? (
-        <div className="space-y-2">
+        <div>
           {members.map((member) => (
             <div
               key={member.user_id}
-              className="flex items-center justify-between p-3 bg-white border border-gray-200 rounded-lg hover:bg-gray-50 transition-colors"
+              className="flex items-center justify-between gap-3 border-b border-gray-100 py-3 last:border-b-0"
             >
-              <div className="flex items-center gap-3">
-                {member.photo ? (
-                  <img
-                    src={member.photo}
-                    alt={member.full_name || ''}
-                    className="w-10 h-10 rounded-full object-cover"
-                  />
-                ) : (
-                  <div className="w-10 h-10 rounded-full bg-gradient-to-br from-blue-500 to-purple-600 flex items-center justify-center">
-                    <Users className="w-5 h-5 text-white" />
-                  </div>
-                )}
-                <div>
-                  <div className="font-medium text-sm text-gray-900">
+              <div className="flex min-w-0 items-center gap-3">
+                <UserAvatar
+                  name={member.full_name || member.email || null}
+                  photoUrl={getImageUrl(member.photo)}
+                  size="sm"
+                />
+                <div className="min-w-0">
+                  <div className="truncate text-sm font-medium text-gray-900">
                     {member.full_name || `User ${member.user_id}`}
                   </div>
-                  <div className="text-xs text-gray-500">{member.email}</div>
+                  <p className="truncate text-sm text-gray-500">
+                    {member.email || 'No email'}
+                    {member.role_title ? ` · ${member.role_title}` : ''}
+                  </p>
                 </div>
               </div>
 
-              <div className="flex items-center gap-3">
-                <Select
+              <div className="flex shrink-0 items-center gap-1.5">
+                <select
                   value={String(member.role_id)}
-                  onValueChange={(value) => handleRoleChange(member.user_id, value)}
                   disabled={updateRoleMutation.isPending}
+                  onChange={(event) =>
+                    updateRoleMutation.mutate({
+                      userId: member.user_id,
+                      roleId: parseInt(event.target.value, 10),
+                    })
+                  }
+                  aria-label={`Role for ${member.full_name || member.email || `user ${member.user_id}`}`}
+                  className="h-8 w-[8.5rem] cursor-pointer rounded-md border-0 bg-transparent px-2 text-xs text-gray-700 hover:bg-gray-100 focus:outline-none focus:ring-0"
                 >
-                  <SelectTrigger className="w-[180px]">
-                    <SelectValue />
-                  </SelectTrigger>
-                  <SelectContent>
-                    {roles?.map((role) => (
-                      <SelectItem key={role.id} value={String(role.id)}>
-                        {role.title}
-                      </SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
-
-                {member.has_access_app && (
-                  <span className="text-xs bg-green-100 text-green-700 px-2 py-1 rounded">
-                    App Access
-                  </span>
-                )}
-
+                  {roles?.map((role) => (
+                    <option key={role.id} value={String(role.id)}>
+                      {role.title}
+                    </option>
+                  ))}
+                </select>
                 <Button
                   variant="ghost"
                   size="sm"
-                  onClick={() => {
-                    setSelectedMember(member)
-                    setShowRemoveDialog(true)
-                  }}
+                  className="h-8 w-8 p-0 text-gray-400 hover:text-red-600"
+                  onClick={() => setMemberPendingRemove(member)}
+                  aria-label="Remove member"
                 >
-                  <Trash2 className="w-4 h-4 text-red-600" />
+                  <Trash2 className="h-4 w-4" />
                 </Button>
               </div>
             </div>
           ))}
         </div>
       ) : (
-        <div className="text-center py-12 border border-dashed border-gray-300 rounded-lg bg-white">
-          <Users className="w-12 h-12 text-gray-300 mx-auto mb-3" />
-          <p className="text-sm text-gray-500">No members yet</p>
-        </div>
+        <p className="py-6 text-sm text-gray-500">No members yet.</p>
       )}
 
-      {/* Add Member Dialog */}
-      <Dialog open={showAddDialog} onOpenChange={setShowAddDialog}>
-        <DialogContent>
-          <DialogHeader>
-            <DialogTitle>Add Member to Team</DialogTitle>
-            <DialogDescription>
-              Select a user and assign them a role
-            </DialogDescription>
-          </DialogHeader>
-
-          <div className="space-y-4">
-            <div>
-              <Label htmlFor="user-search">Search User</Label>
-              <Input
-                id="user-search"
-                placeholder="Search by name or email"
-                value={userSearch}
-                onChange={(e) => setUserSearch(e.target.value)}
-              />
-            </div>
-
-            <div>
-              <Label htmlFor="user">User</Label>
-              <Select value={selectedUserId} onValueChange={setSelectedUserId}>
-                <SelectTrigger>
-                  <SelectValue placeholder="Select user" />
-                </SelectTrigger>
-                <SelectContent>
-                  {availableUsers?.map((user) => (
-                    <SelectItem key={user.id} value={String(user.id)}>
-                      {user.full_name || user.email}
-                    </SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
-            </div>
-
-            <div>
-              <Label htmlFor="role">Role</Label>
-              <Select value={selectedRoleId} onValueChange={setSelectedRoleId}>
-                <SelectTrigger>
-                  <SelectValue placeholder="Select role" />
-                </SelectTrigger>
-                <SelectContent>
-                  {roles?.map((role) => (
-                    <SelectItem key={role.id} value={String(role.id)}>
-                      <div>
-                        <div>{role.title}</div>
-                        {role.description && (
-                          <div className="text-xs text-gray-500">{role.description}</div>
-                        )}
-                      </div>
-                    </SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
-            </div>
-          </div>
-
-          <DialogFooter>
-            <Button
-              variant="outline"
-              onClick={() => setShowAddDialog(false)}
-              disabled={addMemberMutation.isPending}
-            >
-              Cancel
-            </Button>
-            <Button
-              onClick={handleAddMember}
-              disabled={!selectedUserId || !selectedRoleId || addMemberMutation.isPending}
-            >
-              {addMemberMutation.isPending && (
-                <Loader2 className="w-4 h-4 mr-2 animate-spin" />
-              )}
-              Add Member
-            </Button>
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
-
-      {/* Remove Member Dialog */}
-      <AlertDialog open={showRemoveDialog} onOpenChange={setShowRemoveDialog}>
-        <AlertDialogContent>
-          <AlertDialogHeader>
-            <AlertDialogTitle>Remove Member</AlertDialogTitle>
-            <AlertDialogDescription>
-              Are you sure you want to remove {selectedMember?.full_name} from this team?
-              This action cannot be undone.
-            </AlertDialogDescription>
-          </AlertDialogHeader>
-          <AlertDialogFooter>
-            <AlertDialogCancel disabled={removeMemberMutation.isPending}>
-              Cancel
-            </AlertDialogCancel>
-            <AlertDialogAction
-              onClick={handleRemoveMember}
-              disabled={removeMemberMutation.isPending}
-              className="bg-red-600 hover:bg-red-700"
-            >
-              {removeMemberMutation.isPending && (
-                <Loader2 className="w-4 h-4 mr-2 animate-spin" />
-              )}
-              Remove
-            </AlertDialogAction>
-          </AlertDialogFooter>
-        </AlertDialogContent>
-      </AlertDialog>
     </div>
   )
 }
 
-// Projects Tab Component
-function TeamProjectsTab({ teamId }: { teamId: number }) {
-  const router = useRouter()
-  const queryClient = useQueryClient()
-  const [showAddDialog, setShowAddDialog] = useState(false)
-  const [showRemoveDialog, setShowRemoveDialog] = useState(false)
-  const [selectedProject, setSelectedProject] = useState<any>(null)
-  const [selectedProjectId, setSelectedProjectId] = useState<string>('')
-  const [projectSearch, setProjectSearch] = useState('')
-
-  // Fetch projects
-  const { data: projects, isLoading: projectsLoading } = useQuery({
-    queryKey: ['team-projects', teamId],
-    queryFn: async () => {
-      const { data, error } = await getTeamProjects(teamId)
-      if (error) throw error
-      return data
-    },
-  })
-
-  // Fetch available projects
-  const { data: availableProjects } = useQuery({
-    queryKey: ['available-projects', projectSearch],
-    queryFn: async () => {
-      const { data, error } = await getAvailableProjects(projectSearch)
-      if (error) throw error
-      // Filter out projects already in team
-      const currentProjectIds = new Set(projects?.map(p => p.project_id) || [])
-      return data?.filter(p => !currentProjectIds.has(p.id)) || []
-    },
-    enabled: showAddDialog,
-  })
-
-  const addProjectMutation = useMutation({
-    mutationFn: async (projectId: number) => {
-      const { data, error } = await addProjectToTeam(teamId, projectId)
-      if (error) throw error
-      return data
-    },
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['team-projects', teamId] })
-      queryClient.invalidateQueries({ queryKey: ['team-profile', teamId] })
-      setShowAddDialog(false)
-      setSelectedProjectId('')
-      toast({
-        title: 'Success',
-        description: 'Project added successfully',
-      })
-    },
-    onError: (error: any) => {
-      toast({
-        title: 'Error',
-        description: error.message || 'Failed to add project',
-        variant: 'destructive',
-      })
-    },
-  })
-
-  const removeProjectMutation = useMutation({
-    mutationFn: async (projectId: number) => {
-      const { data, error } = await removeProjectFromTeam(teamId, projectId)
-      if (error) throw error
-      return data
-    },
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['team-projects', teamId] })
-      queryClient.invalidateQueries({ queryKey: ['team-profile', teamId] })
-      setShowRemoveDialog(false)
-      setSelectedProject(null)
-      toast({
-        title: 'Success',
-        description: 'Project removed successfully',
-      })
-    },
-    onError: (error: any) => {
-      toast({
-        title: 'Error',
-        description: error.message || 'Failed to remove project',
-        variant: 'destructive',
-      })
-    },
-  })
-
-  const handleAddProject = () => {
-    if (!selectedProjectId) return
-    addProjectMutation.mutate(parseInt(selectedProjectId))
-  }
-
-  const handleRemoveProject = () => {
-    if (!selectedProject) return
-    removeProjectMutation.mutate(selectedProject.project_id)
-  }
-
-  const handleProjectClick = (projectId: number) => {
-    router.push(`/projects/${projectId}?tab=overview`)
-  }
-
-  return (
-    <div>
-      <div className="flex items-center justify-between mb-6">
-        <h2 className="text-xl font-semibold">Team Projects</h2>
-        <Button onClick={() => setShowAddDialog(true)} size="sm" className="gap-2">
-          <Plus className="w-4 h-4" />
-          Add Project
-        </Button>
-      </div>
-      {projectsLoading ? (
-        <div className="flex items-center justify-center py-8">
-          <Loader2 className="w-5 h-5 animate-spin text-gray-400" />
-        </div>
-      ) : projects && projects.length > 0 ? (
-        <div className="space-y-2">
-          {projects.map((project) => (
-            <div
-              key={project.project_id}
-              className="flex items-center justify-between p-3 bg-white border border-gray-200 rounded-lg hover:bg-gray-50 transition-colors cursor-pointer"
-              onClick={() => handleProjectClick(project.project_id)}
-            >
-              <div className="flex items-center gap-3">
-                {project.logo ? (
-                  <img
-                    src={project.logo}
-                    alt={project.name}
-                    className="w-5 h-5 rounded-md object-cover flex-shrink-0"
-                  />
-                ) : project.color ? (
-                  <div
-                    className="w-5 h-5 rounded-md flex-shrink-0"
-                    style={{ backgroundColor: project.color }}
-                    aria-hidden="true"
-                  />
-                ) : (
-                  <div className="w-5 h-5 rounded-md flex items-center justify-center bg-gray-100 text-gray-500 flex-shrink-0">
-                    <FolderKanban className="w-3 h-3" />
-                  </div>
-                )}
-                <div>
-                  <div className="font-medium text-sm text-gray-900">
-                    {project.name}
-                  </div>
-                  <div className="flex items-center gap-3 mt-1 text-xs text-gray-500">
-                    {project.status && <span>{project.status}</span>}
-                    {project.due_date && (
-                      <>
-                        <span>•</span>
-                        <span>Due {new Date(project.due_date).toLocaleDateString()}</span>
-                      </>
-                    )}
-                  </div>
-                </div>
-              </div>
-
-              <Button
-                variant="ghost"
-                size="sm"
-                onClick={(e) => {
-                  e.stopPropagation()
-                  setSelectedProject(project)
-                  setShowRemoveDialog(true)
-                }}
-              >
-                <Trash2 className="w-4 h-4 text-red-600" />
-              </Button>
-            </div>
-          ))}
-        </div>
-      ) : (
-        <div className="text-center py-12 border border-dashed border-gray-300 rounded-lg bg-white">
-          <p className="text-sm text-gray-500">No projects assigned</p>
-        </div>
-      )}
-
-      {/* Add Project Dialog */}
-      <Dialog open={showAddDialog} onOpenChange={setShowAddDialog}>
-        <DialogContent>
-          <DialogHeader>
-            <DialogTitle>Add Project to Team</DialogTitle>
-            <DialogDescription>
-              Select a project to assign to this team
-            </DialogDescription>
-          </DialogHeader>
-
-          <div className="space-y-4">
-            <div>
-              <Label htmlFor="project-search">Search Project</Label>
-              <Input
-                id="project-search"
-                placeholder="Search by name"
-                value={projectSearch}
-                onChange={(e) => setProjectSearch(e.target.value)}
-              />
-            </div>
-
-            <div>
-              <Label htmlFor="project">Project</Label>
-              <Select value={selectedProjectId} onValueChange={setSelectedProjectId}>
-                <SelectTrigger>
-                  <SelectValue placeholder="Select project" />
-                </SelectTrigger>
-                <SelectContent>
-                  {availableProjects?.map((project) => (
-                    <SelectItem key={project.id} value={String(project.id)}>
-                      <div className="flex items-center gap-2">
-                        {(project as { logo?: string | null }).logo ? (
-                          <img
-                            src={(project as { logo?: string | null }).logo!}
-                            alt={project.name}
-                            className="w-3 h-3 rounded-sm object-cover flex-shrink-0"
-                          />
-                        ) : project.color ? (
-                          <div
-                            className="w-3 h-3 rounded-sm flex-shrink-0"
-                            style={{ backgroundColor: project.color }}
-                            aria-hidden="true"
-                          />
-                        ) : (
-                          <div className="w-3 h-3 rounded-sm flex items-center justify-center bg-gray-100 text-gray-500 flex-shrink-0">
-                            <FolderKanban className="w-2 h-2" />
-                          </div>
-                        )}
-                        {project.name}
-                      </div>
-                    </SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
-            </div>
-          </div>
-
-          <DialogFooter>
-            <Button
-              variant="outline"
-              onClick={() => setShowAddDialog(false)}
-              disabled={addProjectMutation.isPending}
-            >
-              Cancel
-            </Button>
-            <Button
-              onClick={handleAddProject}
-              disabled={!selectedProjectId || addProjectMutation.isPending}
-            >
-              {addProjectMutation.isPending && (
-                <Loader2 className="w-4 h-4 mr-2 animate-spin" />
-              )}
-              Add Project
-            </Button>
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
-
-      {/* Remove Project Dialog */}
-      <AlertDialog open={showRemoveDialog} onOpenChange={setShowRemoveDialog}>
-        <AlertDialogContent>
-          <AlertDialogHeader>
-            <AlertDialogTitle>Remove Project</AlertDialogTitle>
-            <AlertDialogDescription>
-              Are you sure you want to remove {selectedProject?.name} from this team?
-              This will not delete the project.
-            </AlertDialogDescription>
-          </AlertDialogHeader>
-          <AlertDialogFooter>
-            <AlertDialogCancel disabled={removeProjectMutation.isPending}>
-              Cancel
-            </AlertDialogCancel>
-            <AlertDialogAction
-              onClick={handleRemoveProject}
-              disabled={removeProjectMutation.isPending}
-              className="bg-red-600 hover:bg-red-700"
-            >
-              {removeProjectMutation.isPending && (
-                <Loader2 className="w-4 h-4 mr-2 animate-spin" />
-              )}
-              Remove
-            </AlertDialogAction>
-          </AlertDialogFooter>
-        </AlertDialogContent>
-      </AlertDialog>
-    </div>
-  )
-}
-
-// Billing Tab Component
-function TeamBillingTab({ teamId, teamProfile }: { teamId: number; teamProfile: any }) {
+function TeamBillingSection({ teamId, teamProfile }: { teamId: number; teamProfile: any }) {
   const queryClient = useQueryClient()
   const [isEditing, setIsEditing] = useState(false)
   const [billingInfo, setBillingInfo] = useState({
@@ -1177,10 +669,7 @@ function TeamBillingTab({ teamId, teamProfile }: { teamId: number; teamProfile: 
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['team-profile', teamId] })
       setIsEditing(false)
-      toast({
-        title: 'Success',
-        description: 'Billing information updated successfully',
-      })
+      toast({ title: 'Success', description: 'Billing information updated successfully' })
     },
     onError: (error: any) => {
       toast({
@@ -1190,10 +679,6 @@ function TeamBillingTab({ teamId, teamProfile }: { teamId: number; teamProfile: 
       })
     },
   })
-
-  const handleSave = () => {
-    updateBillingMutation.mutate()
-  }
 
   const handleCancel = () => {
     setBillingInfo({
@@ -1210,215 +695,71 @@ function TeamBillingTab({ teamId, teamProfile }: { teamId: number; teamProfile: 
     setIsEditing(false)
   }
 
+  const field = (
+    id: keyof typeof billingInfo,
+    label: string,
+    opts?: { className?: string; placeholder?: string; maxLength?: number },
+  ) => (
+    <div className={cn('space-y-2', opts?.className)}>
+      <Label htmlFor={id}>{label}</Label>
+      {isEditing ? (
+        <Input
+          id={id}
+          value={billingInfo[id]}
+          onChange={(e) => setBillingInfo({ ...billingInfo, [id]: e.target.value })}
+          placeholder={opts?.placeholder}
+          maxLength={opts?.maxLength}
+        />
+      ) : (
+        <Input id={id} value={billingInfo[id] || ''} disabled className="bg-gray-50" placeholder="—" />
+      )}
+    </div>
+  )
+
   return (
-    <div>
-      <div className="mb-6 flex items-center justify-between">
-        <h2 className="text-xl font-semibold">Billing Information</h2>
+    <div className="space-y-4">
+      <div className="flex items-center justify-between gap-3">
+        <h3 className="text-sm font-medium text-gray-900">Billing info</h3>
         {!isEditing ? (
           <Button onClick={() => setIsEditing(true)} variant="outline" size="sm">
-            <Edit2 className="w-4 h-4 mr-2" />
+            <Edit2 className="mr-2 h-4 w-4" />
             Edit
           </Button>
         ) : (
           <div className="flex gap-2">
-            <Button
-              onClick={handleSave}
-              size="sm"
-              disabled={updateBillingMutation.isPending}
-            >
-              {updateBillingMutation.isPending ? (
-                <Loader2 className="w-4 h-4 mr-2 animate-spin" />
-              ) : (
-                <Save className="w-4 h-4 mr-2" />
-              )}
+            <Button size="sm" onClick={() => updateBillingMutation.mutate()} disabled={updateBillingMutation.isPending}>
+              {updateBillingMutation.isPending ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <Save className="mr-2 h-4 w-4" />}
               Save
             </Button>
-            <Button
-              onClick={handleCancel}
-              variant="outline"
-              size="sm"
-              disabled={updateBillingMutation.isPending}
-            >
-              <X className="w-4 h-4 mr-2" />
+            <Button variant="outline" size="sm" onClick={handleCancel} disabled={updateBillingMutation.isPending}>
+              <X className="mr-2 h-4 w-4" />
               Cancel
             </Button>
           </div>
         )}
       </div>
-      <div className="grid grid-cols-1 gap-6 md:grid-cols-2">
-        <div className="space-y-2 md:col-span-2">
-              <Label htmlFor="billing_business_name">Business Name</Label>
-              {isEditing ? (
-                <Input
-                  id="billing_business_name"
-                  value={billingInfo.billing_business_name}
-                  onChange={(e) =>
-                    setBillingInfo({ ...billingInfo, billing_business_name: e.target.value })
-                  }
-                  placeholder="Business name"
-                />
-              ) : (
-                <p className="text-sm text-gray-900 mt-1">
-                  {billingInfo.billing_business_name || '—'}
-                </p>
-              )}
-            </div>
 
-            <div className="space-y-2">
-              <Label htmlFor="billing_vat_number">VAT Number</Label>
-              {isEditing ? (
-                <Input
-                  id="billing_vat_number"
-                  value={billingInfo.billing_vat_number}
-                  onChange={(e) =>
-                    setBillingInfo({ ...billingInfo, billing_vat_number: e.target.value })
-                  }
-                  placeholder="VAT number"
-                />
-              ) : (
-                <p className="text-sm text-gray-900 mt-1">
-                  {billingInfo.billing_vat_number || '—'}
-                </p>
-              )}
-            </div>
-
-            <div className="space-y-2">
-              <Label htmlFor="invoice_provider_name">Invoice Provider</Label>
-              {isEditing ? (
-                <Input
-                  id="invoice_provider_name"
-                  value={billingInfo.invoice_provider_name}
-                  onChange={(e) =>
-                    setBillingInfo({ ...billingInfo, invoice_provider_name: e.target.value })
-                  }
-                  placeholder="Invoice provider"
-                />
-              ) : (
-                <p className="text-sm text-gray-900 mt-1">
-                  {billingInfo.invoice_provider_name || '—'}
-                </p>
-              )}
-            </div>
-
-            <div className="space-y-2 md:col-span-2">
-              <Label htmlFor="billing_address_line1">Address Line 1</Label>
-              {isEditing ? (
-                <Input
-                  id="billing_address_line1"
-                  value={billingInfo.billing_address_line1}
-                  onChange={(e) =>
-                    setBillingInfo({ ...billingInfo, billing_address_line1: e.target.value })
-                  }
-                  placeholder="Address line 1"
-                />
-              ) : (
-                <p className="text-sm text-gray-900 mt-1">
-                  {billingInfo.billing_address_line1 || '—'}
-                </p>
-              )}
-            </div>
-
-            <div className="space-y-2 md:col-span-2">
-              <Label htmlFor="billing_address_line2">Address Line 2</Label>
-              {isEditing ? (
-                <Input
-                  id="billing_address_line2"
-                  value={billingInfo.billing_address_line2}
-                  onChange={(e) =>
-                    setBillingInfo({ ...billingInfo, billing_address_line2: e.target.value })
-                  }
-                  placeholder="Address line 2"
-                />
-              ) : (
-                <p className="text-sm text-gray-900 mt-1">
-                  {billingInfo.billing_address_line2 || '—'}
-                </p>
-              )}
-            </div>
-
-            <div className="space-y-2">
-              <Label htmlFor="billing_city">City</Label>
-              {isEditing ? (
-                <Input
-                  id="billing_city"
-                  value={billingInfo.billing_city}
-                  onChange={(e) =>
-                    setBillingInfo({ ...billingInfo, billing_city: e.target.value })
-                  }
-                  placeholder="City"
-                />
-              ) : (
-                <p className="text-sm text-gray-900 mt-1">
-                  {billingInfo.billing_city || '—'}
-                </p>
-              )}
-            </div>
-
-            <div className="space-y-2">
-              <Label htmlFor="billing_postcode">Postcode</Label>
-              {isEditing ? (
-                <Input
-                  id="billing_postcode"
-                  value={billingInfo.billing_postcode}
-                  onChange={(e) =>
-                    setBillingInfo({ ...billingInfo, billing_postcode: e.target.value })
-                  }
-                  placeholder="Postcode"
-                />
-              ) : (
-                <p className="text-sm text-gray-900 mt-1">
-                  {billingInfo.billing_postcode || '—'}
-                </p>
-              )}
-            </div>
-
-            <div className="space-y-2">
-              <Label htmlFor="billing_region">Region/State</Label>
-              {isEditing ? (
-                <Input
-                  id="billing_region"
-                  value={billingInfo.billing_region}
-                  onChange={(e) =>
-                    setBillingInfo({ ...billingInfo, billing_region: e.target.value })
-                  }
-                  placeholder="Region/State"
-                />
-              ) : (
-                <p className="text-sm text-gray-900 mt-1">
-                  {billingInfo.billing_region || '—'}
-                </p>
-              )}
-            </div>
-
-            <div className="space-y-2">
-              <Label htmlFor="billing_country_code">Country Code</Label>
-              {isEditing ? (
-                <Input
-                  id="billing_country_code"
-                  value={billingInfo.billing_country_code}
-                  onChange={(e) =>
-                    setBillingInfo({ ...billingInfo, billing_country_code: e.target.value })
-                  }
-                  placeholder="e.g. US, GB, PT"
-                  maxLength={2}
-                />
-              ) : (
-                <p className="text-sm text-gray-900 mt-1">
-                  {billingInfo.billing_country_code || '—'}
-                </p>
-              )}
-            </div>
+      <div className="space-y-5">
+        {field('billing_business_name', 'Business name', { placeholder: 'Business name' })}
+        <div className="grid grid-cols-1 gap-5 sm:grid-cols-2">
+          {field('billing_vat_number', 'VAT number', { placeholder: 'VAT number' })}
+          {field('invoice_provider_name', 'Invoice provider', { placeholder: 'Invoice provider' })}
+        </div>
+        {field('billing_address_line1', 'Address line 1', { placeholder: 'Address line 1' })}
+        {field('billing_address_line2', 'Address line 2', { placeholder: 'Address line 2' })}
+        <div className="grid grid-cols-1 gap-5 sm:grid-cols-2">
+          {field('billing_city', 'City', { placeholder: 'City' })}
+          {field('billing_postcode', 'Postcode', { placeholder: 'Postcode' })}
+          {field('billing_region', 'Region / state', { placeholder: 'Region/State' })}
+          {field('billing_country_code', 'Country code', { placeholder: 'e.g. US', maxLength: 2 })}
+        </div>
       </div>
     </div>
   )
 }
 
-// Activity Tab Component
-function TeamActivityTab({ teamId }: { teamId: number }) {
-  const router = useRouter()
-  const pathname = usePathname()
-  const searchParams = useSearchParams()
-  const [limit] = useState(50)
+function TeamActivitySection({ teamId }: { teamId: number }) {
+  const [limit] = useState(30)
   const [offset, setOffset] = useState(0)
 
   const { data: activities, isLoading: activitiesLoading } = useQuery({
@@ -1430,86 +771,43 @@ function TeamActivityTab({ teamId }: { teamId: number }) {
     },
   })
 
-  const handleLoadMore = () => {
-    setOffset((prev) => prev + limit)
-  }
-
-  const handleTaskClick = (taskId: number) => {
-    mergeWorkspaceUrlState(
-      {
-        rightView: "task-details",
-        rightTaskId: String(taskId),
-      },
-      { source: "team-activity-open-task", mode: "push" },
-    )
-  }
-
   return (
-    <div>
-      <div className="mb-6">
-        <h2 className="text-xl font-semibold">Team Activity</h2>
-        <p className="text-sm text-gray-500 mt-1">Recent activity from all team projects</p>
-      </div>
+    <div className="space-y-4">
+      <h3 className="text-sm font-medium text-gray-900">Activity</h3>
+
       {activitiesLoading ? (
         <div className="flex items-center justify-center py-8">
-          <Loader2 className="w-5 h-5 animate-spin text-gray-400" />
+          <Loader2 className="h-5 w-5 animate-spin text-gray-400" />
         </div>
       ) : activities && activities.length > 0 ? (
-        <div className="space-y-4">
+        <div>
           {activities.map((activity) => (
             <div
               key={activity.id}
-              className="flex gap-4 p-4 bg-white border border-gray-200 rounded-lg hover:bg-gray-50 transition-colors"
+              className="flex items-start justify-between gap-3 border-b border-gray-100 py-2.5 last:border-b-0"
             >
-              <div className="flex-shrink-0 pt-1">
-                <div
-                  className="w-2 h-2 rounded-full"
-                  style={{ backgroundColor: activity.project_color || '#6b7280' }}
-                />
+              <div className="min-w-0">
+                <div className="truncate text-sm text-gray-900">{activity.action}</div>
+                <p className="truncate text-xs text-gray-500">
+                  {[activity.project_name, activity.details].filter(Boolean).join(' · ')}
+                </p>
               </div>
-              <div className="flex-1 min-w-0">
-                <div className="flex items-center gap-2 mb-1">
-                  <span className="text-sm font-medium text-gray-900">
-                    {activity.project_name}
-                  </span>
-                  <span className="text-xs text-gray-400">
-                    {formatDistanceToNow(new Date(activity.timestamp), {
-                      addSuffix: true,
-                    })}
-                  </span>
-                </div>
-                <div className="text-sm text-gray-700 mb-1">{activity.action}</div>
-                {activity.details && (
-                  <div className="text-xs text-gray-500">{activity.details}</div>
-                )}
-                {activity.task_id && (
-                  <Button
-                    variant="link"
-                    size="sm"
-                    className="text-xs p-0 h-auto mt-1"
-                    onClick={() => handleTaskClick(activity.task_id!)}
-                  >
-                    View Task <ChevronRight className="w-3 h-3 ml-1" />
-                  </Button>
-                )}
-              </div>
+              <span className="shrink-0 text-xs text-gray-400">
+                {formatDistanceToNow(new Date(activity.timestamp), { addSuffix: true })}
+              </span>
             </div>
           ))}
-
-          {activities.length >= limit && (
-            <div className="text-center pt-4">
-              <Button onClick={handleLoadMore} variant="outline">
-                Load More
+          {activities.length >= limit ? (
+            <div className="pt-3">
+              <Button variant="outline" size="sm" onClick={() => setOffset((prev) => prev + limit)}>
+                Load more
               </Button>
             </div>
-          )}
+          ) : null}
         </div>
       ) : (
-        <div className="text-center py-12 border border-dashed border-gray-300 rounded-lg bg-white">
-          <p className="text-sm text-gray-500">No activity yet</p>
-        </div>
+        <p className="py-6 text-sm text-gray-500">No activity yet.</p>
       )}
     </div>
   )
 }
-

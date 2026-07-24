@@ -149,6 +149,8 @@ export function DocumentsFilters({ isOpen, onClose, filters, onFiltersChange }: 
       isOpen={isOpen}
       onClose={onClose}
       title="Filter Documents"
+      overlayClassName="z-[90]"
+      className="z-[100]"
     >
       <div className="space-y-6">
         {/* Search */}

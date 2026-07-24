@@ -3,10 +3,7 @@
 import React from 'react';
 import { createPortal } from 'react-dom';
 import { cn } from "@/lib/utils";
-import { X, Plus, Bot, Lightbulb, Settings, LogOut, Menu } from 'lucide-react';
-import { createClientComponentClient } from '@supabase/auth-helpers-nextjs';
-import { usePathname, useRouter, useSearchParams } from 'next/navigation';
-import { useCurrentUserStore } from '../../store/current-user';
+import { X, ChevronDown, FolderKanban, ListTodo, MessageSquare, UserRound, Menu } from 'lucide-react';
 import {
   DropdownMenu,
   DropdownMenuTrigger,
@@ -20,16 +17,17 @@ import {
   type GlobalSearchItemEntityType,
 } from "../../lib/global-search-types";
 import { GlobalSearchBox } from "./global-search-box";
-import { shallowReplaceSearchParams } from "../../lib/tasks-shallow-nav";
-import { buildNewAiThreadParams } from "../../lib/ai-thread-route";
-import { UserAvatar } from "../UserAvatar";
-import { getImageUrl } from "../../lib/public-media";
 import { HeaderCreateSurface } from "./header-create-surface";
 import {
   CREATE_MODAL_TITLES,
   CREATE_POPUP_Z_CLASS,
   useHeaderCreateFlow,
+  type HeaderCreateType,
 } from "./use-header-create-flow";
+import {
+  OPEN_HEADER_CREATE_EVENT,
+  type OpenHeaderCreateDetail,
+} from "./sidebar-home-feed";
 
 interface TaskHeaderBarProps {
   searchValue: string;
@@ -66,10 +64,7 @@ export function TaskHeaderBar({
   onSearchCommit,
   onFilterClick,
   onSidebarToggle,
-  onKeywordPlannerClick,
-  isKeywordPlannerActive = false,
   placeholder,
-  onAiChatClick,
   onNewAiThreadClick,
   viewMode,
   onViewModeChange,
@@ -78,16 +73,9 @@ export function TaskHeaderBar({
   selectedTypeFilters = [],
   onToggleTypeFilter,
   onPreviewResultSelect,
-  onShowMore,
   onShowAll,
   onClearSearch,
 }: TaskHeaderBarProps) {
-  const fullName = useCurrentUserStore((s) => s.fullName)
-  const userMetadata = useCurrentUserStore((s) => s.userMetadata)
-  const router = useRouter();
-  const pathname = usePathname();
-  const searchParams = useSearchParams();
-  const supabase = createClientComponentClient();
   const [isCreateModalOpen, setIsCreateModalOpen] = React.useState(false)
   const [isPortalMounted, setIsPortalMounted] = React.useState(false)
   const createFlow = useHeaderCreateFlow({ enabled: isCreateModalOpen })
@@ -96,33 +84,24 @@ export function TaskHeaderBar({
     setIsPortalMounted(true)
   }, [])
 
-  const accountDisplayName = React.useMemo(
-    () => fullName || userMetadata?.full_name || userMetadata?.email || "User",
-    [fullName, userMetadata],
-  )
-  const accountAvatarUrl = React.useMemo(
-    () => getImageUrl(userMetadata?.photo || userMetadata?.avatar_url || null),
-    [userMetadata],
-  )
-
-  const handleAccountSignOut = React.useCallback(async () => {
-    await supabase.auth.signOut()
-    router.push("/auth")
-  }, [router, supabase])
-
-  const openCreateModal = React.useCallback(() => {
-    createFlow.openCreateForm("task")
+  const openCreateModal = React.useCallback((type: HeaderCreateType = "task") => {
+    createFlow.openCreateForm(type)
     setIsCreateModalOpen(true)
   }, [createFlow.openCreateForm])
 
-  const handleAiPillSelect = React.useCallback(() => {
-    if (!pathname && onNewAiThreadClick) {
-      onNewAiThreadClick()
-      return
+  React.useEffect(() => {
+    const handleOpenCreate = (event: Event) => {
+      const detail = (event as CustomEvent<OpenHeaderCreateDetail>).detail
+      const type = detail?.type
+      if (!type || type === "ai") {
+        onNewAiThreadClick?.()
+        return
+      }
+      openCreateModal(type)
     }
-    const next = buildNewAiThreadParams(new URLSearchParams(searchParams.toString()))
-    shallowReplaceSearchParams(pathname || "/tasks", next)
-  }, [onNewAiThreadClick, pathname, searchParams])
+    window.addEventListener(OPEN_HEADER_CREATE_EVENT, handleOpenCreate)
+    return () => window.removeEventListener(OPEN_HEADER_CREATE_EVENT, handleOpenCreate)
+  }, [onNewAiThreadClick, openCreateModal])
 
   const closeCreateModal = React.useCallback(() => {
     setIsCreateModalOpen(false)
@@ -135,8 +114,9 @@ export function TaskHeaderBar({
 
   return (
     <TooltipProvider delayDuration={120}>
-    <header className="sticky top-0 z-30 grid h-16 w-full grid-cols-[1fr_minmax(0,36rem)_1fr] items-center gap-x-3 border-b bg-white px-4 shadow-sm">
-      {/* Left: nav + brand (equal 1fr column keeps search visually centered in header) */}
+    {/* z-40: above sticky editor toolbars (z-30) so the global-search preview is never covered */}
+    <header className="sticky top-0 z-40 grid h-16 w-full grid-cols-[1fr_minmax(0,36rem)_1fr] items-center gap-x-3 border-b bg-white px-4 shadow-sm">
+      {/* Left: hamburger + brand (equal 1fr column keeps search visually centered). */}
       <div className="flex min-w-0 items-center gap-2 justify-self-start">
         <div className="flex min-w-0 items-center gap-3">
           {onSidebarToggle ? (
@@ -151,16 +131,9 @@ export function TaskHeaderBar({
               </button>
             </IconTooltip>
           ) : null}
-          {/* Create opens Add Task by default; object pills inside the popup switch create type. */}
-          <button
-            type="button"
-            onClick={openCreateModal}
-            className="inline-flex shrink-0 items-center gap-1.5 rounded-md bg-gray-900 px-3 py-1.5 text-sm font-medium text-white hover:bg-gray-800 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-black focus-visible:ring-offset-1"
-            aria-label="Create"
-          >
-            <Plus className="h-4 w-4" />
-            <span>Create</span>
-          </button>
+          <span className="shrink-0 text-base font-semibold tracking-tight text-gray-900">
+            Articulate
+          </span>
           {onViewModeChange && (
             <div className="hidden items-center rounded-full bg-gray-100 p-0.5 text-xs font-medium text-gray-700 md:inline-flex">
               <button
@@ -201,7 +174,7 @@ export function TaskHeaderBar({
         </div>
       </div>
 
-      {/* Center: search in middle column of grid */}
+      {/* Center: search */}
       <div className="min-w-0 w-full max-w-xl justify-self-center">
         <GlobalSearchBox
           searchValue={searchValue}
@@ -219,100 +192,78 @@ export function TaskHeaderBar({
         />
       </div>
 
-      {/* Right: actions (second 1fr column, end-aligned) */}
+      {/* Right: create (balances left chrome; account avatar lives in the sidebar). */}
       <div className="flex min-w-0 items-center justify-end justify-self-end gap-2">
-        {onAiChatClick ? (
-          <IconTooltip label="AI pane">
-            <button
-              type="button"
-              className="inline-flex h-9 w-9 shrink-0 items-center justify-center rounded text-gray-500 hover:bg-gray-100 hover:text-gray-700 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-black focus-visible:ring-offset-1"
-              aria-label="AI pane"
-              onClick={() => onAiChatClick()}
-            >
-              <Bot className="h-5 w-5" />
-            </button>
-          </IconTooltip>
-        ) : null}
-        {onKeywordPlannerClick ? (
-          <IconTooltip label="Keyword research">
-            <button
-              type="button"
-              className={`inline-flex h-9 w-9 shrink-0 items-center justify-center rounded focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-black focus-visible:ring-offset-1 ${
-                isKeywordPlannerActive
-                  ? "bg-gray-900 text-white hover:bg-gray-800"
-                  : "text-gray-500 hover:bg-gray-100 hover:text-gray-700"
-              }`}
-              aria-label="Keyword research"
-              onClick={() => onKeywordPlannerClick()}
-            >
-              <Lightbulb className="h-5 w-5" />
-            </button>
-          </IconTooltip>
-        ) : null}
-        <DropdownMenu>
-          <IconTooltip label="Account">
+        <div className="inline-flex h-9 shrink-0 items-stretch overflow-hidden rounded-full border border-gray-200 bg-white shadow-sm">
+          <button
+            type="button"
+            onClick={() => openCreateModal("task")}
+            className="inline-flex items-center gap-1.5 px-3 text-sm font-medium text-gray-900 hover:bg-gray-50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-black"
+            aria-label="Add task"
+          >
+            Add task
+          </button>
+          <DropdownMenu>
             <DropdownMenuTrigger asChild>
               <button
                 type="button"
-                className="inline-flex h-9 w-9 shrink-0 items-center justify-center rounded focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-black focus-visible:ring-offset-1"
-                aria-label="Account menu"
+                className="inline-flex items-center border-l border-gray-200 px-2 text-gray-600 hover:bg-gray-50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-black"
+                aria-label="Create other"
               >
-                <UserAvatar name={accountDisplayName} photoUrl={accountAvatarUrl} size="sm" />
+                <ChevronDown className="h-4 w-4" />
               </button>
             </DropdownMenuTrigger>
-          </IconTooltip>
-          <DropdownMenuContent align="end" className="min-w-[190px]">
-            <DropdownMenuItem
-              onSelect={() => {
-                const next = new URLSearchParams(searchParams.toString())
-                next.set("settings", "open")
-                router.push(`/?${next.toString()}`)
-              }}
-            >
-              <Settings className="mr-2 h-4 w-4" />
-              Preferences
-            </DropdownMenuItem>
-            <DropdownMenuItem
-              onSelect={() => {
-                void handleAccountSignOut()
-              }}
-            >
-              <LogOut className="mr-2 h-4 w-4" />
-              Sign out
-            </DropdownMenuItem>
-          </DropdownMenuContent>
-        </DropdownMenu>
-        {isCreateModalOpen && isPortalMounted
-          ? createPortal(
-          <div
-            className={cn(
-              "fixed bottom-4 right-4 flex h-[min(86vh,760px)] w-[min(620px,calc(100vw-2rem))] flex-col overflow-hidden rounded-lg border border-gray-200 bg-white shadow-lg",
-              CREATE_POPUP_Z_CLASS,
-            )}
-          >
-            <div className="flex shrink-0 items-center justify-between border-b bg-white px-4 py-2">
-              <span className="text-sm font-medium">{CREATE_MODAL_TITLES[createFlow.createType]}</span>
-              <button
-                type="button"
-                onClick={handleCreateClose}
-                className="rounded p-1.5 hover:bg-gray-100"
-                aria-label="Close create popup"
-              >
-                <X className="h-4 w-4 text-gray-600" />
-              </button>
-            </div>
-            <HeaderCreateSurface
-              flow={createFlow}
-              onClose={handleCreateClose}
-              onSuccess={handleCreateClose}
-              onAiPillSelect={handleAiPillSelect}
-            />
-          </div>,
-          document.body
-        )
-          : null}
+            <DropdownMenuContent align="end" className="min-w-[180px]">
+              <DropdownMenuItem onSelect={() => openCreateModal("task")}>
+                <ListTodo className="mr-2 h-4 w-4" />
+                Add task
+              </DropdownMenuItem>
+              <DropdownMenuItem onSelect={() => openCreateModal("project")}>
+                <FolderKanban className="mr-2 h-4 w-4" />
+                Project
+              </DropdownMenuItem>
+              <DropdownMenuItem onSelect={() => openCreateModal("user")}>
+                <UserRound className="mr-2 h-4 w-4" />
+                User
+              </DropdownMenuItem>
+              <DropdownMenuItem onSelect={() => openCreateModal("thread")}>
+                <MessageSquare className="mr-2 h-4 w-4" />
+                Thread
+              </DropdownMenuItem>
+            </DropdownMenuContent>
+          </DropdownMenu>
+        </div>
       </div>
+
+      {isCreateModalOpen && isPortalMounted
+        ? createPortal(
+        <div
+          className={cn(
+            "fixed bottom-4 right-4 flex h-[min(86vh,760px)] w-[min(620px,calc(100vw-2rem))] flex-col overflow-hidden rounded-lg border border-gray-200 bg-white shadow-lg",
+            CREATE_POPUP_Z_CLASS,
+          )}
+        >
+          <div className="flex shrink-0 items-center justify-between border-b bg-white px-4 py-2">
+            <span className="text-sm font-medium">{CREATE_MODAL_TITLES[createFlow.createType]}</span>
+            <button
+              type="button"
+              onClick={handleCreateClose}
+              className="rounded p-1.5 hover:bg-gray-100"
+              aria-label="Close create popup"
+            >
+              <X className="h-4 w-4 text-gray-600" />
+            </button>
+          </div>
+          <HeaderCreateSurface
+            flow={createFlow}
+            onClose={handleCreateClose}
+            onSuccess={handleCreateClose}
+          />
+        </div>,
+        document.body
+      )
+        : null}
     </header>
     </TooltipProvider>
   );
-} 
+}

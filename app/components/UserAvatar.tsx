@@ -3,7 +3,7 @@ import { cn } from "@/lib/utils"
 type UserAvatarProps = {
   name: string | null
   photoUrl?: string | null
-  size?: "xs" | "sm" | "md" | "lg"
+  size?: "xs" | "sm" | "md" | "lg" | "xl"
   className?: string
 }
 
@@ -12,6 +12,7 @@ const SIZE_CLASSES: Record<NonNullable<UserAvatarProps["size"]>, string> = {
   sm: "h-8 w-8 min-h-8 min-w-8 text-xs",
   md: "h-10 w-10 min-h-10 min-w-10 text-sm",
   lg: "h-12 w-12 min-h-12 min-w-12 text-base",
+  xl: "h-16 w-16 min-h-16 min-w-16 text-lg",
 }
 
 /**

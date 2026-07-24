@@ -26,6 +26,7 @@ import {
   fetchGlobalSearchDocumentsByType,
   trackGlobalObjectOpen,
 } from "../lib/services/global-search"
+import { bumpAndInvalidateHomeSidebarRecent } from "../lib/home-sidebar-recents-cache"
 import type { TaskFiltersForUrl } from "../lib/tasks-filter-url"
 import { buildSeeMoreTasksSearchParams } from "../lib/tasks-filter-url"
 import { applyAiThreadOpenParams } from "../lib/ai-thread-route"
@@ -153,7 +154,10 @@ function readDetailTargetFromSearchParams(searchParams: SearchParamsLike, isShel
       entityId: centerThreadId,
       projectId: null,
       threadId: centerThreadId,
-      mentionId: null,
+      mentionId:
+        optionalString(searchParams.get("centerMentionId")) ??
+        optionalString(searchParams.get("rightMentionId")) ??
+        optionalString(searchParams.get("mentionId")),
     }
   }
 
@@ -419,6 +423,9 @@ const SHELL_ALLOWED_PARAMS = new Set([
   "taskAiOpen",
   "focus",
   "layout",
+  // Preferences / settings modal — must survive home shell sanitize
+  "settings",
+  "settingsCategory",
 ])
 
 function getShellStateParams(searchParams: SearchParamsLike): URLSearchParams {
@@ -490,7 +497,7 @@ function resolveObjectDataSource(pathname: string, objectRoute: ReturnType<typeo
 }
 
 const DEFAULT_VISIBLE_RESULT_TYPES: GlobalSearchItemEntityType[] = [
-  ...GLOBAL_SEARCH_ENTITY_TYPES,
+  ...GLOBAL_SEARCH_ENTITY_TYPES.filter((type) => type !== "team"),
   "ai_thread",
 ]
 
@@ -654,6 +661,8 @@ export function useGlobalSearchController({
 
   const pendingTypesOrNull = pendingSelectedTypes.length > 0 ? pendingSelectedTypes : null
   const committedTypesOrNull = committedSelectedTypes.length > 0 ? committedSelectedTypes : null
+  // Home / All discovery should never surface teams (moved to preferences).
+  const allTabEntityTypesOrNull = committedTypesOrNull ?? DEFAULT_VISIBLE_RESULT_TYPES.filter((type) => type !== "ai_thread")
   const objectDataSource = resolveObjectDataSource(effectivePathname, routeObject, searchValue)
   if (process.env.NODE_ENV === "development") {
     console.log("[object data source]", {
@@ -705,7 +714,7 @@ export function useGlobalSearchController({
             kind: "counts",
           }),
           fetchGlobalSearchDiscoveryCounts({
-            entityTypes: committedTypesOrNull,
+            entityTypes: allTabEntityTypesOrNull,
             signal,
           }).then((result) => {
             console.log("[discovery fetch success]", {
@@ -732,7 +741,7 @@ export function useGlobalSearchController({
             kind: "sections",
           }),
           fetchGlobalSearchDiscoverySections({
-            entityTypes: committedTypesOrNull,
+            entityTypes: allTabEntityTypesOrNull,
             perTypeLimit: 10,
             signal,
           }).then((result) => {
@@ -752,6 +761,9 @@ export function useGlobalSearchController({
 
   const saveHistoryMutation = useMutation({
     mutationFn: addGlobalSearchHistory,
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: ["global-search", "header-history"] })
+    },
   })
 
   useEffect(() => {
@@ -1082,16 +1094,37 @@ export function useGlobalSearchController({
     (item: GlobalSearchDocument) => {
       seedEntityPreviewFromSearchDocument(queryClient, item)
 
+      const draftQuery = (latestSearchInputRef.current ?? searchDraftValue).trim()
+      if (draftQuery) {
+        persistSearchTerm(draftQuery)
+      }
+
       const isUnifiedRoute = isPrimaryRoute && !isTasksRoute
       const trackOpen = () => {
         const entityId = getTrackingEntityId(item)
         if (!entityId) return
+        const trackingType = getTrackingEntityType(item)
+        const title =
+          (typeof item.title === "string" && item.title.trim()) || entityId
+        if (trackingType === "task") {
+          bumpAndInvalidateHomeSidebarRecent(queryClient, "tasks", { id: entityId, title })
+        } else if (trackingType === "project") {
+          bumpAndInvalidateHomeSidebarRecent(queryClient, "projects", { id: entityId, title })
+        } else if (trackingType === "user") {
+          bumpAndInvalidateHomeSidebarRecent(queryClient, "users", { id: entityId, title })
+        } else {
+          void queryClient.invalidateQueries({ queryKey: ["home-sidebar-recents"] })
+        }
         void trackGlobalObjectOpen({
-          entityType: getTrackingEntityType(item),
+          entityType: trackingType,
           entityId,
-        }).catch((error) => {
-          console.debug("track_global_object_open failed", error)
         })
+          .then(() => {
+            void queryClient.invalidateQueries({ queryKey: ["global-search", "header-recently-opened"] })
+          })
+          .catch((error) => {
+            console.debug("track_global_object_open failed", error)
+          })
       }
 
       setIsOpen(false)
@@ -1213,20 +1246,21 @@ export function useGlobalSearchController({
       setSelectedDetailTarget(detailTarget)
       if (isUnifiedRoute) {
         if (detailTarget.entityType === "mention") {
-          const threadId = optionalString(item.thread_id ?? item.raw.thread_id ?? item.raw.threadId)
+          const threadId =
+            optionalString(item.thread_id ?? item.raw.thread_id ?? item.raw.threadId) ??
+            optionalString(detailTarget.threadId)
           if (threadId) {
-            const next = isAiRightPane
-              ? buildCenterPaneSelectionSearchParams({
-                  currentSearchParams: currentParams,
-                  entity: "thread",
-                  id: threadId,
-                })
-              : buildRightPaneSelectionSearchParams({
-                  currentSearchParams: currentParams,
-                  entity: "thread",
-                  id: threadId,
-                  mentionId: item.entity_id != null ? String(item.entity_id) : null,
-                })
+            // Threads always open in the middle/details pane so the right column stays free for AI.
+            const next = buildCenterPaneSelectionSearchParams({
+              currentSearchParams: currentParams,
+              entity: "thread",
+              id: threadId,
+              mentionId: item.entity_id != null ? String(item.entity_id) : null,
+            })
+            if (!isAiRightPane && next.get("rightView") === "ai") {
+              next.set("rightView", "details")
+              next.delete("taskAiOpen")
+            }
             shallowReplaceSearchParams(effectivePathname, next, "global-search-open-result")
           }
         } else if (detailTarget.entityType === "project" || detailTarget.entityType === "project_briefing") {
@@ -1285,20 +1319,20 @@ export function useGlobalSearchController({
         }
       } else {
         if (detailTarget.entityType === "mention") {
-          const threadId = optionalString(item.thread_id ?? item.raw.thread_id ?? item.raw.threadId)
+          const threadId =
+            optionalString(item.thread_id ?? item.raw.thread_id ?? item.raw.threadId) ??
+            optionalString(detailTarget.threadId)
           if (threadId) {
-            const next = isAiRightPane
-              ? buildCenterPaneSelectionSearchParams({
-                  currentSearchParams: currentParams,
-                  entity: "thread",
-                  id: threadId,
-                })
-              : buildRightPaneSelectionSearchParams({
-                  currentSearchParams: currentParams,
-                  entity: "thread",
-                  id: threadId,
-                  mentionId: detailTarget.mentionId,
-                })
+            const next = buildCenterPaneSelectionSearchParams({
+              currentSearchParams: currentParams,
+              entity: "thread",
+              id: threadId,
+              mentionId: detailTarget.mentionId,
+            })
+            if (!isAiRightPane && next.get("rightView") === "ai") {
+              next.set("rightView", "details")
+              next.delete("taskAiOpen")
+            }
             next.delete("itemKind")
             next.delete("focus")
             shallowReplaceSearchParams(effectivePathname, next, "global-search-open-result")
@@ -1374,7 +1408,9 @@ export function useGlobalSearchController({
       navigateWithParams,
       effectivePathname,
       currentUserId,
+      persistSearchTerm,
       queryClient,
+      searchDraftValue,
       searchParams,
       searchValue,
       setSelectedDetailTarget,

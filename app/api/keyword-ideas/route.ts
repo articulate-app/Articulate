@@ -2,6 +2,10 @@ import { NextRequest, NextResponse } from 'next/server';
 import { getFreshAccessToken, validateGoogleAdsConfig } from '../../lib/googleAdsAuth';
 import { createClientComponentClient } from '@supabase/auth-helpers-nextjs';
 import { getCurrentUser } from '../../../lib/utils/getCurrentUser';
+import {
+  parseMonthlySearchVolumes,
+  type KeywordMonthlySearchVolume,
+} from '../../lib/keyword-ideas-metrics';
 
 interface KeywordIdeasRequest {
   keyword: string;
@@ -14,6 +18,7 @@ interface KeywordIdea {
   keyword: string;
   avgMonthlySearches: number;
   competitionIndex: number;
+  monthlySearchVolumes: KeywordMonthlySearchVolume[];
 }
 
 interface KeywordIdeasResponse {
@@ -27,6 +32,7 @@ interface GoogleAdsKeywordIdea {
   keywordIdeaMetrics: {
     avgMonthlySearches: string;
     competitionIndex: string;
+    monthlySearchVolumes?: unknown;
   };
 }
 
@@ -229,6 +235,7 @@ export async function POST(request: NextRequest) {
             keyword: 'Unknown',
             avgMonthlySearches: 0,
             competitionIndex: 0,
+            monthlySearchVolumes: [],
           };
         }
         
@@ -236,6 +243,9 @@ export async function POST(request: NextRequest) {
           keyword: item.text || 'Unknown',
           avgMonthlySearches: parseInt(item.keywordIdeaMetrics?.avgMonthlySearches) || 0,
           competitionIndex: parseInt(item.keywordIdeaMetrics?.competitionIndex) || 0,
+          monthlySearchVolumes: parseMonthlySearchVolumes(
+            item.keywordIdeaMetrics?.monthlySearchVolumes,
+          ),
         };
       } catch (itemError) {
         console.warn(`Error processing keyword item at index ${index}:`, itemError, item);
@@ -243,6 +253,7 @@ export async function POST(request: NextRequest) {
           keyword: 'Unknown',
           avgMonthlySearches: 0,
           competitionIndex: 0,
+          monthlySearchVolumes: [],
         };
       }
     });

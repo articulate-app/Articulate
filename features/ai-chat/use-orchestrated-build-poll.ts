@@ -18,6 +18,20 @@ import {
   isTerminalAiOrchestratedBuildStatus,
 } from "../../app/lib/ai/ai-orchestrated-build-types"
 import { invalidateTaskChannelContentQueries } from "./invalidate-task-channel-content"
+import {
+  parseBuildComponentPreviewPayload,
+  useAiBuildComponentPreviewStore,
+} from "../../app/store/ai-build-component-preview-store"
+import {
+  isArtifactBuildEventType,
+  isArtifactCardContentEventType,
+  parseBuildArtifactPreviewPayload,
+  useAiBuildArtifactPreviewStore,
+} from "../../app/store/ai-build-artifact-preview-store"
+import { loadPersistedBuildAfterSequence } from "./orchestrated-build-sequence-persist"
+import { logArtifactBuildLegacyComponentRegression } from "./artifact-build-legacy-guard"
+import { useAiRequestPlanStore } from "../../app/store/ai-request-plan-store"
+import { ARTIFACT_BUILD_EXECUTOR } from "../../app/lib/ai/ai-orchestrated-build-types"
 
 const TERMINAL_UNIT_STATUSES = new Set<AiOrchestratedBuildUnitStatus>([
   "succeeded",
@@ -66,6 +80,137 @@ const SLOW_POLL_MS = 5000
 const BACKOFF_AFTER_MS = 30_000
 const STALE_PUMP_AFTER_MS = 30_000
 
+function isPreviewEventType(eventType: string): boolean {
+  const normalized = eventType.trim().toLowerCase()
+  return (
+    normalized === "preview"
+    || normalized === "work_unit.preview"
+    || normalized.endsWith(".preview")
+  )
+}
+
+function isComponentSavedEventType(eventType: string): boolean {
+  const normalized = eventType.trim().toLowerCase()
+  return (
+    normalized === "component.saved"
+    || normalized === "work_unit.component_saved"
+    || normalized === "unit.saved"
+    || (normalized.endsWith(".saved") && !normalized.includes("website_index"))
+  )
+}
+
+/**
+ * Apply live `work_unit.preview` / `component.saved` into the non-persisted preview store.
+ * Never writes into the canonical task-component output cache.
+ *
+ * Artifact builds continue after the originating chat stream closes — merge by
+ * build_id + unit_id + artifact_id from durable `artifact.*` events.
+ * Decision events (`plan_ready`, `started`, `context_loaded`, `structure_decided`)
+ * feed the execution timeline only — not live artifact cards.
+ */
+function applyBuildPreviewEventsFromSnapshot(
+  buildId: string,
+  snapshot: AiOrchestratedBuildSnapshot,
+  previousAfterSequence: number,
+  entry: {
+    threadId: string | null
+    assistantMessageIds: Record<string, true>
+  },
+) {
+  const previewStore = useAiBuildComponentPreviewStore.getState()
+  const artifactPreviewStore = useAiBuildArtifactPreviewStore.getState()
+  const assistantMessageId = Object.keys(entry.assistantMessageIds)[0] ?? null
+  const planExecutor = assistantMessageId
+    ? useAiRequestPlanStore.getState().getBucket(assistantMessageId)?.plan.executor ?? null
+    : null
+
+  for (const event of snapshot.events) {
+    if (event.sequence <= previousAfterSequence) continue
+    const type = event.event_type.toLowerCase()
+    const payload = (event.payload ?? {}) as Record<string, unknown>
+    const unitId =
+      (typeof event.unit_id === "string" && event.unit_id.trim())
+      || (typeof payload.unit_id === "string" && payload.unit_id.trim())
+      || "unit"
+
+    logArtifactBuildLegacyComponentRegression({
+      buildId,
+      eventType: event.event_type,
+      sequence: event.sequence,
+      executor: planExecutor,
+      unitId,
+    })
+
+    if (isArtifactBuildEventType(type)) {
+      // Timeline decision events are mapped by the execution-trace store — skip card upsert.
+      if (!isArtifactCardContentEventType(type)) continue
+      const artifactParsed = parseBuildArtifactPreviewPayload(payload)
+      if (artifactParsed.artifactId) {
+        artifactPreviewStore.upsertFromEvent({
+          buildId,
+          unitId,
+          artifactId: artifactParsed.artifactId,
+          sequence: event.sequence,
+          eventType: type,
+          taskId: artifactParsed.taskId,
+          aiThreadId: artifactParsed.aiThreadId ?? entry.threadId,
+          channelId: artifactParsed.channelId,
+          languageId: artifactParsed.languageId,
+          channelName: artifactParsed.channelName,
+          languageName: artifactParsed.languageName,
+          artifactType: artifactParsed.artifactType,
+          artifactRole: artifactParsed.artifactRole,
+          title: artifactParsed.title,
+          contentText: artifactParsed.contentText,
+          contentJson: artifactParsed.contentJson,
+          assetData: artifactParsed.assetData,
+          currentVersion: artifactParsed.currentVersion,
+          errorMessage: artifactParsed.errorMessage,
+          mediaItem: artifactParsed.mediaItem,
+          threadId: entry.threadId,
+          assistantMessageId,
+        })
+      }
+      continue
+    }
+
+    const parsed = parseBuildComponentPreviewPayload(payload)
+
+    // Artifact-first builds must not surface legacy component preview cards.
+    if (planExecutor === ARTIFACT_BUILD_EXECUTOR) continue
+
+    if (isPreviewEventType(type) && parsed.componentId) {
+      previewStore.upsertPreview({
+        buildId,
+        unitId,
+        componentId: parsed.componentId,
+        sequence: event.sequence,
+        taskId: parsed.taskId,
+        channelId: parsed.channelId,
+        title: parsed.title,
+        position: parsed.position,
+        contentText: parsed.contentText,
+        contentJson: parsed.contentJson,
+        threadId: entry.threadId,
+        assistantMessageId,
+      })
+      continue
+    }
+
+    if (isComponentSavedEventType(type) && parsed.componentId) {
+      previewStore.markSaved({
+        buildId,
+        unitId: typeof event.unit_id === "string" ? event.unit_id : unitId,
+        componentId: parsed.componentId,
+        sequence: event.sequence,
+        title: parsed.title,
+        contentText: parsed.contentText,
+        contentJson: parsed.contentJson,
+      })
+    }
+  }
+}
+
 function invalidateContentFromBuildSnapshot(
   queryClient: ReturnType<typeof useQueryClient>,
   snapshot: AiOrchestratedBuildSnapshot,
@@ -88,6 +233,12 @@ function invalidateContentFromBuildSnapshot(
   for (const event of snapshot.events) {
     if (event.sequence <= previousAfterSequence) continue
     const type = event.event_type.toLowerCase()
+    const isArtifactSaved =
+      type.includes("artifact.version_saved") || type === "artifact.saved"
+    if (isArtifactSaved) {
+      void queryClient.invalidateQueries({ queryKey: ["task-artifacts"] })
+      void queryClient.invalidateQueries({ queryKey: ["ai-thread-artifacts"] })
+    }
     const isSaved =
       type === "component.saved" || type === "unit.saved" || type.endsWith(".saved")
     const isReordered = isComponentsReorderedEventType(type)
@@ -146,12 +297,17 @@ async function reconcileBuild(
       try {
         const pumped = await pumpAiOrchestratedBuild({ buildId })
         if (pumped) {
-          store.applySnapshot({ buildId, snapshot: pumped, replaceFromZero: true })
-          if (options.queryClient) {
+          store.applySnapshot({
+            buildId,
+            snapshot: pumped,
+            replaceFromZero: previousAfterSequence <= 0,
+          })
+          applyBuildPreviewEventsFromSnapshot(buildId, pumped, previousAfterSequence, entry)
+          if (options?.queryClient) {
             invalidateContentFromBuildSnapshot(
               options.queryClient,
               pumped,
-              0,
+              previousAfterSequence,
               previousUnitsById,
             )
           }
@@ -162,22 +318,33 @@ async function reconcileBuild(
     }
 
     const latest = store.getBuild(buildId)
-    const afterSequence = options?.fromZero ? 0 : latest?.afterSequence ?? 0
+    // Resume from persisted/in-memory cursor unless we explicitly need a cold start.
+    const afterSequence =
+      options?.fromZero && (latest?.afterSequence ?? 0) <= 0
+        ? 0
+        : latest?.afterSequence ?? loadPersistedBuildAfterSequence(buildId)
     const unitsBeforeFetch = latest?.unitsById ?? previousUnitsById
     const snapshot = await fetchAiOrchestratedBuildSnapshot({
       buildId,
       afterSequence,
     })
+    const cursorBeforeApply = latest?.afterSequence ?? previousAfterSequence
     store.applySnapshot({
       buildId,
       snapshot,
-      replaceFromZero: options?.fromZero === true || afterSequence === 0,
+      replaceFromZero: afterSequence === 0,
     })
+    applyBuildPreviewEventsFromSnapshot(
+      buildId,
+      snapshot,
+      cursorBeforeApply,
+      latest ?? entry,
+    )
     if (options?.queryClient) {
       invalidateContentFromBuildSnapshot(
         options.queryClient,
         snapshot,
-        options.fromZero ? 0 : previousAfterSequence,
+        cursorBeforeApply,
         unitsBeforeFetch,
       )
     }
@@ -212,29 +379,29 @@ async function maybeStalePump(buildId: string) {
 }
 
 /**
- * Polls active orchestrated builds for the current thread.
+ * Polls active orchestrated builds across all threads.
+ * Build monitoring stays alive when the user opens another chat.
  * - Fast (2s) while units change; backs off to 5s after 30s idle.
  * - Pauses when the document is hidden; reconciles immediately on visible.
  * - On register/reload: fetch from sequence 0 once + one pump for lease recovery.
+ * - Stops at terminal status: completed / partially_completed / failed / cancelled.
  */
-export function useOrchestratedBuildPoll(threadId: string | null) {
+export function useOrchestratedBuildPoll(_threadId?: string | null) {
   const queryClient = useQueryClient()
   const builds = useAiOrchestratedBuildStore((state) => state.builds)
   const activeBuildIdsKey = useMemo(() => {
-    if (!threadId) return ""
     return Object.values(builds)
-      .filter((entry) => entry.threadId === threadId)
       .filter((entry) => !isTerminalAiOrchestratedBuildStatus(entry.build?.status ?? null))
       .map((entry) => entry.buildId)
       .sort()
       .join("|")
-  }, [builds, threadId])
+  }, [builds])
 
   const timersRef = useRef<Record<string, number>>({})
   const bootstrappedRef = useRef<Record<string, true>>({})
 
   useEffect(() => {
-    if (!threadId || !activeBuildIdsKey) {
+    if (!activeBuildIdsKey) {
       for (const timer of Object.values(timersRef.current)) window.clearTimeout(timer)
       timersRef.current = {}
       return
@@ -265,7 +432,11 @@ export function useOrchestratedBuildPoll(threadId: string | null) {
     for (const buildId of activeIds) {
       if (!bootstrappedRef.current[buildId]) {
         bootstrappedRef.current[buildId] = true
-        void reconcileBuild(buildId, { fromZero: true, pumpOnce: true, queryClient }).then(() =>
+        // Resume from persisted after_sequence when present; avoid replaying events.
+        const persisted = loadPersistedBuildAfterSequence(buildId)
+        const entry = useAiOrchestratedBuildStore.getState().getBuild(buildId)
+        const fromZero = (entry?.afterSequence ?? persisted) <= 0
+        void reconcileBuild(buildId, { fromZero, pumpOnce: true, queryClient }).then(() =>
           schedule(buildId),
         )
       } else if (!timersRef.current[buildId]) {
@@ -292,7 +463,7 @@ export function useOrchestratedBuildPoll(threadId: string | null) {
     return () => {
       document.removeEventListener("visibilitychange", onVisibility)
     }
-  }, [activeBuildIdsKey, queryClient, threadId])
+  }, [activeBuildIdsKey, queryClient])
 
   useEffect(() => {
     return () => {

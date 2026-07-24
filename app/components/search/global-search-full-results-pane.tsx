@@ -11,6 +11,7 @@ import {
 } from "../../lib/global-search-types"
 import { SearchResultRow } from "./SearchResultRow"
 import { MentionsFullResultsPane } from "./mentions-full-results-pane"
+import { ObjectListColumnHeader, getObjectListColumnHeaderLabels } from "./object-list-column-header"
 import { ObjectPaneScrollShell, objectPaneCenteredStateClass } from "./object-pane-content"
 
 const PAGE_SIZE = 25
@@ -188,44 +189,46 @@ export function GlobalSearchFullResultsPane({
 
   return (
     <ObjectPaneScrollShell scrollRef={scrollContainerRef}>
-        {fullResultsQuery.isLoading ? (
-          <div className={objectPaneCenteredStateClass()}>
-            <Loader2 className="h-4 w-4 animate-spin" />
-            Loading {getGlobalSearchEntityLabel(activeTab).toLowerCase()}...
+      {/* Same compact column header density as tasks; labels match this object type. */}
+      <ObjectListColumnHeader {...getObjectListColumnHeaderLabels(activeTab)} />
+      {fullResultsQuery.isLoading ? (
+        <div className={objectPaneCenteredStateClass()}>
+          <Loader2 className="h-4 w-4 animate-spin" />
+          Loading {getGlobalSearchEntityLabel(activeTab).toLowerCase()}...
+        </div>
+      ) : fullResultsQuery.isError && !hasAbortError ? (
+        <div className={cn(objectPaneCenteredStateClass(), "text-red-500")}>
+          Unable to load {getGlobalSearchEntityLabel(activeTab).toLowerCase()} results.
+        </div>
+      ) : hasFetched && items.length === 0 ? (
+        <div className={objectPaneCenteredStateClass()}>
+          No {getGlobalSearchEntityLabel(activeTab).toLowerCase()} results found.
+        </div>
+      ) : !hasFetched || hasAbortError ? (
+        <div className={objectPaneCenteredStateClass()}>
+          <Loader2 className="h-4 w-4 animate-spin" />
+          Loading {getGlobalSearchEntityLabel(activeTab).toLowerCase()}...
+        </div>
+      ) : (
+        <div className="flex min-h-full flex-col">
+          <div className="divide-y divide-gray-200">
+            {items.map((item, index) => (
+              <SearchResultRow
+                key={buildScopedResultKey(viewScope, "list", item, index)}
+                item={item}
+                onSelect={onResultSelect}
+              />
+            ))}
           </div>
-        ) : fullResultsQuery.isError && !hasAbortError ? (
-          <div className={cn(objectPaneCenteredStateClass(), "text-red-500")}>
-            Unable to load {getGlobalSearchEntityLabel(activeTab).toLowerCase()} results.
-          </div>
-        ) : hasFetched && items.length === 0 ? (
-          <div className={objectPaneCenteredStateClass()}>
-            No {getGlobalSearchEntityLabel(activeTab).toLowerCase()} results found.
-          </div>
-        ) : !hasFetched || hasAbortError ? (
-          <div className={objectPaneCenteredStateClass()}>
-            <Loader2 className="h-4 w-4 animate-spin" />
-            Loading {getGlobalSearchEntityLabel(activeTab).toLowerCase()}...
-          </div>
-        ) : (
-          <div className="flex min-h-full flex-col">
-            <div className="divide-y divide-gray-200">
-              {items.map((item, index) => (
-                <SearchResultRow
-                  key={buildScopedResultKey(viewScope, "list", item, index)}
-                  item={item}
-                  onSelect={onResultSelect}
-                />
-              ))}
+          <div ref={sentinelRef} />
+          {fullResultsQuery.isFetchingNextPage ? (
+            <div className="flex items-center justify-center gap-2 py-4 text-sm text-gray-500">
+              <Loader2 className="h-4 w-4 animate-spin" />
+              Loading more...
             </div>
-            <div ref={sentinelRef} />
-            {fullResultsQuery.isFetchingNextPage ? (
-              <div className="flex items-center justify-center gap-2 py-4 text-sm text-gray-500">
-                <Loader2 className="h-4 w-4 animate-spin" />
-                Loading more...
-              </div>
-            ) : null}
-          </div>
-        )}
+          ) : null}
+        </div>
+      )}
     </ObjectPaneScrollShell>
   )
 }

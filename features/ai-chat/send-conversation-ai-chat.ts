@@ -12,6 +12,7 @@ import {
   type AiChatChangePreviewEvent,
   type AiChatComponentLibraryTraceEvent,
   type AiChatComponentPlanTraceEvent,
+  type AiChatExecutionTraceEvent,
   type AiChatRequestPlanEvent,
 } from "../../app/lib/ai/chat"
 import { getSupabaseBrowser } from "../../lib/supabase-browser"
@@ -44,6 +45,10 @@ import {
   selectedContextTypeForSource,
   type AiSelectedTextContext,
 } from "./ai-chat-text-selection"
+import type {
+  ArtifactSelectedContextType,
+  SelectedArtifactContext,
+} from "../../app/lib/artifacts/artifact-types"
 import { parseAiChatErrorPayload } from "./ai-chat-usage"
 import {
   createAiChatRunDiagnosticsTracker,
@@ -83,6 +88,8 @@ export type SendConversationAiChatStreamCallbacks = {
   onComponentPlanTraceEvent?: (tempId: string, event: AiChatComponentPlanTraceEvent) => void
   /** Request Plan V3 execution audit (`__AI_REQUEST_PLAN__`). */
   onRequestPlanEvent?: (tempId: string, event: AiChatRequestPlanEvent) => void
+  /** Progressive execution timeline (`__AI_EXECUTION_TRACE__`). */
+  onExecutionTraceEvent?: (tempId: string, event: AiChatExecutionTraceEvent) => void
   /** Protocol V2 run events (terminal state, target progress, ambiguity). */
   onAiChatV2RunEvent?: (tempId: string, event: AiChatV2RunEvent) => void
   /** Captured immediately from response headers / JSON before the stream body is consumed. */
@@ -123,6 +130,9 @@ export type SendConversationAiChatStreamArgs = {
   modelKey?: AiChatModelKey | null
   /** Highlighted source text ("Ask/Edit selected text with AI"). Source material, not a write instruction. */
   selectedTextContext?: AiSelectedTextContext | null
+  /** Artifact selection context (text/block/media). Source material, not an automatic edit. */
+  selectedArtifactContext?: SelectedArtifactContext | null
+  selectedArtifactContextType?: ArtifactSelectedContextType | null
   autoRun: boolean
   stream: boolean
   clarificationResponse?: {
@@ -173,6 +183,8 @@ export async function sendConversationAiChatStream(args: SendConversationAiChatS
     ambientContext,
     modelKey,
     selectedTextContext,
+    selectedArtifactContext,
+    selectedArtifactContextType,
     autoRun,
     stream,
     clarificationResponse,
@@ -197,6 +209,7 @@ export async function sendConversationAiChatStream(args: SendConversationAiChatS
     onComponentLibraryTraceEvent,
     onComponentPlanTraceEvent,
     onRequestPlanEvent,
+    onExecutionTraceEvent,
     onAiChatV2RunEvent,
     onRunId,
     onRunTerminalState,
@@ -248,6 +261,11 @@ export async function sendConversationAiChatStream(args: SendConversationAiChatS
   const selectedTextContextType = sanitizedSelectedTextContext
     ? selectedContextTypeForSource(sanitizedSelectedTextContext.source_type)
     : null
+
+  const sanitizedSelectedArtifactContext = (() => {
+    if (!selectedArtifactContext?.artifact_id?.trim()) return null
+    return selectedArtifactContext
+  })()
 
   const isManualStreamingInteraction = stream
   let streamAssistantTempId: string | null = null
@@ -309,15 +327,29 @@ export async function sendConversationAiChatStream(args: SendConversationAiChatS
           ...(writableTaskComponentOutputId
             ? { task_component_output_id: writableTaskComponentOutputId }
             : {}),
-          ...(sanitizedSelectedTextContext
-            ? { selected_context_type: selectedTextContextType }
-            : selectedContextType && selectedContextType !== "general"
-              ? { selected_context_type: selectedContextType }
-              : {}),
+          ...(sanitizedSelectedArtifactContext
+            ? {
+                selected_context_type:
+                  selectedArtifactContextType
+                  ?? selectedContextType
+                  ?? "artifact_document",
+              }
+            : sanitizedSelectedTextContext
+              ? { selected_context_type: selectedTextContextType }
+              : selectedContextType && selectedContextType !== "general"
+                ? { selected_context_type: selectedContextType }
+                : {}),
           ...(selectedComponentLabel ? { selected_component_label: selectedComponentLabel } : {}),
-          context_source: sanitizedSelectedTextContext ? "text_selection" : contextSource ?? "none",
+          context_source: sanitizedSelectedArtifactContext
+            ? "text_selection"
+            : sanitizedSelectedTextContext
+              ? "text_selection"
+              : contextSource ?? "none",
           ...(sanitizedSelectedTextContext
             ? { selected_text_context: sanitizedSelectedTextContext }
+            : {}),
+          ...(sanitizedSelectedArtifactContext
+            ? { selected_artifact_context: sanitizedSelectedArtifactContext }
             : {}),
           model_key: modelKey ?? DEFAULT_AI_CHAT_MODEL_KEY,
           ...(ambientContext ? { ambient_context: ambientContext } : {}),
@@ -559,6 +591,9 @@ export async function sendConversationAiChatStream(args: SendConversationAiChatS
           },
           onRequestPlanEvent: (event) => {
             onRequestPlanEvent?.(assistantId, event)
+          },
+          onExecutionTraceEvent: (event) => {
+            onExecutionTraceEvent?.(assistantId, event)
           },
         })
       } catch (consumeErr) {

@@ -83,6 +83,8 @@ export interface ConsumeTextStreamHandlers {
   onComponentPlanTraceEvent?: (event: AiChatComponentPlanTraceEvent) => void
   /** Request Plan V3 execution audit from `__AI_REQUEST_PLAN__` (never shown as assistant text). */
   onRequestPlanEvent?: (event: AiChatRequestPlanEvent) => void
+  /** Progressive execution timeline from `__AI_EXECUTION_TRACE__` (never shown as assistant text). */
+  onExecutionTraceEvent?: (event: AiChatExecutionTraceEvent) => void
   /** Protocol V2 run lifecycle events (`message.completed`, `run.failed`, target progress, …). */
   onAiChatV2RunEvent?: (event: AiChatV2RunEvent) => void
   /** Fired when an `__AI_STATUS__` payload passes sequence dedupe and will be processed. */
@@ -147,6 +149,7 @@ export type ComponentEditPatch = {
 export type AiChatComponentEditPreviewEvent = {
   type: "component_edit_preview"
   phase: "started" | "delta" | "completed" | "saved" | "failed"
+  ok?: boolean | null
   preview_key?: string | null
   task_id: number
   channel_id: number
@@ -215,7 +218,7 @@ export type AiChatChangePreviewEvent = {
 export type AiChatThreadTitleEvent =
   | { type: "thread_title"; phase: "started" }
   | { type: "thread_title"; phase: "delta"; delta: string }
-  | { type: "thread_title"; phase: "completed"; title?: string }
+  | { type: "thread_title"; phase: "completed"; title?: string | null }
 
 export type AiChatAssetEvent = Record<string, unknown>
 export type AiChatComponentOutputEvent = Record<string, unknown>
@@ -226,6 +229,8 @@ export type AiChatComponentLibraryTraceEvent = Record<string, unknown>
 export type AiChatComponentPlanTraceEvent = Record<string, unknown>
 /** Raw `__AI_REQUEST_PLAN__` payload; normalized downstream in the ai-chat feature layer. */
 export type AiChatRequestPlanEvent = Record<string, unknown>
+/** Raw `__AI_EXECUTION_TRACE__` payload; normalized downstream in the ai-chat feature layer. */
+export type AiChatExecutionTraceEvent = Record<string, unknown>
 
 const AI_STATUS_PREFIX = "__AI_STATUS__"
 const AI_ACTION_PREFIX = "__AI_ACTION__"
@@ -238,6 +243,7 @@ const AI_CHANGE_PREVIEW_PREFIX = "__AI_CHANGE_PREVIEW__"
 const AI_COMPONENT_LIBRARY_TRACE_PREFIX = "__AI_COMPONENT_LIBRARY_TRACE__"
 const AI_COMPONENT_PLAN_TRACE_PREFIX = "__AI_COMPONENT_PLAN_TRACE__"
 const AI_REQUEST_PLAN_PREFIX = "__AI_REQUEST_PLAN__"
+const AI_EXECUTION_TRACE_PREFIX = "__AI_EXECUTION_TRACE__"
 const AI_MESSAGE_OUTPUT_PREFIX = "__AI_MESSAGE_OUTPUT__"
 const ASSET_PLACEHOLDER_PATTERN = /\[\[asset:[a-zA-Z0-9_-]+\]\]/g
 
@@ -491,6 +497,24 @@ function processAiRequestPlanJsonPayload(
   }
 }
 
+function processAiExecutionTraceJsonPayload(
+  jsonPayload: string,
+  handlers: ConsumeTextStreamHandlers,
+): void {
+  try {
+    const parsed = JSON.parse(jsonPayload) as Record<string, unknown>
+    console.debug("[ai-chat] __AI_EXECUTION_TRACE__ parsed", {
+      step_id: typeof parsed.step_id === "string" ? parsed.step_id : null,
+      phase: typeof parsed.phase === "string" ? parsed.phase : null,
+      category: typeof parsed.category === "string" ? parsed.category : null,
+      sequence: typeof parsed.sequence === "number" ? parsed.sequence : null,
+    })
+    handlers.onExecutionTraceEvent?.(parsed)
+  } catch {
+    /* ignore malformed */
+  }
+}
+
 function processAiComponentOutputJsonPayload(
   jsonPayload: string,
   handlers: ConsumeTextStreamHandlers
@@ -662,6 +686,7 @@ export function parseComponentEditPreviewEvent(
   return {
     type: "component_edit_preview",
     phase: phaseRaw,
+    ok: typeof parsed.ok === "boolean" ? parsed.ok : null,
     preview_key:
       typeof parsed.preview_key === "string" && parsed.preview_key.trim().length > 0
         ? parsed.preview_key.trim()
@@ -945,6 +970,18 @@ export function parseClarificationRequestAction(
     ...(Object.prototype.hasOwnProperty.call(parsed, "pending_request")
       ? { pending_request: parsed.pending_request }
       : {}),
+    request_plan_id: (() => {
+      if (typeof parsed.request_plan_id === "string" && parsed.request_plan_id.trim()) {
+        return parsed.request_plan_id.trim()
+      }
+      const pending =
+        parsed.pending_request && typeof parsed.pending_request === "object"
+          ? (parsed.pending_request as Record<string, unknown>)
+          : null
+      return typeof pending?.request_plan_id === "string" && pending.request_plan_id.trim()
+        ? pending.request_plan_id.trim()
+        : null
+    })(),
     task_id: taskId,
     channel_id: channelId,
     component_id: componentId,
@@ -1018,6 +1055,9 @@ function parseThreadTitleEvent(parsed: Record<string, unknown>): AiChatThreadTit
     return { type: "thread_title", phase: "delta", delta }
   }
   if (phase === "completed") {
+    if (parsed.title === null) {
+      return { type: "thread_title", phase: "completed", title: null }
+    }
     const title = typeof parsed.title === "string" ? parsed.title : undefined
     return { type: "thread_title", phase: "completed", title }
   }
@@ -1124,6 +1164,7 @@ export async function consumeTextStream(
       const componentLibraryTraceIdx = mixedPlainBuffer.indexOf(AI_COMPONENT_LIBRARY_TRACE_PREFIX)
       const componentPlanTraceIdx = mixedPlainBuffer.indexOf(AI_COMPONENT_PLAN_TRACE_PREFIX)
       const requestPlanIdx = mixedPlainBuffer.indexOf(AI_REQUEST_PLAN_PREFIX)
+      const executionTraceIdx = mixedPlainBuffer.indexOf(AI_EXECUTION_TRACE_PREFIX)
       const messageOutputIdx = mixedPlainBuffer.indexOf(AI_MESSAGE_OUTPUT_PREFIX)
 
       let sentinelIndex = -1
@@ -1138,6 +1179,7 @@ export async function consumeTextStream(
         | "component_library_trace"
         | "component_plan_trace"
         | "request_plan"
+        | "execution_trace"
         | "message_output"
         | null = null
       const candidates: Array<{
@@ -1153,6 +1195,7 @@ export async function consumeTextStream(
           | "component_library_trace"
           | "component_plan_trace"
           | "request_plan"
+          | "execution_trace"
           | "message_output"
       }> = []
       if (statusIdx >= 0) candidates.push({ idx: statusIdx, kind: "status" })
@@ -1175,6 +1218,9 @@ export async function consumeTextStream(
       }
       if (requestPlanIdx >= 0) {
         candidates.push({ idx: requestPlanIdx, kind: "request_plan" })
+      }
+      if (executionTraceIdx >= 0) {
+        candidates.push({ idx: executionTraceIdx, kind: "execution_trace" })
       }
       if (messageOutputIdx >= 0) candidates.push({ idx: messageOutputIdx, kind: "message_output" })
       if (candidates.length > 0) {
@@ -1201,6 +1247,7 @@ export async function consumeTextStream(
           maxSuffixMatchingSentinelPrefix(mixedPlainBuffer, AI_COMPONENT_LIBRARY_TRACE_PREFIX),
           maxSuffixMatchingSentinelPrefix(mixedPlainBuffer, AI_COMPONENT_PLAN_TRACE_PREFIX),
           maxSuffixMatchingSentinelPrefix(mixedPlainBuffer, AI_REQUEST_PLAN_PREFIX),
+          maxSuffixMatchingSentinelPrefix(mixedPlainBuffer, AI_EXECUTION_TRACE_PREFIX),
           maxSuffixMatchingSentinelPrefix(mixedPlainBuffer, AI_MESSAGE_OUTPUT_PREFIX)
         )
         const safeFlushLength = mixedPlainBuffer.length - hold
@@ -1239,7 +1286,9 @@ export async function consumeTextStream(
                           ? AI_COMPONENT_PLAN_TRACE_PREFIX
                           : kind === "request_plan"
                             ? AI_REQUEST_PLAN_PREFIX
-                            : AI_MESSAGE_OUTPUT_PREFIX
+                            : kind === "execution_trace"
+                              ? AI_EXECUTION_TRACE_PREFIX
+                              : AI_MESSAGE_OUTPUT_PREFIX
       if (mixedPlainBuffer.length < prefix.length) return
 
       let cursor = prefix.length
@@ -1278,6 +1327,8 @@ export async function consumeTextStream(
         processAiComponentPlanTraceJsonPayload(parsedObject.raw, handlers)
       } else if (kind === "request_plan") {
         processAiRequestPlanJsonPayload(parsedObject.raw, handlers)
+      } else if (kind === "execution_trace") {
+        processAiExecutionTraceJsonPayload(parsedObject.raw, handlers)
       } else {
         processAiMessageOutputJsonPayload(parsedObject.raw, handlers)
       }
@@ -1349,6 +1400,10 @@ export async function consumeTextStream(
         }
         if (po.type === "request_plan") {
           handlers.onRequestPlanEvent?.(po)
+          return
+        }
+        if (po.type === "execution_trace") {
+          handlers.onExecutionTraceEvent?.(po)
           return
         }
         if (po.type === "message_output") {

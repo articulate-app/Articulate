@@ -3,12 +3,22 @@ import {
   collectCandidatesConsidered,
   countResolvedTargets,
   countUnresolvedChoices,
+  isApplyComponentStructureOperation,
+  isBuildTaskContentOperation,
+  isPlanComponentStructureOperation,
+  mergeOrchestratedBuildIntoRequestPlan,
   mergeRequestPlan,
   normalizeRequestPlan,
+  normalizeRequestPlanStatus,
   normalizeRequestPlanStreamEvent,
   parseRequestPlanFromMessage,
+  requestPlanAllowsOrchestratedBuildCard,
   requestPlanOperationLabel,
+  requestPlanShowsCompletion,
   requestPlanStatusLabel,
+  resolveRequestPlanDisplayStatus,
+  sanitizeRequestPlanResultSummary,
+  formatRequestPlanKeyValueRows,
 } from "../features/ai-chat/request-plan"
 import { useAiRequestPlanStore } from "../app/store/ai-request-plan-store"
 
@@ -122,13 +132,102 @@ describe("request plan display helpers", () => {
     expect(requestPlanStatusLabel("planning")).toBe("Resolving request")
     expect(requestPlanStatusLabel("waiting_for_input")).toBe("Needs your input")
     expect(requestPlanStatusLabel("ready")).toBe("Ready to run")
-    expect(requestPlanStatusLabel("executing")).toBe("Applying changes")
-    expect(requestPlanStatusLabel("completed")).toBe("Completed")
+    expect(requestPlanStatusLabel("executing")).toBe("Build running")
+    expect(requestPlanStatusLabel("dispatch_started")).toBe("Build queued")
+    expect(requestPlanStatusLabel("queued")).toBe("Build queued")
+    expect(requestPlanStatusLabel("running")).toBe("Build running")
+    expect(requestPlanStatusLabel("completed")).toBe("Build completed")
     expect(requestPlanStatusLabel("partially_completed")).toBe("Partially completed")
-    expect(requestPlanStatusLabel("failed")).toBe("Failed")
+    expect(requestPlanStatusLabel("failed")).toBe("Build failed")
     expect(requestPlanStatusLabel("cancelled")).toBe("Cancelled")
     expect(requestPlanStatusLabel("expired")).toBe("Expired")
     expect(requestPlanOperationLabel("build_task_content")).toBe("Build task content")
+    expect(requestPlanOperationLabel("plan_component_structure")).toBe("Plan component structure")
+    expect(requestPlanOperationLabel("apply_component_structure")).toBe("Apply component structure")
+  })
+
+  it("treats dispatch_started / execution_phase as queued or running, never completed", () => {
+    expect(normalizeRequestPlanStatus("dispatch_started")).toBe("queued")
+    expect(requestPlanShowsCompletion("dispatch_started")).toBe(false)
+    expect(requestPlanShowsCompletion("executing")).toBe(false)
+    expect(requestPlanShowsCompletion("completed")).toBe(true)
+
+    const queued = normalizeRequestPlan({
+      plan_id: "plan-d",
+      status: "executing",
+      arguments: { execution_phase: "queued" },
+      resolved_inputs: { build_id: "11111111-1111-4111-8111-111111111111" },
+    })
+    expect(queued?.executionPhase).toBe("queued")
+    expect(queued?.buildId).toBe("11111111-1111-4111-8111-111111111111")
+    expect(resolveRequestPlanDisplayStatus(queued!).label).toBe("Build queued")
+
+    const running = normalizeRequestPlan({
+      plan_id: "plan-r",
+      status: "executing",
+      arguments: { execution_phase: "running" },
+    })
+    expect(resolveRequestPlanDisplayStatus(running!).label).toBe("Build running")
+
+    const completed = normalizeRequestPlan({ ...PLAN_PAYLOAD, status: "completed" })!
+    const merged = mergeRequestPlan(completed, normalizeRequestPlan({
+      ...PLAN_PAYLOAD,
+      status: "dispatch_started",
+      arguments: { execution_phase: "queued" },
+    })!)
+    expect(merged.status).toBe("completed")
+  })
+
+  it("merges orchestrated build terminal state into the plan display", () => {
+    const plan = normalizeRequestPlan({
+      plan_id: "plan-b",
+      status: "executing",
+      arguments: { execution_phase: "running" },
+      resolved_inputs: { build_id: "build-1" },
+    })!
+    const failed = mergeOrchestratedBuildIntoRequestPlan(plan, {
+      status: "failed",
+      failed_units: 1,
+      succeeded_units: 0,
+      total_units: 1,
+    })
+    expect(failed.executionPhase).toBe("failed")
+    expect(failed.status).toBe("failed")
+    expect(resolveRequestPlanDisplayStatus(failed).isFailed).toBe(true)
+
+    const done = mergeOrchestratedBuildIntoRequestPlan(plan, {
+      status: "completed",
+      succeeded_units: 1,
+      failed_units: 0,
+      total_units: 1,
+    })
+    expect(done.executionPhase).toBe("completed")
+    expect(resolveRequestPlanDisplayStatus(done).isSuccess).toBe(true)
+  })
+
+  it("omits ai_start_orchestrated_build from successful content operations", () => {
+    const sanitized = sanitizeRequestPlanResultSummary({
+      successful_tools: ["ai_start_orchestrated_build", "edit_component"],
+      build_state: "failed",
+    })
+    expect(sanitized.successful_tools).toEqual(["edit_component"])
+    const rows = formatRequestPlanKeyValueRows({
+      successful_tools: ["ai_start_orchestrated_build"],
+      build_state: "failed",
+    })
+    expect(rows.some((row) => row.key === "successful_tools")).toBe(false)
+    expect(rows.find((row) => row.key === "build_state")?.value).toBe("failed")
+  })
+
+  it("gates orchestrated-build cards by structure/build operations", () => {
+    expect(isPlanComponentStructureOperation("plan_component_structure")).toBe(true)
+    expect(isApplyComponentStructureOperation("apply_component_structure")).toBe(true)
+    expect(isBuildTaskContentOperation("build_task_content")).toBe(true)
+    expect(requestPlanAllowsOrchestratedBuildCard("plan_component_structure")).toBe(false)
+    expect(requestPlanAllowsOrchestratedBuildCard("apply_component_structure")).toBe(false)
+    expect(requestPlanAllowsOrchestratedBuildCard("build_task_content")).toBe(true)
+    expect(requestPlanAllowsOrchestratedBuildCard("edit_component")).toBe(true)
+    expect(requestPlanAllowsOrchestratedBuildCard(null)).toBe(true)
   })
 
   it("counts resolved targets, unresolved choices, and candidates", () => {
@@ -190,5 +289,35 @@ describe("useAiRequestPlanStore", () => {
       plan: normalizeRequestPlan({ ...PLAN_PAYLOAD, status: "planning" }),
     })
     expect(useAiRequestPlanStore.getState().buckets["assistant-1"]?.plan.status).toBe("completed")
+  })
+
+  it("merges stream updates for the same plan_id onto one pending-plan bucket", () => {
+    useAiRequestPlanStore.getState().upsertFromStreamEvent({
+      threadId: "thread-1",
+      assistantMessageId: "temp-a",
+      payload: {
+        type: "request_plan",
+        phase: "planning",
+        plan: { ...PLAN_PAYLOAD, operation: "plan_component_structure", status: "planning" },
+      },
+    })
+    useAiRequestPlanStore.getState().upsertFromStreamEvent({
+      threadId: "thread-1",
+      assistantMessageId: "temp-b",
+      payload: {
+        type: "request_plan",
+        phase: "waiting_for_input",
+        plan: {
+          ...PLAN_PAYLOAD,
+          operation: "plan_component_structure",
+          status: "waiting_for_input",
+        },
+      },
+    })
+    const buckets = useAiRequestPlanStore.getState().buckets
+    expect(buckets["temp-a"]).toBeUndefined()
+    expect(buckets["temp-b"]?.plan.planId).toBe("plan-111")
+    expect(buckets["temp-b"]?.plan.status).toBe("waiting_for_input")
+    expect(Object.keys(buckets)).toHaveLength(1)
   })
 })

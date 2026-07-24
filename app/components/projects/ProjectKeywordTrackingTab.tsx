@@ -40,6 +40,16 @@ import {
   DialogHeader,
   DialogTitle,
 } from "../ui/dialog"
+import {
+  CHART_LINE_STROKE,
+  formatChartAxisDate,
+} from "./chart-date-range-footer"
+import {
+  ChartPreviewDateRangeButton,
+  ChartPreviewHoverActions,
+} from "./chart-preview-hover-actions"
+import { AddDashedButton } from "../ui/add-dashed-button"
+import { cn } from "@/lib/utils"
 
 interface DateRangeValue {
   from?: Date
@@ -48,8 +58,8 @@ interface DateRangeValue {
 
 interface ProjectKeywordTrackingTabProps {
   projectId: number
-  /** Overview embed: global rankings chart only. */
-  variant?: "full" | "preview"
+  /** Overview embed: chart + keyword picker. Manage: list/add only. */
+  variant?: "full" | "preview" | "manage"
   dateRange?: DateRangeValue
   onDateRangeChange?: (range: DateRangeValue) => void
 }
@@ -103,19 +113,13 @@ const LANGUAGE_OPTIONS: { code: string; label: string }[] = [
   { code: "DE", label: "German" },
 ]
 
-const getDefaultDateRange = (): DateRangeValue => {
+const getDefaultDateRange = (days = 29): DateRangeValue => {
   const today = new Date()
-  const from = subDays(today, 29)
+  const from = subDays(today, days)
   return { from, to: today }
 }
 
-const formatShortDate = (dateStr: string) => {
-  try {
-    return format(new Date(dateStr), "MMM d")
-  } catch {
-    return dateStr
-  }
-}
+const formatShortDate = (dateStr: string) => formatChartAxisDate(dateStr)
 
 const mapRegionName = (regionCode: string | null) => {
   if (!regionCode || regionCode === "") return "Any"
@@ -146,6 +150,7 @@ export function ProjectKeywordTrackingTab({
   onDateRangeChange,
 }: ProjectKeywordTrackingTabProps) {
   const isPreview = variant === "preview"
+  const isManage = variant === "manage"
   const supabase = useMemo(() => createClient(), [])
   const queryClient = useQueryClient()
   const functionsClient = useMemo(() => createClientComponentClient(), [])
@@ -157,11 +162,12 @@ export function ProjectKeywordTrackingTab({
   const [newLanguage, setNewLanguage] = useState<string>("any")
   const [newRegion, setNewRegion] = useState<string>("any")
   const [isAdding, setIsAdding] = useState(false)
+  const [showPreviewAddForm, setShowPreviewAddForm] = useState(false)
   const [isSyncing, setIsSyncing] = useState(false)
   const [selectedKeywordId, setSelectedKeywordId] = useState<number | null>(null)
   const [isDetailsOpen, setIsDetailsOpen] = useState(false)
   const [uncontrolledDateRange, setUncontrolledDateRange] = useState<DateRangeValue>(() =>
-    getDefaultDateRange(),
+    getDefaultDateRange(isPreview ? 6 : 29),
   )
   const dateRange = controlledDateRange ?? uncontrolledDateRange
   const setDateRange = onDateRangeChange ?? setUncontrolledDateRange
@@ -392,6 +398,7 @@ export function ProjectKeywordTrackingTab({
       })
 
       setNewKeyword("")
+      setShowPreviewAddForm(false)
 
       if (data?.id) {
         setSelectedKeywordId(data.id as number)
@@ -483,9 +490,15 @@ export function ProjectKeywordTrackingTab({
     ? keywords!.find((row) => row.project_keyword_id === selectedKeywordId) || null
     : null
 
-  // Auto-open details pane when landing on ?tab=keywords&keywordId=XYZ
+  // Preview: auto-select first keyword so chart + SERP stay in-page.
   useEffect(() => {
-    if (!isClient || !hasKeywords) return
+    if (!isPreview || !hasKeywords || selectedKeywordId != null) return
+    setSelectedKeywordId(keywords![0].project_keyword_id)
+  }, [hasKeywords, isPreview, keywords, selectedKeywordId])
+
+  // Full tab: auto-open details pane when landing on ?keywordId=XYZ
+  useEffect(() => {
+    if (!isClient || !hasKeywords || isPreview) return
 
     const keywordIdParam = searchParams.get("keywordId")
     const keywordId = keywordIdParam ? Number(keywordIdParam) : null
@@ -498,7 +511,7 @@ export function ProjectKeywordTrackingTab({
 
     setSelectedKeywordId(keywordId)
     setIsDetailsOpen(true)
-  }, [isClient, hasKeywords, keywords, searchParams])
+  }, [isClient, hasKeywords, isPreview, keywords, searchParams])
 
   const detailsPane =
     selectedKeywordRow && isDetailsOpen && isClient
@@ -641,7 +654,7 @@ export function ProjectKeywordTrackingTab({
                         <Line
                           type="monotone"
                           dataKey="displayRank"
-                          stroke="#7c3aed"
+                          stroke={CHART_LINE_STROKE}
                           strokeWidth={2}
                           dot={{ r: 3 }}
                           activeDot={{ r: 4 }}
@@ -841,7 +854,8 @@ export function ProjectKeywordTrackingTab({
                 <Line
                   type="monotone"
                   dataKey="best_rank"
-                  stroke="#2563eb"
+                  stroke={CHART_LINE_STROKE}
+                  strokeOpacity={0.45}
                   strokeWidth={2}
                   dot={false}
                   activeDot={{ r: 4 }}
@@ -851,7 +865,7 @@ export function ProjectKeywordTrackingTab({
                 type="monotone"
                 dataKey="avg_rank"
                 name={isPreview ? "Avg rank" : "avg_rank"}
-                stroke="#10b981"
+                stroke={CHART_LINE_STROKE}
                 strokeWidth={2}
                 dot={false}
                 activeDot={{ r: 4 }}
@@ -863,240 +877,477 @@ export function ProjectKeywordTrackingTab({
     </Card>
   )
 
+  const serpSnapshotBlock = selectedKeywordRow ? (
+    <div className="space-y-2">
+      <div className="text-[11px] font-medium text-gray-500">
+        {snapshot?.check_date
+          ? `Top results · ${format(new Date(snapshot.check_date), "MMM d, yyyy")}`
+          : "Top results"}
+      </div>
+      {isSnapshotLoading ? (
+        <div className="flex items-center gap-2 py-4 text-xs text-gray-500">
+          <Loader2 className="h-3.5 w-3.5 animate-spin" />
+          Loading SERP data…
+        </div>
+      ) : snapshotError ? (
+        <p className="text-xs text-red-600">{snapshotError}</p>
+      ) : !snapshot ? (
+        <p className="text-xs text-gray-500">No SERP data for this date.</p>
+      ) : (
+        <div className="divide-y divide-gray-100 rounded-md border border-gray-100">
+          {Array.isArray(snapshot.top_results)
+            ? (snapshot.top_results as any[]).slice(0, 5).map((res: any, idx: number) => {
+                const link = String(res.link || "")
+                const isOurUrl =
+                  (snapshot.found_url && link === snapshot.found_url) ||
+                  (snapshot.found_domain &&
+                    (() => {
+                      try {
+                        return new URL(link).hostname === snapshot.found_domain
+                      } catch {
+                        return false
+                      }
+                    })())
+                return (
+                  <div
+                    key={`${link}-${idx}`}
+                    className={cn("px-3 py-2", isOurUrl && "bg-gray-50")}
+                  >
+                    <div className="text-xs font-medium text-gray-900">
+                      {(res.position ?? idx + 1) + ". "}
+                      {res.title || "Untitled"}
+                      {isOurUrl ? (
+                        <span className="ml-1.5 text-[10px] font-medium text-gray-500">
+                          Your site
+                        </span>
+                      ) : null}
+                    </div>
+                    {link ? (
+                      <a
+                        href={link}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className="mt-0.5 block truncate text-[11px] text-gray-500 hover:text-gray-700"
+                        title={link}
+                      >
+                        {shortenUrl(link)}
+                      </a>
+                    ) : null}
+                  </div>
+                )
+              })
+            : null}
+        </div>
+      )}
+    </div>
+  ) : null
+
   if (isPreview) {
-    return <div className="min-w-0">{globalRankingsCard}</div>
+    const showKeywordChart = !!selectedKeywordId
+    // Range control only when keywords exist (chart surface is available).
+    const chartAvailable = hasKeywords
+
+    if (isLoadingKeywords) {
+      return (
+        <div className="flex items-center gap-2 text-sm text-gray-500">
+          <Loader2 className="h-4 w-4 animate-spin" />
+          Loading…
+        </div>
+      )
+    }
+
+    if (!hasKeywords) {
+      return (
+        <div className="min-w-0 space-y-3">
+          {showPreviewAddForm ? (
+            <div className="space-y-3 rounded-lg border border-dashed border-gray-200 p-3">
+              <div className="space-y-1">
+                <Label htmlFor="overview-new-keyword" className="text-xs">
+                  Keyword
+                </Label>
+                <Input
+                  id="overview-new-keyword"
+                  placeholder="e.g. best seo agency lisbon"
+                  value={newKeyword}
+                  onChange={(e) => setNewKeyword(e.target.value)}
+                  className="h-8 text-xs"
+                  autoFocus
+                />
+              </div>
+              <div className="flex flex-wrap items-center gap-2">
+                <Button type="button" size="sm" onClick={handleAddKeyword} disabled={isAdding}>
+                  {isAdding ? (
+                    <>
+                      <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                      Adding…
+                    </>
+                  ) : (
+                    <>Add keyword</>
+                  )}
+                </Button>
+                <Button
+                  type="button"
+                  size="sm"
+                  variant="ghost"
+                  onClick={() => setShowPreviewAddForm(false)}
+                  disabled={isAdding}
+                >
+                  Cancel
+                </Button>
+              </div>
+            </div>
+          ) : (
+            <AddDashedButton
+              label="Add keyword"
+              className="mt-0"
+              onClick={() => setShowPreviewAddForm(true)}
+            />
+          )}
+        </div>
+      )
+    }
+
+    return (
+      <div className="min-w-0 space-y-3">
+        <ChartPreviewHoverActions
+          enabled={chartAvailable}
+          actions={<ChartPreviewDateRangeButton value={dateRange} onChange={setDateRange} />}
+        >
+          <div className="h-64 min-w-0">
+            {showKeywordChart ? (
+              isLoadingKeywordSeries ? (
+                <div className="flex h-full items-center justify-center text-sm text-gray-500">
+                  <Loader2 className="mr-2 h-5 w-5 animate-spin" />
+                  Loading keyword rankings…
+                </div>
+              ) : keywordSeriesError ? (
+                <div className="flex h-full items-center gap-2 text-xs text-red-700">
+                  <AlertCircle className="h-4 w-4" />
+                  <span>Failed to load keyword ranking history.</span>
+                </div>
+              ) : !hasKeywordSeries ? (
+                <div className="flex h-full items-center justify-center text-sm text-gray-500">
+                  No ranking data for this keyword in the selected range.
+                </div>
+              ) : (
+                <ResponsiveContainer width="100%" height="100%">
+                  <LineChart
+                    data={keywordSeries!.map((point) => ({
+                      ...point,
+                      displayRank:
+                        point.rank == null || point.rank <= 0 ? 101 : point.rank,
+                    }))}
+                    margin={{ top: 8, right: 8, left: 0, bottom: 0 }}
+                    onClick={(e: any) => {
+                      const payload = e?.activePayload?.[0]?.payload
+                      if (payload?.check_date) {
+                        setSelectedDate(new Date(payload.check_date))
+                      }
+                    }}
+                  >
+                    <CartesianGrid strokeDasharray="3 3" stroke="#e5e7eb" />
+                    <XAxis
+                      dataKey="check_date"
+                      stroke="#6b7280"
+                      style={{ fontSize: "12px" }}
+                      tickFormatter={formatShortDate}
+                      tickMargin={8}
+                    />
+                    <YAxis
+                      width={36}
+                      stroke="#6b7280"
+                      style={{ fontSize: "12px" }}
+                      reversed
+                      domain={[1, 101]}
+                    />
+                    <RechartsTooltip
+                      formatter={(_value: any, _name: string, props: any) => {
+                        const originalRank = props.payload.rank
+                        if (originalRank == null || originalRank <= 0) {
+                          return ["Not ranked", "Rank"]
+                        }
+                        return [`#${originalRank}`, "Rank"]
+                      }}
+                      labelFormatter={(label) =>
+                        `Date: ${format(new Date(label), "yyyy-MM-dd")}`
+                      }
+                    />
+                    <Line
+                      type="monotone"
+                      dataKey="displayRank"
+                      stroke={CHART_LINE_STROKE}
+                      strokeWidth={2}
+                      dot={false}
+                      activeDot={{ r: 4 }}
+                    />
+                  </LineChart>
+                </ResponsiveContainer>
+              )
+            ) : (
+              globalRankingsCard
+            )}
+          </div>
+        </ChartPreviewHoverActions>
+
+        <div className="space-y-2">
+          <div className="text-[11px] font-medium text-gray-500">Keywords</div>
+          <div className="flex flex-wrap gap-1.5">
+            {keywords!.map((row) => {
+              const isSelected = row.project_keyword_id === selectedKeywordId
+              return (
+                <button
+                  key={row.project_keyword_id}
+                  type="button"
+                  onClick={() => {
+                    setSelectedKeywordId(row.project_keyword_id)
+                    setIsDetailsOpen(false)
+                  }}
+                  className={cn(
+                    "max-w-full rounded-md border px-2.5 py-1.5 text-left text-xs transition-colors",
+                    isSelected
+                      ? "border-gray-900 bg-gray-900 text-white"
+                      : "border-gray-200 bg-white text-gray-700 hover:border-gray-300 hover:bg-gray-50",
+                  )}
+                >
+                  <span className="line-clamp-2">
+                    {row.keyword}
+                    <span className={cn("ml-1", isSelected ? "text-gray-300" : "text-gray-400")}>
+                      {row.rank != null ? `#${row.rank}` : "—"}
+                    </span>
+                  </span>
+                </button>
+              )
+            })}
+          </div>
+          {showPreviewAddForm ? (
+            <div className="space-y-3 rounded-lg border border-dashed border-gray-200 p-3">
+              <div className="space-y-1">
+                <Label htmlFor="overview-add-keyword" className="text-xs">
+                  Keyword
+                </Label>
+                <Input
+                  id="overview-add-keyword"
+                  placeholder="e.g. best seo agency lisbon"
+                  value={newKeyword}
+                  onChange={(e) => setNewKeyword(e.target.value)}
+                  className="h-8 text-xs"
+                  autoFocus
+                />
+              </div>
+              <div className="flex flex-wrap items-center gap-2">
+                <Button type="button" size="sm" onClick={handleAddKeyword} disabled={isAdding}>
+                  {isAdding ? (
+                    <>
+                      <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                      Adding…
+                    </>
+                  ) : (
+                    <>Add keyword</>
+                  )}
+                </Button>
+                <Button
+                  type="button"
+                  size="sm"
+                  variant="ghost"
+                  onClick={() => setShowPreviewAddForm(false)}
+                  disabled={isAdding}
+                >
+                  Cancel
+                </Button>
+              </div>
+            </div>
+          ) : (
+            <AddDashedButton
+              label="Add keyword"
+              className="mt-1"
+              onClick={() => setShowPreviewAddForm(true)}
+            />
+          )}
+        </div>
+
+        {serpSnapshotBlock}
+      </div>
+    )
+  }
+
+  const keywordsManagementCard = (
+    <Card className="min-w-0 p-4 md:p-6">
+      <div className="mb-4 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+        <div className="min-w-0">
+          <h3 className="text-base font-semibold text-gray-900">Tracked keywords</h3>
+          <p className="text-xs text-gray-500">
+            Keywords currently being monitored for this project.
+          </p>
+        </div>
+        <Button
+          type="button"
+          size="sm"
+          className="shrink-0"
+          onClick={handleSyncRankings}
+          disabled={isSyncing}
+        >
+          {isSyncing ? (
+            <>
+              <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+              Checking…
+            </>
+          ) : (
+            <>Check rankings now</>
+          )}
+        </Button>
+      </div>
+
+      <div className="mb-4 grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
+        <div className="space-y-1 sm:col-span-2 lg:col-span-1">
+          <Label htmlFor="new-keyword" className="text-xs">
+            Keyword
+          </Label>
+          <Input
+            id="new-keyword"
+            placeholder="e.g. best seo agency lisbon"
+            value={newKeyword}
+            onChange={(e) => setNewKeyword(e.target.value)}
+            className="h-8 text-xs"
+          />
+        </div>
+        <div className="space-y-1">
+          <Label htmlFor="new-language" className="text-xs">
+            Language
+          </Label>
+          <Select value={newLanguage} onValueChange={setNewLanguage}>
+            <SelectTrigger id="new-language" className="h-8 text-xs">
+              <SelectValue placeholder="Any" />
+            </SelectTrigger>
+            <SelectContent>
+              {LANGUAGE_OPTIONS.map((opt) => (
+                <SelectItem key={opt.code} value={opt.code}>
+                  {opt.label}
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+        </div>
+        <div className="space-y-1">
+          <Label htmlFor="new-region" className="text-xs">
+            Region
+          </Label>
+          <Select value={newRegion} onValueChange={setNewRegion}>
+            <SelectTrigger id="new-region" className="h-8 text-xs">
+              <SelectValue placeholder="Any" />
+            </SelectTrigger>
+            <SelectContent>
+              {regions.map((region) => (
+                <SelectItem key={region.id || "any"} value={region.id || "any"}>
+                  {region.name}
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+        </div>
+      </div>
+      <div className="mb-4 flex flex-wrap items-center gap-2">
+        <Button type="button" size="sm" onClick={handleAddKeyword} disabled={isAdding}>
+          {isAdding ? (
+            <>
+              <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+              Adding…
+            </>
+          ) : (
+            <>Add keyword</>
+          )}
+        </Button>
+        <p className="text-[11px] text-gray-500">
+          New keywords will be included the next time you check rankings.
+        </p>
+      </div>
+
+      {isLoadingKeywords ? (
+        <div className="flex items-center justify-center py-8 text-sm text-gray-500">
+          <Loader2 className="mr-2 h-5 w-5 animate-spin" />
+          Loading keywords…
+        </div>
+      ) : keywordsError ? (
+        <div className="flex items-center gap-2 rounded-md border border-red-200 bg-red-50 px-3 py-2 text-xs text-red-700">
+          <AlertCircle className="h-4 w-4" />
+          <span>Failed to load keywords.</span>
+        </div>
+      ) : !hasKeywords ? (
+        <div className="rounded-md bg-gray-50 px-3 py-4 text-sm text-gray-600">
+          No keywords being tracked yet. Add your first keyword to start tracking rankings.
+        </div>
+      ) : (
+        <div className="divide-y divide-gray-100 rounded-md border border-gray-100">
+          {keywords!.map((row) => {
+            const isSelected = row.project_keyword_id === selectedKeywordId
+            return (
+              <button
+                key={row.project_keyword_id}
+                type="button"
+                className={cn(
+                  "flex w-full flex-col gap-1 px-3 py-2.5 text-left transition-colors hover:bg-gray-50 sm:flex-row sm:items-center sm:justify-between",
+                  isSelected && "bg-gray-50",
+                )}
+                onClick={() => {
+                  const id = row.project_keyword_id
+                  setSelectedKeywordId(id)
+                  if (!isManage) {
+                    setIsDetailsOpen(true)
+                    const params = new URLSearchParams(searchParams.toString())
+                    params.set("keywordId", String(id))
+                    const query = params.toString()
+                    router.replace(query ? `${pathname}?${query}` : pathname, {
+                      scroll: false,
+                    })
+                  }
+                }}
+              >
+                <div className="min-w-0">
+                  <div className="line-clamp-2 text-xs text-gray-900">{row.keyword}</div>
+                  <div className="mt-0.5 text-[11px] text-gray-500">
+                    {mapLanguageName(row.language_code)} · {mapRegionName(row.region_code)}
+                    {row.check_date
+                      ? ` · ${format(new Date(row.check_date), "MMM d, yyyy")}`
+                      : ""}
+                  </div>
+                </div>
+                <div className="shrink-0 text-xs text-gray-700">
+                  {row.rank != null ? `#${row.rank}` : "Not ranked"}
+                </div>
+              </button>
+            )
+          })}
+        </div>
+      )}
+    </Card>
+  )
+
+  if (isManage) {
+    return <div className="min-w-0">{keywordsManagementCard}</div>
   }
 
   return (
     <>
       <div className="space-y-6">
-      {/* Date range + global chart */}
-      <div className="space-y-4">
-        <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
-          <div>
-            <h2 className="text-xl font-semibold">
-              Ranking evolution
-            </h2>
-            <p className="text-xs text-gray-500">
-              Lower rank is better (1 = top position).
-            </p>
-          </div>
-          <div className="w-full md:w-64">
-            <DateRangePicker
-              value={dateRange}
-              onChange={(range) => setDateRange(range)}
-            />
-          </div>
-        </div>
-
-        {globalRankingsCard}
-      </div>
-
-      {/* Keyword list + add form + sync button */}
-      <div className="flex flex-col gap-4 lg:flex-row">
-        <Card className="flex-1 p-4 md:p-6">
-          <div className="mb-4 flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
+        <div className="space-y-4">
+          <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
             <div>
-              <h3 className="text-base font-semibold text-gray-900">
-                Tracked keywords
-              </h3>
+              <h2 className="text-xl font-semibold">Ranking evolution</h2>
               <p className="text-xs text-gray-500">
-                Keywords currently being monitored for this project.
+                Lower rank is better (1 = top position).
               </p>
             </div>
-            <div className="flex items-center gap-2">
-              <Button
-                type="button"
-                size="sm"
-                onClick={handleSyncRankings}
-                disabled={isSyncing}
-              >
-                {isSyncing ? (
-                  <>
-                    <Loader2 className="mr-2 h-4 w-4 animate-spin" />
-                    Checking rankings…
-                  </>
-                ) : (
-                  <>Check rankings now</>
-                )}
-              </Button>
-            </div>
-          </div>
-
-          {/* Add keyword form */}
-          <div className="mb-4 grid gap-3 md:grid-cols-3">
-            <div className="space-y-1">
-              <Label htmlFor="new-keyword" className="text-xs">
-                Keyword
-              </Label>
-              <Input
-                id="new-keyword"
-                placeholder="e.g. best seo agency lisbon"
-                value={newKeyword}
-                onChange={(e) => setNewKeyword(e.target.value)}
-                className="h-8 text-xs"
+            <div className="w-full md:w-64">
+              <DateRangePicker
+                value={dateRange}
+                onChange={(range) => setDateRange(range)}
               />
             </div>
-            <div className="space-y-1">
-              <Label htmlFor="new-language" className="text-xs">
-                Language
-              </Label>
-              <Select
-                value={newLanguage}
-                onValueChange={(value) => setNewLanguage(value)}
-              >
-                <SelectTrigger id="new-language" className="h-8 text-xs">
-                  <SelectValue placeholder="Any" />
-                </SelectTrigger>
-                <SelectContent>
-                  {LANGUAGE_OPTIONS.map((opt) => (
-                    <SelectItem key={opt.code} value={opt.code}>
-                      {opt.label}
-                    </SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
-            </div>
-            <div className="space-y-1">
-              <Label htmlFor="new-region" className="text-xs">
-                Region
-              </Label>
-              <Select
-                value={newRegion}
-                onValueChange={(value) => setNewRegion(value)}
-              >
-                <SelectTrigger id="new-region" className="h-8 text-xs">
-                  <SelectValue placeholder="Any" />
-                </SelectTrigger>
-                <SelectContent>
-                  {regions.map((region) => (
-                    <SelectItem
-                      key={region.id || "any"}
-                      value={region.id || "any"}
-                    >
-                      {region.name}
-                    </SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
-            </div>
-          </div>
-          <div className="mb-4 flex items-center gap-2">
-            <Button
-              type="button"
-              size="sm"
-              onClick={handleAddKeyword}
-              disabled={isAdding}
-            >
-              {isAdding ? (
-                <>
-                  <Loader2 className="mr-2 h-4 w-4 animate-spin" />
-                  Adding…
-                </>
-              ) : (
-                <>Add keyword</>
-              )}
-            </Button>
-            <p className="text-[11px] text-gray-500">
-              New keywords will be included the next time you check rankings.
-            </p>
           </div>
 
-          {/* Keyword list */}
-          {isLoadingKeywords ? (
-            <div className="flex items-center justify-center py-8 text-sm text-gray-500">
-              <Loader2 className="h-5 w-5 animate-spin mr-2" />
-              Loading keywords…
-            </div>
-          ) : keywordsError ? (
-            <div className="flex items-center gap-2 rounded-md border border-red-200 bg-red-50 px-3 py-2 text-xs text-red-700">
-              <AlertCircle className="h-4 w-4" />
-              <span>Failed to load keywords.</span>
-            </div>
-          ) : !hasKeywords ? (
-            <div className="rounded-md bg-gray-50 px-3 py-4 text-sm text-gray-600">
-              No keywords being tracked yet. Add your first keyword to start
-              tracking rankings.
-            </div>
-          ) : (
-            <div className="overflow-x-auto">
-              <table className="min-w-full text-left text-xs">
-                <thead className="border-b bg-gray-50 text-[11px] font-medium uppercase text-gray-500">
-                  <tr>
-                    <th className="px-3 py-2">Keyword</th>
-                    <th className="px-3 py-2">Language</th>
-                    <th className="px-3 py-2">Region</th>
-                    <th className="px-3 py-2 text-right">Last rank</th>
-                    <th className="px-3 py-2">Ranking URL</th>
-                    <th className="px-3 py-2 text-right">Last check</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {keywords!.map((row) => {
-                    const isSelected = row.project_keyword_id === selectedKeywordId
-                    return (
-                      <tr
-                        key={row.project_keyword_id}
-                        className={`cursor-pointer border-b last:border-0 transition-colors hover:bg-gray-50 ${
-                          isSelected ? "bg-blue-50/60" : ""
-                        }`}
-                        onClick={() => {
-                          const id = row.project_keyword_id
-                          setSelectedKeywordId(id)
-                          setIsDetailsOpen(true)
+          {globalRankingsCard}
+        </div>
 
-                          const params = new URLSearchParams(
-                            searchParams.toString(),
-                          )
-                          params.set("keywordId", String(id))
-                          const query = params.toString()
-                          router.replace(
-                            query ? `${pathname}?${query}` : pathname,
-                            { scroll: false },
-                          )
-                        }}
-                      >
-                        <td className="max-w-xs px-3 py-2 text-xs text-gray-900">
-                          <span className="line-clamp-2">{row.keyword}</span>
-                        </td>
-                        <td className="px-3 py-2 text-xs text-gray-700">
-                          {mapLanguageName(row.language_code)}
-                        </td>
-                        <td className="px-3 py-2 text-xs text-gray-700">
-                          {mapRegionName(row.region_code)}
-                        </td>
-                        <td className="px-3 py-2 text-right text-xs text-gray-900">
-                          {row.rank != null ? `#${row.rank}` : "Not ranked"}
-                        </td>
-                        <td className="px-3 py-2 text-xs text-gray-700 max-w-xs">
-                          {row.found_url ? (
-                            <a
-                              href={row.found_url}
-                              target="_blank"
-                              rel="noopener noreferrer"
-                              className="text-blue-600 hover:text-blue-800 truncate inline-block max-w-[180px]"
-                              title={row.found_url}
-                            >
-                              {shortenUrl(row.found_url)}
-                            </a>
-                          ) : (
-                            <span className="text-gray-400">Not ranked</span>
-                          )}
-                        </td>
-                        <td className="px-3 py-2 text-right text-xs text-gray-600">
-                          {row.check_date
-                            ? format(new Date(row.check_date), "yyyy-MM-dd")
-                            : "—"}
-                        </td>
-                      </tr>
-                    )
-                  })}
-                </tbody>
-              </table>
-            </div>
-          )}
-        </Card>
-      </div>
+        {keywordsManagementCard}
       </div>
       {detailsPane}
     </>

@@ -4,7 +4,7 @@ import { getGlobalSearchResultKey, type GlobalSearchDocument, type GlobalSearchS
 import { SearchResultRow } from "./SearchResultRow"
 
 function RowList({ children }: { children: React.ReactNode }) {
-  return <div className="divide-y divide-gray-200">{children}</div>
+  return <div className="divide-y divide-gray-100">{children}</div>
 }
 
 export function GlobalSearchAllSectionCards({
@@ -40,7 +40,7 @@ export function GlobalSearchAiThreadList({
   onSelect: (item: GlobalSearchDocument) => void
 }) {
   return (
-    <div className="divide-y divide-gray-200">
+    <div className="divide-y divide-gray-100">
       {items.map((item) => (
         <SearchResultRow
           key={`ai:${getGlobalSearchResultKey(item)}`}

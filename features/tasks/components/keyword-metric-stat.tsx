@@ -19,7 +19,7 @@ export const KEYWORD_METRIC_DEFINITIONS = {
   },
   difficulty: {
     label: "KD",
-    tooltip: "Keyword difficulty (competition index). Higher values mean stronger competition.",
+    tooltip: "Keyword competition: Very Low, Low, Medium, or High.",
   },
 } as const
 

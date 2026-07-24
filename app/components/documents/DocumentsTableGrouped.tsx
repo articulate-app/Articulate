@@ -11,6 +11,7 @@ import { fetchDocumentGroupTotals, getTotalsForGroup, type DocumentGroupTotals }
 import { useQuery } from '@tanstack/react-query'
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from '../ui/dropdown-menu'
 import type { DocumentsFilters, DocumentsSortConfig, DocumentRow } from '../../lib/types/documents'
+import { cn } from '@/lib/utils'
 
 type TotalsMetric = 'result' | 'invoiced' | 'costs' | 'ar_credit' | 'ap_credit'
 
@@ -46,19 +47,47 @@ interface DocumentsTableGroupedProps {
   groupingMode?: GroupingMode
   onGroupingModeChange?: (mode: GroupingMode) => void
   optimisticGroupTotals?: DocumentGroupTotals[]
+  /** Column ids to omit from the table (e.g. hide From in team-scoped views). */
+  hiddenColumnIds?: DocumentColumnId[]
+  /** Optional localStorage key override when column set differs from the full page. */
+  columnsStorageKey?: string
+  /** Fill parent height via flex instead of viewport-based pixel height. */
+  fillHeight?: boolean
+  /** Compact date labels (e.g. 1 Jul). */
+  compactDates?: boolean
+  /** Activity-style rows (label/detail + trailing value) instead of multi-column table. */
+  listVariant?: 'table' | 'activity'
+  /** When set, only render this many docs and offer a See all affordance. */
+  previewLimit?: number
+  onSeeAll?: () => void
 }
 
-const formatCurrency = (amount: number, currencyCode: string): string => {
-  return new Intl.NumberFormat('en-US', {
-    style: 'currency',
-    currency: currencyCode,
-    minimumFractionDigits: 2,
-    maximumFractionDigits: 2,
-  }).format(amount)
+const formatCurrency = (amount: number | null | undefined, currencyCode?: string | null): string => {
+  const value = typeof amount === 'number' && Number.isFinite(amount) ? amount : Number(amount)
+  const safeAmount = Number.isFinite(value) ? value : 0
+  const code = currencyCode && /^[A-Za-z]{3}$/.test(currencyCode) ? currencyCode.toUpperCase() : 'EUR'
+  try {
+    return new Intl.NumberFormat('en-US', {
+      style: 'currency',
+      currency: code,
+      minimumFractionDigits: 2,
+      maximumFractionDigits: 2,
+    }).format(safeAmount)
+  } catch {
+    return `${safeAmount.toFixed(2)} ${code}`
+  }
 }
 
-const formatDate = (dateString: string): string => {
-  return new Date(dateString).toLocaleDateString('en-US', {
+const formatDate = (dateString: string, compact = false): string => {
+  const date = new Date(dateString)
+  if (Number.isNaN(date.getTime())) return '—'
+  if (compact) {
+    return date.toLocaleDateString('en-GB', {
+      day: 'numeric',
+      month: 'short',
+    })
+  }
+  return date.toLocaleDateString('en-US', {
     year: 'numeric',
     month: 'short',
     day: 'numeric',
@@ -94,12 +123,22 @@ export function DocumentsTableGrouped({
   groupingMode = 'month',
   onGroupingModeChange,
   optimisticGroupTotals,
+  hiddenColumnIds = [],
+  columnsStorageKey = 'documentsTable:columns',
+  fillHeight = false,
+  compactDates = false,
+  listVariant = 'table',
+  previewLimit,
+  onSeeAll,
 }: DocumentsTableGroupedProps) {
+  const isActivityList = listVariant === 'activity'
+  const isPreviewMode = previewLimit != null
   const queryKey = `documents-${JSON.stringify(filters)}-${JSON.stringify(sort)}-${groupingMode}`
   const [isClient, setIsClient] = useState(false)
   const scrollContainerRef = useRef<HTMLDivElement>(null)
   const [containerHeight, setContainerHeight] = useState<number>(400)
   const resizingRef = useRef<boolean>(false)
+  const hiddenColumnIdSet = React.useMemo(() => new Set(hiddenColumnIds), [hiddenColumnIds])
   
   // Collapse state for groups (key -> collapsed)
   const [collapsedGroups, setCollapsedGroups] = useState<Set<string>>(new Set())
@@ -143,31 +182,47 @@ export function DocumentsTableGrouped({
   // Merge optimistic totals with fetched totals
   const groupTotals = optimisticGroupTotals || fetchedGroupTotals
   
-  const defaultColumns: DocumentColumnConfig[] = [
-    { id: 'doc_number', label: 'Number', minWidth: 120, sortable: true, sortField: 'doc_number' },
-    { id: 'doc_date', label: 'Date', minWidth: 120, sortable: true, sortField: 'doc_date' },
-    { id: 'direction', label: 'Direction', minWidth: 100, sortable: true, sortField: 'direction' },
-    { id: 'doc_kind', label: 'Type', minWidth: 120, sortable: true, sortField: 'doc_kind' },
-    { id: 'from_team_name', label: 'From', minWidth: 150, sortable: true, sortField: 'from_team_name' },
-    { id: 'to_team_name', label: 'To', minWidth: 150, sortable: true, sortField: 'to_team_name' },
-    { id: 'subtotal_amount', label: 'Subtotal', minWidth: 130, sortable: true, sortField: 'subtotal_amount' },
-    { id: 'total_amount', label: 'Total', minWidth: 130, sortable: true, sortField: 'total_amount' },
-    { id: 'status', label: 'Status', minWidth: 100, sortable: false },
-    { id: 'projects_text', label: 'Projects', minWidth: 150, sortable: false },
-  ]
+  const defaultColumns: DocumentColumnConfig[] = fillHeight
+    ? [
+        { id: 'doc_date', label: 'Date', minWidth: 72, width: 72, sortable: true, sortField: 'doc_date' },
+        { id: 'doc_kind', label: 'Type', minWidth: 110, width: 120, sortable: true, sortField: 'doc_kind' },
+        { id: 'to_team_name', label: 'To', minWidth: 120, width: 140, sortable: true, sortField: 'to_team_name' },
+        { id: 'subtotal_amount', label: 'Subtotal', minWidth: 90, width: 100, sortable: true, sortField: 'subtotal_amount' },
+        { id: 'status', label: 'Status', minWidth: 80, width: 90, sortable: false },
+        { id: 'projects_text', label: 'Projects', minWidth: 100, width: 140, sortable: false },
+        { id: 'doc_number', label: 'Number', minWidth: 120, sortable: true, sortField: 'doc_number' },
+        { id: 'direction', label: 'Direction', minWidth: 100, sortable: true, sortField: 'direction' },
+        { id: 'from_team_name', label: 'From', minWidth: 150, sortable: true, sortField: 'from_team_name' },
+        { id: 'total_amount', label: 'Total', minWidth: 130, sortable: true, sortField: 'total_amount' },
+      ]
+    : [
+        { id: 'doc_number', label: 'Number', minWidth: 120, sortable: true, sortField: 'doc_number' },
+        { id: 'doc_date', label: 'Date', minWidth: 120, sortable: true, sortField: 'doc_date' },
+        { id: 'direction', label: 'Direction', minWidth: 100, sortable: true, sortField: 'direction' },
+        { id: 'doc_kind', label: 'Type', minWidth: 120, sortable: true, sortField: 'doc_kind' },
+        { id: 'from_team_name', label: 'From', minWidth: 150, sortable: true, sortField: 'from_team_name' },
+        { id: 'to_team_name', label: 'To', minWidth: 150, sortable: true, sortField: 'to_team_name' },
+        { id: 'subtotal_amount', label: 'Subtotal', minWidth: 130, sortable: true, sortField: 'subtotal_amount' },
+        { id: 'total_amount', label: 'Total', minWidth: 130, sortable: true, sortField: 'total_amount' },
+        { id: 'status', label: 'Status', minWidth: 100, sortable: false },
+        { id: 'projects_text', label: 'Projects', minWidth: 150, sortable: false },
+      ]
   
   const [columns, setColumns] = useState<DocumentColumnConfig[]>(() => {
-    const stored = typeof window !== 'undefined' ? window.localStorage.getItem('documentsTable:columns') : null
+    const baseDefaults = defaultColumns.filter((column) => !hiddenColumnIdSet.has(column.id))
+    const stored = typeof window !== 'undefined' ? window.localStorage.getItem(columnsStorageKey) : null
     if (stored) {
       try {
         const parsed: DocumentColumnConfig[] = JSON.parse(stored)
-        const map = new Map(defaultColumns.map(c => [c.id, c]))
-        const merged = parsed.map((c) => ({ ...map.get(c.id)!, ...c }))
-        defaultColumns.forEach(dc => { if (!merged.find(m => m.id === dc.id)) merged.push(dc) })
+        const map = new Map(baseDefaults.map(c => [c.id, c]))
+        const merged = parsed
+          .filter((c) => map.has(c.id))
+          .map((c) => ({ ...map.get(c.id)!, ...c }))
+        baseDefaults.forEach(dc => { if (!merged.find(m => m.id === dc.id)) merged.push(dc) })
         return merged
       } catch {}
     }
-    return defaultColumns
+    return baseDefaults
   })
 
   useEffect(() => {
@@ -176,8 +231,13 @@ export function DocumentsTableGrouped({
 
   useEffect(() => {
     if (!isClient) return
-    window.localStorage.setItem('documentsTable:columns', JSON.stringify(columns))
-  }, [columns, isClient])
+    window.localStorage.setItem(columnsStorageKey, JSON.stringify(columns))
+  }, [columns, columnsStorageKey, isClient])
+
+  useEffect(() => {
+    if (hiddenColumnIdSet.size === 0) return
+    setColumns((current) => current.filter((column) => !hiddenColumnIdSet.has(column.id)))
+  }, [hiddenColumnIdSet])
 
   const startResize = (colId: DocumentColumnId, startClientX: number) => {
     resizingRef.current = true
@@ -196,7 +256,7 @@ export function DocumentsTableGrouped({
   }
 
   useEffect(() => {
-    if (!isClient) return
+    if (!isClient || fillHeight) return
     const updateDimensions = () => {
       const el = scrollContainerRef.current
       if (!el) return
@@ -210,7 +270,7 @@ export function DocumentsTableGrouped({
     return () => {
       window.removeEventListener('resize', updateDimensions)
     }
-  }, [isClient, hasRightPaneOpen])
+  }, [fillHeight, isClient, hasRightPaneOpen])
 
   // Handle scroll to update sticky header
   useEffect(() => {
@@ -351,6 +411,37 @@ export function DocumentsTableGrouped({
     const isSticky = stickyGroupKey === group.key
     const totals = getTotalsForGroup(groupTotals, group.key)
     
+    if (isActivityList) {
+      return (
+        <tr
+          ref={(el) => {
+            if (el) groupHeaderRefs.current.set(group.key, el)
+          }}
+          className="cursor-pointer"
+          onClick={() => toggleGroupCollapse(group.key)}
+        >
+          <td className="p-0">
+            <div className="flex items-center justify-between border-b border-gray-100 py-2.5">
+              <div className="flex min-w-0 items-center gap-2">
+                <ChevronRight
+                  className={cn(
+                    'h-3.5 w-3.5 shrink-0 text-gray-400 transition-transform',
+                    isCollapsed ? '' : 'rotate-90',
+                  )}
+                />
+                <span className="truncate text-sm font-medium text-gray-900">{group.label}</span>
+                {totals ? (
+                  <span className="shrink-0 text-xs tabular-nums text-gray-400">
+                    {formatCurrency(totals.result, 'EUR')}
+                  </span>
+                ) : null}
+              </div>
+            </div>
+          </td>
+        </tr>
+      )
+    }
+
     return (
       <tr
         ref={(el) => {
@@ -490,6 +581,46 @@ export function DocumentsTableGrouped({
   const renderDocumentRow = (document: DocumentRow) => {
     const isSelected = selectedDocument?.doc_id === document.doc_id && selectedDocument?.doc_kind === document.doc_kind
 
+    if (isActivityList) {
+      const toTeam = document.to_team_name?.trim() || '—'
+      const amount =
+        document.subtotal_amount ??
+        document.total_amount ??
+        (document as { subtotal?: number }).subtotal ??
+        0
+      return (
+        <tr
+          key={`${document.doc_kind}-${document.doc_id}`}
+          className={cn('cursor-pointer', isSelected ? 'bg-gray-50' : 'hover:bg-gray-50/70')}
+          onClick={() => handleRowClick(document)}
+        >
+          <td className="w-full p-0">
+            <div className="flex w-full items-center justify-between gap-4 border-b border-gray-100 py-2.5">
+              <div className="min-w-0 flex-1 overflow-hidden">
+                <div className="flex min-w-0 items-baseline gap-1.5 text-sm text-gray-900">
+                  <span className="shrink-0 text-gray-500">
+                    {formatDate(document.doc_date, compactDates)}
+                  </span>
+                  <span className="truncate">
+                    {document.doc_number}
+                    <span className="text-gray-400"> · </span>
+                    {formatDocumentKind(document.doc_kind)}
+                  </span>
+                </div>
+                <p className="truncate text-xs text-gray-500" title={toTeam}>
+                  {toTeam}
+                  {document.status ? ` · ${document.status}` : ''}
+                </p>
+              </div>
+              <div className="ml-auto shrink-0 whitespace-nowrap text-right text-sm font-medium tabular-nums text-gray-900">
+                {formatCurrency(amount, document.currency_code)}
+              </div>
+            </div>
+          </td>
+        </tr>
+      )
+    }
+
     return (
       <tr 
         key={`${document.doc_kind}-${document.doc_id}`} 
@@ -508,7 +639,7 @@ export function DocumentsTableGrouped({
               content = <span className="font-medium text-gray-900">{document.doc_number}</span>
               break
             case 'doc_date':
-              content = formatDate(document.doc_date)
+              content = formatDate(document.doc_date, compactDates)
               break
             case 'direction':
               content = (
@@ -583,78 +714,105 @@ export function DocumentsTableGrouped({
   }
 
   return (
-    <div className="flex flex-col h-full">
+    <div className={cn('flex min-h-0 flex-col', !isPreviewMode && 'h-full')}>
       <div
         ref={scrollContainerRef}
-        className="relative overflow-auto billing-scrollbar-always"
-        style={{ 
-          marginRight: rightPadding,
-          height: containerHeight
-        }}
+        className={cn(
+          'relative min-h-0',
+          isPreviewMode
+            ? 'overflow-visible'
+            : 'overflow-auto billing-scrollbar-always',
+          fillHeight && !isPreviewMode && 'flex-1',
+        )}
+        style={
+          isPreviewMode
+            ? undefined
+            : fillHeight
+              ? { marginRight: rightPadding }
+              : {
+                  marginRight: rightPadding,
+                  height: containerHeight,
+                }
+        }
       >
-        <div style={{ width: `calc(100% + ${rightPadding})` }}>
-          <table className="w-full border-collapse" style={{ minWidth: '1200px', tableLayout: 'fixed' }}>
-            <thead className="sticky top-0 z-20 bg-white border-b shadow-sm">
-              <tr>
-                {columns.map((col) => {
-                  const widthPx = (col.width ?? col.minWidth)
-                  const commonClass = 'px-3 py-2 text-left text-sm font-medium text-gray-500 select-none relative'
-                  const style = { width: `${widthPx}px`, minWidth: `${col.minWidth}px`, maxWidth: `${widthPx}px` }
-                  const isActive = col.sortable && sort.field === col.sortField
-                  const onClick = () => {
-                    if (!col.sortable || !col.sortField) return
-                    onSortChange({ field: col.sortField, direction: isActive && sort.direction === 'asc' ? 'desc' : 'asc' })
-                  }
-                  
-                  return (
-                    <th
-                      key={col.id}
-                      className={`${commonClass} ${col.sortable ? 'cursor-pointer hover:bg-gray-50' : ''}`}
-                      style={style}
-                      onClick={onClick}
-                    >
-                      <div className="flex items-center gap-1">
-                        <span>{col.label}</span>
-                        {col.sortable && isActive && (
-                          <div className="flex items-center">
-                            {sort.direction === 'asc' ? (
-                              <ChevronUp className="w-4 h-4" />
-                            ) : (
-                              <ChevronDown className="w-4 h-4" />
-                            )}
-                          </div>
-                        )}
-                      </div>
-                      <div
-                        onMouseDown={(e) => {
-                          e.stopPropagation()
-                          startResize(col.id, e.clientX)
-                        }}
-                        data-resize="handle"
-                        className="absolute top-0 right-0 h-full w-4 cursor-col-resize"
-                        style={{ userSelect: 'none' }}
-                      />
-                    </th>
-                  )
-                })}
-              </tr>
-            </thead>
+        <div style={fillHeight || isPreviewMode ? undefined : { width: `calc(100% + ${rightPadding})` }}>
+          <table
+            className="w-full border-collapse"
+            style={{
+              minWidth: fillHeight || isActivityList ? undefined : '1200px',
+              tableLayout: isActivityList ? 'auto' : 'fixed',
+              width: '100%',
+            }}
+          >
+            {!isActivityList ? (
+              <thead className="sticky top-0 z-20 border-b bg-white shadow-sm">
+                <tr>
+                  {columns.map((col) => {
+                    const widthPx = (col.width ?? col.minWidth)
+                    const commonClass = 'px-3 py-2 text-left text-sm font-medium text-gray-500 select-none relative'
+                    const style = { width: `${widthPx}px`, minWidth: `${col.minWidth}px`, maxWidth: `${widthPx}px` }
+                    const isActive = col.sortable && sort.field === col.sortField
+                    const onClick = () => {
+                      if (!col.sortable || !col.sortField) return
+                      onSortChange({ field: col.sortField, direction: isActive && sort.direction === 'asc' ? 'desc' : 'asc' })
+                    }
+
+                    return (
+                      <th
+                        key={col.id}
+                        className={`${commonClass} ${col.sortable ? 'cursor-pointer hover:bg-gray-50' : ''}`}
+                        style={style}
+                        onClick={onClick}
+                      >
+                        <div className="flex items-center gap-1">
+                          <span>{col.label}</span>
+                          {col.sortable && isActive && (
+                            <div className="flex items-center">
+                              {sort.direction === 'asc' ? (
+                                <ChevronUp className="w-4 h-4" />
+                              ) : (
+                                <ChevronDown className="w-4 h-4" />
+                              )}
+                            </div>
+                          )}
+                        </div>
+                        <div
+                          onMouseDown={(e) => {
+                            e.stopPropagation()
+                            startResize(col.id, e.clientX)
+                          }}
+                          data-resize="handle"
+                          className="absolute top-0 right-0 h-full w-4 cursor-col-resize"
+                          style={{ userSelect: 'none' }}
+                        />
+                      </th>
+                    )
+                  })}
+                </tr>
+              </thead>
+            ) : null}
             <tbody className="bg-white">
               <InfiniteList<'v_documents_min', DocumentRow>
                 tableName="v_documents_min"
                 columns="*"
-                pageSize={50}
+                pageSize={previewLimit ?? 50}
                 trailingQuery={trailingQuery}
-                queryKey={queryKey}
+                queryKey={`${queryKey}-preview:${previewLimit ?? 'all'}`}
                 isTableBody={true}
                 scrollContainerRef={scrollContainerRef}
                 renderNoResults={renderNoResults}
-                renderEndMessage={renderEndMessage}
+                renderEndMessage={previewLimit != null ? () => null : renderEndMessage}
                 renderSkeleton={renderSkeleton}
               >
                 {(documents: DocumentRow[]) => {
-                  const groups = groupDocuments(documents, groupingMode, sort)
-                  
+                  const limitedDocs =
+                    previewLimit != null ? documents.slice(0, previewLimit) : documents
+                  const groups = groupDocuments(limitedDocs, groupingMode, sort)
+                  const canSeeAll =
+                    previewLimit != null &&
+                    typeof onSeeAll === 'function' &&
+                    documents.length >= previewLimit
+
                   // Track all group keys for collapse/expand all functionality
                   groups.forEach(group => allGroupKeysRef.current.add(group.key))
                   
@@ -666,10 +824,23 @@ export function DocumentsTableGrouped({
                         return (
                           <React.Fragment key={`group-${group.key}-${groupIndex}`}>
                             {renderGroupHeader(group)}
-                            {!isCollapsed && group.documents.map((doc, docIndex) => renderDocumentRow(doc))}
+                            {!isCollapsed && group.documents.map((doc) => renderDocumentRow(doc))}
                           </React.Fragment>
                         )
                       })}
+                      {canSeeAll ? (
+                        <tr>
+                          <td className="p-0">
+                            <button
+                              type="button"
+                              onClick={onSeeAll}
+                              className="w-full py-3 text-left text-sm font-medium text-blue-600 hover:text-blue-700"
+                            >
+                              See all
+                            </button>
+                          </td>
+                        </tr>
+                      ) : null}
                     </>
                   )
                 }}

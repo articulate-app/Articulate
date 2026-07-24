@@ -180,8 +180,11 @@ export function CalendarView({
     const parseDate = (val?: string | null) => (val ? val : '')
     const projectFromParams = params.get('project')?.split(',').filter(Boolean) ?? []
     const projectList = scope.type === 'project' ? [String(scope.projectId)] : projectFromParams
+    const assignedFromParams = params.get('assignedTo')?.split(',').filter(Boolean) ?? []
+    const assignedList =
+      scope.type === 'user' ? [String(scope.userId)] : assignedFromParams
     const out = {
-      assignedTo: params.get('assignedTo')?.split(',').filter(Boolean) ?? [],
+      assignedTo: assignedList,
       status: params.get('status')?.split(',').filter(Boolean) ?? [],
       deliveryDate: {
         from: parseDate(params.get('deliveryDateFrom')),
@@ -198,7 +201,13 @@ export function CalendarView({
     } as any
     if (!showSubtasks) out.parentTaskNull = true
     return out
-  }, [params, showSubtasks, scope.type, scope.type === 'project' ? scope.projectId : null])
+  }, [
+    params,
+    showSubtasks,
+    scope.type,
+    scope.type === 'project' ? scope.projectId : null,
+    scope.type === 'user' ? scope.userId : null,
+  ])
   const filterKey = useMemo(() => JSON.stringify(filterValues), [filterValues])
 
   const calendarChunkKeys = useMemo(() => {

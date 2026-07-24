@@ -1,7 +1,6 @@
 "use client"
 
 import { useEffect, useMemo, useState } from "react"
-import { ChevronDown, ChevronRight } from "lucide-react"
 import { cn } from "@/lib/utils"
 import {
   GLOBAL_SEARCH_ENTITY_TYPES,
@@ -71,8 +70,6 @@ const TASK_GROUP_TAB_ORDER = [
   "overdue_publication",
 ] as const
 
-const TASKS_DISCOVERY_SECTION_KEY = "tasks:Tasks"
-
 function isRecentSearchesSection(section: GlobalSearchSection): boolean {
   return (
     section.type === "recent_searches" ||
@@ -123,7 +120,6 @@ export function GlobalSearchAllTabPane({
   /** Opens the full Tasks pane with filters matching the active Home task subsection. */
   onSeeMoreTasks?: (sectionType: string) => void
 }) {
-  const [collapsedSections, setCollapsedSections] = useState<Record<string, boolean>>({})
   const [activeTaskGroupTabType, setActiveTaskGroupTabType] = useState<string | null>(null)
 
   const orderedSections = useMemo(
@@ -132,12 +128,28 @@ export function GlobalSearchAllTabPane({
         .filter((section) => {
           if (isRecentSearchesSection(section)) return false
           if (section.entity_type === "project_briefing" || section.type === "project_briefing") return false
+          // Teams live in preferences — keep them out of Home / All results.
+          if (section.entity_type === "team" || section.type === "team" || section.type === "teams") return false
           if (section.type === "ai_threads") return !hasCommittedTypeFilter || visibleEntityTypes.includes("ai_thread")
           if (section.type === "task_group") return !hasCommittedTypeFilter || visibleEntityTypes.includes("task")
           if (!section.entity_type) return true
           if (section.entity_type === "ai_thread") return !hasCommittedTypeFilter || visibleEntityTypes.includes("ai_thread")
           if (visibleEntityTypes.length >= GLOBAL_SEARCH_ENTITY_TYPES.length) return true
           return visibleEntityTypes.includes(section.entity_type)
+        })
+        .map((section) => ({
+          ...section,
+          items: section.items.filter((item) => item.entity_type !== "team"),
+          sections: (section.sections ?? [])
+            .filter((nested) => nested.entity_type !== "team" && nested.type !== "team" && nested.type !== "teams")
+            .map((nested) => ({
+              ...nested,
+              items: nested.items.filter((item) => item.entity_type !== "team"),
+            })),
+        }))
+        .filter((section) => {
+          if (section.type === "recently_opened") return section.items.length > 0
+          return true
         })
         .sort((left, right) => {
           const leftRank = SECTION_ORDER[left.type] ?? 999
@@ -198,38 +210,21 @@ export function GlobalSearchAllTabPane({
     )
   }
 
-  const toggleSection = (sectionKey: string) => {
-    setCollapsedSections((current) => ({
-      ...current,
-      [sectionKey]: !current[sectionKey],
-    }))
-  }
-
-  const isTasksDiscoveryCollapsed = Boolean(collapsedSections[TASKS_DISCOVERY_SECTION_KEY])
-
   const renderSection = (section: GlobalSearchSection) => {
     const sectionKey = `${section.type}:${section.label}`
-    const isCollapsed = Boolean(collapsedSections[sectionKey])
     if (section.type === "task_group") {
       const nestedSections = (section.sections ?? []).filter((nestedSection) => nestedSection.items.length > 0)
       if (nestedSections.length === 0) return null
 
       return (
         <section key={sectionKey} className="space-y-4">
-          <div className={cn("flex items-center justify-between gap-3", OBJECT_PANE_SECTION_X_CLASS)}>
-            <button
-              type="button"
-              onClick={() => toggleSection(sectionKey)}
-              className="flex min-w-0 items-center gap-2 text-left text-sm font-semibold text-gray-900"
-            >
-              {isCollapsed ? <ChevronRight className="h-4 w-4 shrink-0" /> : <ChevronDown className="h-4 w-4 shrink-0" />}
-              <span className="truncate">{section.label}</span>
-              {typeof resolveSectionCount(section, sectionCounts) === "number" ? (
-                <span className="text-sm font-medium text-gray-500">{resolveSectionCount(section, sectionCounts)}</span>
-              ) : null}
-            </button>
+          <div className={cn("flex min-w-0 items-center gap-2 text-sm font-semibold text-gray-900", OBJECT_PANE_SECTION_X_CLASS)}>
+            <span className="truncate">{section.label}</span>
+            {typeof resolveSectionCount(section, sectionCounts) === "number" ? (
+              <span className="text-sm font-medium text-gray-500">{resolveSectionCount(section, sectionCounts)}</span>
+            ) : null}
           </div>
-          {!isCollapsed ? <div className="space-y-4">{nestedSections.map(renderSection)}</div> : null}
+          <div className="space-y-4">{nestedSections.map(renderSection)}</div>
         </section>
       )
     }
@@ -245,43 +240,31 @@ export function GlobalSearchAllTabPane({
       section.type === "mention" ||
       (!!section.entity_type && typeof count === "number" && count > section.items.length)
 
+    const handleShowMore = () => {
+      if (isTaskSubgroup && onSeeMoreTasks) {
+        onSeeMoreTasks(section.type)
+        return
+      }
+      onShowMore(section)
+    }
+
     return (
       <section key={sectionKey} className="space-y-3">
-        <div className={cn("flex items-center justify-between gap-3", OBJECT_PANE_SECTION_X_CLASS)}>
-          <button
-            type="button"
-            onClick={() => toggleSection(sectionKey)}
-            className="flex min-w-0 items-center gap-2 text-left text-sm font-semibold text-gray-900"
-          >
-            {isCollapsed ? <ChevronRight className="h-4 w-4 shrink-0" /> : <ChevronDown className="h-4 w-4 shrink-0" />}
-            <span className="truncate">
-              {section.label}
-              {typeof count === "number" ? <span className="text-sm font-medium text-gray-500"> {count}</span> : null}
-            </span>
-          </button>
-          {canShowMore ? (
-            <button
-              type="button"
-              onClick={() => onShowMore(section)}
-              className="shrink-0 text-sm font-medium text-gray-500 transition hover:text-gray-900"
-            >
-              Show more
-            </button>
-          ) : null}
+        <div className={cn("flex min-w-0 items-center gap-2 text-sm font-semibold text-gray-900", OBJECT_PANE_SECTION_X_CLASS)}>
+          <span className="truncate">
+            {section.label}
+            {typeof count === "number" ? <span className="text-sm font-medium text-gray-500"> {count}</span> : null}
+          </span>
         </div>
-        {!isCollapsed ? (
-          <>
-            <GlobalSearchAllSectionCards
-              section={section}
-              viewScope={viewScope}
-              onSelect={onResultSelect as (item: GlobalSearchDocument) => void}
-            />
-            {isTaskSubgroup && onSeeMoreTasks ? (
-              <div className={OBJECT_PANE_SECTION_X_CLASS}>
-                <SeeMoreOutlineButton onClick={() => onSeeMoreTasks(section.type)} />
-              </div>
-            ) : null}
-          </>
+        <GlobalSearchAllSectionCards
+          section={section}
+          viewScope={viewScope}
+          onSelect={onResultSelect as (item: GlobalSearchDocument) => void}
+        />
+        {canShowMore ? (
+          <div className={OBJECT_PANE_SECTION_X_CLASS}>
+            <SeeMoreOutlineButton onClick={handleShowMore} label="Show more" />
+          </div>
         ) : null}
       </section>
     )
@@ -293,64 +276,49 @@ export function GlobalSearchAllTabPane({
         {recentlyOpenedSections.map(renderSection)}
         {isDiscoveryMode && taskGroupTabs.length > 0 ? (
           <section className="space-y-3">
-            <div className={cn("flex items-center justify-between gap-3", OBJECT_PANE_SECTION_X_CLASS)}>
-              <button
-                type="button"
-                onClick={() => toggleSection(TASKS_DISCOVERY_SECTION_KEY)}
-                className="flex min-w-0 items-center gap-2 text-left text-sm font-semibold text-gray-900"
-              >
-                {isTasksDiscoveryCollapsed ? (
-                  <ChevronRight className="h-4 w-4 shrink-0" />
-                ) : (
-                  <ChevronDown className="h-4 w-4 shrink-0" />
-                )}
-                <span className="truncate">Tasks</span>
-                {typeof sectionCounts.task === "number" ? (
-                  <span className="text-sm font-medium text-gray-500">{sectionCounts.task}</span>
-                ) : null}
-              </button>
+            <div className={cn("flex min-w-0 items-center gap-2 text-sm font-semibold text-gray-900", OBJECT_PANE_SECTION_X_CLASS)}>
+              <span className="truncate">Tasks</span>
+              {typeof sectionCounts.task === "number" ? (
+                <span className="text-sm font-medium text-gray-500">{sectionCounts.task}</span>
+              ) : null}
             </div>
-            {!isTasksDiscoveryCollapsed ? (
-              <>
-                <div className={cn("flex flex-wrap gap-1", OBJECT_PANE_SECTION_X_CLASS)}>
-                  {taskGroupTabs.map((section) => {
-                    const isActive = section.type === activeTaskGroupTabType
-                    const count = resolveSectionCount(section, sectionCounts)
-                    return (
-                      <button
-                        key={`task-tab:${section.type}`}
-                        type="button"
-                        onClick={() => setActiveTaskGroupTabType(section.type)}
-                        className={
-                          isActive
-                            ? "inline-flex items-center gap-1 rounded-full bg-gray-900 px-3 py-1 text-xs font-medium text-white"
-                            : "inline-flex items-center gap-1 rounded-full bg-gray-100 px-3 py-1 text-xs font-medium text-gray-700 hover:bg-gray-200"
-                        }
-                      >
-                        <span>{section.label}</span>
-                        {typeof count === "number" ? <span className="opacity-80">{count}</span> : null}
-                      </button>
-                    )
-                  })}
-                </div>
-                {taskGroupTabs.map((section) =>
-                  section.type === activeTaskGroupTabType ? (
-                    <div key={`task-tab-content:${section.type}`}>
-                      <GlobalSearchAllSectionCards
-                        section={section}
-                        viewScope={viewScope}
-                        onSelect={onResultSelect as (item: GlobalSearchDocument) => void}
-                      />
-                      {onSeeMoreTasks ? (
-                        <div className={OBJECT_PANE_SECTION_X_CLASS}>
-                          <SeeMoreOutlineButton onClick={() => onSeeMoreTasks(section.type)} />
-                        </div>
-                      ) : null}
+            <div className={cn("flex flex-wrap gap-1", OBJECT_PANE_SECTION_X_CLASS)}>
+              {taskGroupTabs.map((section) => {
+                const isActive = section.type === activeTaskGroupTabType
+                const count = resolveSectionCount(section, sectionCounts)
+                return (
+                  <button
+                    key={`task-tab:${section.type}`}
+                    type="button"
+                    onClick={() => setActiveTaskGroupTabType(section.type)}
+                    className={
+                      isActive
+                        ? "inline-flex items-center gap-1 rounded-full bg-gray-900 px-3 py-1 text-xs font-medium text-white"
+                        : "inline-flex items-center gap-1 rounded-full bg-gray-100 px-3 py-1 text-xs font-medium text-gray-700 hover:bg-gray-200"
+                    }
+                  >
+                    <span>{section.label}</span>
+                    {typeof count === "number" ? <span className="opacity-80">{count}</span> : null}
+                  </button>
+                )
+              })}
+            </div>
+            {taskGroupTabs.map((section) =>
+              section.type === activeTaskGroupTabType ? (
+                <div key={`task-tab-content:${section.type}`}>
+                  <GlobalSearchAllSectionCards
+                    section={section}
+                    viewScope={viewScope}
+                    onSelect={onResultSelect as (item: GlobalSearchDocument) => void}
+                  />
+                  {onSeeMoreTasks ? (
+                    <div className={OBJECT_PANE_SECTION_X_CLASS}>
+                      <SeeMoreOutlineButton onClick={() => onSeeMoreTasks(section.type)} label="Show more" />
                     </div>
-                  ) : null,
-                )}
-              </>
-            ) : null}
+                  ) : null}
+                </div>
+              ) : null,
+            )}
           </section>
         ) : null}
           {(!isDiscoveryMode || taskGroupTabs.length === 0) && taskSections.length > 0 ? (

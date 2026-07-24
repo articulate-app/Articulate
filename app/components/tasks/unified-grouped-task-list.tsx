@@ -438,6 +438,7 @@ export function UnifiedGroupedTaskList<T>({
   const project = useTasksScopeProjectParam(urlProject) ?? urlProject
   const { scope } = useTasksScope()
   const scopeProjectId = scope.type === 'project' ? scope.projectId : undefined
+  const scopeAssigneeId = scope.type === 'user' ? scope.userId : undefined
 
   // URL param keys (from pills + filter pane) -> RPC filter keys. Single canonical source for task_group_tasks_filtered.
   // Example: status=em+curso in URL -> project_status_name -> p_status_names: ['em curso'] (not null).
@@ -468,8 +469,12 @@ export function UnifiedGroupedTaskList<T>({
     if (deliveryDateTo) out['delivery_date_lt'] = deliveryDateTo
     if (publicationDateFrom) out['publication_date_gte'] = publicationDateFrom
     if (publicationDateTo) out['publication_date_lt'] = publicationDateTo
+    // User scope: always lock assignee (do not rely on URL assignedTo — avoids fighting left-pane filters).
+    if (scopeAssigneeId != null && Number.isFinite(scopeAssigneeId)) {
+      out['assigned_to_name'] = String(scopeAssigneeId)
+    }
     return out
-  }, [params.toString()])
+  }, [params.toString(), scopeAssigneeId])
 
   // Stable, sorted representation so key doesn't flip due to object key order or URL normalization.
   const stableFiltersKey = React.useMemo(() => {
@@ -681,6 +686,7 @@ export function UnifiedGroupedTaskList<T>({
     q,
     project,
     scopeProjectId,
+    scopeAssigneeId,
     filters: urlFilters,
     groupBy: effectiveGroupBy,
     rowSortBy: sortBy,
@@ -949,6 +955,18 @@ export function UnifiedGroupedTaskList<T>({
       const groupIdx = groups.findIndex(g => String(g.group_key) === groupKey)
       const isAfterBlocking = blockingIdx !== -1 && groupIdx > blockingIdx
 
+      const rowsForGroupPreview = plannerVisibility.showTasks
+        ? resolveTasksForGroupKey(groupTasksQuery.tasksByGroup, String(groupKey), effectiveGroupBy)
+        : []
+      const suggestionsForGroupPreview =
+        plannerVisibility.showSuggestions ? suggestionsByGroupKey.get(String(groupKey)) ?? [] : []
+      const optimisticForGroupPreview =
+        plannerVisibility.showTasks ? optimisticTasksByGroupKey.get(String(groupKey)) ?? [] : []
+      const loadedCount =
+        rowsForGroupPreview.length + suggestionsForGroupPreview.length + optimisticForGroupPreview.length
+      const displayTaskCount =
+        typeof group.task_count === 'number' ? group.task_count : loadedCount > 0 ? loadedCount : undefined
+
       if (!isUngroupedSingleAll) {
         result.push({
           type: 'group',
@@ -956,7 +974,7 @@ export function UnifiedGroupedTaskList<T>({
           label,
           isExpanded,
           isAfterBlocking,
-          taskCount: group.task_count,
+          taskCount: displayTaskCount,
         })
       }
 
@@ -966,13 +984,9 @@ export function UnifiedGroupedTaskList<T>({
         blockingGroupKey,
         collapsedGroups,
       })
-      const rowsForGroup = plannerVisibility.showTasks
-        ? resolveTasksForGroupKey(groupTasksQuery.tasksByGroup, String(groupKey), effectiveGroupBy)
-        : []
-      const suggestionsForGroup =
-        plannerVisibility.showSuggestions ? suggestionsByGroupKey.get(String(groupKey)) ?? [] : []
-      const optimisticForGroup =
-        plannerVisibility.showTasks ? optimisticTasksByGroupKey.get(String(groupKey)) ?? [] : []
+      const rowsForGroup = rowsForGroupPreview
+      const suggestionsForGroup = suggestionsForGroupPreview
+      const optimisticForGroup = optimisticForGroupPreview
       const allowSuggestionRowsBeyondBlocking =
         !shouldRenderRows &&
         plannerVisibility.showSuggestions &&
@@ -1403,12 +1417,13 @@ export function UnifiedGroupedTaskList<T>({
                         label={item.label}
                         editFields={editFields}
                       />
+                      {typeof item.taskCount === 'number' ? (
+                        <span className="shrink-0 text-xs font-normal tabular-nums text-gray-500">
+                          {item.taskCount}
+                        </span>
+                      ) : null}
                     </button>
-                    <TaskGroupHeaderActions
-                      groupBy={effectiveGroupBy as GroupByField}
-                      groupKey={item.groupKey}
-                      label={item.label}
-                    />
+                    <TaskGroupHeaderActions />
                   </div>
                 </td>
               </GroupDropZone>
@@ -1460,12 +1475,13 @@ export function UnifiedGroupedTaskList<T>({
                       label={item.label}
                       editFields={editFields}
                     />
+                    {typeof item.taskCount === 'number' ? (
+                      <span className="shrink-0 text-xs font-normal tabular-nums text-gray-500">
+                        {item.taskCount}
+                      </span>
+                    ) : null}
                   </button>
-                  <TaskGroupHeaderActions
-                    groupBy={effectiveGroupBy as GroupByField}
-                    groupKey={item.groupKey}
-                    label={item.label}
-                  />
+                  <TaskGroupHeaderActions />
                 </div>
               </td>
               {/* Span rest of row */}

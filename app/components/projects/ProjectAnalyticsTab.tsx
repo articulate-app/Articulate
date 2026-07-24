@@ -3,7 +3,17 @@
 import { useEffect, useMemo, useState } from "react"
 import { useQuery } from "@tanstack/react-query"
 import { subDays, format, parseISO, isValid as isValidDate } from "date-fns"
-import { Loader2, AlertCircle, Edit2, Plus, SlidersHorizontal } from "lucide-react"
+import {
+  Loader2,
+  AlertCircle,
+  Edit2,
+  Plus,
+  SlidersHorizontal,
+  ArrowDownRight,
+  ArrowUpRight,
+  Minus,
+} from "lucide-react"
+import { cn } from "@/lib/utils"
 import { createClient } from "../../lib/supabase/client"
 import { Card } from "../ui/card"
 import { Button } from "../ui/button"
@@ -24,6 +34,14 @@ import {
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "../ui/select"
 import { ProjectAnalyticsSettings } from "./ProjectAnalyticsSettings"
 import { ProjectAnalyticsPagesSection } from "./ProjectAnalyticsPagesSection"
+import {
+  CHART_LINE_STROKE,
+  formatChartAxisDate,
+} from "./chart-date-range-footer"
+import {
+  ChartPreviewDateRangeButton,
+  ChartPreviewHoverActions,
+} from "./chart-preview-hover-actions"
 
 type PeriodType = "day" | "week" | "month"
 
@@ -44,6 +62,59 @@ export type ProjectAnalyticsChannelSummary = {
   total_active_users: number | null
   total_sessions: number | null
   avg_session_duration: number | null
+  prev_total_active_users?: number | null
+  prev_total_sessions?: number | null
+  prev_avg_session_duration?: number | null
+  sessions_change_pct?: number | null
+  active_users_change_pct?: number | null
+}
+
+type TrendDirection = "up" | "down" | "flat" | "new"
+
+function getTrendDirection(changePct: number | null | undefined, currentValue: number): TrendDirection {
+  if (changePct == null) {
+    return currentValue > 0 ? "new" : "flat"
+  }
+  if (changePct > 0.5) return "up"
+  if (changePct < -0.5) return "down"
+  return "flat"
+}
+
+function ChannelTrendBadge({
+  changePct,
+  currentValue,
+  compact = false,
+}: {
+  changePct: number | null | undefined
+  currentValue: number
+  compact?: boolean
+}) {
+  const direction = getTrendDirection(changePct, currentValue)
+  const Icon =
+    direction === "up" ? ArrowUpRight : direction === "down" ? ArrowDownRight : Minus
+
+  const label =
+    direction === "new"
+      ? "New"
+      : changePct == null
+        ? "—"
+        : `${changePct > 0 ? "+" : ""}${decimalFormatter.format(changePct)}%`
+
+  return (
+    <span
+      className={cn(
+        "inline-flex items-center gap-0.5 font-medium",
+        compact ? "text-[11px]" : "text-xs",
+        direction === "up" && "text-emerald-600",
+        direction === "down" && "text-rose-600",
+        (direction === "flat" || direction === "new") && "text-gray-500",
+      )}
+      title="vs previous period of equal length"
+    >
+      <Icon className={compact ? "h-3 w-3" : "h-3.5 w-3.5"} />
+      <span>{label}</span>
+    </span>
+  )
 }
 
 type ProjectAnalyticsPropertyMapping = {
@@ -119,17 +190,21 @@ const formatSessionDuration = (seconds: number | null | undefined): string => {
   return `${minutes}m ${remainingSeconds}s`
 }
 
-const getPeriodLabel = (periodType: PeriodType, startDateStr: string): string => {
+const getPeriodLabel = (
+  periodType: PeriodType,
+  startDateStr: string,
+  compact = false,
+): string => {
   try {
     const date = parseISO(startDateStr)
     if (!isValidDate(date)) return startDateStr
 
     if (periodType === "day") {
-      return format(date, "MMM d, yyyy")
+      return compact ? formatChartAxisDate(startDateStr) : format(date, "MMM d, yyyy")
     }
 
     if (periodType === "week") {
-      return format(date, "yyyy-'W'II")
+      return compact ? format(date, "MMM d") : format(date, "yyyy-'W'II")
     }
 
     return format(date, "MMM yyyy")
@@ -247,7 +322,7 @@ export function ProjectAnalyticsTab({
   const [uncontrolledDateRange, setUncontrolledDateRange] = useState<DateRangeValue>(() => {
     const today = new Date()
     return {
-      from: subDays(today, 29),
+      from: subDays(today, isPreview ? 6 : 29),
       to: today,
     }
   })
@@ -311,9 +386,9 @@ export function ProjectAnalyticsTab({
         })
 
       const { data: summary, error: summaryError } =
-        await (supabase as any).rpc("fn_get_project_analytics_channel_summary", {
+        await (supabase as any).rpc("fn_get_project_analytics_channel_trends", {
           p_project_id: projectId,
-          // Summary cards should not depend on chart period granularity
+          // Summary / trends should not depend on chart period granularity
           p_period_type: "day",
           p_start_date: startDateStr,
           p_end_date: endDateStr,
@@ -408,7 +483,7 @@ export function ProjectAnalyticsTab({
         if (!periodDatum) {
           periodDatum = {
             periodKey,
-            label: getPeriodLabel(periodType, row.start_date),
+            label: getPeriodLabel(periodType, row.start_date, isPreview),
             startDate: row.start_date,
             endDate: row.end_date,
           }
@@ -435,17 +510,68 @@ export function ProjectAnalyticsTab({
         chartData: sorted,
         channelKeyMap: channelKeyMapLocal,
       }
-    }, [filteredTimeseries, periodType, yMetric])
+    }, [filteredTimeseries, isPreview, periodType, yMetric])
 
-  const totalSessions = filteredSummary.reduce(
-    (acc, row) => acc + Number(row.total_sessions ?? 0),
-    0,
+  const totalTrafficRow = useMemo(
+    () => summary.find((row) => row.channel_group === "Total Traffic") ?? null,
+    [summary],
   )
-  const totalActiveUsers = filteredSummary.reduce(
-    (acc, row) => acc + Number(row.total_active_users ?? 0),
-    0,
+
+  const channelTrendRows = useMemo(
+    () =>
+      filteredSummary
+        .filter((row) => row.channel_group !== "Total Traffic")
+        .slice()
+        .sort(
+          (a, b) => Number(b.total_sessions ?? 0) - Number(a.total_sessions ?? 0),
+        ),
+    [filteredSummary],
   )
-  const overallAvgDurationSeconds = computeOverallAverageDuration(filteredSummary)
+
+  const totalSessions = useMemo(() => {
+    if (selectedChannels.length === 0 && totalTrafficRow) {
+      return Number(totalTrafficRow.total_sessions ?? 0)
+    }
+    return channelTrendRows.reduce((acc, row) => acc + Number(row.total_sessions ?? 0), 0)
+  }, [channelTrendRows, selectedChannels.length, totalTrafficRow])
+
+  const totalActiveUsers = useMemo(() => {
+    if (selectedChannels.length === 0 && totalTrafficRow) {
+      return Number(totalTrafficRow.total_active_users ?? 0)
+    }
+    return channelTrendRows.reduce(
+      (acc, row) => acc + Number(row.total_active_users ?? 0),
+      0,
+    )
+  }, [channelTrendRows, selectedChannels.length, totalTrafficRow])
+
+  const overallAvgDurationSeconds = computeOverallAverageDuration(
+    selectedChannels.length === 0 && totalTrafficRow ? [totalTrafficRow] : channelTrendRows,
+  )
+
+  const overallSessionsChangePct = useMemo(() => {
+    if (selectedChannels.length === 0 && totalTrafficRow) {
+      return totalTrafficRow.sessions_change_pct ?? null
+    }
+    const prev = channelTrendRows.reduce(
+      (acc, row) => acc + Number(row.prev_total_sessions ?? 0),
+      0,
+    )
+    if (prev === 0) return totalSessions > 0 ? null : 0
+    return Math.round(((totalSessions - prev) / prev) * 1000) / 10
+  }, [channelTrendRows, selectedChannels.length, totalSessions, totalTrafficRow])
+
+  const overallActiveUsersChangePct = useMemo(() => {
+    if (selectedChannels.length === 0 && totalTrafficRow) {
+      return totalTrafficRow.active_users_change_pct ?? null
+    }
+    const prev = channelTrendRows.reduce(
+      (acc, row) => acc + Number(row.prev_total_active_users ?? 0),
+      0,
+    )
+    if (prev === 0) return totalActiveUsers > 0 ? null : 0
+    return Math.round(((totalActiveUsers - prev) / prev) * 1000) / 10
+  }, [channelTrendRows, selectedChannels.length, totalActiveUsers, totalTrafficRow])
 
   const handlePeriodTypeChange = (next: PeriodType) => {
     setPeriodType(next)
@@ -454,20 +580,16 @@ export function ProjectAnalyticsTab({
   const hasData = chartData.length > 0
 
   const analyticsFiltersControl = isPreview ? (
-    <Popover open={filtersOpen} onOpenChange={setFiltersOpen}>
-      <PopoverTrigger asChild>
-        <Button
-          type="button"
-          variant="outline"
-          size="sm"
-          className="h-8 w-8 shrink-0 p-0"
-          aria-label="Chart filters"
-          title="Chart filters"
-        >
-          <SlidersHorizontal className="h-4 w-4" />
-        </Button>
+    <Popover open={filtersOpen} onOpenChange={setFiltersOpen} modal={false}>
+      <PopoverTrigger
+        type="button"
+        aria-label="Chart filters"
+        title="Chart filters"
+        className="inline-flex h-7 w-7 items-center justify-center rounded-md border border-gray-200 bg-white/95 text-gray-600 shadow-sm backdrop-blur hover:bg-white hover:text-gray-900 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-gray-300"
+      >
+        <SlidersHorizontal className="h-3.5 w-3.5" />
       </PopoverTrigger>
-      <PopoverContent align="end" className="w-72 space-y-3 p-3">
+      <PopoverContent align="end" className="z-[80] w-72 space-y-3 p-3" sideOffset={6}>
         <div className="space-y-1.5">
           <Label className="text-xs text-gray-500">Channels</Label>
           <MultiSelect
@@ -549,14 +671,28 @@ export function ProjectAnalyticsTab({
     <div className={isPreview ? "grid gap-3 grid-cols-2 sm:grid-cols-3" : "grid gap-4 md:grid-cols-3 lg:grid-cols-4"}>
       <Card className={isPreview ? "border-0 bg-transparent p-0 shadow-none" : "p-4"}>
         <div className="text-xs font-medium text-gray-500">Total sessions</div>
-        <div className={isPreview ? "mt-0.5 text-lg font-semibold" : "mt-2 text-2xl font-semibold"}>
-          {numberFormatter.format(totalSessions)}
+        <div className={cn("flex items-baseline gap-2", isPreview ? "mt-0.5" : "mt-2")}>
+          <span className={isPreview ? "text-lg font-semibold" : "text-2xl font-semibold"}>
+            {numberFormatter.format(totalSessions)}
+          </span>
+          <ChannelTrendBadge
+            changePct={overallSessionsChangePct}
+            currentValue={totalSessions}
+            compact={isPreview}
+          />
         </div>
       </Card>
       <Card className={isPreview ? "border-0 bg-transparent p-0 shadow-none" : "p-4"}>
         <div className="text-xs font-medium text-gray-500">Total active users</div>
-        <div className={isPreview ? "mt-0.5 text-lg font-semibold" : "mt-2 text-2xl font-semibold"}>
-          {numberFormatter.format(totalActiveUsers)}
+        <div className={cn("flex items-baseline gap-2", isPreview ? "mt-0.5" : "mt-2")}>
+          <span className={isPreview ? "text-lg font-semibold" : "text-2xl font-semibold"}>
+            {numberFormatter.format(totalActiveUsers)}
+          </span>
+          <ChannelTrendBadge
+            changePct={overallActiveUsersChangePct}
+            currentValue={totalActiveUsers}
+            compact={isPreview}
+          />
         </div>
       </Card>
       <Card className={isPreview ? "border-0 bg-transparent p-0 shadow-none" : "p-4"}>
@@ -570,11 +706,50 @@ export function ProjectAnalyticsTab({
       {!isPreview ? (
         <Card className="hidden p-4 lg:block">
           <div className="text-xs font-medium text-gray-500">Channels tracked</div>
-          <div className="mt-2 text-2xl font-semibold">{allChannels.length}</div>
+          <div className="mt-2 text-2xl font-semibold">{channelTrendRows.length}</div>
         </Card>
       ) : null}
     </div>
   )
+
+  const channelTrendsList =
+    channelTrendRows.length === 0 ? null : (
+      <div className="space-y-1.5">
+        <div className="text-[11px] font-medium text-gray-500">Channel trends</div>
+        <div className="divide-y divide-gray-100 rounded-md border border-gray-100">
+          {channelTrendRows.slice(0, isPreview ? 6 : undefined).map((row) => {
+            const sessions = Number(row.total_sessions ?? 0)
+            const changePct =
+              yMetric === "active_users"
+                ? row.active_users_change_pct
+                : row.sessions_change_pct
+            const currentValue =
+              yMetric === "active_users"
+                ? Number(row.total_active_users ?? 0)
+                : sessions
+            return (
+              <div
+                key={row.channel_group}
+                className="flex items-center justify-between gap-3 px-3 py-2"
+              >
+                <div className="min-w-0">
+                  <div className="truncate text-xs text-gray-900">{row.channel_group}</div>
+                  <div className="text-[11px] text-gray-500">
+                    {numberFormatter.format(currentValue)}{" "}
+                    {yMetric === "active_users" ? "users" : "sessions"}
+                  </div>
+                </div>
+                <ChannelTrendBadge
+                  changePct={changePct}
+                  currentValue={currentValue}
+                  compact
+                />
+              </div>
+            )
+          })}
+        </div>
+      </div>
+    )
 
   const showChartLegend = Object.keys(channelKeyMap).some(
     (channel) => channel !== "Total Traffic",
@@ -668,12 +843,18 @@ export function ProjectAnalyticsTab({
                 />
               ) : null}
 
-              {Object.entries(channelKeyMap).map(([channel, key]) => (
+              {Object.entries(channelKeyMap).map(([channel, key], index) => (
                 <Line
                   key={key}
                   type="monotone"
                   dataKey={key}
                   name={channel === "Total Traffic" ? "Traffic" : channel}
+                  stroke={CHART_LINE_STROKE}
+                  strokeOpacity={
+                    Object.keys(channelKeyMap).length > 1 && channel !== "Total Traffic"
+                      ? Math.max(0.45, 1 - index * 0.15)
+                      : 1
+                  }
                   strokeWidth={2}
                   dot={false}
                   activeDot={{ r: 4 }}
@@ -687,13 +868,22 @@ export function ProjectAnalyticsTab({
   )
 
   if (isPreview) {
+    const chartAvailable = !isLoading && !error && hasData
     return (
       <div className="min-w-0 space-y-3">
-        <div className="flex items-start gap-2">
-          <div className="min-w-0 flex-1">{summaryCards}</div>
-          <div className="shrink-0 pt-0.5">{analyticsFiltersControl}</div>
-        </div>
-        {trafficChartCard}
+        {summaryCards}
+        <ChartPreviewHoverActions
+          enabled={chartAvailable}
+          actions={
+            <>
+              {analyticsFiltersControl}
+              <ChartPreviewDateRangeButton value={dateRange} onChange={setDateRange} />
+            </>
+          }
+        >
+          {trafficChartCard}
+        </ChartPreviewHoverActions>
+        {chartAvailable ? channelTrendsList : null}
       </div>
     )
   }
@@ -761,13 +951,18 @@ export function ProjectAnalyticsTab({
       {trafficChartCard}
 
       <Card className="p-4 md:p-6">
-        <div className="mb-4 flex items-center justify-between">
-          <h3 className="text-base font-semibold text-gray-900">
-            Channel breakdown
-          </h3>
+        <div className="mb-4 flex flex-col gap-1 sm:flex-row sm:items-end sm:justify-between">
+          <div>
+            <h3 className="text-base font-semibold text-gray-900">
+              Channel breakdown
+            </h3>
+            <p className="text-xs text-gray-500">
+              Trend vs the previous period of equal length.
+            </p>
+          </div>
         </div>
 
-        {summary.length === 0 ? (
+        {channelTrendRows.length === 0 ? (
           <div className="py-8 text-center text-sm text-gray-500">
             No channel data for the selected range.
           </div>
@@ -778,30 +973,38 @@ export function ProjectAnalyticsTab({
                 <tr>
                   <th className="px-4 py-2">Channel</th>
                   <th className="px-4 py-2 text-right">Total sessions</th>
+                  <th className="px-4 py-2 text-right">Sessions trend</th>
                   <th className="px-4 py-2 text-right">Total active users</th>
+                  <th className="px-4 py-2 text-right">Users trend</th>
                   <th className="px-4 py-2 text-right">Avg. session duration</th>
                 </tr>
               </thead>
               <tbody>
-                {summary
-                  .slice()
-                  .sort(
-                    (a, b) =>
-                      Number(b.total_sessions ?? 0) -
-                      Number(a.total_sessions ?? 0),
-                  )
-                  .map((row) => (
+                {channelTrendRows.map((row) => {
+                  const sessions = Number(row.total_sessions ?? 0)
+                  const activeUsers = Number(row.total_active_users ?? 0)
+                  return (
                     <tr key={row.channel_group} className="border-b last:border-0">
                       <td className="px-4 py-2 text-sm text-gray-900">
                         {row.channel_group}
                       </td>
                       <td className="px-4 py-2 text-right text-sm">
-                        {numberFormatter.format(Number(row.total_sessions ?? 0))}
+                        {numberFormatter.format(sessions)}
+                      </td>
+                      <td className="px-4 py-2 text-right">
+                        <ChannelTrendBadge
+                          changePct={row.sessions_change_pct}
+                          currentValue={sessions}
+                        />
                       </td>
                       <td className="px-4 py-2 text-right text-sm">
-                        {numberFormatter.format(
-                          Number(row.total_active_users ?? 0),
-                        )}
+                        {numberFormatter.format(activeUsers)}
+                      </td>
+                      <td className="px-4 py-2 text-right">
+                        <ChannelTrendBadge
+                          changePct={row.active_users_change_pct}
+                          currentValue={activeUsers}
+                        />
                       </td>
                       <td className="px-4 py-2 text-right text-sm">
                         {formatSessionDuration(
@@ -811,7 +1014,8 @@ export function ProjectAnalyticsTab({
                         )}
                       </td>
                     </tr>
-                  ))}
+                  )
+                })}
               </tbody>
             </table>
           </div>

@@ -4,7 +4,9 @@ import {
   type AiChangePreview,
 } from "../../app/store/ai-change-preview-stream"
 import { useAiOrchestratedBuildStore } from "../../app/store/ai-orchestrated-build-store"
+import { useAiRequestPlanStore } from "../../app/store/ai-request-plan-store"
 import { discoverOrchestratedBuildFromChangePreview } from "./discover-orchestrated-build"
+import { requestPlanAllowsOrchestratedBuildCard } from "./request-plan"
 
 function toStorePreview(event: AiChatChangePreviewEvent): AiChangePreview {
   return {
@@ -56,9 +58,15 @@ export function applyAiChangePreviewEvent(
 ): string {
   const skippedPreflight =
     event.requires_clarification === true || event.no_build_created === true
-  const discovered = skippedPreflight
-    ? null
-    : discoverOrchestratedBuildFromChangePreview(event)
+  const planOperation = assistantMessageId
+    ? useAiRequestPlanStore.getState().getBucket(assistantMessageId)?.plan.operation ?? null
+    : null
+  // plan/apply structure ops must never mount an orchestrated-build ("Queued") card.
+  const allowsBuildCard = requestPlanAllowsOrchestratedBuildCard(planOperation)
+  const discovered =
+    skippedPreflight || !allowsBuildCard
+      ? null
+      : discoverOrchestratedBuildFromChangePreview(event)
   // Only register a build card when a real build_id is present (never for skipped preflight).
   if (discovered) {
     useAiOrchestratedBuildStore.getState().registerBuild({

@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest"
 import {
+  formatStructureActionLabel,
   reduceBuildComponentAudits,
   reduceWorkUnitComponentAudit,
 } from "../features/ai-chat/orchestrated-build-audit"
@@ -125,10 +126,14 @@ describe("orchestrated build component audit", () => {
     expect(audit.requiredComponents).toHaveLength(2)
     expect(audit.requiredComponents[0]?.provenance).toBe("system_default")
     expect(audit.currentComponents[0]?.hasContent).toBe(true)
+    expect(audit.selectedComponents).toHaveLength(0)
+    expect(audit.currentComponents).toHaveLength(2)
     expect(audit.reusableGroups[0]?.titles).toEqual(["Hero", "CTA"])
     expect(audit.decisions[0]?.reason).toContain("matches brief")
     expect(audit.finalStructure).toHaveLength(3)
     expect(audit.finalStructure[0]?.action).toBe("replace_existing")
+    expect(formatStructureActionLabel("reactivate_existing")).toBe("Reused and reactivated")
+    expect(formatStructureActionLabel("create_from_system")).toBe("Created")
     expect(audit.finalStructure[0]?.position).toBe(3)
     expect(audit.persistedOrder.map((row) => row.title)).toEqual([
       "Title",
@@ -137,6 +142,46 @@ describe("orchestrated build component audit", () => {
     ])
     expect(audit.repair?.succeeded).toBe(true)
     expect(audit.repair?.validationIssues).toEqual(["Missing CTA"])
+  })
+
+  it("keeps selected and inactive components in separate discovery sections", () => {
+    const events = eventsBySequence([
+      {
+        sequence: 1,
+        event_type: "work_unit.discovery_snapshot",
+        phase: "running",
+        unit_id: UNIT_ID,
+        payload: {
+          selected_components: [
+            { title: "Title", has_content: true, component_id: "sel-1" },
+          ],
+          inactive_components: [
+            { title: "Old FAQ", has_content: false, component_id: "inact-1" },
+          ],
+        },
+      },
+      {
+        sequence: 2,
+        event_type: "work_unit.required_structure_prepared",
+        phase: "completed",
+        unit_id: UNIT_ID,
+        payload: {
+          actions: [
+            { action: "reactivate_existing", title: "Old FAQ", component_id: "inact-1" },
+            { action: "create_from_system", title: "Meta description" },
+          ],
+        },
+      },
+    ])
+
+    const audit = reduceWorkUnitComponentAudit(UNIT_ID, events)
+    expect(audit.selectedComponents.map((row) => row.title)).toEqual(["Title"])
+    expect(audit.inactiveComponents.map((row) => row.title)).toEqual(["Old FAQ"])
+    expect(audit.inactiveComponents[0]?.title).not.toBe(audit.selectedComponents[0]?.title)
+    expect(formatStructureActionLabel(audit.finalStructure[0]?.action)).toBe(
+      "Reused and reactivated",
+    )
+    expect(formatStructureActionLabel(audit.finalStructure[1]?.action)).toBe("Created")
   })
 
   it("dedupes by sequence and scopes audits per unit_id", () => {

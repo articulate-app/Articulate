@@ -29,6 +29,16 @@ import {
   SelectTrigger,
   SelectValue,
 } from "../ui/select"
+import {
+  CHART_LINE_STROKE,
+  formatChartAxisDate,
+} from "./chart-date-range-footer"
+import {
+  ChartPreviewDateRangeButton,
+  ChartPreviewHoverActions,
+} from "./chart-preview-hover-actions"
+import { AddDashedButton } from "../ui/add-dashed-button"
+import { cn } from "@/lib/utils"
 
 type DateRangeValue = {
   from?: Date
@@ -37,8 +47,8 @@ type DateRangeValue = {
 
 interface ProjectAiVisibilityTabProps {
   projectId: number
-  /** Overview embed: brand-position chart only. */
-  variant?: "full" | "preview"
+  /** Overview embed: brand-position chart + tracked prompts. Manage: list/add only. */
+  variant?: "full" | "preview" | "manage"
   dateRange?: DateRangeValue
   onDateRangeChange?: (range: DateRangeValue) => void
 }
@@ -90,9 +100,9 @@ type RankedEntity = {
   snippet?: string
 }
 
-const getDefaultDateRange = (): DateRangeValue => {
+const getDefaultDateRange = (days = 29): DateRangeValue => {
   const today = new Date()
-  const from = subDays(today, 29)
+  const from = subDays(today, days)
   return { from, to: today }
 }
 
@@ -111,6 +121,7 @@ export function ProjectAiVisibilityTab({
   onDateRangeChange,
 }: ProjectAiVisibilityTabProps) {
   const isPreview = variant === "preview"
+  const isManage = variant === "manage"
   const supabase = useMemo(() => createClient(), [])
   const functionsClient = useMemo(() => createClientComponentClient(), [])
   const queryClient = useQueryClient()
@@ -119,13 +130,16 @@ export function ProjectAiVisibilityTab({
   const [newNotes, setNewNotes] = useState("")
   const [selectedToolIds, setSelectedToolIds] = useState<string[]>([])
   const [isAdding, setIsAdding] = useState(false)
+  const [showPreviewAddForm, setShowPreviewAddForm] = useState(false)
   const [isSyncing, setIsSyncing] = useState(false)
   const [isStopping, setIsStopping] = useState(false)
 
   const [selectedPromptId, setSelectedPromptId] = useState<number | null>(null)
   const [selectedToolId, setSelectedToolId] = useState<number | null>(null)
 
-  const [uncontrolledDateRange, setUncontrolledDateRange] = useState<DateRangeValue>(() => getDefaultDateRange())
+  const [uncontrolledDateRange, setUncontrolledDateRange] = useState<DateRangeValue>(() =>
+    getDefaultDateRange(isPreview ? 6 : 29),
+  )
   const dateRange = controlledDateRange ?? uncontrolledDateRange
   const setDateRange = onDateRangeChange ?? setUncontrolledDateRange
   const [selectedRunAt, setSelectedRunAt] = useState<Date | null>(null)
@@ -186,7 +200,7 @@ export function ProjectAiVisibilityTab({
       from ? from.toISOString() : null,
       to ? to.toISOString() : null,
     ],
-    enabled: !isPreview && !!selectedPromptId && !!selectedToolId && !!from && !!to,
+    enabled: !!selectedPromptId && !!selectedToolId && !!from && !!to,
     queryFn: async () => {
       if (!selectedPromptId || !selectedToolId || !from || !to) return []
 
@@ -361,6 +375,7 @@ export function ProjectAiVisibilityTab({
       setNewPrompt("")
       setNewNotes("")
       setSelectedToolIds([])
+      setShowPreviewAddForm(false)
 
       await refetchPrompts()
 
@@ -494,6 +509,14 @@ export function ProjectAiVisibilityTab({
 
   const hasPrompts = prompts && prompts.length > 0
   const hasTimeseries = timeseries && timeseries.length > 0
+
+  useEffect(() => {
+    if (!isPreview || !hasPrompts || selectedPromptId != null) return
+    const first = prompts![0]
+    setSelectedPromptId(first.project_ai_prompt_id)
+    setSelectedToolId(first.ai_tool_id)
+    if (first.run_at) setSelectedRunAt(new Date(first.run_at))
+  }, [hasPrompts, isPreview, prompts, selectedPromptId])
 
   const selectedTool =
     tools && selectedToolId != null
@@ -670,7 +693,7 @@ export function ProjectAiVisibilityTab({
               <Line
                 type="monotone"
                 dataKey="brand_position"
-                stroke="#2563eb"
+                stroke={CHART_LINE_STROKE}
                 strokeWidth={2}
                 dot={{ r: 3 }}
                 activeDot={{ r: 4 }}
@@ -683,70 +706,374 @@ export function ProjectAiVisibilityTab({
   )
 
   if (isPreview) {
-    const hasGlobal = !!globalTimeseries?.length
-    return (
-      <div className="min-w-0">
-        <div className="h-64 min-w-0">
-          {isLoadingGlobalTimeseries ? (
-            <div className="flex h-full items-center justify-center text-sm text-gray-500">
-              <Loader2 className="mr-2 h-5 w-5 animate-spin" />
-              Loading brand position…
-            </div>
-          ) : globalTimeseriesError ? (
-            <div className="flex h-full items-center gap-2 text-xs text-red-700">
-              <AlertCircle className="h-4 w-4" />
-              <span>Failed to load brand position history.</span>
-            </div>
-          ) : !hasGlobal ? (
-            <div className="flex h-full items-center justify-center text-sm text-gray-500">
-              No AI visibility runs yet for this period.
-            </div>
+    const chartData = hasTimeseries ? timeseries : globalTimeseries
+    const isLoadingChart = selectedPromptId
+      ? isLoadingTimeseries
+      : isLoadingGlobalTimeseries
+    const chartError = selectedPromptId ? timeseriesError : globalTimeseriesError
+    const hasChart = !!chartData?.length
+    const metricLabel = selectedPromptId ? "Position" : "Avg position"
+    const chartAvailable = Boolean(hasPrompts)
+
+    const previewAddForm = (
+      <div className="space-y-3 rounded-lg border border-dashed border-gray-200 p-3">
+        <div className="space-y-1">
+          <Label htmlFor="overview-new-prompt" className="text-xs">
+            Prompt
+          </Label>
+          <Input
+            id="overview-new-prompt"
+            placeholder="e.g. What are the best SEO agencies in Lisbon?"
+            value={newPrompt}
+            onChange={(e) => setNewPrompt(e.target.value)}
+            className="h-8 text-xs"
+            autoFocus
+          />
+        </div>
+        <div className="space-y-1">
+          <Label className="text-xs">AI tools</Label>
+          <MultiSelect
+            options={toolOptions}
+            value={selectedToolIds}
+            onChange={setSelectedToolIds}
+            placeholder={isLoadingTools ? "Loading tools…" : "Select AI tools to track"}
+          />
+        </div>
+        <div className="flex flex-wrap items-center gap-2">
+          <Button type="button" size="sm" onClick={handleAddPrompt} disabled={isAdding}>
+            {isAdding ? (
+              <>
+                <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                Adding…
+              </>
+            ) : (
+              <>Add prompt</>
+            )}
+          </Button>
+          <Button
+            type="button"
+            size="sm"
+            variant="ghost"
+            onClick={() => setShowPreviewAddForm(false)}
+            disabled={isAdding}
+          >
+            Cancel
+          </Button>
+        </div>
+      </div>
+    )
+
+    if (isLoadingPrompts) {
+      return (
+        <div className="flex items-center gap-2 text-sm text-gray-500">
+          <Loader2 className="h-4 w-4 animate-spin" />
+          Loading…
+        </div>
+      )
+    }
+
+    if (!hasPrompts) {
+      return (
+        <div className="min-w-0 space-y-3">
+          {showPreviewAddForm ? (
+            previewAddForm
           ) : (
-            <ResponsiveContainer width="100%" height="100%">
-              <LineChart
-                data={globalTimeseries}
-                margin={{ top: 8, right: 8, left: 0, bottom: 0 }}
-              >
-                <CartesianGrid strokeDasharray="3 3" stroke="#e5e7eb" />
-                <XAxis
-                  dataKey="run_at"
-                  stroke="#6b7280"
-                  style={{ fontSize: "12px" }}
-                  tickFormatter={formatShortDateTime}
-                  tickMargin={8}
-                />
-                <YAxis
-                  width={36}
-                  stroke="#6b7280"
-                  style={{ fontSize: "12px" }}
-                  reversed
-                  domain={[1, "dataMax + 1"]}
-                  allowDecimals={false}
-                />
-                <RechartsTooltip
-                  formatter={(value: any) => {
-                    const v = value as number | null
-                    if (v == null) return ["Not mentioned", "Avg position"]
-                    return [`#${v}`, "Avg position"]
+            <AddDashedButton
+              label="Add prompt"
+              className="mt-0"
+              onClick={() => setShowPreviewAddForm(true)}
+            />
+          )}
+        </div>
+      )
+    }
+
+    return (
+      <div className="min-w-0 space-y-3">
+        <ChartPreviewHoverActions
+          enabled={chartAvailable}
+          actions={<ChartPreviewDateRangeButton value={dateRange} onChange={setDateRange} />}
+        >
+          <div className="h-64 min-w-0">
+            {isLoadingChart ? (
+              <div className="flex h-full items-center justify-center text-sm text-gray-500">
+                <Loader2 className="mr-2 h-5 w-5 animate-spin" />
+                Loading brand position…
+              </div>
+            ) : chartError ? (
+              <div className="flex h-full items-center gap-2 text-xs text-red-700">
+                <AlertCircle className="h-4 w-4" />
+                <span>Failed to load brand position history.</span>
+              </div>
+            ) : !hasChart ? (
+              <div className="flex h-full items-center justify-center text-sm text-gray-500">
+                No AI visibility runs yet for this period.
+              </div>
+            ) : (
+              <ResponsiveContainer width="100%" height="100%">
+                <LineChart
+                  data={chartData}
+                  margin={{ top: 8, right: 8, left: 0, bottom: 0 }}
+                >
+                  <CartesianGrid strokeDasharray="3 3" stroke="#e5e7eb" />
+                  <XAxis
+                    dataKey="run_at"
+                    stroke="#6b7280"
+                    style={{ fontSize: "12px" }}
+                    tickFormatter={formatChartAxisDate}
+                    tickMargin={8}
+                  />
+                  <YAxis
+                    width={36}
+                    stroke="#6b7280"
+                    style={{ fontSize: "12px" }}
+                    reversed
+                    domain={[1, "dataMax + 1"]}
+                    allowDecimals={false}
+                  />
+                  <RechartsTooltip
+                    formatter={(value: any) => {
+                      const v = value as number | null
+                      if (v == null) return ["Not mentioned", metricLabel]
+                      return [`#${v}`, metricLabel]
+                    }}
+                    labelFormatter={(label) =>
+                      `Date: ${format(new Date(label), "yyyy-MM-dd")}`
+                    }
+                  />
+                  <Line
+                    type="monotone"
+                    dataKey="brand_position"
+                    stroke={CHART_LINE_STROKE}
+                    strokeWidth={2}
+                    dot={false}
+                    activeDot={{ r: 4 }}
+                  />
+                </LineChart>
+              </ResponsiveContainer>
+            )}
+          </div>
+        </ChartPreviewHoverActions>
+
+        <div className="space-y-2">
+          <div className="text-[11px] font-medium text-gray-500">Tracked prompts</div>
+          <div className="flex flex-wrap gap-1.5">
+            {prompts!.map((row) => {
+              const isSelected =
+                row.project_ai_prompt_id === selectedPromptId &&
+                row.ai_tool_id === selectedToolId
+              return (
+                <button
+                  key={`${row.project_ai_prompt_id}-${row.ai_tool_id}`}
+                  type="button"
+                  onClick={() => {
+                    setSelectedPromptId(row.project_ai_prompt_id)
+                    setSelectedToolId(row.ai_tool_id)
+                    if (row.run_at) setSelectedRunAt(new Date(row.run_at))
                   }}
-                  labelFormatter={(label) =>
-                    `Date: ${format(new Date(label), "yyyy-MM-dd")}`
-                  }
-                />
-                <Line
-                  type="monotone"
-                  dataKey="brand_position"
-                  stroke="#2563eb"
-                  strokeWidth={2}
-                  dot={false}
-                  activeDot={{ r: 4 }}
-                />
-              </LineChart>
-            </ResponsiveContainer>
+                  className={cn(
+                    "max-w-full rounded-md border px-2.5 py-1.5 text-left text-xs transition-colors",
+                    isSelected
+                      ? "border-gray-900 bg-gray-900 text-white"
+                      : "border-gray-200 bg-white text-gray-700 hover:border-gray-300 hover:bg-gray-50",
+                  )}
+                >
+                  <span className="line-clamp-2">
+                    {row.prompt_text}
+                    {row.ai_tool_name ? (
+                      <span className={cn("ml-1", isSelected ? "text-gray-300" : "text-gray-400")}>
+                        · {row.ai_tool_name}
+                      </span>
+                    ) : null}
+                    {row.brand_position != null ? (
+                      <span className={cn("ml-1", isSelected ? "text-gray-300" : "text-gray-500")}>
+                        #{row.brand_position}
+                      </span>
+                    ) : null}
+                  </span>
+                </button>
+              )
+            })}
+          </div>
+          {showPreviewAddForm ? (
+            previewAddForm
+          ) : (
+            <AddDashedButton
+              label="Add prompt"
+              className="mt-1"
+              onClick={() => setShowPreviewAddForm(true)}
+            />
           )}
         </div>
       </div>
     )
+  }
+
+  const promptsManagementCard = (
+      <Card className="min-w-0 p-4 md:p-6">
+        <div className="mb-4 flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+          <div className="min-w-0">
+            <h3 className="text-base font-semibold text-gray-900">
+              AI prompts & tools
+            </h3>
+            <p className="text-xs text-gray-500">
+              Configure prompts and track how your brand appears in AI answers.
+            </p>
+          </div>
+          <div className="flex flex-wrap items-center gap-2">
+            <Button
+              type="button"
+              size="sm"
+              onClick={handleRunNow}
+              disabled={isSyncing}
+            >
+              {isSyncing ? (
+                <>
+                  <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                  Running…
+                </>
+              ) : (
+                <>Run now</>
+              )}
+            </Button>
+            <Button
+              type="button"
+              size="sm"
+              variant="outline"
+              onClick={handleStopTracking}
+              disabled={isStopping || !selectedPromptId}
+            >
+              {isStopping ? (
+                <>
+                  <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                  Stopping…
+                </>
+              ) : (
+                <>Stop tracking</>
+              )}
+            </Button>
+          </div>
+        </div>
+
+        <div className="mb-4 grid min-w-0 gap-3 md:grid-cols-3">
+          <div className="min-w-0 space-y-1 md:col-span-2">
+            <Label htmlFor="new-prompt" className="text-xs">
+              Prompt
+            </Label>
+            <Input
+              id="new-prompt"
+              placeholder="e.g. What are the best SEO agencies in Lisbon?"
+              value={newPrompt}
+              onChange={(e) => setNewPrompt(e.target.value)}
+              className="h-8 text-xs"
+            />
+          </div>
+          <div className="min-w-0 space-y-1">
+            <Label htmlFor="new-notes" className="text-xs">
+              Notes (optional)
+            </Label>
+            <Input
+              id="new-notes"
+              placeholder="Internal notes about this prompt (optional)"
+              value={newNotes}
+              onChange={(e) => setNewNotes(e.target.value)}
+              className="h-8 text-xs"
+            />
+          </div>
+        </div>
+
+        <div className="mb-4 grid min-w-0 gap-3 md:grid-cols-3 md:items-end">
+          <div className="min-w-0 space-y-1 md:col-span-2">
+            <Label className="text-xs">AI tools</Label>
+            <MultiSelect
+              options={toolOptions}
+              value={selectedToolIds}
+              onChange={setSelectedToolIds}
+              placeholder={
+                isLoadingTools ? "Loading tools…" : "Select AI tools to track"
+              }
+            />
+          </div>
+          <div className="flex min-w-0 flex-col gap-2 sm:flex-row sm:items-center">
+            <Button
+              type="button"
+              size="sm"
+              className="w-full shrink-0 sm:w-auto"
+              onClick={handleAddPrompt}
+              disabled={isAdding}
+            >
+              {isAdding ? (
+                <>
+                  <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                  Adding…
+                </>
+              ) : (
+                <>Add prompt</>
+              )}
+            </Button>
+            <p className="text-[11px] text-gray-500">
+              New prompts will be included the next time you run AI visibility.
+            </p>
+          </div>
+        </div>
+
+        {isLoadingPrompts ? (
+          <div className="flex items-center justify-center py-8 text-sm text-gray-500">
+            <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+            Loading prompts…
+          </div>
+        ) : promptsError ? (
+          <div className="flex items-center gap-2 rounded-md border border-red-200 bg-red-50 px-3 py-2 text-xs text-red-700">
+            <AlertCircle className="h-4 w-4" />
+            <span>Failed to load AI prompts.</span>
+          </div>
+        ) : !hasPrompts ? (
+          <div className="rounded-md bg-gray-50 px-3 py-4 text-sm text-gray-600">
+            No AI prompts configured yet. Add your first prompt to start tracking
+            AI visibility.
+          </div>
+        ) : (
+          <div className="divide-y divide-gray-100 rounded-md border border-gray-100">
+            {prompts!.map((row) => {
+              const isSelected =
+                row.project_ai_prompt_id === selectedPromptId &&
+                row.ai_tool_id === selectedToolId
+              return (
+                <button
+                  key={`${row.project_ai_prompt_id}-${row.ai_tool_id}`}
+                  type="button"
+                  className={cn(
+                    "flex w-full flex-col gap-1 px-3 py-2.5 text-left transition-colors hover:bg-gray-50 sm:flex-row sm:items-center sm:justify-between",
+                    isSelected && "bg-gray-50",
+                  )}
+                  onClick={() => {
+                    setSelectedPromptId(row.project_ai_prompt_id)
+                    setSelectedToolId(row.ai_tool_id)
+                    if (row.run_at) setSelectedRunAt(new Date(row.run_at))
+                  }}
+                >
+                  <div className="min-w-0">
+                    <div className="line-clamp-2 text-xs text-gray-900">{row.prompt_text}</div>
+                    <div className="mt-0.5 text-[11px] text-gray-500">
+                      {row.ai_tool_name || "Tool"}
+                      {row.run_at
+                        ? ` · ${format(new Date(row.run_at), "MMM d, yyyy")}`
+                        : ""}
+                    </div>
+                  </div>
+                  <div className="shrink-0 text-xs text-gray-700">
+                    {row.brand_position != null ? `#${row.brand_position}` : "Not mentioned"}
+                  </div>
+                </button>
+              )
+            })}
+          </div>
+        )}
+      </Card>
+  )
+
+  if (isManage) {
+    return <div className="min-w-0">{promptsManagementCard}</div>
   }
 
   return (
@@ -907,201 +1234,7 @@ export function ProjectAiVisibilityTab({
         </Card>
       </div>
 
-      {/* Prompts, tools, and sync */}
-      <Card className="min-w-0 p-4 md:p-6">
-        <div className="mb-4 flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
-          <div className="min-w-0">
-            <h3 className="text-base font-semibold text-gray-900">
-              AI prompts & tools
-            </h3>
-            <p className="text-xs text-gray-500">
-              Configure prompts and track how your brand appears in AI answers.
-            </p>
-          </div>
-          <div className="flex flex-wrap items-center gap-2">
-            <Button
-              type="button"
-              size="sm"
-              onClick={handleRunNow}
-              disabled={isSyncing}
-            >
-              {isSyncing ? (
-                <>
-                  <Loader2 className="mr-2 h-4 w-4 animate-spin" />
-                  Running…
-                </>
-              ) : (
-                <>Run now</>
-              )}
-            </Button>
-            <Button
-              type="button"
-              size="sm"
-              variant="outline"
-              onClick={handleStopTracking}
-              disabled={isStopping || !selectedPromptId}
-            >
-              {isStopping ? (
-                <>
-                  <Loader2 className="mr-2 h-4 w-4 animate-spin" />
-                  Stopping…
-                </>
-              ) : (
-                <>Stop tracking</>
-              )}
-            </Button>
-          </div>
-        </div>
-
-        {/* Add prompt form */}
-        <div className="mb-4 grid min-w-0 gap-3 md:grid-cols-3">
-          <div className="min-w-0 space-y-1 md:col-span-2">
-            <Label htmlFor="new-prompt" className="text-xs">
-              Prompt
-            </Label>
-            <Input
-              id="new-prompt"
-              placeholder="e.g. What are the best SEO agencies in Lisbon?"
-              value={newPrompt}
-              onChange={(e) => setNewPrompt(e.target.value)}
-              className="h-8 text-xs"
-            />
-          </div>
-          <div className="min-w-0 space-y-1">
-            <Label htmlFor="new-notes" className="text-xs">
-              Notes (optional)
-            </Label>
-            <Input
-              id="new-notes"
-              placeholder="Internal notes about this prompt (optional)"
-              value={newNotes}
-              onChange={(e) => setNewNotes(e.target.value)}
-              className="h-8 text-xs"
-            />
-          </div>
-        </div>
-
-        <div className="mb-4 grid min-w-0 gap-3 md:grid-cols-3 md:items-end">
-          <div className="min-w-0 space-y-1 md:col-span-2">
-            <Label className="text-xs">AI tools</Label>
-            <MultiSelect
-              options={toolOptions}
-              value={selectedToolIds}
-              onChange={setSelectedToolIds}
-              placeholder={
-                isLoadingTools ? "Loading tools…" : "Select AI tools to track"
-              }
-            />
-          </div>
-          <div className="flex min-w-0 flex-col gap-2 sm:flex-row sm:items-center">
-            <Button
-              type="button"
-              size="sm"
-              className="w-full shrink-0 sm:w-auto"
-              onClick={handleAddPrompt}
-              disabled={isAdding}
-            >
-              {isAdding ? (
-                <>
-                  <Loader2 className="mr-2 h-4 w-4 animate-spin" />
-                  Adding…
-                </>
-              ) : (
-                <>Add prompt</>
-              )}
-            </Button>
-            <p className="text-[11px] text-gray-500">
-              New prompts will be included the next time you run AI visibility.
-            </p>
-          </div>
-        </div>
-
-        {/* Prompt list */}
-        {isLoadingPrompts ? (
-          <div className="flex items-center justify-center py-8 text-sm text-gray-500">
-            <Loader2 className="mr-2 h-4 w-4 animate-spin" />
-            Loading prompts…
-          </div>
-        ) : promptsError ? (
-          <div className="flex items-center gap-2 rounded-md border border-red-200 bg-red-50 px-3 py-2 text-xs text-red-700">
-            <AlertCircle className="h-4 w-4" />
-            <span>Failed to load AI prompts.</span>
-          </div>
-        ) : !hasPrompts ? (
-          <div className="rounded-md bg-gray-50 px-3 py-4 text-sm text-gray-600">
-            No AI prompts configured yet. Add your first prompt to start tracking
-            AI visibility.
-          </div>
-        ) : (
-          <div className="min-w-0 overflow-x-auto">
-            <table className="w-full min-w-[36rem] text-left text-xs">
-              <thead className="border-b bg-gray-50 text-[11px] font-medium uppercase text-gray-500">
-                <tr>
-                  <th className="px-3 py-2">Prompt</th>
-                  <th className="px-3 py-2">Tool</th>
-                  <th className="px-3 py-2 text-right">Latest position</th>
-                  <th className="hidden px-3 py-2 md:table-cell">Brand URL</th>
-                  <th className="px-3 py-2 text-right">Last run</th>
-                </tr>
-              </thead>
-              <tbody>
-                {prompts!.map((row) => {
-                  const isSelected =
-                    row.project_ai_prompt_id === selectedPromptId &&
-                    row.ai_tool_id === selectedToolId
-                  return (
-                    <tr
-                      key={`${row.project_ai_prompt_id}-${row.ai_tool_id}`}
-                      className={`cursor-pointer border-b last:border-0 transition-colors hover:bg-gray-50 ${
-                        isSelected ? "bg-blue-50/60" : ""
-                      }`}
-                      onClick={() => {
-                        setSelectedPromptId(row.project_ai_prompt_id)
-                        setSelectedToolId(row.ai_tool_id)
-                        if (row.run_at) {
-                          setSelectedRunAt(new Date(row.run_at))
-                        }
-                      }}
-                    >
-                      <td className="max-w-md px-3 py-2 text-xs text-gray-900">
-                        <span className="line-clamp-2">{row.prompt_text}</span>
-                      </td>
-                      <td className="px-3 py-2 text-xs text-gray-700">
-                        {row.ai_tool_name}
-                      </td>
-                      <td className="px-3 py-2 text-right text-xs text-gray-900">
-                        {row.brand_position != null
-                          ? `#${row.brand_position}`
-                          : "Not mentioned"}
-                      </td>
-                      <td className="hidden max-w-xs px-3 py-2 text-xs text-gray-700 md:table-cell">
-                        {row.brand_url ? (
-                          <a
-                            href={row.brand_url}
-                            target="_blank"
-                            rel="noopener noreferrer"
-                            className="inline-block max-w-[220px] truncate text-blue-600 hover:text-blue-800"
-                            title={row.brand_url}
-                          >
-                            {row.brand_url}
-                          </a>
-                        ) : (
-                          <span className="text-gray-400">—</span>
-                        )}
-                      </td>
-                      <td className="px-3 py-2 text-right text-xs text-gray-600">
-                        {row.run_at
-                          ? format(new Date(row.run_at), "yyyy-MM-dd HH:mm")
-                          : "—"}
-                      </td>
-                    </tr>
-                  )
-                })}
-              </tbody>
-            </table>
-          </div>
-        )}
-      </Card>
+      {promptsManagementCard}
     </div>
   )
 }

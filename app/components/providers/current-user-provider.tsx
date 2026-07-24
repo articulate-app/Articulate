@@ -7,6 +7,7 @@ import { useCurrentUserStore } from '../../store/current-user';
 export function CurrentUserProvider({ children }: { children: React.ReactNode }) {
   const setPublicUserId = useCurrentUserStore((s) => s.setPublicUserId);
   const setFullName = useCurrentUserStore((s) => s.setFullName);
+  const setPhoto = useCurrentUserStore((s) => s.setPhoto);
   const setUserMetadata = useCurrentUserStore((s) => s.setUserMetadata);
   const setUserTeams = useCurrentUserStore((s) => s.setUserTeams);
 
@@ -20,7 +21,7 @@ export function CurrentUserProvider({ children }: { children: React.ReactNode })
 
       const { data: userRow, error } = await supabase
         .from('users')
-        .select('id, full_name')
+        .select('id, full_name, photo')
         .eq('auth_user_id', authUserId)
         .single();
 
@@ -28,6 +29,7 @@ export function CurrentUserProvider({ children }: { children: React.ReactNode })
         console.log('Fetched public user ID:', userRow.id);
         setPublicUserId(userRow.id);
         setFullName(userRow.full_name);
+        setPhoto(userRow.photo ?? null);
         setUserMetadata(session?.user?.user_metadata);
 
         // Fetch user teams - only need team IDs for AR/AP detection
@@ -50,13 +52,14 @@ export function CurrentUserProvider({ children }: { children: React.ReactNode })
       } else {
         setPublicUserId(null);
         setFullName(null);
+        setPhoto(null);
         setUserMetadata(null);
         setUserTeams([]);
         if (error) console.error('Failed to fetch public user ID:', error);
       }
     }
     fetchPublicUserId();
-  }, [setPublicUserId, setFullName, setUserMetadata, setUserTeams]);
+  }, [setPublicUserId, setFullName, setPhoto, setUserMetadata, setUserTeams]);
 
   return <>{children}</>;
 } 

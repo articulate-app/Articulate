@@ -1,6 +1,6 @@
-import { DocumentsPage } from '../screens/documents/DocumentsPage'
+import { redirect } from 'next/navigation'
 
+/** Documents / billing history live in Settings → Billing. */
 export default function DocumentsRoute() {
-  return <DocumentsPage />
+  redirect('/?settings=open&settingsCategory=billing')
 }
-

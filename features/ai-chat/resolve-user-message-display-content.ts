@@ -2,6 +2,7 @@ import {
   parseUserMessageContentJson,
   synthesizePlainTextFromDisplayParts,
 } from "./ai-chat-user-message-content"
+import { resolveClarificationUserDisplayMessage } from "./ai-clarification"
 
 /** Prefer persisted display_message / display_parts over the full internal build prompt. */
 export function resolveUserMessageDisplayContent(
@@ -22,6 +23,16 @@ export function resolveUserMessageDisplayContent(
     const row = contentJson as Record<string, unknown>
     const displayMessage = typeof row.display_message === "string" ? row.display_message.trim() : ""
     if (displayMessage) return displayMessage
+
+    // Clarification answers are normal visible user bubbles — never hide them, and
+    // never render internal option ids when a human-facing answer is available.
+    if (row.clarification_response && typeof row.clarification_response === "object") {
+      const clarificationDisplay = resolveClarificationUserDisplayMessage({
+        content,
+        contentJson,
+      })
+      if (clarificationDisplay) return clarificationDisplay
+    }
   }
 
   return content

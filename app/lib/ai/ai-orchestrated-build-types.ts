@@ -30,6 +30,8 @@ export type AiOrchestratedBuildFailedComponent = {
   component_id?: string
   title?: string
   error: string
+  error_code?: string | null
+  code?: string | null
 }
 
 export type AiOrchestratedBuildUnitResult = {
@@ -78,6 +80,21 @@ export type AiOrchestratedBuildSnapshot = {
 
 export const AI_ORCHESTRATED_BUILD_ENTITY_TYPE = "ai_orchestrated_build"
 export const AI_START_ORCHESTRATED_BUILD_TOOL = "ai_start_orchestrated_build"
+/** Artifact-first build dispatch tool — process start, not a content mutation. */
+export const AI_START_ARTIFACT_BUILD_TOOL = "ai_start_artifact_build"
+/** Request-plan executor for artifact-first builds. */
+export const ARTIFACT_BUILD_EXECUTOR = "artifact_build_executor"
+
+/** Tools that only dispatch a build — never render as change-preview cards. */
+export const BUILD_DISPATCH_TOOLS = new Set([
+  AI_START_ORCHESTRATED_BUILD_TOOL,
+  AI_START_ARTIFACT_BUILD_TOOL,
+])
+
+export function isBuildDispatchTool(toolName: string | null | undefined): boolean {
+  if (!toolName) return false
+  return BUILD_DISPATCH_TOOLS.has(toolName.trim())
+}
 
 export function isTerminalAiOrchestratedBuildStatus(
   status: AiOrchestratedBuildStatus | null | undefined,

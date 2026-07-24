@@ -1,5 +1,9 @@
-import { DocumentsPage } from '../screens/documents/DocumentsPage'
+import { redirect } from 'next/navigation'
 
+/**
+ * Financials now lives in Settings → Billing (unified shell).
+ * Keep this route as a deep-link alias into billing settings.
+ */
 export default function FinancialsRoute() {
-  return <DocumentsPage />
+  redirect('/?settings=open&settingsCategory=billing')
 }

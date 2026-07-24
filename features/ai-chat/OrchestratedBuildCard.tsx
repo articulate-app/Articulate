@@ -25,17 +25,66 @@ import {
   isActiveAiOrchestratedBuildStatus,
   isTerminalAiOrchestratedBuildStatus,
 } from "../../app/lib/ai/ai-orchestrated-build-types"
-import { resolveOrchestratedBuildErrorMessage } from "./ai-orchestrated-build-errors"
+import { dedupeWorkUnitFailures, aggregateValidationIssues } from "./ai-orchestrated-build-errors"
 import {
   cancelOrchestratedBuild,
   retryDispatchOrchestratedBuild,
 } from "./use-orchestrated-build-poll"
 import {
+  formatStructureActionLabel,
   reduceWorkUnitComponentAudit,
+  type WorkUnitAuditCurrentComponent,
   type WorkUnitComponentAudit,
 } from "./orchestrated-build-audit"
+import { formatConciseComponentDecisionSummary } from "./execution-trace"
+import { BuildComponentPreviewCard } from "./BuildComponentPreviewCard"
+import { useAiBuildComponentPreviewStore } from "../../app/store/ai-build-component-preview-store"
+import { useAiBuildArtifactPreviewStore } from "../../app/store/ai-build-artifact-preview-store"
+import { ArtifactCard } from "../artifacts/ArtifactCard"
+import type { TaskArtifact } from "../../app/lib/artifacts/artifact-types"
 import { AssistantMessageRestoreFooter } from "./AssistantMessageRestoreFooter"
 import { cn } from "../../app/lib/utils"
+
+function artifactFromLivePreview(entry: {
+  artifactId: string
+  taskId: number | null
+  aiThreadId: string | null
+  channelId: number | null
+  languageId: number | null
+  channelName?: string | null
+  languageName?: string | null
+  artifactType?: string | null
+  artifactRole?: string | null
+  title: string | null
+  contentText: string
+  contentJson: TaskArtifact["content_json"]
+  assetData: TaskArtifact["asset_data"]
+  currentVersion: number | null
+  threadId: string | null
+}): TaskArtifact {
+  return {
+    id: entry.artifactId,
+    task_id: entry.taskId,
+    ai_thread_id: entry.aiThreadId ?? entry.threadId,
+    artifact_type: entry.artifactType?.trim() || "document",
+    artifact_role: entry.artifactRole ?? null,
+    title: entry.title,
+    status: "draft",
+    channel_id: entry.channelId,
+    language_id: entry.languageId,
+    content_text: entry.contentText,
+    content_json: entry.contentJson,
+    asset_data: entry.assetData,
+    source_artifact_id: null,
+    source_version_number: null,
+    derivation_type: null,
+    current_version: entry.currentVersion ?? 0,
+    metadata: {
+      ...(entry.channelName ? { channel_name: entry.channelName } : {}),
+      ...(entry.languageName ? { language_name: entry.languageName } : {}),
+    },
+  }
+}
 
 function statusLabel(status: AiOrchestratedBuildStatus | null | undefined): string {
   switch (status) {
@@ -119,9 +168,94 @@ function StatusPill({ status }: { status: AiOrchestratedBuildStatus | null | und
   )
 }
 
+function ComponentList({
+  components,
+  showIds = false,
+}: {
+  components: WorkUnitAuditCurrentComponent[]
+  showIds?: boolean
+}) {
+  if (components.length === 0) return null
+  return (
+    <ul className="mt-0.5 space-y-0.5">
+      {components.map((component, index) => (
+        <li
+          key={`${component.componentId ?? component.title}-${index}`}
+          className="text-[11px] text-foreground break-words [overflow-wrap:anywhere]"
+        >
+          {component.title}
+          <span className="text-muted-foreground">
+            {component.hasContent === true
+              ? " — has content"
+              : component.hasContent === false
+                ? " — empty"
+                : ""}
+          </span>
+          {showIds && component.componentId ? (
+            <span className="text-muted-foreground"> ({component.componentId})</span>
+          ) : null}
+        </li>
+      ))}
+    </ul>
+  )
+}
+
+function ValidationIssueGroups({
+  issues,
+}: {
+  issues: ReturnType<typeof aggregateValidationIssues>
+}) {
+  const [expandedCodes, setExpandedCodes] = useState<Record<string, boolean>>({})
+  if (issues.length === 0) return null
+  return (
+    <ul className="mt-0.5 space-y-1.5">
+      {issues.map((group) => {
+        const isExpanded = expandedCodes[group.code] === true
+        const visible = isExpanded ? group.componentTitles : group.componentTitles.slice(0, 5)
+        const hiddenCount = Math.max(0, group.componentTitles.length - 5)
+        return (
+          <li key={group.code} className="text-[11px] text-destructive/90 break-words [overflow-wrap:anywhere]">
+            <div className="font-medium">{group.message}</div>
+            {visible.length > 0 ? (
+              <ul className="mt-0.5 space-y-0.5 pl-2 text-muted-foreground">
+                {visible.map((title) => (
+                  <li key={title}>{title}</li>
+                ))}
+              </ul>
+            ) : null}
+            {hiddenCount > 0 ? (
+              <button
+                type="button"
+                onClick={() =>
+                  setExpandedCodes((prev) => ({
+                    ...prev,
+                    [group.code]: !isExpanded,
+                  }))
+                }
+                className="mt-0.5 text-[10px] font-medium text-muted-foreground hover:text-foreground"
+              >
+                {isExpanded ? "Show less" : `${hiddenCount} more`}
+              </button>
+            ) : null}
+          </li>
+        )
+      })}
+    </ul>
+  )
+}
+
 function WorkUnitAuditTrail({ audit }: { audit: WorkUnitComponentAudit }) {
   const [expanded, setExpanded] = useState(false)
+  const [showIds, setShowIds] = useState(false)
   if (!audit.hasAnyTrace) return null
+
+  const selected = audit.selectedComponents
+  const inactive = audit.inactiveComponents
+  // Active inventory when the server did not send an explicit selection set.
+  const activeOnly =
+    selected.length === 0 && audit.currentComponents.length > 0
+      ? audit.currentComponents
+      : []
 
   return (
     <div className="mt-2 border-t border-border/60 pt-1.5">
@@ -146,7 +280,9 @@ function WorkUnitAuditTrail({ audit }: { audit: WorkUnitComponentAudit }) {
 
           {(audit.discoveryStarted
             || audit.discoveryOrder.length > 0
-            || audit.currentComponents.length > 0
+            || selected.length > 0
+            || activeOnly.length > 0
+            || inactive.length > 0
             || audit.reusableGroups.length > 0
             || audit.requiredComponents.length > 0) ? (
             <section>
@@ -191,24 +327,28 @@ function WorkUnitAuditTrail({ audit }: { audit: WorkUnitComponentAudit }) {
                   </ul>
                 </div>
               ) : null}
-              {audit.currentComponents.length > 0 ? (
-                <ul className="mt-1 space-y-0.5">
-                  {audit.currentComponents.map((component, index) => (
-                    <li
-                      key={`${component.componentId ?? component.title}-${index}`}
-                      className="text-[11px] text-foreground break-words [overflow-wrap:anywhere]"
-                    >
-                      {component.title}
-                      <span className="text-muted-foreground">
-                        {component.hasContent === true
-                          ? " — has content"
-                          : component.hasContent === false
-                            ? " — empty"
-                            : ""}
-                      </span>
-                    </li>
-                  ))}
-                </ul>
+              {selected.length > 0 ? (
+                <div className="mt-1.5">
+                  <div className="text-[10px] font-medium text-muted-foreground">
+                    Selected task components
+                  </div>
+                  <ComponentList components={selected} showIds={showIds} />
+                </div>
+              ) : activeOnly.length > 0 ? (
+                <div className="mt-1.5">
+                  <div className="text-[10px] font-medium text-muted-foreground">
+                    Active task components
+                  </div>
+                  <ComponentList components={activeOnly} showIds={showIds} />
+                </div>
+              ) : null}
+              {inactive.length > 0 ? (
+                <div className="mt-1.5">
+                  <div className="text-[10px] font-medium text-muted-foreground">
+                    Inactive task components available for reuse
+                  </div>
+                  <ComponentList components={inactive} showIds={showIds} />
+                </div>
               ) : null}
               {audit.reusableGroups.length > 0 ? (
                 <ul className="mt-1 space-y-0.5">
@@ -239,33 +379,41 @@ function WorkUnitAuditTrail({ audit }: { audit: WorkUnitComponentAudit }) {
                 Component decisions
               </div>
               <ul className="mt-1 space-y-1">
-                {audit.decisions.map((decision, index) => (
-                  <li
-                    key={`${decision.title}-${index}`}
-                    className="text-[11px] text-foreground break-words [overflow-wrap:anywhere]"
-                  >
-                    <span className="font-medium">{decision.title}</span>
-                    {decision.source ? (
-                      <span className="text-muted-foreground"> · {decision.source}</span>
-                    ) : null}
-                    {decision.outcome ? (
-                      <span className="text-muted-foreground"> · {decision.outcome}</span>
-                    ) : null}
-                    {decision.reason ? (
-                      <span className="mt-0.5 block text-[10px] text-muted-foreground">
-                        {decision.reason}
-                      </span>
-                    ) : null}
-                  </li>
-                ))}
+                {audit.decisions.map((decision, index) => {
+                  const summary = formatConciseComponentDecisionSummary({
+                    title: decision.title,
+                    outcome: decision.outcome,
+                    source: decision.source,
+                    reason: decision.reason,
+                  })
+                  return (
+                    <li
+                      key={`${decision.title}-${index}`}
+                      className="text-[11px] text-foreground break-words [overflow-wrap:anywhere]"
+                    >
+                      {summary ?? decision.title}
+                    </li>
+                  )
+                })}
               </ul>
             </section>
           ) : null}
 
           {audit.finalStructure.length > 0 ? (
             <section>
-              <div className="text-[10px] font-semibold uppercase tracking-wide text-muted-foreground">
-                Final structure
+              <div className="flex items-center justify-between gap-2">
+                <div className="text-[10px] font-semibold uppercase tracking-wide text-muted-foreground">
+                  Final structure
+                </div>
+                {audit.finalStructure.some((item) => item.componentId) ? (
+                  <button
+                    type="button"
+                    onClick={() => setShowIds((value) => !value)}
+                    className="text-[10px] font-medium text-muted-foreground hover:text-foreground"
+                  >
+                    {showIds ? "Hide IDs" : "Show IDs"}
+                  </button>
+                ) : null}
               </div>
               <ul className="mt-1 space-y-0.5">
                 {audit.finalStructure.map((item, index) => (
@@ -273,13 +421,15 @@ function WorkUnitAuditTrail({ audit }: { audit: WorkUnitComponentAudit }) {
                     key={`${item.componentId ?? item.title}-${index}`}
                     className="text-[11px] text-foreground break-words [overflow-wrap:anywhere]"
                   >
-                    <span className="text-muted-foreground">{item.action}</span>
+                    <span className="text-muted-foreground">
+                      {formatStructureActionLabel(item.action)}
+                    </span>
                     {" · "}
                     {item.title}
                     {item.position != null ? (
                       <span className="text-muted-foreground"> · pos {item.position}</span>
                     ) : null}
-                    {item.componentId ? (
+                    {showIds && item.componentId ? (
                       <span className="text-muted-foreground"> ({item.componentId})</span>
                     ) : null}
                   </li>
@@ -299,9 +449,12 @@ function WorkUnitAuditTrail({ audit }: { audit: WorkUnitComponentAudit }) {
                     key={`${item.componentId ?? item.title ?? "order"}-${index}`}
                     className="text-[11px] text-foreground break-words [overflow-wrap:anywhere]"
                   >
-                    {item.title ?? item.componentId ?? "Component"}
+                    {item.title ?? (showIds ? item.componentId : null) ?? "Component"}
                     {item.position != null ? (
                       <span className="text-muted-foreground"> · pos {item.position}</span>
+                    ) : null}
+                    {showIds && item.componentId && item.title ? (
+                      <span className="text-muted-foreground"> ({item.componentId})</span>
                     ) : null}
                   </li>
                 ))}
@@ -314,18 +467,13 @@ function WorkUnitAuditTrail({ audit }: { audit: WorkUnitComponentAudit }) {
               <div className="text-[10px] font-semibold uppercase tracking-wide text-muted-foreground">
                 Repair
               </div>
-              {audit.repair.validationIssues.length > 0 ? (
-                <ul className="mt-1 space-y-0.5">
-                  {audit.repair.validationIssues.map((issue, index) => (
-                    <li
-                      key={`issue-${index}`}
-                      className="text-[11px] text-muted-foreground break-words [overflow-wrap:anywhere]"
-                    >
-                      {issue}
-                    </li>
-                  ))}
-                </ul>
-              ) : null}
+              <ValidationIssueGroups
+                issues={aggregateValidationIssues(
+                  audit.repair.validationIssueRows.length > 0
+                    ? audit.repair.validationIssueRows
+                    : audit.repair.validationIssues,
+                )}
+              />
               {audit.repair.succeeded != null ? (
                 <p className="mt-1 text-[11px] text-foreground">
                   {audit.repair.succeeded
@@ -333,18 +481,13 @@ function WorkUnitAuditTrail({ audit }: { audit: WorkUnitComponentAudit }) {
                     : "Bounded repair did not fully resolve issues."}
                 </p>
               ) : null}
-              {audit.repair.remainingIssues.length > 0 ? (
-                <ul className="mt-1 space-y-0.5">
-                  {audit.repair.remainingIssues.map((issue, index) => (
-                    <li
-                      key={`remaining-${index}`}
-                      className="text-[11px] text-destructive/90 break-words [overflow-wrap:anywhere]"
-                    >
-                      Remaining: {issue}
-                    </li>
-                  ))}
-                </ul>
-              ) : null}
+              <ValidationIssueGroups
+                issues={aggregateValidationIssues(
+                  audit.repair.remainingIssueRows.length > 0
+                    ? audit.repair.remainingIssueRows
+                    : audit.repair.remainingIssues,
+                )}
+              />
             </section>
           ) : null}
         </div>
@@ -356,19 +499,58 @@ function WorkUnitAuditTrail({ audit }: { audit: WorkUnitComponentAudit }) {
 function UnitRow({
   unit,
   audit,
+  buildId,
+  buildError,
+  onRetry,
+  canRetry,
+  isRetrying,
 }: {
   unit: AiOrchestratedBuildUnit
   audit: WorkUnitComponentAudit | null
+  buildId: string
+  buildError?: string | null
+  onRetry?: () => void
+  canRetry?: boolean
+  isRetrying?: boolean
 }) {
-  const errorMessage =
-    unit.status === "failed" || unit.status === "conflict"
-      ? resolveOrchestratedBuildErrorMessage({
-          code: unit.error_code,
-          backendMessage: unit.error_message,
-        })
-      : null
+  const [detailsOpen, setDetailsOpen] = useState(false)
   const saved = unit.result.saved ?? []
   const failed = unit.result.failed ?? []
+  const primaryFailures = dedupeWorkUnitFailures({
+    buildId,
+    unitId: unit.id,
+    unitErrorCode: unit.error_code,
+    unitErrorMessage: unit.error_message,
+    itemFailures: failed.map((item) => ({
+      component_id: item.component_id,
+      title: item.title,
+      error: item.error,
+      error_code: item.error_code ?? item.code ?? null,
+    })),
+    buildErrorCode: null,
+    buildErrorMessage: buildError,
+    repairErrorCode: audit?.repair?.succeeded === false ? audit.repair.errorCode : null,
+    repairErrorMessage:
+      audit?.repair?.succeeded === false
+        ? (audit.repair.errorMessage
+          ?? (audit.repair.remainingIssues[0] ?? null)
+          ?? "Structure validation failed")
+        : null,
+  })
+  const primary = primaryFailures[0] ?? null
+  const secondary = primaryFailures.slice(1)
+  const showFailureCard =
+    unit.status === "failed" || unit.status === "conflict" || primaryFailures.length > 0
+  const aggregatedRemaining = aggregateValidationIssues(
+    audit?.repair?.remainingIssueRows?.length
+      ? audit.repair.remainingIssueRows
+      : audit?.repair?.remainingIssues ?? [],
+  )
+  const aggregatedValidation = aggregateValidationIssues(
+    audit?.repair?.validationIssueRows?.length
+      ? audit.repair.validationIssueRows
+      : audit?.repair?.validationIssues ?? [],
+  )
 
   return (
     <li className="rounded-md border border-border/70 bg-background/60 px-2.5 py-2">
@@ -402,7 +584,15 @@ function UnitRow({
         </span>
       </div>
 
-      {audit ? <WorkUnitAuditTrail audit={audit} /> : null}
+      {audit ? (
+        <WorkUnitAuditTrail
+          audit={
+            showFailureCard && audit.repair
+              ? { ...audit, repair: null }
+              : audit
+          }
+        />
+      ) : null}
 
       {saved.length > 0 ? (
         <ul className="mt-1.5 space-y-1">
@@ -419,24 +609,108 @@ function UnitRow({
         </ul>
       ) : null}
 
-      {failed.length > 0 ? (
-        <ul className="mt-1.5 space-y-1">
-          {failed.map((item, index) => (
-            <li
-              key={`${item.component_id ?? "failed"}-${index}`}
-              className="text-[11px] text-destructive/90"
+      {showFailureCard && primary ? (
+        <div className="mt-1.5 space-y-1.5 rounded-md border border-destructive/30 bg-destructive/5 px-2 py-1.5">
+          <div className="text-[11px] text-destructive/90">
+            {primary.title ? <span className="font-medium">{primary.title}: </span> : null}
+            <span className="break-words [overflow-wrap:anywhere]">{primary.message}</span>
+          </div>
+          {audit?.repair && (aggregatedRemaining.length > 0 || aggregatedValidation.length > 0) ? (
+            <div className="border-t border-destructive/20 pt-1.5">
+              <ValidationIssueGroups
+                issues={aggregatedRemaining.length > 0 ? aggregatedRemaining : aggregatedValidation}
+              />
+            </div>
+          ) : audit?.repair ? (
+            <div className="border-t border-destructive/20 pt-1.5 text-[11px] text-muted-foreground">
+              {audit.repair.succeeded != null
+                ? audit.repair.succeeded
+                  ? "Bounded repair succeeded."
+                  : "Bounded repair did not fully resolve issues."
+                : "Repair attempted."}
+            </div>
+          ) : null}
+          {secondary.length > 0 || (failed.length > 0 && primaryFailures.length > 0) ? (
+            <div className="border-t border-destructive/20 pt-1">
+              <button
+                type="button"
+                onClick={() => setDetailsOpen((value) => !value)}
+                className="inline-flex items-center gap-1 text-[10px] font-medium text-muted-foreground hover:text-foreground"
+              >
+                {detailsOpen ? (
+                  <ChevronDown className="h-3 w-3" aria-hidden />
+                ) : (
+                  <ChevronRight className="h-3 w-3" aria-hidden />
+                )}
+                {detailsOpen ? "Hide details" : "Failure details"}
+              </button>
+              {detailsOpen ? (
+                <div className="mt-1 space-y-1.5">
+                  {(() => {
+                    const byCode = new Map<string, Array<{ title: string | null; message: string }>>()
+                    for (const item of failed) {
+                      const code =
+                        (item.error_code ?? item.code ?? "failed").toString().trim().toLowerCase()
+                        || "failed"
+                      const bucket = byCode.get(code) ?? []
+                      bucket.push({
+                        title: item.title?.trim() || null,
+                        message: item.error?.trim() || code,
+                      })
+                      byCode.set(code, bucket)
+                    }
+                    if (byCode.size === 0 && secondary.length > 0) {
+                      return (
+                        <ul className="space-y-0.5">
+                          {secondary.map((failure) => (
+                            <li key={failure.key} className="text-[10px] text-muted-foreground break-words [overflow-wrap:anywhere]">
+                              {failure.title ? `${failure.title}: ` : null}
+                              {failure.message}
+                            </li>
+                          ))}
+                        </ul>
+                      )
+                    }
+                    return (
+                      <ul className="space-y-1">
+                        {[...byCode.entries()].map(([code, rows]) => (
+                          <li key={code} className="text-[10px] text-muted-foreground">
+                            <div className="font-medium text-foreground/80">
+                              {code.replace(/_/g, " ")} ({rows.length})
+                            </div>
+                            <ul className="mt-0.5 space-y-0.5 pl-2">
+                              {rows.map((row, index) => (
+                                <li key={`${code}-${row.title ?? "row"}-${index}`} className="break-words [overflow-wrap:anywhere]">
+                                  {row.title ? `${row.title}: ` : null}
+                                  {row.message}
+                                </li>
+                              ))}
+                            </ul>
+                          </li>
+                        ))}
+                      </ul>
+                    )
+                  })()}
+                </div>
+              ) : null}
+            </div>
+          ) : null}
+          {canRetry && onRetry ? (
+            <button
+              type="button"
+              disabled={isRetrying}
+              onClick={onRetry}
+              className="inline-flex items-center gap-1 rounded-md border border-border bg-background px-2 py-0.5 text-[11px] font-medium text-foreground hover:bg-muted disabled:opacity-50"
             >
-              {item.title ? <span className="font-medium">{item.title}: </span> : null}
-              {resolveOrchestratedBuildErrorMessage({ backendMessage: item.error })}
-            </li>
-          ))}
-        </ul>
-      ) : null}
-
-      {errorMessage ? (
-        <p className="mt-1.5 text-[11px] text-destructive/90 break-words [overflow-wrap:anywhere]">
-          {errorMessage}
-        </p>
+              {isRetrying ? (
+                <Loader2 className="h-3 w-3 animate-spin" aria-hidden />
+              ) : (
+                <RefreshCw className="h-3 w-3" aria-hidden />
+              )}
+              Retry
+            </button>
+          ) : null}
+        </div>
       ) : null}
     </li>
   )
@@ -500,6 +774,42 @@ export function OrchestratedBuildCard({
     }
     return out
   }, [entry])
+  const previewEntries = useAiBuildComponentPreviewStore((state) => state.previews)
+  const buildPreviews = useMemo(
+    () =>
+      Object.values(previewEntries)
+        .filter((row) => row.buildId === buildId)
+        .sort((a, b) => a.sequence - b.sequence),
+    [previewEntries, buildId],
+  )
+  const artifactPreviewEntries = useAiBuildArtifactPreviewStore((state) => state.previews)
+  const artifactPreviews = useMemo(() => {
+    // One live card per artifact_id (highest sequence wins). Decision-only phases
+    // are rendered in the execution timeline, not as cards.
+    const byArtifactId = new Map<string, (typeof artifactPreviewEntries)[string]>()
+    for (const row of Object.values(artifactPreviewEntries)) {
+      if (row.buildId !== buildId) continue
+      if (
+        row.phase !== "preview"
+        && row.phase !== "saved"
+        && row.phase !== "media"
+        && row.phase !== "failed"
+      ) {
+        continue
+      }
+      const prev = byArtifactId.get(row.artifactId)
+      if (!prev || row.sequence > prev.sequence) byArtifactId.set(row.artifactId, row)
+    }
+    return Array.from(byArtifactId.values()).sort((a, b) => a.sequence - b.sequence)
+  }, [artifactPreviewEntries, buildId])
+  const isArtifactFirstBuild = useMemo(() => {
+    if (artifactPreviews.length > 0) return true
+    if (!entry) return false
+    return Object.values(entry.eventsBySequence).some((event) =>
+      typeof event.event_type === "string"
+      && event.event_type.toLowerCase().includes("artifact."),
+    )
+  }, [artifactPreviews.length, entry])
 
   if (!entry) return null
 
@@ -576,27 +886,74 @@ export function OrchestratedBuildCard({
         </div>
       ) : null}
 
-      {units.length > 0 ? (
+      {buildPreviews.length > 0 && !isArtifactFirstBuild ? (
         <ul className="space-y-1.5 border-t border-border/70 px-3 py-2">
-          {units.map((unit) => (
-            <UnitRow
-              key={unit.id}
-              unit={unit}
-              audit={auditsByUnitId[unit.id] ?? null}
-            />
+          {buildPreviews.map((preview) => (
+            <li key={preview.key}>
+              <BuildComponentPreviewCard entry={preview} />
+            </li>
           ))}
         </ul>
       ) : null}
 
-      {entry.error ? (
+      {artifactPreviews.length > 0 ? (
+        <ul className="space-y-1.5 border-t border-border/70 px-3 py-2">
+          {artifactPreviews.map((preview) => (
+            <li key={preview.artifactId}>
+              <ArtifactCard
+                artifact={artifactFromLivePreview(preview)}
+                livePreview={preview}
+                allowAttachToTask
+                defaultTaskId={taskId ?? preview.taskId}
+                defaultChannelId={activeChannelId ?? preview.channelId}
+                compact
+              />
+            </li>
+          ))}
+        </ul>
+      ) : null}
+
+      {units.length > 0 && !isArtifactFirstBuild ? (
+        <ul className="space-y-1.5 border-t border-border/70 px-3 py-2">
+          {units.map((unit, index) => {
+            const isFailedUnit =
+              unit.status === "failed" || unit.status === "conflict"
+            const showUnitRetry =
+              canRetryDispatch
+              || (isFailedUnit && (status === "failed" || status === "partially_completed" || status === "queued"))
+            // One retry action for the build — attach to the first failed unit card.
+            const isPrimaryFailureUnit =
+              showUnitRetry
+              && units.findIndex((row) => row.status === "failed" || row.status === "conflict") === index
+            return (
+              <UnitRow
+                key={unit.id}
+                unit={unit}
+                audit={auditsByUnitId[unit.id] ?? null}
+                buildId={buildId}
+                buildError={entry.error}
+                canRetry={isPrimaryFailureUnit}
+                isRetrying={entry.isPumping}
+                onRetry={
+                  isPrimaryFailureUnit
+                    ? () => void retryDispatchOrchestratedBuild(buildId)
+                    : undefined
+                }
+              />
+            )
+          })}
+        </ul>
+      ) : null}
+
+      {entry.error && units.length === 0 ? (
         <p className="border-t border-destructive/30 px-3 py-2 text-xs text-destructive/90">
           {entry.error}
         </p>
       ) : null}
 
-      {canCancel || canRetryDispatch ? (
+      {canCancel || (canRetryDispatch && units.every((unit) => unit.status !== "failed" && unit.status !== "conflict")) ? (
         <div className="flex flex-wrap gap-2 border-t border-border/70 px-3 py-2">
-          {canRetryDispatch ? (
+          {canRetryDispatch && units.every((unit) => unit.status !== "failed" && unit.status !== "conflict") ? (
             <button
               type="button"
               disabled={entry.isPumping}

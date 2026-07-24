@@ -8,6 +8,10 @@ import type {
   AiOrchestratedBuildUnit,
 } from "../lib/ai/ai-orchestrated-build-types"
 import { isTerminalAiOrchestratedBuildStatus } from "../lib/ai/ai-orchestrated-build-types"
+import {
+  loadPersistedBuildAfterSequence,
+  persistBuildAfterSequence,
+} from "../../features/ai-chat/orchestrated-build-sequence-persist"
 
 export type AiOrchestratedBuildCardEntry = {
   buildId: string
@@ -63,6 +67,8 @@ type AiOrchestratedBuildStoreState = {
   ) => void
   markProgress: (buildId: string) => void
   clearBuildsExceptThread: (threadId: string | null) => void
+  /** Drop terminal builds from other threads; keep active builds alive across chat switches. */
+  clearInactiveBuildsExceptThread: (threadId: string | null) => void
   getBuild: (buildId: string) => AiOrchestratedBuildCardEntry | null
   getActiveBuildIds: (threadId?: string | null) => string[]
 }
@@ -76,6 +82,7 @@ function createEmptyEntry(args: {
   /** Optional initial status — never treat dispatch_started as completed. */
   status?: import("../lib/ai/ai-orchestrated-build-types").AiOrchestratedBuildStatus
 }): AiOrchestratedBuildCardEntry {
+  const persistedAfter = loadPersistedBuildAfterSequence(args.buildId)
   return {
     buildId: args.buildId,
     threadId: args.threadId ?? null,
@@ -90,13 +97,13 @@ function createEmptyEntry(args: {
       running_units: 0,
       succeeded_units: 0,
       failed_units: 0,
-      last_event_sequence: 0,
+      last_event_sequence: persistedAfter,
       change_set_id: args.changeSetId ?? null,
     },
     unitsById: {},
     eventsBySequence: {},
-    nextSequence: 0,
-    afterSequence: 0,
+    nextSequence: persistedAfter,
+    afterSequence: persistedAfter,
     lastProgressAt: Date.now(),
     lastPumpAt: null,
     didInitialPump: false,
@@ -220,6 +227,7 @@ export const useAiOrchestratedBuildStore = create<AiOrchestratedBuildStoreState>
         error: null,
         updatedAt: new Date().toISOString(),
       }
+      persistBuildAfterSequence(id, next.afterSequence)
       return { builds: { ...state.builds, [id]: next } }
     })
   },
@@ -280,6 +288,18 @@ export const useAiOrchestratedBuildStore = create<AiOrchestratedBuildStoreState>
       const next: Record<string, AiOrchestratedBuildCardEntry> = {}
       for (const [key, entry] of Object.entries(state.builds)) {
         if (entry.threadId === threadId) next[key] = entry
+      }
+      return { builds: next }
+    })
+  },
+
+  clearInactiveBuildsExceptThread: (threadId) => {
+    set((state) => {
+      const next: Record<string, AiOrchestratedBuildCardEntry> = {}
+      for (const [key, entry] of Object.entries(state.builds)) {
+        const isCurrentThread = Boolean(threadId) && entry.threadId === threadId
+        const isActive = !isTerminalAiOrchestratedBuildStatus(entry.build?.status ?? null)
+        if (isCurrentThread || isActive) next[key] = entry
       }
       return { builds: next }
     })

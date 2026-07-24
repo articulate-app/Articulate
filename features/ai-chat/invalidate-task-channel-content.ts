@@ -54,6 +54,11 @@ export function invalidateTaskChannelContentQueries(
       queryKey: ["tc_components_for_task_channel", taskId, channelId],
     })
   }
+  if (taskId != null) {
+    // Task overview / detail surfaces that embed channel structure.
+    void queryClient.invalidateQueries({ queryKey: ["task", taskId] })
+    void queryClient.invalidateQueries({ queryKey: ["task", String(taskId)] })
+  }
   if (outputId) {
     void queryClient.invalidateQueries({
       queryKey: [...taskComponentOutputQueryKey(outputId)],

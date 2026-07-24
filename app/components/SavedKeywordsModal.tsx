@@ -5,10 +5,25 @@ import { ArrowLeft, Bookmark, Edit3, Trash2, X } from 'lucide-react';
 import { Button } from './ui/button';
 import { Badge } from './ui/badge';
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from './ui/dialog';
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from './ui/alert-dialog';
 import { useKeywordListsApi } from '../store/keyword-lists-api';
 import type { KeywordList, Keyword } from '../../lib/types/keyword';
 
 type Step = 'lists' | 'keywords';
+
+type PendingDelete =
+  | { type: 'list'; listId: number; name: string }
+  | { type: 'keyword'; listId: number; keywordId: number; name: string }
+  | null;
 
 interface SavedKeywordsModalProps {
   isOpen: boolean;
@@ -34,6 +49,8 @@ export function SavedKeywordsModal({ isOpen, onClose }: SavedKeywordsModalProps)
   const [activeListId, setActiveListId] = useState<number | null>(null);
   const [editingListId, setEditingListId] = useState<number | null>(null);
   const [editName, setEditName] = useState('');
+  const [pendingDelete, setPendingDelete] = useState<PendingDelete>(null);
+  const [isDeleting, setIsDeleting] = useState(false);
 
   const getCompetitionLevel = (competitionIndex: number): string => {
     if (competitionIndex >= 80) return 'High';
@@ -106,20 +123,34 @@ export function SavedKeywordsModal({ isOpen, onClose }: SavedKeywordsModalProps)
     setEditName('');
   };
 
-  const handleDeleteList = async (listId: number) => {
-    if (!confirm('Delete this list? This cannot be undone.')) return;
-    await deleteList(listId);
-    if (activeListId === listId) {
-      handleBack();
+  const requestDeleteList = (list: KeywordList) => {
+    setPendingDelete({ type: 'list', listId: list.id, name: list.name });
+  };
+
+  const requestRemoveKeyword = (listId: number, keywordId: number, name: string) => {
+    setPendingDelete({ type: 'keyword', listId, keywordId, name });
+  };
+
+  const confirmPendingDelete = async () => {
+    if (!pendingDelete || isDeleting) return;
+    setIsDeleting(true);
+    try {
+      if (pendingDelete.type === 'list') {
+        await deleteList(pendingDelete.listId);
+        if (activeListId === pendingDelete.listId) {
+          handleBack();
+        }
+      } else {
+        await removeKeyword(pendingDelete.listId, pendingDelete.keywordId);
+      }
+      setPendingDelete(null);
+    } finally {
+      setIsDeleting(false);
     }
   };
 
-  const handleRemoveKeyword = async (listId: number, keywordId: number) => {
-    if (!confirm('Remove this keyword from the list?')) return;
-    await removeKeyword(listId, keywordId);
-  };
-
   return (
+    <>
     <Dialog open={isOpen} onOpenChange={handleClose}>
       <DialogContent className="sm:max-w-2xl h-[70vh] flex flex-col overflow-hidden">
         <DialogHeader>
@@ -224,7 +255,7 @@ export function SavedKeywordsModal({ isOpen, onClose }: SavedKeywordsModalProps)
                           <Button
                             variant="ghost"
                             size="sm"
-                            onClick={() => handleDeleteList(list.id)}
+                            onClick={() => requestDeleteList(list)}
                             className="h-8 w-8 p-0 text-gray-400 hover:text-red-600"
                             title="Delete list"
                           >
@@ -305,7 +336,13 @@ export function SavedKeywordsModal({ isOpen, onClose }: SavedKeywordsModalProps)
                         <Button
                           variant="ghost"
                           size="sm"
-                          onClick={() => handleRemoveKeyword(activeListId, k.id)}
+                          onClick={() =>
+                            requestRemoveKeyword(
+                              activeListId,
+                              k.id,
+                              k.name || (k as any).keyword || (k as any).term || 'this keyword',
+                            )
+                          }
                           className="h-8 w-8 p-0 text-gray-400 hover:text-red-600"
                           title="Remove keyword"
                         >
@@ -322,6 +359,39 @@ export function SavedKeywordsModal({ isOpen, onClose }: SavedKeywordsModalProps)
         </div>
       </DialogContent>
     </Dialog>
+
+    <AlertDialog
+      open={pendingDelete != null}
+      onOpenChange={(open) => {
+        if (!open && !isDeleting) setPendingDelete(null);
+      }}
+    >
+      <AlertDialogContent>
+        <AlertDialogHeader>
+          <AlertDialogTitle>
+            {pendingDelete?.type === 'list' ? 'Delete keyword list?' : 'Remove keyword?'}
+          </AlertDialogTitle>
+          <AlertDialogDescription>
+            {pendingDelete?.type === 'list'
+              ? `Delete “${pendingDelete.name}”? This cannot be undone.`
+              : `Remove “${pendingDelete?.name ?? 'this keyword'}” from the list?`}
+          </AlertDialogDescription>
+        </AlertDialogHeader>
+        <AlertDialogFooter>
+          <AlertDialogCancel disabled={isDeleting}>Cancel</AlertDialogCancel>
+          <AlertDialogAction
+            disabled={isDeleting}
+            onClick={(e) => {
+              e.preventDefault()
+              void confirmPendingDelete()
+            }}
+          >
+            {isDeleting ? 'Deleting…' : pendingDelete?.type === 'list' ? 'Delete list' : 'Remove'}
+          </AlertDialogAction>
+        </AlertDialogFooter>
+      </AlertDialogContent>
+    </AlertDialog>
+    </>
   );
 }
 

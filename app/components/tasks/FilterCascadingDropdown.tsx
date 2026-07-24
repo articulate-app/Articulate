@@ -31,6 +31,8 @@ interface FilterCascadingDropdownProps {
   className?: string
   /** When true, hide the Project category in the dropdown (e.g. when already scoped to a project). */
   hideProjectFilter?: boolean
+  /** When true, hide the Assigned To category (e.g. when already scoped to a user). */
+  hideAssigneeFilter?: boolean
   /** Icon-only trigger (toolbar right cluster). */
   variant?: 'default' | 'icon'
 }
@@ -56,15 +58,18 @@ export function FilterCascadingDropdown({
   params,
   className,
   hideProjectFilter = false,
+  hideAssigneeFilter = false,
   variant = 'default',
 }: FilterCascadingDropdownProps) {
   const [menuOpen, setMenuOpen] = useState(false)
   const [paramSearch, setParamSearch] = useState<Record<string, string>>({})
   const currentUserId = useCurrentUserStore((state) => state.publicUserId)
 
-  const filterCategories = hideProjectFilter
-    ? FILTER_CATEGORIES_ALL.filter((c) => c.id !== 'project')
-    : FILTER_CATEGORIES_ALL
+  const filterCategories = FILTER_CATEGORIES_ALL.filter((c) => {
+    if (hideProjectFilter && c.id === 'project') return false
+    if (hideAssigneeFilter && c.id === 'assignedTo') return false
+    return true
+  })
 
   const updateUrl = (newFilters: TaskFiltersType) => {
     const newParams = buildFilterSearchParams(params, newFilters)
@@ -86,13 +91,11 @@ export function FilterCascadingDropdown({
     const today = new Date()
     const start = new Date(today.getFullYear(), today.getMonth(), today.getDate())
     const end = new Date(today.getFullYear(), today.getMonth(), today.getDate() + 1)
+    const shouldSetAssignee =
+      !hideAssigneeFilter && (kind === "due_today" || kind === "assigned_to_me")
     const nextFilters: TaskFiltersType = {
       assignedTo:
-        kind === "due_today" || kind === "assigned_to_me"
-          ? currentUserId != null
-            ? [String(currentUserId)]
-            : []
-          : [],
+        shouldSetAssignee && currentUserId != null ? [String(currentUserId)] : [],
       status: [],
       deliveryDate: kind === "due_today" ? { from: start, to: end } : {},
       publicationDate: {},
@@ -108,7 +111,7 @@ export function FilterCascadingDropdown({
           ? ["publication_overdue"]
           : [],
     }
-    setFilters(nextFilters)
+    updateUrl(nextFilters)
     setMenuOpen(false)
   }
 
@@ -213,7 +216,9 @@ export function FilterCascadingDropdown({
       })()}
       <DropdownMenuContent align="start" className="min-w-[200px] max-w-[min(280px,calc(100vw-2rem))] p-1">
         <DropdownMenuItem onSelect={() => applyQuickFilter("due_today")}>Due today</DropdownMenuItem>
-        <DropdownMenuItem onSelect={() => applyQuickFilter("assigned_to_me")}>Assigned to me</DropdownMenuItem>
+        {!hideAssigneeFilter ? (
+          <DropdownMenuItem onSelect={() => applyQuickFilter("assigned_to_me")}>Assigned to me</DropdownMenuItem>
+        ) : null}
         <DropdownMenuItem onSelect={() => applyQuickFilter("delivery_overdue")}>Delivery overdue</DropdownMenuItem>
         <DropdownMenuItem onSelect={() => applyQuickFilter("publication_overdue")}>Publication overdue</DropdownMenuItem>
         <div className="my-1 h-px bg-gray-200" />

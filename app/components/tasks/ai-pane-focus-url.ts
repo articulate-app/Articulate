@@ -1,5 +1,7 @@
 export function buildAiPaneFocusParams(current: URLSearchParams, shouldFocus: boolean): URLSearchParams {
-  const next = new URLSearchParams(current.toString())
+  const next = shouldFocus
+    ? migrateThreadSelectionToCenterPane(new URLSearchParams(current.toString()))
+    : new URLSearchParams(current.toString())
   if (shouldFocus) {
     const layout = new Set((next.get("layout") || "left,middle").split(",").filter(Boolean))
     layout.add("right")
@@ -80,9 +82,29 @@ export function applyCreatedTaskSelectionUrlParams(
   return next
 }
 
+/**
+ * When AI owns the right column, thread details must live in center* params.
+ * Migrates legacy `rightThreadId` / `rightMentionId` so the AI pane is not blocked.
+ */
+export function migrateThreadSelectionToCenterPane(current: URLSearchParams): URLSearchParams {
+  const next = new URLSearchParams(current.toString())
+  const rightThreadId = next.get("rightThreadId")?.trim()
+  if (!rightThreadId) return next
+  if (!next.get("centerThreadId")) {
+    next.set("centerThreadId", rightThreadId)
+  }
+  const rightMentionId = next.get("rightMentionId")?.trim()
+  if (rightMentionId && !next.get("centerMentionId")) {
+    next.set("centerMentionId", rightMentionId)
+  }
+  next.delete("rightThreadId")
+  next.delete("rightMentionId")
+  return next
+}
+
 /** When opening AI from focused task details, keep `focus=right` for the details+AI split layout. */
 export function preserveTaskDetailsFocusWhenOpeningAi(current: URLSearchParams): URLSearchParams {
-  const next = new URLSearchParams(current.toString())
+  const next = migrateThreadSelectionToCenterPane(new URLSearchParams(current.toString()))
   const layout = new Set((next.get("layout") || "left,middle").split(",").filter(Boolean))
   layout.add("right")
   next.set("layout", Array.from(layout).join(","))

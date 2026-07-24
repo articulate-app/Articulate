@@ -608,20 +608,23 @@ export function TaskList({ onTaskSelect, expandMainTaskId, selectedTaskId, editF
     }
   }, []); // Only run once on mount
   
-  // URL is source of truth for groupBy: sync store from URL so one click on "No group" works (no race with router.push).
+  // URL is source of truth for groupBy. Sync store FROM the URL only — never clear the store just
+  // because groupBy is briefly missing (TasksLayout seeds defaults after object switches; clearing
+  // here raced that seed and caused a maximum-update-depth loop via setGroupBy).
   useEffect(() => {
-    if (hasGroupByParam) {
-      const groupByValue = hasGroupByParam as any;
-      const normalizedValue = groupByValue === 'null' || groupByValue === '' ? null : groupByValue;
-      if (normalizedValue !== selectedGroupBy) {
-        setGroupBy(normalizedValue);
+    if (!hasGroupByParam) {
+      const mode = params.get('mode')
+      if (mode === 'list' || mode === 'ungrouped') {
+        if (selectedGroupBy !== null) setGroupBy(null)
       }
-    } else {
-      if (selectedGroupBy !== null) {
-        setGroupBy(null);
-      }
+      return
     }
-  }, [hasGroupByParam, selectedGroupBy, setGroupBy]);
+    const groupByValue = hasGroupByParam as any
+    const normalizedValue = groupByValue === 'null' || groupByValue === '' ? null : groupByValue
+    if (normalizedValue !== selectedGroupBy) {
+      setGroupBy(normalizedValue)
+    }
+  }, [hasGroupByParam, params, selectedGroupBy, setGroupBy]);
   
   // Grouped when groupBy is set; ungrouped (null) uses same list with p_group_key='all'.
   const isGroupedView = selectedGroupBy != null;

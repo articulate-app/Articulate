@@ -2,13 +2,11 @@
 
 import { useEffect } from "react"
 import { useSearchParams } from "next/navigation"
-import { useQuery, useQueryClient } from "@tanstack/react-query"
-import { createClientComponentClient } from "@supabase/auth-helpers-nextjs"
 import { BriefingsPage } from "../project-briefings/BriefingsPage"
 import { UserDetailsPage } from "../users/UserDetailsPageTabs"
 import { TeamDetailsPage } from "../teams/TeamDetailsPage"
-import { InboxThreadView } from "../inbox/inbox-thread-view"
-import { replaceWorkspaceUrlState } from "../../lib/workspace-url-state"
+import { CenterPaneThreadChat } from "../comments-section/center-pane-thread-chat"
+import { mergeWorkspaceUrlState, replaceWorkspaceUrlState } from "../../lib/workspace-url-state"
 import type { GlobalSearchDetailTarget } from "../../lib/global-search-types"
 
 const PROJECT_ALLOWED_TABS = new Set([
@@ -20,6 +18,7 @@ const PROJECT_ALLOWED_TABS = new Set([
   "analytics",
   "ai-visibility",
   "keywords",
+  "ai-usage",
   "briefings",
   "library",
   "tasks",
@@ -43,12 +42,6 @@ const TEAM_ALLOWED_TABS = new Set(["overview", "members", "projects", "billing",
 function ThreadDetailsPane({
   threadId,
   focusedMentionId,
-  initialTitle,
-  onOpenTask,
-  onOpenProject,
-  onClose,
-  isDetailsFocused = false,
-  onFocusToggle,
 }: {
   threadId: string | number
   focusedMentionId?: string | number | null
@@ -59,46 +52,28 @@ function ThreadDetailsPane({
   isDetailsFocused?: boolean
   onFocusToggle?: () => void
 }) {
-  const supabase = createClientComponentClient()
-  const queryClient = useQueryClient()
-  const threadQuery = useQuery({
-    queryKey: ["global-search-thread", threadId],
-    queryFn: async () => {
-      const { data, error } = await supabase
-        .from("threads")
-        .select("id, title, project_id, task_id")
-        .eq("id", threadId)
-        .maybeSingle()
-      if (error) throw error
-      return data
-    },
-    enabled: Boolean(threadId),
-    initialData: () =>
-      queryClient.getQueryData(["global-search-thread", threadId]) ??
-      (initialTitle
-        ? {
-            id: Number(threadId),
-            title: initialTitle,
-            project_id: null,
-            task_id: null,
-            __partial: true,
-          }
-        : undefined),
-    staleTime: 0,
-  })
+  const numericThreadId = Number(threadId)
+  if (!Number.isFinite(numericThreadId) || numericThreadId <= 0) return null
+  const numericMentionId =
+    focusedMentionId == null || focusedMentionId === ""
+      ? null
+      : Number(focusedMentionId)
 
   return (
-    <InboxThreadView
-      threadId={threadId as never}
-      threadTitle={threadQuery.data?.title ?? initialTitle ?? null}
-      projectId={threadQuery.data?.project_id ?? null}
-      taskId={threadQuery.data?.task_id ?? null}
-      focusedMentionId={focusedMentionId ?? null}
-      onOpenTaskDetails={onOpenTask}
-      onOpenProjectDetails={onOpenProject}
-      onClose={onClose}
-      isDetailsFocused={isDetailsFocused}
-      onFocusToggle={onFocusToggle}
+    <CenterPaneThreadChat
+      threadId={numericThreadId}
+      focusedMentionId={Number.isFinite(numericMentionId) ? numericMentionId : null}
+      onThreadCreated={(nextThreadId) => {
+        mergeWorkspaceUrlState(
+          {
+            centerThreadId: String(nextThreadId),
+            centerMentionId: null,
+            rightThreadId: null,
+            rightMentionId: null,
+          },
+          { source: "center-thread-created" },
+        )
+      }}
     />
   )
 }
@@ -112,6 +87,7 @@ export function GlobalSearchDetailsPane({
   onOpenProject,
   isDetailsFocused = false,
   onFocusToggle,
+  onResolvedTitle,
 }: {
   target: GlobalSearchDetailTarget
   onClose: () => void
@@ -123,8 +99,15 @@ export function GlobalSearchDetailsPane({
   onOpenProject: (projectId: number) => void
   isDetailsFocused?: boolean
   onFocusToggle?: () => void
+  /** When the detail entity resolves a display name, update the middle-pane tab label. */
+  onResolvedTitle?: (title: string) => void
 }) {
   const searchParams = useSearchParams()
+
+  useEffect(() => {
+    const knownTitle = target.title?.trim()
+    if (knownTitle) onResolvedTitle?.(knownTitle)
+  }, [onResolvedTitle, target.title])
 
   useEffect(() => {
     const currentParams =
@@ -152,6 +135,7 @@ export function GlobalSearchDetailsPane({
         next.delete("centerUserId")
         next.delete("centerTeamId")
         next.delete("centerThreadId")
+        next.delete("centerMentionId")
       } else if (target.entityType === "user" && target.entityId) {
         next.set("centerUserId", String(target.entityId))
         if (currentTab && USER_ALLOWED_TABS.has(currentTab)) next.set("centerTab", currentTab)
@@ -160,6 +144,7 @@ export function GlobalSearchDetailsPane({
         next.delete("centerProjectId")
         next.delete("centerTeamId")
         next.delete("centerThreadId")
+        next.delete("centerMentionId")
       } else if (target.entityType === "team" && target.entityId) {
         next.set("centerTeamId", String(target.entityId))
         if (currentTab && TEAM_ALLOWED_TABS.has(currentTab) && currentTab !== "overview") next.set("centerTab", currentTab)
@@ -168,9 +153,12 @@ export function GlobalSearchDetailsPane({
         next.delete("centerProjectId")
         next.delete("centerUserId")
         next.delete("centerThreadId")
+        next.delete("centerMentionId")
       } else if (target.entityType === "mention") {
         const threadId = target.threadId ?? target.entityId
         if (threadId) next.set("centerThreadId", String(threadId))
+        if (target.mentionId) next.set("centerMentionId", String(target.mentionId))
+        else next.delete("centerMentionId")
         next.delete("centerTaskId")
         next.delete("centerProjectId")
         next.delete("centerUserId")
@@ -225,11 +213,20 @@ export function GlobalSearchDetailsPane({
         next.delete("briefingTypeId")
       }
     } else if (target.entityType === "mention") {
-      if (target.threadId ?? target.entityId) next.set("rightThreadId", String(target.threadId ?? target.entityId))
-      if (target.mentionId) next.set("rightMentionId", String(target.mentionId))
+      // Threads always live in the center/details pane (right column is AI).
+      const threadId = target.threadId ?? target.entityId
+      if (threadId) next.set("centerThreadId", String(threadId))
+      if (target.mentionId) next.set("centerMentionId", String(target.mentionId))
+      else next.delete("centerMentionId")
+      next.delete("rightThreadId")
+      next.delete("rightMentionId")
       next.delete("rightProjectId")
       next.delete("rightUserId")
       next.delete("rightTeamId")
+      next.delete("centerTaskId")
+      next.delete("centerProjectId")
+      next.delete("centerUserId")
+      next.delete("centerTeamId")
     }
     // Pane state uses center*/right* params. Keep generic tab/entity/id clear in canonical section routes.
     next.delete("tab")
@@ -257,6 +254,7 @@ export function GlobalSearchDetailsPane({
         onClose={onClose}
         isDetailsFocused={isDetailsFocused}
         onFocusToggle={onFocusToggle}
+        onResolvedTitle={onResolvedTitle}
       />
     )
   }
@@ -268,8 +266,11 @@ export function GlobalSearchDetailsPane({
         onClose={onClose}
         isDetailsFocused={isDetailsFocused}
         onFocusToggle={onFocusToggle}
+        onOpenTask={onOpenTask}
         onOpenTaskKeepingDetail={onOpenTaskKeepingDetail}
         onOpenTeamKeepingDetail={onOpenTeamKeepingDetail}
+        onOpenProject={onOpenProject}
+        onResolvedTitle={onResolvedTitle}
       />
     )
   }
@@ -281,6 +282,7 @@ export function GlobalSearchDetailsPane({
         onClose={onClose}
         isDetailsFocused={isDetailsFocused}
         onFocusToggle={onFocusToggle}
+        onResolvedTitle={onResolvedTitle}
       />
     )
   }

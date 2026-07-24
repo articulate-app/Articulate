@@ -64,6 +64,16 @@ export type RequestPlanMissingInput = {
   raw: Record<string, unknown>
 }
 
+/** Worker/build lifecycle nested under plan.arguments.execution_phase. */
+export type RequestPlanExecutionPhase =
+  | "queued"
+  | "running"
+  | "completed"
+  | "partially_completed"
+  | "failed"
+  | "cancelled"
+  | string
+
 /** Normalized public request plan (stream + persisted snapshot). */
 export type AiRequestPlan = {
   planId: string
@@ -72,6 +82,8 @@ export type AiRequestPlan = {
   executor: string | null
   status: RequestPlanStatus
   phase: string | null
+  /** From `arguments.execution_phase` — queued/running until worker terminal. */
+  executionPhase: RequestPlanExecutionPhase | null
   requestText: string | null
   mutationTargets: Record<string, unknown>
   contextRefs: Record<string, unknown>
@@ -79,6 +91,8 @@ export type AiRequestPlan = {
   arguments: Record<string, unknown>
   missingInputs: RequestPlanMissingInput[]
   resolvedInputs: Record<string, unknown>
+  /** Convenience: resolved_inputs.build_id when present. */
+  buildId: string | null
   decisionAudit: RequestPlanDecisionAudit | null
   resultSummary: Record<string, unknown> | null
   verification: Record<string, unknown> | null
@@ -97,12 +111,279 @@ const REQUEST_PLAN_STATUS_LABELS: Record<string, string> = {
   planning: "Resolving request",
   waiting_for_input: "Needs your input",
   ready: "Ready to run",
-  executing: "Applying changes",
-  completed: "Completed",
+  queued: "Build queued",
+  running: "Build running",
+  dispatch_started: "Build queued",
+  executing: "Build running",
+  completed: "Build completed",
   partially_completed: "Partially completed",
-  failed: "Failed",
+  failed: "Build failed",
   cancelled: "Cancelled",
   expired: "Expired",
+}
+
+const REQUEST_PLAN_EXECUTION_PHASES = new Set([
+  "queued",
+  "running",
+  "completed",
+  "partially_completed",
+  "failed",
+  "cancelled",
+])
+
+/** Phases/statuses that mean queued or running — never completed content. */
+const REQUEST_PLAN_IN_FLIGHT = new Set([
+  "dispatch_started",
+  "dispatched",
+  "queued",
+  "running",
+  "in_progress",
+  "executing",
+])
+
+const REQUEST_PLAN_TERMINAL_SUCCESS = new Set([
+  "completed",
+  "partially_completed",
+])
+
+const REQUEST_PLAN_TERMINAL_FAILURE = new Set([
+  "failed",
+  "cancelled",
+  "expired",
+])
+
+/**
+ * Normalize a plan/stream status without collapsing queued vs running.
+ * `dispatch_started` / successful `ai_start_orchestrated_build` → queued (never completed).
+ */
+export function normalizeRequestPlanStatus(
+  status: string | null | undefined,
+  phase?: string | null,
+): string {
+  const statusRaw = (status ?? "").trim().toLowerCase()
+  const phaseRaw = (phase ?? "").trim().toLowerCase()
+  if (statusRaw === "dispatch_started" || phaseRaw === "dispatch_started") return "queued"
+  if (statusRaw) return statusRaw
+  if (phaseRaw) return phaseRaw
+  return "planning"
+}
+
+export function extractRequestPlanExecutionPhase(
+  plan: Pick<AiRequestPlan, "arguments" | "executionPhase" | "resultSummary" | "verification">,
+): RequestPlanExecutionPhase | null {
+  if (plan.executionPhase && REQUEST_PLAN_EXECUTION_PHASES.has(String(plan.executionPhase))) {
+    return plan.executionPhase
+  }
+  const fromArgs = toTrimmedString(plan.arguments?.execution_phase)?.toLowerCase() ?? null
+  if (fromArgs && REQUEST_PLAN_EXECUTION_PHASES.has(fromArgs)) return fromArgs
+  const buildState =
+    toTrimmedString(plan.resultSummary?.build_state)?.toLowerCase()
+    ?? toTrimmedString(plan.resultSummary?.buildState)?.toLowerCase()
+  if (buildState && REQUEST_PLAN_EXECUTION_PHASES.has(buildState)) return buildState
+  return null
+}
+
+export function extractRequestPlanBuildId(
+  plan: Pick<AiRequestPlan, "resolvedInputs" | "buildId" | "resultSummary">,
+): string | null {
+  if (plan.buildId?.trim()) return plan.buildId.trim()
+  const fromResolved =
+    toTrimmedString(plan.resolvedInputs?.build_id)
+    ?? toTrimmedString(plan.resolvedInputs?.buildId)
+  if (fromResolved) return fromResolved
+  return (
+    toTrimmedString(plan.resultSummary?.build_id)
+    ?? toTrimmedString(plan.resultSummary?.buildId)
+  )
+}
+
+export function isRequestPlanBuildTerminal(
+  plan: Pick<AiRequestPlan, "verification" | "resultSummary" | "executionPhase" | "arguments">,
+): boolean {
+  if (plan.verification?.build_terminal === true) return true
+  if (plan.verification?.buildTerminal === true) return true
+  const phase = extractRequestPlanExecutionPhase(plan)
+  if (!phase) return false
+  return REQUEST_PLAN_TERMINAL_SUCCESS.has(phase) || REQUEST_PLAN_TERMINAL_FAILURE.has(phase)
+}
+
+/**
+ * Display badge for the request-plan card.
+ * Prefer `execution_phase` when present; never treat start-tool acceptance as completed.
+ */
+export function resolveRequestPlanDisplayStatus(plan: AiRequestPlan): {
+  status: string
+  label: string
+  isQueued: boolean
+  isRunning: boolean
+  isSuccess: boolean
+  isPartial: boolean
+  isFailed: boolean
+  isCancelled: boolean
+  isInFlight: boolean
+} {
+  const executionPhase = extractRequestPlanExecutionPhase(plan)
+  const raw = (executionPhase || normalizeRequestPlanStatus(plan.status, plan.phase)).toLowerCase()
+
+  if (raw === "queued" || raw === "dispatch_started") {
+    return {
+      status: "queued",
+      label: "Build queued",
+      isQueued: true,
+      isRunning: false,
+      isSuccess: false,
+      isPartial: false,
+      isFailed: false,
+      isCancelled: false,
+      isInFlight: true,
+    }
+  }
+  if (raw === "running" || raw === "executing" || raw === "in_progress") {
+    return {
+      status: "running",
+      label: "Build running",
+      isQueued: false,
+      isRunning: true,
+      isSuccess: false,
+      isPartial: false,
+      isFailed: false,
+      isCancelled: false,
+      isInFlight: true,
+    }
+  }
+  if (raw === "completed") {
+    return {
+      status: "completed",
+      label: "Build completed",
+      isQueued: false,
+      isRunning: false,
+      isSuccess: true,
+      isPartial: false,
+      isFailed: false,
+      isCancelled: false,
+      isInFlight: false,
+    }
+  }
+  if (raw === "partially_completed") {
+    return {
+      status: "partially_completed",
+      label: "Partially completed",
+      isQueued: false,
+      isRunning: false,
+      isSuccess: false,
+      isPartial: true,
+      isFailed: false,
+      isCancelled: false,
+      isInFlight: false,
+    }
+  }
+  if (raw === "failed") {
+    return {
+      status: "failed",
+      label: "Build failed",
+      isQueued: false,
+      isRunning: false,
+      isSuccess: false,
+      isPartial: false,
+      isFailed: true,
+      isCancelled: false,
+      isInFlight: false,
+    }
+  }
+  if (raw === "cancelled") {
+    return {
+      status: "cancelled",
+      label: "Cancelled",
+      isQueued: false,
+      isRunning: false,
+      isSuccess: false,
+      isPartial: false,
+      isFailed: false,
+      isCancelled: true,
+      isInFlight: false,
+    }
+  }
+  return {
+    status: raw || "planning",
+    label: REQUEST_PLAN_STATUS_LABELS[raw] ?? (raw || "Resolving request").replace(/_/g, " "),
+    isQueued: false,
+    isRunning: false,
+    isSuccess: false,
+    isPartial: false,
+    isFailed: REQUEST_PLAN_TERMINAL_FAILURE.has(raw),
+    isCancelled: false,
+    isInFlight: REQUEST_PLAN_IN_FLIGHT.has(raw),
+  }
+}
+
+/**
+ * Merge durable orchestrated-build terminal state into the plan display fields.
+ * Does not invent completion from a successful start alone.
+ */
+export function mergeOrchestratedBuildIntoRequestPlan(
+  plan: AiRequestPlan,
+  build: {
+    status?: string | null
+    succeeded_units?: number
+    failed_units?: number
+    total_units?: number
+  } | null,
+): AiRequestPlan {
+  if (!build?.status) return plan
+  const buildStatus = String(build.status).trim().toLowerCase()
+  const mapBuildToPhase = (): RequestPlanExecutionPhase | null => {
+    if (buildStatus === "queued") return "queued"
+    if (buildStatus === "running") return "running"
+    if (buildStatus === "completed") return "completed"
+    if (buildStatus === "partially_completed") return "partially_completed"
+    if (buildStatus === "failed") return "failed"
+    if (buildStatus === "cancelled") return "cancelled"
+    return null
+  }
+  const phase = mapBuildToPhase()
+  if (!phase) return plan
+  const isTerminal = REQUEST_PLAN_TERMINAL_SUCCESS.has(phase) || REQUEST_PLAN_TERMINAL_FAILURE.has(phase)
+  const nextStatus =
+    phase === "queued" || phase === "running"
+      ? "executing"
+      : phase
+  return {
+    ...plan,
+    status: nextStatus,
+    executionPhase: phase,
+    arguments: {
+      ...plan.arguments,
+      execution_phase: phase,
+    },
+    resultSummary: {
+      ...(plan.resultSummary ?? {}),
+      build_state: phase,
+      ...(build.succeeded_units != null ? { succeeded_units: build.succeeded_units } : {}),
+      ...(build.failed_units != null ? { failed_units: build.failed_units } : {}),
+      ...(build.total_units != null ? { total_units: build.total_units } : {}),
+    },
+    verification: {
+      ...(plan.verification ?? {}),
+      build_terminal: isTerminal,
+    },
+  }
+}
+
+export function requestPlanStatusLabel(status: string | null | undefined): string {
+  if (!status) return "Resolving request"
+  const normalized = normalizeRequestPlanStatus(status)
+  return REQUEST_PLAN_STATUS_LABELS[normalized]
+    ?? REQUEST_PLAN_STATUS_LABELS[status]
+    ?? status.replace(/_/g, " ")
+}
+
+/** True only for completed (not partially_completed, not in-flight). */
+export function requestPlanShowsCompletion(status: string | null | undefined): boolean {
+  return normalizeRequestPlanStatus(status).toLowerCase() === "completed"
+}
+
+export function requestPlanShowsPartialCompletion(status: string | null | undefined): boolean {
+  return normalizeRequestPlanStatus(status).toLowerCase() === "partially_completed"
 }
 
 const OPERATION_LABELS: Record<string, string> = {
@@ -113,8 +394,34 @@ const OPERATION_LABELS: Record<string, string> = {
   update_task_fields: "Update task fields",
   update_project_fields: "Update project fields",
   manage_users_watchers: "Manage users & watchers",
+  plan_component_structure: "Plan component structure",
+  apply_component_structure: "Apply component structure",
   build_task_content: "Build task content",
   other_mutation: "Apply changes",
+}
+
+/** Proposal-only — never show mutation/build progress cards for this operation. */
+export function isPlanComponentStructureOperation(operation: string | null | undefined): boolean {
+  return operation === "plan_component_structure"
+}
+
+/** Structure apply — show structure previews/saves, never an orchestrated build card. */
+export function isApplyComponentStructureOperation(operation: string | null | undefined): boolean {
+  return operation === "apply_component_structure"
+}
+
+/** Full content build — orchestrated build UI only after a real build_id exists. */
+export function isBuildTaskContentOperation(operation: string | null | undefined): boolean {
+  return operation === "build_task_content"
+}
+
+/** Whether an orchestrated-build progress card may mount for this request-plan operation. */
+export function requestPlanAllowsOrchestratedBuildCard(
+  operation: string | null | undefined,
+): boolean {
+  if (isPlanComponentStructureOperation(operation)) return false
+  if (isApplyComponentStructureOperation(operation)) return false
+  return true
 }
 
 function toTrimmedString(value: unknown): string | null {
@@ -335,32 +642,60 @@ export function normalizeRequestPlan(
     ?? toTrimmedString(raw.id)
   if (!planId) return null
 
-  const status =
+  const rawStatus =
     toTrimmedString(raw.status)
     ?? toTrimmedString(options?.phase)
     ?? "planning"
+  const status = normalizeRequestPlanStatus(rawStatus, options?.phase)
+
+  const argumentsRecord = normalizeRecord(raw.arguments)
+  const resolvedInputs = normalizeRecord(raw.resolved_inputs)
+  const resultSummary = normalizeNullableRecord(raw.result_summary)
+  const verification = normalizeNullableRecord(raw.verification)
+  const executionPhaseRaw =
+    toTrimmedString(argumentsRecord.execution_phase)
+    ?? toTrimmedString(raw.execution_phase)
+  const executionPhase =
+    executionPhaseRaw && REQUEST_PLAN_EXECUTION_PHASES.has(executionPhaseRaw.toLowerCase())
+      ? executionPhaseRaw.toLowerCase()
+      : null
+  const buildId =
+    toTrimmedString(resolvedInputs.build_id)
+    ?? toTrimmedString(resolvedInputs.buildId)
+    ?? toTrimmedString(resultSummary?.build_id)
+    ?? toTrimmedString(raw.build_id)
+
+  // Never treat a successful start (dispatch_started) as completed content.
+  const statusForStore =
+    status === "queued" || status === "dispatch_started" || executionPhase === "queued"
+      ? (status === "completed" || status === "partially_completed" ? status : "executing")
+      : status
 
   return {
     planId,
     planVersion: toFiniteNumber(raw.plan_version),
     operation: toTrimmedString(raw.operation),
     executor: toTrimmedString(raw.executor),
-    status,
+    status: statusForStore,
     phase: toTrimmedString(options?.phase) ?? toTrimmedString(raw.status),
+    executionPhase:
+      executionPhase
+      ?? (status === "queued" || status === "dispatch_started" ? "queued" : null),
     requestText: toTrimmedString(raw.request_text),
     mutationTargets: normalizeRecord(raw.mutation_targets),
     contextRefs: normalizeRecord(raw.context_refs),
     targetReferences: Array.isArray(raw.target_references) ? [...raw.target_references] : [],
-    arguments: normalizeRecord(raw.arguments),
+    arguments: argumentsRecord,
     missingInputs: Array.isArray(raw.missing_inputs)
       ? raw.missing_inputs
           .map((item) => normalizeMissingInput(item))
           .filter((item): item is RequestPlanMissingInput => item != null)
       : [],
-    resolvedInputs: normalizeRecord(raw.resolved_inputs),
+    resolvedInputs,
+    buildId,
     decisionAudit: normalizeDecisionAudit(raw.decision_audit),
-    resultSummary: normalizeNullableRecord(raw.result_summary),
-    verification: normalizeNullableRecord(raw.verification),
+    resultSummary,
+    verification,
     createdAt: toTrimmedString(raw.created_at),
     updatedAt: toTrimmedString(raw.updated_at),
   }
@@ -390,20 +725,43 @@ export function mergeRequestPlan(
   previous: AiRequestPlan | null,
   incoming: AiRequestPlan,
 ): AiRequestPlan {
-  if (!previous || previous.planId !== incoming.planId) return incoming
+  if (!previous || previous.planId !== incoming.planId) {
+    return {
+      ...incoming,
+      status: normalizeRequestPlanStatus(incoming.status, incoming.phase),
+      executionPhase: incoming.executionPhase ?? extractRequestPlanExecutionPhase(incoming),
+      buildId: incoming.buildId ?? extractRequestPlanBuildId(incoming),
+    }
+  }
+  const nextStatus = normalizeRequestPlanStatus(incoming.status, incoming.phase)
+  const prevStatus = normalizeRequestPlanStatus(previous.status, previous.phase)
+  const prevDisplay = resolveRequestPlanDisplayStatus(previous)
+  const nextDisplay = resolveRequestPlanDisplayStatus(incoming)
+  // Never let an in-flight update overwrite a terminal success/failure.
+  const status =
+    (prevDisplay.isSuccess || prevDisplay.isPartial || prevDisplay.isFailed || prevDisplay.isCancelled)
+    && nextDisplay.isInFlight
+      ? prevStatus
+      : nextStatus || prevStatus
+  const executionPhase =
+    (prevDisplay.isSuccess || prevDisplay.isPartial || prevDisplay.isFailed || prevDisplay.isCancelled)
+    && nextDisplay.isInFlight
+      ? previous.executionPhase
+      : (incoming.executionPhase ?? previous.executionPhase ?? extractRequestPlanExecutionPhase(incoming))
   return {
     ...previous,
     ...incoming,
     planId: incoming.planId,
-    // Keep a useful phase even if a later partial payload omits it.
     phase: incoming.phase ?? previous.phase,
-    status: incoming.status || previous.status,
+    status,
+    executionPhase,
+    buildId: incoming.buildId ?? previous.buildId ?? extractRequestPlanBuildId(incoming) ?? extractRequestPlanBuildId(previous),
+    arguments: Object.keys(incoming.arguments).length > 0 ? incoming.arguments : previous.arguments,
+    resolvedInputs:
+      Object.keys(incoming.resolvedInputs).length > 0 ? incoming.resolvedInputs : previous.resolvedInputs,
+    resultSummary: incoming.resultSummary ?? previous.resultSummary,
+    verification: incoming.verification ?? previous.verification,
   }
-}
-
-export function requestPlanStatusLabel(status: string | null | undefined): string {
-  if (!status) return "Resolving request"
-  return REQUEST_PLAN_STATUS_LABELS[status] ?? status.replace(/_/g, " ")
 }
 
 export function requestPlanOperationLabel(operation: string | null | undefined): string {
@@ -461,8 +819,9 @@ export function formatRequestPlanKeyValueRows(
   record: Record<string, unknown> | null | undefined,
 ): Array<{ key: string; value: string }> {
   if (!record) return []
+  const sanitized = sanitizeRequestPlanResultSummary(record)
   const rows: Array<{ key: string; value: string }> = []
-  for (const [key, value] of Object.entries(record)) {
+  for (const [key, value] of Object.entries(sanitized)) {
     if (value == null) continue
     if (typeof value === "string") {
       if (!value.trim()) continue
@@ -483,6 +842,49 @@ export function formatRequestPlanKeyValueRows(
     }
   }
   return rows
+}
+
+const DISPATCH_ONLY_TOOLS = new Set([
+  "ai_start_orchestrated_build",
+  "ai_start_artifact_build",
+])
+
+/**
+ * Strip dispatch-only tool metadata from result summaries so failed builds do not
+ * list `ai_start_orchestrated_build` / `ai_start_artifact_build` under successful content operations.
+ */
+export function sanitizeRequestPlanResultSummary(
+  record: Record<string, unknown>,
+): Record<string, unknown> {
+  const next: Record<string, unknown> = { ...record }
+  const filterTools = (value: unknown): unknown => {
+    if (!Array.isArray(value)) return value
+    const filtered = value.filter((row) => {
+      if (typeof row === "string") return !DISPATCH_ONLY_TOOLS.has(row.trim())
+      if (row && typeof row === "object" && !Array.isArray(row)) {
+        const name =
+          typeof (row as { tool_name?: unknown }).tool_name === "string"
+            ? (row as { tool_name: string }).tool_name.trim()
+            : typeof (row as { name?: unknown }).name === "string"
+              ? (row as { name: string }).name.trim()
+              : ""
+        return !DISPATCH_ONLY_TOOLS.has(name)
+      }
+      return true
+    })
+    return filtered
+  }
+
+  for (const key of ["successful_tools", "successful_operations", "completed_tools", "tools"] as const) {
+    if (!(key in next)) continue
+    const filtered = filterTools(next[key])
+    if (Array.isArray(filtered) && filtered.length === 0) {
+      delete next[key]
+    } else {
+      next[key] = filtered
+    }
+  }
+  return next
 }
 
 export function formatHumanizedKey(key: string): string {

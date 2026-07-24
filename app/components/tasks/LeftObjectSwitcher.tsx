@@ -20,7 +20,7 @@ import { IconTooltip } from "../ui/icon-tooltip"
 
 const pillBase =
   "inline-flex h-8 shrink-0 items-center gap-1.5 rounded-full border px-3 text-sm font-medium transition focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-gray-400"
-const pillActive = "border-gray-900 bg-gray-900 text-white hover:bg-gray-800"
+const pillActive = "border-transparent bg-gray-100 text-gray-900 hover:bg-gray-200"
 const pillInactive = "border-gray-200 bg-white text-gray-900 hover:bg-gray-50"
 
 export function LeftObjectSwitcher({

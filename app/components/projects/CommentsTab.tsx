@@ -1,6 +1,6 @@
 "use client"
 
-import { useCallback, useEffect, useMemo, useRef, useState } from "react"
+import React, { useCallback, useEffect, useMemo, useRef, useState } from "react"
 import { useQuery, useQueryClient } from "@tanstack/react-query"
 import { createClientComponentClient } from "@supabase/auth-helpers-nextjs"
 import {
@@ -32,6 +32,10 @@ interface CommentsTabProps {
   hideMentionsList?: boolean
   /** When preview, hide thread history / new-thread header controls. */
   hideThreadToolbar?: boolean
+  /** Overview: max merged feed rows (default unlimited). */
+  previewMaxRows?: number
+  /** Overview: expose thread toolbar for the section header row. */
+  onHeaderActionsChange?: (actions: React.ReactNode | null) => void
   /** Overview: merge activity rows into the same scrolling feed. */
   activityLogs?: ProjectActivityFeedRow[]
   feedFilter?: "all" | "updates" | "comments"
@@ -204,6 +208,8 @@ export function CommentsTab({
   variant = "full",
   hideMentionsList = false,
   hideThreadToolbar = false,
+  previewMaxRows,
+  onHeaderActionsChange,
   activityLogs = [],
   feedFilter = "all",
   onLoadMoreActivity,
@@ -604,8 +610,12 @@ export function CommentsTab({
         })
       }
     }
-    return items.sort((a, b) => toTime(b.createdAt) - toTime(a.createdAt))
-  }, [activityLogs, feedFilter, isPreview, mentions])
+    const sorted = items.sort((a, b) => toTime(b.createdAt) - toTime(a.createdAt))
+    if (typeof previewMaxRows === "number" && previewMaxRows > 0) {
+      return sorted.slice(0, previewMaxRows)
+    }
+    return sorted
+  }, [activityLogs, feedFilter, isPreview, mentions, previewMaxRows])
 
   const refreshAll = useCallback(async () => {
     loadedOffsetsRef.current.clear()
@@ -665,6 +675,54 @@ export function CommentsTab({
     },
     [projectIdNum, loadProjectCommentThreads],
   )
+
+  const threadHeaderActions = useMemo(() => {
+    if (!isPreview || hideThreadToolbar) return null
+    return (
+      <TaskCommentsHeaderRow
+        handleAddThread={handleAddThread}
+        taskIdNum={projectIdNum}
+        threadsList={hydratedThreadsList as any[]}
+        selectedThreadId={selectedThreadId}
+        setSelectedThreadId={(id) => {
+          handleSelectThread(id).catch((error: any) => {
+            toast({
+              title: "Failed to load thread",
+              description: error?.message || "Unable to load project thread details.",
+              variant: "destructive",
+            })
+          })
+        }}
+        setIsAddingThread={setIsAddingThread}
+        isThreadListLoading={isLoadingSummaries}
+        handleViewThreadHistory={() => {
+          handleViewThreadHistory().catch((error: any) => {
+            toast({
+              title: "Failed to load thread history",
+              description: error?.message || "Unable to load project thread summaries.",
+              variant: "destructive",
+            })
+          })
+        }}
+      />
+    )
+  }, [
+    handleAddThread,
+    handleSelectThread,
+    handleViewThreadHistory,
+    hideThreadToolbar,
+    hydratedThreadsList,
+    isLoadingSummaries,
+    isPreview,
+    projectIdNum,
+    selectedThreadId,
+  ])
+
+  useEffect(() => {
+    if (!onHeaderActionsChange) return
+    onHeaderActionsChange(threadHeaderActions)
+    return () => onHeaderActionsChange(null)
+  }, [onHeaderActionsChange, threadHeaderActions])
 
   const handleMentionsScroll = useCallback(async () => {
     if (viewMode !== "all") return
@@ -752,7 +810,7 @@ export function CommentsTab({
           isPreview
             ? hideMentionsList
               ? "hidden"
-              : "max-h-[min(360px,48vh)] min-h-0 overflow-y-auto overflow-x-hidden pr-1"
+              : "min-h-0 overflow-y-auto overflow-x-hidden pr-1"
             : "min-h-0 flex-1 overflow-y-auto overflow-x-hidden pr-1"
         }
         onScroll={() => {
@@ -1022,36 +1080,6 @@ export function CommentsTab({
                   }}
                 />
               </div>
-              {isPreview ? (
-                <div className="mt-2 shrink-0">
-                  <TaskCommentsHeaderRow
-                    handleAddThread={handleAddThread}
-                    taskIdNum={projectIdNum}
-                    threadsList={hydratedThreadsList as any[]}
-                    selectedThreadId={selectedThreadId}
-                    setSelectedThreadId={(id) => {
-                      handleSelectThread(id).catch((error: any) => {
-                        toast({
-                          title: "Failed to load thread",
-                          description: error?.message || "Unable to load project thread details.",
-                          variant: "destructive",
-                        })
-                      })
-                    }}
-                    setIsAddingThread={setIsAddingThread}
-                    isThreadListLoading={isLoadingSummaries}
-                    handleViewThreadHistory={() => {
-                      handleViewThreadHistory().catch((error: any) => {
-                        toast({
-                          title: "Failed to load thread history",
-                          description: error?.message || "Unable to load project thread summaries.",
-                          variant: "destructive",
-                        })
-                      })
-                    }}
-                  />
-                </div>
-              ) : null}
             </div>
             <div className="mt-2 flex items-center gap-2">
               <span className="shrink-0 text-xs text-gray-500">We'll notify</span>

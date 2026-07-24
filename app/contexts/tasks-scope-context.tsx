@@ -4,7 +4,8 @@ import React, { createContext, useContext, useMemo } from "react";
 
 export type TasksScope =
   | { type: "global" }
-  | { type: "project"; projectId: number };
+  | { type: "project"; projectId: number }
+  | { type: "user"; userId: number };
 
 export interface TasksScopeContextValue {
   scope: TasksScope;
@@ -34,7 +35,17 @@ export function TasksScopeProvider({
   children: React.ReactNode;
   value: TasksScopeContextValue;
 }) {
-  const stable = useMemo(() => value, [value.scope.type, value.basePath, JSON.stringify(value.preserveQueryKeys ?? {})]);
+  const stable = useMemo(
+    () => value,
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- stabilize on scope identity + path/keys
+    [
+      value.scope.type,
+      value.scope.type === "project" ? value.scope.projectId : null,
+      value.scope.type === "user" ? value.scope.userId : null,
+      value.basePath,
+      JSON.stringify(value.preserveQueryKeys ?? {}),
+    ],
+  );
   return (
     <TasksScopeContext.Provider value={stable}>
       {children}
@@ -52,4 +63,11 @@ export function useTasksScopeProjectParam(urlProject: string | undefined): strin
   const { scope } = useTasksScope();
   if (scope.type === "project") return String(scope.projectId);
   return urlProject;
+}
+
+/** Resolve assignee id when user-scoped (forced), else undefined. */
+export function useTasksScopeAssigneeId(): number | undefined {
+  const { scope } = useTasksScope();
+  if (scope.type === "user") return scope.userId;
+  return undefined;
 }

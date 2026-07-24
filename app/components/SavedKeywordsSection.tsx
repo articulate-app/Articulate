@@ -4,12 +4,27 @@ import React, { useState, useEffect } from 'react';
 import { Bookmark, ChevronDown, ChevronRight, Trash2, Edit3, X } from 'lucide-react';
 import { Button } from './ui/button';
 import { Badge } from './ui/badge';
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from './ui/alert-dialog';
 import { useKeywordListsApi } from '../store/keyword-lists-api';
 import { type KeywordList, type Keyword } from '../../lib/types/keyword';
 
 interface SavedKeywordsSectionProps {
   onKeywordClick?: (keyword: Keyword) => void;
 }
+
+type PendingDelete =
+  | { type: 'list'; listId: number; name: string }
+  | { type: 'keyword'; listId: number; keywordId: number; name: string }
+  | null;
 
 export function SavedKeywordsSection({ onKeywordClick }: SavedKeywordsSectionProps) {
   const { 
@@ -29,6 +44,8 @@ export function SavedKeywordsSection({ onKeywordClick }: SavedKeywordsSectionPro
   const [expandedLists, setExpandedLists] = useState<Set<number>>(new Set());
   const [editingList, setEditingList] = useState<number | null>(null);
   const [editName, setEditName] = useState('');
+  const [pendingDelete, setPendingDelete] = useState<PendingDelete>(null);
+  const [isDeleting, setIsDeleting] = useState(false);
 
   // Fetch lists on mount
   useEffect(() => {
@@ -69,26 +86,31 @@ export function SavedKeywordsSection({ onKeywordClick }: SavedKeywordsSectionPro
     setEditName('');
   };
 
-  const handleDeleteList = async (listId: number) => {
-    if (confirm('Are you sure you want to delete this list? This action cannot be undone.')) {
-      try {
-        await deleteList(listId);
-        const newExpanded = new Set(expandedLists);
-        newExpanded.delete(listId);
-        setExpandedLists(newExpanded);
-      } catch (error) {
-        console.error('Error deleting list:', error);
-      }
-    }
+  const requestDeleteList = (list: KeywordList) => {
+    setPendingDelete({ type: 'list', listId: list.id, name: list.name });
   };
 
-  const handleRemoveKeyword = async (listId: number, keywordId: number) => {
-    if (confirm('Remove this keyword from the list?')) {
-      try {
-        await removeKeyword(listId, keywordId);
-      } catch (error) {
-        console.error('Error removing keyword:', error);
+  const requestRemoveKeyword = (listId: number, keywordId: number, name: string) => {
+    setPendingDelete({ type: 'keyword', listId, keywordId, name });
+  };
+
+  const confirmPendingDelete = async () => {
+    if (!pendingDelete || isDeleting) return;
+    setIsDeleting(true);
+    try {
+      if (pendingDelete.type === 'list') {
+        await deleteList(pendingDelete.listId);
+        const newExpanded = new Set(expandedLists);
+        newExpanded.delete(pendingDelete.listId);
+        setExpandedLists(newExpanded);
+      } else {
+        await removeKeyword(pendingDelete.listId, pendingDelete.keywordId);
       }
+      setPendingDelete(null);
+    } catch (error) {
+      console.error('Error deleting keyword list item:', error);
+    } finally {
+      setIsDeleting(false);
     }
   };
 
@@ -144,6 +166,7 @@ export function SavedKeywordsSection({ onKeywordClick }: SavedKeywordsSectionPro
   }
 
   return (
+    <>
     <div className="space-y-2">
       <h3 className="text-sm font-medium text-gray-900 mb-3">Saved Keywords</h3>
       
@@ -218,7 +241,7 @@ export function SavedKeywordsSection({ onKeywordClick }: SavedKeywordsSectionPro
                 <Button
                   variant="ghost"
                   size="sm"
-                  onClick={() => handleDeleteList(list.id)}
+                  onClick={() => requestDeleteList(list)}
                   className="h-6 w-6 p-0 text-gray-400 hover:text-red-600"
                   title="Delete list"
                 >
@@ -278,7 +301,9 @@ export function SavedKeywordsSection({ onKeywordClick }: SavedKeywordsSectionPro
                       <Button
                         variant="ghost"
                         size="sm"
-                        onClick={() => handleRemoveKeyword(list.id, keyword.id)}
+                        onClick={() =>
+                          requestRemoveKeyword(list.id, keyword.id, keyword.name || 'this keyword')
+                        }
                         className="h-6 w-6 p-0 text-gray-400 hover:text-red-600"
                         title="Remove keyword"
                       >
@@ -293,5 +318,38 @@ export function SavedKeywordsSection({ onKeywordClick }: SavedKeywordsSectionPro
         </div>
       ))}
     </div>
+
+    <AlertDialog
+      open={pendingDelete != null}
+      onOpenChange={(open) => {
+        if (!open && !isDeleting) setPendingDelete(null);
+      }}
+    >
+      <AlertDialogContent>
+        <AlertDialogHeader>
+          <AlertDialogTitle>
+            {pendingDelete?.type === 'list' ? 'Delete keyword list?' : 'Remove keyword?'}
+          </AlertDialogTitle>
+          <AlertDialogDescription>
+            {pendingDelete?.type === 'list'
+              ? `Delete “${pendingDelete.name}”? This cannot be undone.`
+              : `Remove “${pendingDelete?.name ?? 'this keyword'}” from the list?`}
+          </AlertDialogDescription>
+        </AlertDialogHeader>
+        <AlertDialogFooter>
+          <AlertDialogCancel disabled={isDeleting}>Cancel</AlertDialogCancel>
+          <AlertDialogAction
+            disabled={isDeleting}
+            onClick={(e) => {
+              e.preventDefault()
+              void confirmPendingDelete()
+            }}
+          >
+            {isDeleting ? 'Deleting…' : pendingDelete?.type === 'list' ? 'Delete list' : 'Remove'}
+          </AlertDialogAction>
+        </AlertDialogFooter>
+      </AlertDialogContent>
+    </AlertDialog>
+    </>
   );
 } 

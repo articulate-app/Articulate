@@ -7,6 +7,7 @@ import { Button } from "../../../app/components/ui/button"
 import { Badge } from "../../../app/components/ui/badge"
 import { toast } from "../../../app/components/ui/use-toast"
 import {
+  fetchTaskChannelComponentOutputVersions,
   fetchTaskComponentOutputVersions,
   resolveChangeSourceBadge,
   rollbackTaskComponentOutputVersion,
@@ -23,14 +24,29 @@ import {
   type ContentVersionHistoryRefreshDetail,
 } from "../../ai-chat/apply-ai-thread-timeline-restore"
 
+export type VersionHistoryComponentOption = {
+  taskComponentId: string | null
+  taskComponentOutputId: string
+  title: string
+  currentContentText?: string | null
+}
+
 type ComponentOutputVersionHistoryDialogProps = {
   open: boolean
   onOpenChange: (open: boolean) => void
-  taskComponentOutputId: string | null
-  componentTitle: string
+  /** Channel-wide history (preferred). When set with channelId, loads all component versions. */
+  taskId?: number | null
+  channelId?: number | null
+  channelLabel?: string | null
+  componentOptions?: VersionHistoryComponentOption[]
+  /** Pre-select a component filter (task_component_id). Null/undefined = all components. */
+  initialFilterTaskComponentId?: string | null
+  /** Legacy single-component mode (kept for callers that only have one output id). */
+  taskComponentOutputId?: string | null
+  componentTitle?: string
   currentContentText?: string | null
   onRestored?: (output: RolledBackTaskComponentOutput) => void
-  onBeforeRestore?: () => Promise<void>
+  onBeforeRestore?: (version: TaskComponentOutputVersion) => Promise<void>
 }
 
 function versionContentToHtml(version: TaskComponentOutputVersion): string {
@@ -63,25 +79,71 @@ function formatVersionTimestamp(value: string): string {
 export function ComponentOutputVersionHistoryDialog({
   open,
   onOpenChange,
-  taskComponentOutputId,
-  componentTitle,
-  currentContentText,
+  taskId = null,
+  channelId = null,
+  channelLabel = null,
+  componentOptions = [],
+  initialFilterTaskComponentId = null,
+  taskComponentOutputId = null,
+  componentTitle = "Component output",
+  currentContentText = null,
   onRestored,
   onBeforeRestore,
 }: ComponentOutputVersionHistoryDialogProps) {
+  const isChannelMode = taskId != null && channelId != null
   const [versions, setVersions] = useState<TaskComponentOutputVersion[]>([])
   const [isLoading, setIsLoading] = useState(false)
-  const [restoringVersionNumber, setRestoringVersionNumber] = useState<number | null>(null)
-  const [expandedDiffVersionNumber, setExpandedDiffVersionNumber] = useState<number | null>(null)
-  const [expandedPreviewVersionNumber, setExpandedPreviewVersionNumber] = useState<number | null>(null)
+  const [restoringVersionId, setRestoringVersionId] = useState<string | null>(null)
+  const [expandedDiffVersionId, setExpandedDiffVersionId] = useState<string | null>(null)
+  const [expandedPreviewVersionId, setExpandedPreviewVersionId] = useState<string | null>(null)
+  const [filterTaskComponentId, setFilterTaskComponentId] = useState<string>("all")
+
+  useEffect(() => {
+    if (!open) return
+    setFilterTaskComponentId(initialFilterTaskComponentId?.trim() || "all")
+    setExpandedDiffVersionId(null)
+    setExpandedPreviewVersionId(null)
+  }, [open, initialFilterTaskComponentId])
+
+  const componentTitleByOutputId = useMemo(() => {
+    const map = new Map<string, string>()
+    for (const option of componentOptions) {
+      map.set(option.taskComponentOutputId, option.title)
+    }
+    return map
+  }, [componentOptions])
+
+  const componentTitleByTaskComponentId = useMemo(() => {
+    const map = new Map<string, string>()
+    for (const option of componentOptions) {
+      if (option.taskComponentId) map.set(option.taskComponentId, option.title)
+    }
+    return map
+  }, [componentOptions])
+
+  const currentContentByOutputId = useMemo(() => {
+    const map = new Map<string, string | null>()
+    for (const option of componentOptions) {
+      map.set(option.taskComponentOutputId, option.currentContentText ?? null)
+    }
+    if (taskComponentOutputId) {
+      map.set(taskComponentOutputId, currentContentText)
+    }
+    return map
+  }, [componentOptions, currentContentText, taskComponentOutputId])
 
   const loadVersions = useCallback(async () => {
-    if (!taskComponentOutputId) {
-      setVersions([])
-      return
-    }
     setIsLoading(true)
     try {
+      if (isChannelMode && taskId != null && channelId != null) {
+        const rows = await fetchTaskChannelComponentOutputVersions(taskId, channelId)
+        setVersions(rows)
+        return
+      }
+      if (!taskComponentOutputId) {
+        setVersions([])
+        return
+      }
       const rows = await fetchTaskComponentOutputVersions(taskComponentOutputId)
       setVersions(rows)
     } catch (error) {
@@ -94,7 +156,7 @@ export function ComponentOutputVersionHistoryDialog({
     } finally {
       setIsLoading(false)
     }
-  }, [taskComponentOutputId])
+  }, [channelId, isChannelMode, taskComponentOutputId, taskId])
 
   useEffect(() => {
     if (!open) return
@@ -105,7 +167,10 @@ export function ComponentOutputVersionHistoryDialog({
     if (!open) return
     const handleRefresh = (event: Event) => {
       const detail = (event as CustomEvent<ContentVersionHistoryRefreshDetail>).detail
-      if (
+      if (isChannelMode) {
+        if (detail?.taskId != null && taskId != null && detail.taskId !== taskId) return
+        if (detail?.channelId != null && channelId != null && detail.channelId !== channelId) return
+      } else if (
         detail?.taskComponentOutputId
         && taskComponentOutputId
         && detail.taskComponentOutputId !== taskComponentOutputId
@@ -116,24 +181,64 @@ export function ComponentOutputVersionHistoryDialog({
     }
     window.addEventListener(CONTENT_VERSION_HISTORY_REFRESH_EVENT, handleRefresh)
     return () => window.removeEventListener(CONTENT_VERSION_HISTORY_REFRESH_EVENT, handleRefresh)
-  }, [loadVersions, open, taskComponentOutputId])
+  }, [channelId, isChannelMode, loadVersions, open, taskComponentOutputId, taskId])
 
-  const previousByVersionNumber = useMemo(() => {
-    const sortedAsc = [...versions].sort((a, b) => a.version_number - b.version_number)
-    const map = new Map<number, TaskComponentOutputVersion | null>()
-    for (let index = 0; index < sortedAsc.length; index += 1) {
-      map.set(sortedAsc[index].version_number, sortedAsc[index - 1] ?? null)
+  const filterOptions = useMemo(() => {
+    const seen = new Set<string>()
+    const options: Array<{ value: string; label: string }> = [{ value: "all", label: "All components" }]
+    for (const option of componentOptions) {
+      const value = option.taskComponentId?.trim() || `output:${option.taskComponentOutputId}`
+      if (seen.has(value)) continue
+      seen.add(value)
+      options.push({ value, label: option.title || "Untitled component" })
+    }
+    // Include components that appear in history but are no longer in the active list.
+    for (const version of versions) {
+      const value = version.task_component_id?.trim() || `output:${version.task_component_output_id}`
+      if (seen.has(value)) continue
+      seen.add(value)
+      const label =
+        (version.task_component_id && componentTitleByTaskComponentId.get(version.task_component_id))
+        || componentTitleByOutputId.get(version.task_component_output_id)
+        || "Removed component"
+      options.push({ value, label })
+    }
+    return options
+  }, [componentOptions, componentTitleByOutputId, componentTitleByTaskComponentId, versions])
+
+  const filteredVersions = useMemo(() => {
+    if (!isChannelMode || filterTaskComponentId === "all") return versions
+    if (filterTaskComponentId.startsWith("output:")) {
+      const outputId = filterTaskComponentId.slice("output:".length)
+      return versions.filter((version) => version.task_component_output_id === outputId)
+    }
+    return versions.filter((version) => version.task_component_id === filterTaskComponentId)
+  }, [filterTaskComponentId, isChannelMode, versions])
+
+  const previousByOutputAndVersion = useMemo(() => {
+    const grouped = new Map<string, TaskComponentOutputVersion[]>()
+    for (const version of versions) {
+      const key = version.task_component_output_id
+      const list = grouped.get(key) ?? []
+      list.push(version)
+      grouped.set(key, list)
+    }
+    const map = new Map<string, TaskComponentOutputVersion | null>()
+    for (const [outputId, list] of grouped) {
+      const sortedAsc = [...list].sort((a, b) => a.version_number - b.version_number)
+      for (let index = 0; index < sortedAsc.length; index += 1) {
+        map.set(`${outputId}:${sortedAsc[index].version_number}`, sortedAsc[index - 1] ?? null)
+      }
     }
     return map
   }, [versions])
 
   const handleRestore = async (version: TaskComponentOutputVersion) => {
-    if (!taskComponentOutputId) return
-    setRestoringVersionNumber(version.version_number)
+    setRestoringVersionId(version.id)
     try {
-      await onBeforeRestore?.()
+      await onBeforeRestore?.(version)
       const restored = await rollbackTaskComponentOutputVersion({
-        taskComponentOutputId,
+        taskComponentOutputId: version.task_component_output_id,
         versionNumber: version.version_number,
       })
       onRestored?.(restored)
@@ -147,45 +252,81 @@ export function ComponentOutputVersionHistoryDialog({
         variant: "destructive",
       })
     } finally {
-      setRestoringVersionNumber(null)
+      setRestoringVersionId(null)
     }
   }
+
+  const dialogTitle = isChannelMode
+    ? `Version history${channelLabel ? ` · ${channelLabel}` : ""}`
+    : `Version history · ${componentTitle}`
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent className="max-h-[85vh] max-w-2xl overflow-hidden p-0">
         <DialogHeader className="px-6 pt-6 pb-2">
-          <DialogTitle>Version history · {componentTitle}</DialogTitle>
+          <DialogTitle>{dialogTitle}</DialogTitle>
         </DialogHeader>
+        {isChannelMode && filterOptions.length > 1 ? (
+          <div className="px-6 pb-2">
+            <label className="mb-1 block text-[11px] font-medium uppercase tracking-wide text-muted-foreground">
+              Component
+            </label>
+            <select
+              value={filterTaskComponentId}
+              onChange={(event) => setFilterTaskComponentId(event.target.value)}
+              className="h-8 w-full rounded-md border border-input bg-background px-2 text-sm"
+            >
+              {filterOptions.map((option) => (
+                <option key={option.value} value={option.value}>
+                  {option.label}
+                </option>
+              ))}
+            </select>
+          </div>
+        ) : null}
         <div className="max-h-[calc(85vh-5rem)] overflow-y-auto px-6 pb-6">
           {isLoading ? (
             <div className="flex items-center justify-center py-10">
               <Loader2 className="h-5 w-5 animate-spin text-muted-foreground" />
             </div>
-          ) : versions.length === 0 ? (
+          ) : filteredVersions.length === 0 ? (
             <div className="py-8 text-sm text-muted-foreground">No saved versions yet.</div>
           ) : (
             <div className="space-y-3">
-              {versions.map((version) => {
+              {filteredVersions.map((version) => {
                 const badge = resolveChangeSourceBadge(version.change_source)
-                const previous = previousByVersionNumber.get(version.version_number) ?? null
+                const previous =
+                  previousByOutputAndVersion.get(
+                    `${version.task_component_output_id}:${version.version_number}`,
+                  ) ?? null
                 const beforeText =
-                  previous?.content_text ??
-                  (version.version_number === versions[0]?.version_number ? currentContentText ?? "" : "")
+                  previous?.content_text
+                  ?? currentContentByOutputId.get(version.task_component_output_id)
+                  ?? ""
                 const afterText = version.content_text ?? ""
                 const diffLines = buildComponentPreviewDiff({
                   operation: "replace",
                   beforeText,
                   afterText,
                 })
-                const showDiff = expandedDiffVersionNumber === version.version_number
-                const showPreview = expandedPreviewVersionNumber === version.version_number
+                const showDiff = expandedDiffVersionId === version.id
+                const showPreview = expandedPreviewVersionId === version.id
+                const versionComponentTitle =
+                  (version.task_component_id
+                    && componentTitleByTaskComponentId.get(version.task_component_id))
+                  || componentTitleByOutputId.get(version.task_component_output_id)
+                  || componentTitle
 
                 return (
                   <div key={version.id} className="rounded-xl border border-border bg-card p-3 shadow-sm">
                     <div className="flex flex-wrap items-start justify-between gap-2">
                       <div className="min-w-0 space-y-1">
                         <div className="flex flex-wrap items-center gap-2">
+                          {isChannelMode && filterTaskComponentId === "all" ? (
+                            <span className="max-w-[14rem] truncate text-sm font-medium text-foreground">
+                              {versionComponentTitle}
+                            </span>
+                          ) : null}
                           <span className="text-sm font-medium">v{version.version_number}</span>
                           <Badge
                             variant="secondary"
@@ -215,11 +356,11 @@ export function ComponentOutputVersionHistoryDialog({
                           size="sm"
                           variant="outline"
                           onClick={() => {
-                            setExpandedPreviewVersionNumber((prev) =>
-                              prev === version.version_number ? null : version.version_number,
+                            setExpandedPreviewVersionId((prev) =>
+                              prev === version.id ? null : version.id,
                             )
-                            if (expandedDiffVersionNumber === version.version_number) {
-                              setExpandedDiffVersionNumber(null)
+                            if (expandedDiffVersionId === version.id) {
+                              setExpandedDiffVersionId(null)
                             }
                           }}
                         >
@@ -230,11 +371,11 @@ export function ComponentOutputVersionHistoryDialog({
                           size="sm"
                           variant="outline"
                           onClick={() => {
-                            setExpandedDiffVersionNumber((prev) =>
-                              prev === version.version_number ? null : version.version_number,
+                            setExpandedDiffVersionId((prev) =>
+                              prev === version.id ? null : version.id,
                             )
-                            if (expandedPreviewVersionNumber === version.version_number) {
-                              setExpandedPreviewVersionNumber(null)
+                            if (expandedPreviewVersionId === version.id) {
+                              setExpandedPreviewVersionId(null)
                             }
                           }}
                         >
@@ -245,10 +386,10 @@ export function ComponentOutputVersionHistoryDialog({
                           type="button"
                           size="sm"
                           variant="outline"
-                          disabled={restoringVersionNumber != null}
+                          disabled={restoringVersionId != null}
                           onClick={() => void handleRestore(version)}
                         >
-                          {restoringVersionNumber === version.version_number ? (
+                          {restoringVersionId === version.id ? (
                             <Loader2 className="h-3.5 w-3.5 animate-spin" />
                           ) : (
                             <>

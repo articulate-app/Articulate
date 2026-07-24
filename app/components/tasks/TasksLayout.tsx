@@ -4,7 +4,7 @@ import { ReactNode, useState, cloneElement, useEffect, useCallback, useRef, useM
 import { TaskDetails } from "./TaskDetails"
 import type { SuggestionDetailsModel } from "./SuggestionDetails"
 import { normalizeTask } from "./task-cache-utils"
-import { Menu, X, ChevronLeft, ChevronRight, Calendar, PanelLeft, PanelRight, Maximize2, Minimize2, ChevronDown, Search, LayoutGrid, List, Plus } from "lucide-react"
+import { Menu, X, ChevronRight, Calendar, PanelLeft, PanelRight, Maximize2, Minimize2, ChevronDown, Search, LayoutGrid, List, Plus } from "lucide-react"
 import { cn } from "@/lib/utils"
 import type { Task } from '../../lib/types/tasks'
 import React from "react"
@@ -21,6 +21,8 @@ import { useSearchParams, usePathname } from 'next/navigation'
 import { TaskList } from './TaskList'
 import { getTaskById } from '../../../lib/services/tasks';
 import { useQueryClient } from '@tanstack/react-query';
+import { trackGlobalObjectOpen } from '../../lib/services/global-search';
+import { bumpAndInvalidateHomeSidebarRecent } from '../../lib/home-sidebar-recents-cache';
 import { createClientComponentClient } from '@supabase/auth-helpers-nextjs';
 import { toast } from '../ui/use-toast';
 import { removeTaskFromAllStores } from './task-cache-utils';
@@ -85,19 +87,31 @@ import type { AiActiveFieldContext } from '../../../features/ai-chat/active-fiel
 import { ProjectSEOSettings } from '../../../features/tasks/components/ProjectSEOSettings';
 import { GlobalSearchFullResultsPane } from '../search/global-search-full-results-pane';
 import { GlobalSearchAllTabPane } from '../search/global-search-all-tab-pane';
-import { HomePaneGreeting } from '../search/home-pane-greeting';
 import { ActiveSearchChip } from "../search/active-search-chip";
 import { OBJECT_PANE_CHIP_ROW_CLASS } from "../search/object-pane-content";
 import { GlobalSearchDetailsPane } from '@/components/search/global-search-details-pane';
 import { TeamDetailsPage } from '@/components/teams/TeamDetailsPage';
 import { SettingsPanel } from '../settings/settings-panel';
-import { ThreadedRealtimeChat } from '../threaded-realtime-chat';
+import { CenterPaneThreadChat } from '../comments-section/center-pane-thread-chat';
 import { useGlobalSearchContext } from '../../contexts/global-search-context';
 import { useCurrentUserStore } from '../../store/current-user';
 import { leftPaneObjectLabel, resolveLeftPaneObject, type LeftPaneObject } from "../../lib/left-pane-object";
 import { buildSectionSwitchUrl, leftObjectToSectionKey } from "../../lib/section-switch-url";
-import { buildCenterPaneSelectionSearchParams, clearActiveCenterSelectionParams, getActiveCenterSelection } from "../../lib/center-pane-selection-url";
+import { buildCenterPaneSelectionSearchParams, buildCenterPaneTabSelectionSearchParams, clearActiveCenterSelectionParams, getActiveCenterSelection, KEYWORD_RESEARCH_CENTER_VIEW, KEYWORD_RESEARCH_QUERY_PARAM } from "../../lib/center-pane-selection-url";
+import { OPEN_KEYWORD_RESEARCH_EVENT, TOGGLE_AI_PANE_EVENT, TOGGLE_KEYWORD_RESEARCH_EVENT } from "../ui/sidebar-home-feed";
+import {
+  resolveActiveCenterPaneTab,
+  toPaneTabStripItems,
+} from "../../lib/center-pane-tabs";
+import {
+  buildCenterPaneTabKey,
+  KEYWORD_RESEARCH_TAB_ID,
+  useCenterPaneTabsStore,
+  type CenterPaneTab,
+} from "../../store/center-pane-tabs";
+import { CenterPaneTabBar } from "./center-pane-tab-bar";
 import { LeftObjectSwitcher } from "./LeftObjectSwitcher";
+import { useResolveCenterPaneTabTitles } from "../../hooks/use-resolve-center-pane-tab-titles";
 import { useElementWidth } from "../../hooks/use-element-width";
 import {
   getEffectiveSplitOrientation,
@@ -113,6 +127,7 @@ import {
 } from "./ai-pane-focus-mount-policy";
 import { getAiPaneFocusLayoutChrome } from "./ai-pane-focus-layout-chrome";
 import { buildNewAiThreadParams } from "../../lib/ai-thread-route";
+import { mergeWorkspaceUrlState } from "../../lib/workspace-url-state";
 
 // Transform editFields data to filter options format (exported for reuse in ProjectTasksTabContent)
 export function transformEditFieldsToFilterOptions(editFields: TaskEditFields, users: any[] = []): FilterOptions {
@@ -388,7 +403,9 @@ export function getActiveFilterBadges(
   params: URLSearchParams,
   filterOptions?: any,
   /** When true, do not show a badge for the project filter (e.g. when scoped to a project). */
-  excludeProjectBadge?: boolean
+  excludeProjectBadge?: boolean,
+  /** When true, do not show a badge for the assignee filter (e.g. when scoped to a user). */
+  excludeAssigneeBadge?: boolean
 ): { badges: Array<{ id: string; label: string; value: string; onRemove: () => void }>; onClearAll: () => void } {
   const badges: Array<{ id: string; label: string; value: string; onRemove: () => void }> = [];
   const updateUrl = (newFilters: TaskFiltersType) => {
@@ -482,6 +499,7 @@ export function getActiveFilterBadges(
   };
   Object.entries(filterLabels).forEach(([key, label]) => {
     if (excludeProjectBadge && key === 'project') return;
+    if (excludeAssigneeBadge && key === 'assignedTo') return;
     const arr = (filters as any)[key] as string[];
     if (Array.isArray(arr) && arr.length) {
       arr.forEach((val: string) => {
@@ -667,7 +685,6 @@ export function TasksLayout({
     if (leftObject === "projects") return "project" as const;
     if (leftObject === "mentions") return "mention" as const;
     if (leftObject === "users") return "user" as const;
-    if (leftObject === "teams") return "team" as const;
     return "ai_thread" as const;
   }, [leftObject]);
   const navigateToLeftObject = useCallback((targetObject: LeftPaneObject) => {
@@ -780,7 +797,9 @@ export function TasksLayout({
     const changed = applyTaskListDefaultGroupingMode(nextParams)
     if (!changed) return
     shallowReplaceSearchParams(effectivePathname, nextParams, "task-default-grouped-mode")
-  }, [effectiveObjectRoute, effectivePathname, params])
+    // Intentionally omit `params` from deps: seeding mutates the URL, and depending on `params`
+    // re-fired this effect against a half-updated Next searchParams snapshot.
+  }, [effectiveObjectRoute, effectivePathname])
   const isClosingDetailsRef = useRef(false);
   const resolvedStandaloneAiProjectId = useMemo(() => {
     const projectCandidates = [
@@ -2005,6 +2024,15 @@ export function TasksLayout({
       setSelectedTaskId(selectedId)
     }
 
+    if (entityType === "task") {
+      const title =
+        (typeof task?.title === "string" && task.title.trim()) ||
+        (typeof task?.name === "string" && task.name.trim()) ||
+        `Task ${selectedId}`
+      bumpAndInvalidateHomeSidebarRecent(queryClient, "tasks", { id: selectedId, title })
+      void trackGlobalObjectOpen({ entityType: "task", entityId: selectedId }).catch(() => {})
+    }
+
     // Seed details cache from clicked row data (fast first paint), then
     // task-details-bootstrap query will merge richer fields.
     const seededTask = normalizeBasicTask(task)
@@ -2073,6 +2101,28 @@ export function TasksLayout({
       shallowReplaceSearchParams(effectivePathname, newParams, "task-row-select")
     }
   }, [accessToken, globalSearch, params, pathname, queryClient, resolveSelectedRowKindAndId, router, selectedTaskId, setLastSelectedTask, setSelectedTaskId, setSelectedTaskSeed]);
+
+  /** Open a project as a new center-pane tab (replaces current selection; no stacked back chevron). */
+  const handleOpenProjectSelect = useCallback(
+    (projectId: number) => {
+      if (!Number.isFinite(projectId) || projectId <= 0) return
+      setSelectedTaskId(null)
+      setSelectedTaskSeed(null)
+      const baseParams =
+        typeof window !== "undefined"
+          ? new URLSearchParams(window.location.search)
+          : new URLSearchParams(params.toString())
+      const next = buildCenterPaneSelectionSearchParams({
+        currentSearchParams: baseParams,
+        entity: "project",
+        id: projectId,
+      })
+      if (next.toString() !== baseParams.toString()) {
+        shallowReplaceSearchParams(effectivePathname, next, "project-row-select")
+      }
+    },
+    [params, setSelectedTaskId, setSelectedTaskSeed],
+  )
 
   const handleGlobalSearchTaskResultOpen = useCallback(
     (item: GlobalSearchDocument) => {
@@ -2323,42 +2373,239 @@ export function TasksLayout({
     }
   }, [effectiveObjectRoute, params.toString(), effectivePathname, tasksShallowUrlEpoch])
 
-  // Handler for closing details pane
-  const handleCloseDetails = () => {
-    isClosingDetailsRef.current = true;
-    setSelectedTaskId(null);
-    setSelectedTaskSeed(null);
-    globalSearch?.closeDetailTarget()
-    const newParams = new URLSearchParams(params.toString());
-    newParams.delete('id');
-    newParams.delete('entity');
-    newParams.delete('rightTaskId');
-    newParams.delete('rightProjectId');
-    newParams.delete('rightUserId');
-    newParams.delete('rightTeamId');
-    newParams.delete('rightThreadId');
-    newParams.delete('rightMentionId');
-    newParams.delete('rightTab');
-    newParams.delete('centerTaskId');
-    newParams.delete('centerSuggestionId');
-    newParams.delete('centerProjectId');
-    newParams.delete('centerUserId');
-    newParams.delete('centerTeamId');
-    newParams.delete('centerThreadId');
-    newParams.delete('centerTab');
-    newParams.delete('itemKind');
-    newParams.delete('detailType');
-    newParams.delete('detailId');
-    newParams.delete('tab');
-    newParams.delete('briefingTypeId');
-    newParams.delete('stackTeamId');
-    if (newParams.get('rightView') === 'details') {
-      newParams.delete('rightView');
-    }
-    shallowReplaceSearchParams(effectivePathname, newParams, "task-close-details");
+  // Handler for closing details pane — with desktop tabs, closes the active tab only.
+  const centerPaneTabs = useCenterPaneTabsStore((state) => state.tabs)
+  const upsertCenterPaneTab = useCenterPaneTabsStore((state) => state.upsertTab)
+  const updateCenterPaneTabTitle = useCenterPaneTabsStore((state) => state.updateTitle)
+  const closeCenterPaneTab = useCenterPaneTabsStore((state) => state.closeTab)
+  const closeAllCenterPaneTabs = useCenterPaneTabsStore((state) => state.closeAll)
 
-    if (onCloseDetails) onCloseDetails();
-  };
+  const clearCenterPaneUrlSelection = useCallback(() => {
+    isClosingDetailsRef.current = true
+    setSelectedTaskId(null)
+    setSelectedTaskSeed(null)
+    globalSearch?.closeDetailTarget()
+    const newParams = new URLSearchParams(
+      typeof window !== "undefined" ? window.location.search : params.toString(),
+    )
+    newParams.delete("id")
+    newParams.delete("entity")
+    newParams.delete("rightTaskId")
+    newParams.delete("rightProjectId")
+    newParams.delete("rightUserId")
+    newParams.delete("rightTeamId")
+    newParams.delete("rightThreadId")
+    newParams.delete("rightMentionId")
+    newParams.delete("rightTab")
+    newParams.delete("centerTaskId")
+    newParams.delete("centerSuggestionId")
+    newParams.delete("centerProjectId")
+    newParams.delete("centerUserId")
+    newParams.delete("centerTeamId")
+    newParams.delete("centerThreadId")
+    newParams.delete("centerMentionId")
+    newParams.delete("centerTab")
+    newParams.delete("centerView")
+    newParams.delete(KEYWORD_RESEARCH_QUERY_PARAM)
+    newParams.delete("itemKind")
+    newParams.delete("detailType")
+    newParams.delete("detailId")
+    newParams.delete("tab")
+    newParams.delete("briefingTypeId")
+    newParams.delete("stackTeamId")
+    if (newParams.get("rightView") === "details") {
+      newParams.delete("rightView")
+    }
+    shallowReplaceSearchParams(effectivePathname, newParams, "task-close-details")
+    if (onCloseDetails) onCloseDetails()
+  }, [effectivePathname, globalSearch, onCloseDetails, params, setSelectedTaskId, setSelectedTaskSeed])
+
+  const activateCenterPaneTab = useCallback(
+    (tab: CenterPaneTab) => {
+      const baseParams =
+        typeof window !== "undefined"
+          ? new URLSearchParams(window.location.search)
+          : new URLSearchParams(params.toString())
+      const next = buildCenterPaneTabSelectionSearchParams({
+        currentSearchParams: baseParams,
+        kind: tab.kind,
+        id: tab.id,
+      })
+      if (tab.kind === "task" || tab.kind === "suggestion") {
+        setSelectedTaskId(tab.id)
+        setSelectedTaskSeed(null)
+        globalSearch?.closeDetailTarget()
+      } else {
+        setSelectedTaskId(null)
+        setSelectedTaskSeed(null)
+      }
+      shallowReplaceSearchParams(effectivePathname, next, "center-pane-tab-activate")
+    },
+    [effectivePathname, globalSearch, params, setSelectedTaskId, setSelectedTaskSeed],
+  )
+
+  const handleCloseDetails = () => {
+    if (isMobile) {
+      clearCenterPaneUrlSelection()
+      return
+    }
+
+    const stackTeamIdRaw =
+      typeof window !== "undefined"
+        ? new URLSearchParams(window.location.search).get("stackTeamId")
+        : params.get("stackTeamId")
+    const activeTab = resolveActiveCenterPaneTab({
+      selectedTaskId,
+      isSuggestion: isSuggestionSelected,
+      selectedTaskTitle:
+        (isSuggestionSelected
+          ? (selectedSuggestionAsTask as any)?.title
+          : (selectedTaskData as any)?.title) ?? null,
+      selectedDetailTarget: globalSearch?.selectedDetailTarget ?? null,
+      stackTeamId: stackTeamIdRaw,
+      centerView:
+        typeof window !== "undefined"
+          ? new URLSearchParams(window.location.search).get("centerView")
+          : params.get("centerView"),
+    })
+
+    if (!activeTab) {
+      clearCenterPaneUrlSelection()
+      return
+    }
+
+    const nextTab = closeCenterPaneTab(activeTab.key)
+    if (nextTab) {
+      activateCenterPaneTab(nextTab)
+      return
+    }
+    clearCenterPaneUrlSelection()
+  }
+
+  const handleCenterPaneTabSelect = useCallback(
+    (key: string) => {
+      const tab = useCenterPaneTabsStore.getState().tabs.find((entry) => entry.key === key)
+      if (!tab) return
+      activateCenterPaneTab(tab)
+    },
+    [activateCenterPaneTab],
+  )
+
+  const handleCenterPaneTabClose = useCallback(
+    (key: string) => {
+      const stackTeamIdRaw =
+        typeof window !== "undefined"
+          ? new URLSearchParams(window.location.search).get("stackTeamId")
+          : params.get("stackTeamId")
+      const activeTab = resolveActiveCenterPaneTab({
+        selectedTaskId,
+        isSuggestion: isSuggestionSelected,
+        selectedDetailTarget: globalSearch?.selectedDetailTarget ?? null,
+        stackTeamId: stackTeamIdRaw,
+        centerView:
+          typeof window !== "undefined"
+            ? new URLSearchParams(window.location.search).get("centerView")
+            : params.get("centerView"),
+      })
+      const nextTab = closeCenterPaneTab(key)
+      if (activeTab?.key === key) {
+        if (nextTab) activateCenterPaneTab(nextTab)
+        else clearCenterPaneUrlSelection()
+      }
+    },
+    [
+      activateCenterPaneTab,
+      clearCenterPaneUrlSelection,
+      closeCenterPaneTab,
+      globalSearch?.selectedDetailTarget,
+      isSuggestionSelected,
+      params,
+      selectedTaskId,
+    ],
+  )
+
+  const handleCenterPaneCloseAllTabs = useCallback(() => {
+    closeAllCenterPaneTabs()
+    clearCenterPaneUrlSelection()
+  }, [clearCenterPaneUrlSelection, closeAllCenterPaneTabs])
+
+  const handleCenterPaneResolvedTitle = useCallback(
+    (title: string) => {
+      const trimmed = title.trim()
+      if (!trimmed) return
+      const stackTeamIdRaw =
+        typeof window !== "undefined"
+          ? new URLSearchParams(window.location.search).get("stackTeamId")
+          : params.get("stackTeamId")
+      const activeTab = resolveActiveCenterPaneTab({
+        selectedTaskId,
+        isSuggestion: isSuggestionSelected,
+        selectedTaskTitle:
+          (isSuggestionSelected
+            ? (selectedSuggestionAsTask as any)?.title
+            : (selectedTaskData as any)?.title) ?? null,
+        selectedDetailTarget: globalSearch?.selectedDetailTarget ?? null,
+        stackTeamId: stackTeamIdRaw,
+        centerView:
+          typeof window !== "undefined"
+            ? new URLSearchParams(window.location.search).get("centerView")
+            : params.get("centerView"),
+      })
+      if (!activeTab) return
+      updateCenterPaneTabTitle(activeTab.key, trimmed)
+    },
+    [
+      globalSearch?.selectedDetailTarget,
+      isSuggestionSelected,
+      params,
+      selectedSuggestionAsTask,
+      selectedTaskData,
+      selectedTaskId,
+      updateCenterPaneTabTitle,
+    ],
+  )
+
+  // Desktop: keep open-tab set in sync with the active middle-pane entity (AI stays right-only).
+  useEffect(() => {
+    if (isMobile) return
+    const stackTeamIdRaw =
+      typeof window !== "undefined"
+        ? new URLSearchParams(window.location.search).get("stackTeamId")
+        : params.get("stackTeamId")
+    const activeTab = resolveActiveCenterPaneTab({
+      selectedTaskId,
+      isSuggestion: isSuggestionSelected,
+      selectedTaskTitle:
+        (isSuggestionSelected
+          ? (selectedSuggestionAsTask as any)?.title
+          : (selectedTaskData as any)?.title) ?? null,
+      selectedDetailTarget: globalSearch?.selectedDetailTarget ?? null,
+      stackTeamId: stackTeamIdRaw,
+      centerView:
+        typeof window !== "undefined"
+          ? new URLSearchParams(window.location.search).get("centerView")
+          : params.get("centerView"),
+    })
+    if (!activeTab) return
+    upsertCenterPaneTab({
+      kind: activeTab.kind,
+      id: activeTab.id,
+      title: activeTab.title,
+    })
+  }, [
+    globalSearch?.selectedDetailTarget,
+    isMobile,
+    isSuggestionSelected,
+    params,
+    selectedSuggestionAsTask,
+    selectedTaskData,
+    selectedTaskId,
+    tasksShallowUrlEpoch,
+    upsertCenterPaneTab,
+  ])
+
+  // Resolve placeholder labels for inactive tabs (detail pages only mount for the active tab).
+  useResolveCenterPaneTabTitles(!isMobile)
 
   const handleDuplicateTask = useCallback((initialValues: any, options?: { onSuccess?: (task: any) => void | Promise<void> }) => {
     setDuplicateInitialValues(initialValues);
@@ -2379,7 +2626,11 @@ export function TasksLayout({
 
   // Add local state for details panel collapsed state
   const [isDetailsCollapsed, setIsDetailsCollapsed] = useState(true);
-  const [isTaskAiPaneOpen, setIsTaskAiPaneOpen] = useState(params.get('taskAiOpen') === 'true')
+  const [isTaskAiPaneOpen, setIsTaskAiPaneOpen] = useState(() => {
+    const raw = params.get("taskAiOpen")
+    // Default open unless the user explicitly closed it.
+    return raw !== "false"
+  })
   const [searchOpenedAiThreadId, setSearchOpenedAiThreadId] = useState<string | null>(null)
   const forceNewAiThread = params.get("newAiThread") === "true"
   const [taskDetailsPanePercent, setTaskDetailsPanePercent] = useState(58)
@@ -2414,7 +2665,8 @@ export function TasksLayout({
     const nextLayout = new Set((newParams.get('layout') || 'left,middle').split(',').filter(Boolean))
     nextLayout.add('right')
     newParams.set('layout', Array.from(nextLayout).join(','))
-    newParams.delete('taskAiOpen')
+    // Persist explicit close so the default-open seed does not reopen the pane.
+    newParams.set('taskAiOpen', 'false')
     newParams.delete('aiFocus')
     newParams.delete('aiThreadId')
     newParams.delete('chatMode')
@@ -2443,6 +2695,123 @@ export function TasksLayout({
     setIsTaskAiPaneOpen(isOpen)
     updateTaskAiOpenInUrl(isOpen)
   }, [selectedTaskId, resolvedStandaloneAiProjectId, setAiPaneContextSafe, updateTaskAiOpenInUrl])
+
+  const liveCenterView =
+    typeof window !== "undefined"
+      ? new URLSearchParams(window.location.search).get("centerView")
+      : params.get("centerView")
+  // Shallow URL updates bump this epoch so centerView is re-read without a full navigation.
+  void tasksShallowUrlEpoch
+  const isKeywordResearchCenterOpen = liveCenterView === KEYWORD_RESEARCH_CENTER_VIEW
+
+  const openKeywordResearchCenterTab = useCallback(
+    (options?: { query?: string | null; forceOpen?: boolean }) => {
+      const query = typeof options?.query === "string" ? options.query.trim() : ""
+      const forceOpen = options?.forceOpen === true || query.length > 0
+      const baseParams =
+        typeof window !== "undefined"
+          ? new URLSearchParams(window.location.search)
+          : new URLSearchParams(params.toString())
+      if (
+        !forceOpen &&
+        baseParams.get("centerView") === KEYWORD_RESEARCH_CENTER_VIEW
+      ) {
+        handleCenterPaneTabClose(buildCenterPaneTabKey("keyword-research", KEYWORD_RESEARCH_TAB_ID))
+        return
+      }
+      const next = buildCenterPaneTabSelectionSearchParams({
+        currentSearchParams: baseParams,
+        kind: "keyword-research",
+        id: KEYWORD_RESEARCH_TAB_ID,
+        keywordQuery: query || null,
+      })
+      setSelectedTaskId(null)
+      setSelectedTaskSeed(null)
+      globalSearch?.closeDetailTarget()
+      upsertCenterPaneTab({
+        kind: "keyword-research",
+        id: KEYWORD_RESEARCH_TAB_ID,
+        title: "Keyword research",
+      })
+      shallowReplaceSearchParams(effectivePathname, next, "keyword-research-center-open")
+    },
+    [
+      effectivePathname,
+      globalSearch,
+      handleCenterPaneTabClose,
+      params,
+      setSelectedTaskId,
+      setSelectedTaskSeed,
+      upsertCenterPaneTab,
+    ],
+  )
+
+  // Sidebar Tools category → same handlers as the former header/toolbar buttons.
+  useEffect(() => {
+    const onToggleAi = () => {
+      handleTaskAiPaneOpenChange(!isTaskAiPaneOpen)
+    }
+    const onToggleKeyword = () => {
+      if (isMobile) {
+        setIsKeywordPlannerOpen((open) => !open)
+        return
+      }
+      openKeywordResearchCenterTab()
+    }
+    const onOpenKeyword = (event: Event) => {
+      const detail = (event as CustomEvent<{ query?: string | null }>).detail
+      const query = typeof detail?.query === "string" ? detail.query.trim() : ""
+      if (isMobile) {
+        setIsKeywordPlannerOpen(true)
+        if (query) {
+          const baseParams =
+            typeof window !== "undefined"
+              ? new URLSearchParams(window.location.search)
+              : new URLSearchParams(params.toString())
+          baseParams.set(KEYWORD_RESEARCH_QUERY_PARAM, query)
+          shallowReplaceSearchParams(effectivePathname, baseParams, "keyword-research-seed")
+        }
+        return
+      }
+      openKeywordResearchCenterTab({ query, forceOpen: true })
+    }
+    window.addEventListener(TOGGLE_AI_PANE_EVENT, onToggleAi)
+    window.addEventListener(TOGGLE_KEYWORD_RESEARCH_EVENT, onToggleKeyword)
+    window.addEventListener(OPEN_KEYWORD_RESEARCH_EVENT, onOpenKeyword)
+    return () => {
+      window.removeEventListener(TOGGLE_AI_PANE_EVENT, onToggleAi)
+      window.removeEventListener(TOGGLE_KEYWORD_RESEARCH_EVENT, onToggleKeyword)
+      window.removeEventListener(OPEN_KEYWORD_RESEARCH_EVENT, onOpenKeyword)
+    }
+  }, [
+    effectivePathname,
+    handleTaskAiPaneOpenChange,
+    isMobile,
+    isTaskAiPaneOpen,
+    openKeywordResearchCenterTab,
+    params,
+  ])
+
+  useEffect(() => {
+    window.dispatchEvent(
+      new CustomEvent("app:keyword-research-state", {
+        detail: { open: isMobile ? isKeywordPlannerOpen : isKeywordResearchCenterOpen },
+      }),
+    )
+  }, [isKeywordPlannerOpen, isKeywordResearchCenterOpen, isMobile, tasksShallowUrlEpoch])
+
+  // AI pane open by default unless the user explicitly closed it (`taskAiOpen=false`).
+  useEffect(() => {
+    const nextParams =
+      typeof window !== "undefined"
+        ? new URLSearchParams(window.location.search)
+        : new URLSearchParams(params.toString())
+    if (nextParams.get("taskAiOpen") === "false") return
+    if (nextParams.get("taskAiOpen") === "true" && nextParams.get("rightView") === "ai") return
+    const seeded = preserveTaskDetailsFocusWhenOpeningAi(nextParams)
+    shallowReplaceSearchParams(effectivePathname, seeded, "ai-pane-default-open")
+    setIsTaskAiPaneOpen(true)
+  }, [effectivePathname, params, shallowReplaceSearchParams])
 
   const handleConsumeForceNewAiThread = useCallback(() => {
     if (params.get("newAiThread") !== "true") return
@@ -2545,19 +2914,12 @@ export function TasksLayout({
         : new URLSearchParams(params.toString())
     const isAiFocus = isAiPaneFocusMode(sourceParams)
     const taskAiOpenRaw = sourceParams.get("taskAiOpen")
-    // Ignore transient missing search params during route transitions.
-    // We only toggle closed on an explicit `taskAiOpen=false` URL state.
-    if (taskAiOpenRaw === "true") {
-      setIsTaskAiPaneOpen(true)
-      return
-    }
+    // Explicit close only. Missing/true keeps the pane open (AI is default-on).
     if (taskAiOpenRaw === "false") {
       setIsTaskAiPaneOpen(isAiFocus)
       return
     }
-    if (isAiFocus) {
-      setIsTaskAiPaneOpen(true)
-    }
+    setIsTaskAiPaneOpen(true)
   }, [params])
 
   useEffect(() => {
@@ -2743,8 +3105,10 @@ export function TasksLayout({
       }
       // Omit clearing selection when ?id= is absent: shallow updates (e.g. AI pane only) keep prior task in URL or intentionally omit id without closing details.
 
-      setIsTaskAiPaneOpen(sp.get("taskAiOpen") === "true")
-      if (sp.get("taskAiOpen") !== "true") return
+      const taskAiOpenRaw = sp.get("taskAiOpen")
+      // Default open; only an explicit `false` closes the pane.
+      setIsTaskAiPaneOpen(taskAiOpenRaw !== "false")
+      if (taskAiOpenRaw === "false") return
       const selectedId = sp.get("id")
       if (selectedId && Number.isFinite(Number(selectedId))) {
         setAiPaneContextSafe({ scope: "task", taskId: Number(selectedId) })
@@ -3351,23 +3715,8 @@ export function TasksLayout({
                 onOpenTask={(taskId: number) => handleTaskSelect({ id: taskId })}
                 onOpenTaskKeepingDetail={handleOpenTaskKeepingDetailContext}
                 onOpenTeamKeepingDetail={handleOpenTeamKeepingDetailContext}
-                onOpenProject={(projectId: number) =>
-                  globalSearch?.openSearchResult({
-                    entity_type: "project",
-                    entity_id: String(projectId),
-                    title: "",
-                    subtitle: null,
-                    preview: null,
-                    created_at: null,
-                    score: null,
-                    url: null,
-                    project_id: projectId,
-                    task_id: null,
-                    thread_id: null,
-                    display_payload: null,
-                    raw: {},
-                  })
-                }
+                onOpenProject={handleOpenProjectSelect}
+                onResolvedTitle={handleCenterPaneResolvedTitle}
               />
             </div>
           ) : isLeftObjectTasks && mobileTaskDetailOpen && (isSuggestionDetailSelection ? !!selectedTaskId : !!selectedTaskData) ? (
@@ -3427,7 +3776,6 @@ export function TasksLayout({
                                view controls live in the top-right "..." options drawer. */}
                            {globalSearch ? (
                            <div className="px-4 py-3 bg-white">
-                             {leftObject === "all" ? <HomePaneGreeting className="mb-3" /> : null}
                              <GlobalSearchBox
                                searchValue={globalSearch.committedQuery}
                                onSearchChange={globalSearch.setDraftQuery}
@@ -3682,17 +4030,26 @@ export function TasksLayout({
       params.get("centerProjectId") ||
       params.get("centerUserId") ||
       params.get("centerTeamId") ||
-      params.get("centerThreadId"),
+      params.get("centerThreadId") ||
+      params.get("centerView") === KEYWORD_RESEARCH_CENTER_VIEW ||
+      (typeof window !== "undefined" &&
+        new URLSearchParams(window.location.search).get("centerView") === KEYWORD_RESEARCH_CENTER_VIEW),
   )
   const rightViewParamResolved = params.get("rightView")
   const taskAiOpenParamResolved = params.get("taskAiOpen")
   const showAiPanelFromUrl = rightViewParamResolved === "ai" && taskAiOpenParamResolved === "true"
-  const isSettingsOpen = params.get("settings") === "open"
+  // Shallow URL updates do not refresh Next's useSearchParams — read live location
+  // (same pattern as stackTeamId) so Preferences/Teams open without a full RSC navigation.
+  void tasksShallowUrlEpoch
+  const isSettingsOpen =
+    (typeof window !== "undefined"
+      ? new URLSearchParams(window.location.search).get("settings")
+      : params.get("settings")) === "open"
   const closeSettings = () => {
-    const next = new URLSearchParams(params.toString())
-    next.delete("settings")
-    const qs = next.toString()
-    router.push(qs ? `/?${qs}` : "/")
+    mergeWorkspaceUrlState(
+      { settings: null, settingsCategory: null },
+      { source: "settings-close", mode: "replace" },
+    )
   }
   const hasTaskSelectionInUrlParams = Boolean(
     params.get("id") || params.get("centerTaskId")
@@ -3704,10 +4061,11 @@ export function TasksLayout({
       !!selectedTaskId ||
       !!globalSearch?.selectedDetailTarget ||
       hasCenterPaneSelectionFromParams ||
-      hasTaskSelectionInUrlParams) &&
+      hasTaskSelectionInUrlParams ||
+      isKeywordResearchCenterOpen) &&
     !focusedPane;
+  // Thread details live in the middle pane; do not block the AI right pane when a thread is open.
   const showAiPanel =
-    !isThreadChatRequested &&
     (isTaskAiPaneOpen || showAiPanelFromUrl || isAiFocusModeEnabled) &&
     !focusedPane &&
     !isDetailsFocusModeEnabled;
@@ -3721,7 +4079,7 @@ export function TasksLayout({
   const renderPaneContent = (view: MainViewMode, pane: 'single' | 'top' | 'bottom' | 'right') => {
     const { badges, onClearAll } = getBadgeHelpers();
     const filterRow = (
-      <FilterBadges badges={badges} onClearAll={onClearAll} className="mt-1 mb-2 shrink-0 px-2" />
+      <FilterBadges badges={badges} onClearAll={onClearAll} className="mt-1 mb-2 shrink-0 px-4" />
     );
     const searchChipRow = (
       <ActiveSearchChip
@@ -3751,7 +4109,6 @@ export function TasksLayout({
           case "projects":
           case "mentions":
           case "users":
-          case "teams":
           case "ai_chats":
             return globalSearch ? (
               <GlobalSearchFullResultsPane
@@ -3980,6 +4337,39 @@ export function TasksLayout({
 
   const detailsPane = (
     <div className="flex h-full min-h-0 flex-col overflow-hidden">
+      {!isDetailsFocusModeEnabled && !isDetailsPaneExpandedMax ? (
+        <CenterPaneTabBar
+          tabs={toPaneTabStripItems(centerPaneTabs)}
+          activeKey={
+            resolveActiveCenterPaneTab({
+              selectedTaskId,
+              isSuggestion: isSuggestionSelected,
+              selectedTaskTitle:
+                (isSuggestionSelected
+                  ? (selectedSuggestionAsTask as any)?.title
+                  : (selectedTaskData as any)?.title) ?? null,
+              selectedDetailTarget: selectedDetailTarget ?? null,
+              stackTeamId: stackTeamIdRaw,
+              centerView:
+                typeof window !== "undefined"
+                  ? new URLSearchParams(window.location.search).get("centerView")
+                  : params.get("centerView"),
+            })?.key ?? null
+          }
+          onSelect={handleCenterPaneTabSelect}
+          onClose={handleCenterPaneTabClose}
+          onCloseAll={handleCenterPaneCloseAllTabs}
+          searchValue={globalSearch?.committedQuery ?? ""}
+          onSearchChange={globalSearch?.setDraftQuery}
+          onSearchCommit={(value) => globalSearch?.commitSearch({ nextQuery: value })}
+          onClearSearch={globalSearch?.clearSearch}
+          selectedTypeFilters={globalSearch?.pendingSelectedTypes ?? []}
+          onToggleTypeFilter={globalSearch?.togglePendingTypeFilter}
+          onPreviewResultSelect={globalSearch?.openSearchResult}
+          onShowAll={globalSearch?.handleShowAll}
+        />
+      ) : null}
+      <div className="min-h-0 flex-1 overflow-hidden">
       {(() => {
         console.log("middle pane params", {
           rightView: rightViewParam,
@@ -3993,41 +4383,32 @@ export function TasksLayout({
         return null
       })()}
       {isThreadChatRequested && publicUserId && rightThreadIdNum ? (
-        <div className="flex h-full min-h-0 flex-col">
-          <div className="flex items-center border-b border-gray-200 px-3 py-2">
-            <button
-              type="button"
-              className="inline-flex h-7 w-7 items-center justify-center rounded hover:bg-gray-100"
-              aria-label="Back to comments list"
-              title="Back to comments list"
-              onClick={() => {
-                const next = new URLSearchParams(params.toString())
-                next.delete("rightThreadId")
-                next.delete("rightMentionId")
-                if (!next.get("rightView")) next.set("rightView", "details")
-                shallowReplaceSearchParams(effectivePathname, next, "task-thread-back")
-              }}
-            >
-              <ChevronLeft className="h-4 w-4 text-gray-600" />
-            </button>
-            <span className="ml-2 text-sm font-medium text-gray-800">Thread</span>
-          </div>
-          {(() => {
-            console.log("render ThreadChat", rightThreadIdNum, rightMentionIdNum)
-            return null
-          })()}
-          <div className="min-h-0 flex-1">
-            <ThreadedRealtimeChat
-              key={`${rightThreadIdNum}-${rightMentionIdParam ?? ""}`}
-              threadId={rightThreadIdNum}
-              currentUserId={publicUserId}
-              currentUserName={fullName || undefined}
-              currentUserAvatar={userMetadata?.avatar_url || undefined}
-              currentUserEmail={userMetadata?.email || ""}
-              currentPublicUserId={publicUserId}
-              focusedMentionId={Number.isFinite(rightMentionIdNum) ? rightMentionIdNum : null}
-            />
-          </div>
+        <CenterPaneThreadChat
+          key={`${rightThreadIdNum}-${rightMentionIdParam ?? ""}`}
+          threadId={rightThreadIdNum}
+          focusedMentionId={Number.isFinite(rightMentionIdNum) ? rightMentionIdNum : null}
+          onThreadCreated={(nextThreadId) => {
+            const next = new URLSearchParams(params.toString())
+            // Prefer center-pane thread selection so AI can keep the right column.
+            next.set("centerThreadId", String(nextThreadId))
+            next.delete("centerMentionId")
+            next.delete("rightThreadId")
+            next.delete("rightMentionId")
+            if (!next.get("rightView")) next.set("rightView", "details")
+            shallowReplaceSearchParams(effectivePathname, next, "task-thread-created")
+          }}
+        />
+      ) : isKeywordResearchCenterOpen ? (
+        <div className="h-full min-h-0 overflow-hidden">
+          <KeywordPlannerPane
+            isOpen
+            variant="inline"
+            onClose={() =>
+              handleCenterPaneTabClose(
+                buildCenterPaneTabKey("keyword-research", KEYWORD_RESEARCH_TAB_ID),
+              )
+            }
+          />
         </div>
       ) : selectedDetailTarget && selectedTaskId ? (
         // Stacked navigation: a task was opened on top of an existing detail target (e.g. a user
@@ -4090,6 +4471,7 @@ export function TasksLayout({
             onClose={handleCloseDetails}
             isDetailsFocused={isDetailsFocusModeEnabled}
             onFocusToggle={handleExpandDetailsPane}
+            onResolvedTitle={handleCenterPaneResolvedTitle}
           />
         </div>
       ) : selectedDetailTarget && !selectedTaskId ? (
@@ -4102,23 +4484,8 @@ export function TasksLayout({
             onOpenTask={(taskId: number) => handleTaskSelect({ id: taskId })}
             onOpenTaskKeepingDetail={handleOpenTaskKeepingDetailContext}
             onOpenTeamKeepingDetail={handleOpenTeamKeepingDetailContext}
-            onOpenProject={(projectId: number) =>
-              globalSearch?.openSearchResult({
-                entity_type: "project",
-                entity_id: String(projectId),
-                title: "",
-                subtitle: null,
-                preview: null,
-                created_at: null,
-                score: null,
-                url: null,
-                project_id: projectId,
-                task_id: null,
-                thread_id: null,
-                display_payload: null,
-                raw: {},
-              })
-            }
+            onOpenProject={handleOpenProjectSelect}
+            onResolvedTitle={handleCenterPaneResolvedTitle}
           />
         </div>
       ) : (
@@ -4160,10 +4527,10 @@ export function TasksLayout({
             isBootstrapLoaded={isBootstrapLoadedForSelectedTask}
             onActiveFieldContextChange={setActiveFieldContext}
             onAiPaneOpenChange={handleTaskAiPaneOpenChange}
-            onDetailStackBack={taskDetailStackBack}
           />
         </div>
       )}
+      </div>
     </div>
   )
 
@@ -4329,7 +4696,7 @@ export function TasksLayout({
               })()
             )}
           >
-            <div className="flex items-center flex-nowrap min-h-[56px] w-full relative border-b border-gray-200">
+            <div className="flex items-center flex-nowrap min-h-[56px] w-full relative border-b border-gray-200 pl-4">
               {/* Left side: horizontally scrollable pills. Keeping this separate prevents the right controls from overlapping pills. */}
               <div
                 ref={leftToolbarScrollRef}
@@ -4340,7 +4707,6 @@ export function TasksLayout({
                   <LeftObjectSwitcher
                     value={leftObject}
                     onChange={navigateToLeftObject}
-                    className="ml-2"
                     containerWidth={leftToolbarWidth}
                     isTaskView={isLeftObjectTasks}
                   />
@@ -4482,7 +4848,7 @@ export function TasksLayout({
                 <FilterBadges
                   badges={badges}
                   onClearAll={onClearAll}
-                  className="mt-1 mb-2 px-2 shrink-0"
+                  className="mt-1 mb-2 shrink-0 px-4"
                 />
               );
             })() : null}
@@ -5003,6 +5369,7 @@ export function TasksLayout({
           </div>
         </div>
       )}
+
     </div>
   );
-} 
+}

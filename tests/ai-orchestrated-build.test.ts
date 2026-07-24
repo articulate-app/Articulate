@@ -36,6 +36,21 @@ describe("orchestrated build discovery", () => {
     })).toBe(true)
   })
 
+  it("treats ai_start_artifact_build as a dispatch preview (not a change card)", () => {
+    expect(isOrchestratedBuildChangePreview({
+      entity_type: "ai_orchestrated_build",
+      entity_id: BUILD_ID,
+      tool_name: "ai_start_artifact_build",
+    })).toBe(true)
+    const discovered = discoverOrchestratedBuildFromChangePreview({
+      entity_type: "ai_orchestrated_build",
+      entity_id: BUILD_ID,
+      tool_name: "ai_start_artifact_build",
+      title: "Artifact build",
+    })
+    expect(discovered?.buildId).toBe(BUILD_ID)
+  })
+
   it("discovers builds from tool_results without chat text parsing", () => {
     const builds = discoverOrchestratedBuildsFromMessageContentJson({
       tool_results: [

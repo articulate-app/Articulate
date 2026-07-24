@@ -3,6 +3,7 @@
 import React, { useState, useEffect, useCallback, useMemo, useRef } from "react"
 import { useSearchParams, usePathname, useRouter } from "next/navigation"
 import { useQuery, useQueryClient } from "@tanstack/react-query"
+import { bumpAndInvalidateHomeSidebarRecent } from "../../../app/lib/home-sidebar-recents-cache"
 import { cn } from "../../../app/lib/utils"
 import { Textarea } from "../../../app/components/ui/textarea"
 import { createClientComponentClient } from "@supabase/auth-helpers-nextjs"
@@ -42,6 +43,7 @@ import {
   type AiActiveFieldContext,
 } from "../../ai-chat/active-field-context"
 import { useComponentEditStreamStore, componentEditStreamKey } from "../../../app/store/component-edit-stream"
+import { useAiBuildComponentPreviewStore } from "../../../app/store/ai-build-component-preview-store"
 import { streamTextToPreviewBlocks, buildEditStreamOptimisticOutputBlocks, buildEditStreamMergedPlainText, isLiveComponentEditStream } from "../../ai-chat/component-edit-stream-utils"
 import {
   buildStreamingPreviewBlocks,
@@ -3278,6 +3280,8 @@ function SortableComponentItem({
   autoExpandTaskComponentIds,
   autoExpandOnlyAfterMountRef,
   onAutoExpandConsumed,
+  expandedTaskComponentIds,
+  onExpandedTaskComponentChange,
   onDuplicateComponent,
   componentKey,
   onApplyToProjectTemplate,
@@ -3392,6 +3396,9 @@ function SortableComponentItem({
   autoExpandOnlyAfterMountRef?: React.MutableRefObject<boolean>
   /** Called once after a newly added component auto-expands, so the parent can clear the pending auto-expand flag and let the user collapse it freely. */
   onAutoExpandConsumed?: (taskComponentId: string) => void
+  /** Parent-owned expanded set keyed by stable task_component_id (survives AI refetch). */
+  expandedTaskComponentIds?: Set<string>
+  onExpandedTaskComponentChange?: (taskComponentId: string, expanded: boolean) => void
   /** Duplicate this component (same task+channel, copied title/instructions, empty output, no AI). */
   onDuplicateComponent?: (component: TaskChannelComponent) => void
   componentKey?: string
@@ -3418,7 +3425,27 @@ function SortableComponentItem({
   /** Derive component_key from selected-row (tc_components has no component_key). */
   getComponentKeyForSelectedRow?: (row: TaskChannelComponent) => string
 }) {
-  const [isExpanded, setIsExpanded] = useState(false) // Collapsed by default
+  const queryClient = useQueryClient()
+  const taskComponentIdForExpand = component.task_component_id?.trim() || null
+  const isExpandedControlled =
+    Boolean(taskComponentIdForExpand)
+    && expandedTaskComponentIds != null
+    && onExpandedTaskComponentChange != null
+  const [localExpanded, setLocalExpanded] = useState(false) // Collapsed by default
+  const isExpanded = isExpandedControlled
+    ? expandedTaskComponentIds!.has(taskComponentIdForExpand!)
+    : localExpanded
+  const setIsExpanded = useCallback(
+    (next: boolean | ((prev: boolean) => boolean)) => {
+      const resolved = typeof next === "function" ? next(isExpanded) : next
+      if (isExpandedControlled && taskComponentIdForExpand) {
+        onExpandedTaskComponentChange!(taskComponentIdForExpand, resolved)
+        return
+      }
+      setLocalExpanded(resolved)
+    },
+    [isExpanded, isExpandedControlled, onExpandedTaskComponentChange, taskComponentIdForExpand],
+  )
   const [menuOpen, setMenuOpen] = useState(false)
   const [isHovered, setIsHovered] = useState(false)
   // Stable unique sortable id: task_component_id (UUID) first, then component_key, then fallback (no index-derived ids)
@@ -3526,7 +3553,6 @@ function SortableComponentItem({
   useEffect(() => {
     setIsInstructionsExpanded(!hasOutputContent)
   }, [component.task_component_id, hasOutputContent])
-  const savedAtLabel = output?.updated_at ? formatCompactRelativeTime(output.updated_at) : null
   const applyToProjectTemplateRef = useRef(false)
   useEffect(() => {
     if (!isOutputCommentComposerOpen) return
@@ -4363,6 +4389,12 @@ function SortableComponentItem({
       console.error("[saveOutputBlocks] RPC error", error)
       throw error
     }
+    if (taskId) {
+      bumpAndInvalidateHomeSidebarRecent(queryClient, "tasks", {
+        id: String(taskId),
+        title: taskTitle?.trim() || `Task ${taskId}`,
+      })
+    }
     onPatchOutput?.({
       task_component_output_id: outputId,
       resolved_content_json: blocks,
@@ -4371,7 +4403,7 @@ function SortableComponentItem({
     })
     if (!options?.skipRefresh) onRequestOutputRefresh?.()
     return data
-  }, [supabase, onPatchOutput, onRequestOutputRefresh, taskId, channelId, component])
+  }, [supabase, onPatchOutput, onRequestOutputRefresh, taskId, taskTitle, channelId, component, queryClient])
   const debouncedPersistCanonicalBlocks = useMemo(
     () => debounce((nextBlocks: OutputContentBlock[]) => {
       void saveOutputBlocks(output?.task_component_output_id ?? null, nextBlocks, {
@@ -5112,33 +5144,6 @@ function SortableComponentItem({
       </DropdownMenuContent>
     </DropdownMenu>
   )
-  const savedAtHeaderSlot = isOutputSaving ? (
-    <span className="shrink-0 self-center inline-flex items-center gap-1.5 text-[11px] text-muted-foreground/70">
-      <Loader2 className="h-3 w-3 animate-spin" />
-      Saving…
-    </span>
-  ) : savedAtLabel ? (
-    <button
-      type="button"
-      onClick={(event) => {
-        event.stopPropagation()
-        onOpenVersionHistory?.()
-      }}
-      onPointerDown={(event) => event.stopPropagation()}
-      disabled={!output?.task_component_output_id || !onOpenVersionHistory}
-      data-no-dnd
-      className="shrink-0 self-center rounded px-1 text-[11px] tabular-nums text-muted-foreground/70 transition-colors hover:text-muted-foreground disabled:cursor-default disabled:opacity-60"
-      title={
-        output?.updated_at
-          ? `${new Date(output.updated_at).toLocaleString()} · Version history`
-          : 'Version history'
-      }
-      aria-label="Open version history"
-    >
-      {savedAtLabel}
-    </button>
-  ) : null
-
   const renderPendingOutputMediaPlaceholders = useCallback((insertIndex: number) => {
     if (!pendingOutputMediaInsert || pendingOutputMediaInsert.insertIndex !== insertIndex) return null
     return Array.from({ length: pendingOutputMediaInsert.count }).map((_, idx) => (
@@ -5640,7 +5645,6 @@ function SortableComponentItem({
           ? collapsedHeaderLoadingSlot
           : (
             <>
-              {savedAtHeaderSlot}
               {excludeActionSlot}
               {selectedMenuSlot}
               {selectionActionSlot}
@@ -6704,6 +6708,7 @@ export function TaskContentTab({
   )
   const consumeFocusRequest = useComponentEditStreamStore((state) => state.consumeFocusRequest)
   const editStreamEntries = useComponentEditStreamStore((state) => state.streams)
+  const buildPreviewEntries = useAiBuildComponentPreviewStore((state) => state.previews)
   const [streamHighlightComponentId, setStreamHighlightComponentId] = useState<string | null>(null)
   const pathname = usePathname()
   const router = useRouter()
@@ -6726,6 +6731,19 @@ export function TaskContentTab({
           )
         : [],
     [editStreamEntries, taskId, selectedChannelId],
+  )
+  const buildPreviewsForChannel = useMemo(
+    () =>
+      selectedChannelId != null
+        ? Object.values(buildPreviewEntries).filter(
+            (row) =>
+              row.phase === "preview"
+              && row.taskId === taskId
+              && row.channelId === selectedChannelId
+              && row.contentText.trim().length > 0,
+          )
+        : [],
+    [buildPreviewEntries, taskId, selectedChannelId],
   )
   const [selectedBriefingTypeId, setSelectedBriefingTypeId] = useState<number | null>(null)
   const [effectiveDefaultBriefingTypeId, setEffectiveDefaultBriefingTypeId] = useState<number | null>(null)
@@ -6761,11 +6779,8 @@ export function TaskContentTab({
   // When set, a confirmation modal asks the user before regenerating AI content for this channel.
   const [confirmGenerateWithAi, setConfirmGenerateWithAi] = useState<{ channelId: number } | null>(null)
   const [isGeneratingWithAi, setIsGeneratingWithAi] = useState(false)
-  const [componentVersionHistoryTarget, setComponentVersionHistoryTarget] = useState<{
-    taskComponentOutputId: string
-    componentTitle: string
-    currentContentText: string | null
-  } | null>(null)
+  const [isComponentVersionHistoryOpen, setIsComponentVersionHistoryOpen] = useState(false)
+  const [componentVersionHistoryFilterId, setComponentVersionHistoryFilterId] = useState<string | null>(null)
   const [isChannelContentHistoryOpen, setIsChannelContentHistoryOpen] = useState(false)
   const [components, setComponents] = useState<TaskChannelComponent[]>([]) // Active components (top area)
   const componentsRef = useRef<TaskChannelComponent[]>([])
@@ -6853,7 +6868,7 @@ export function TaskContentTab({
   const [addComponentHighlightedIndex, setAddComponentHighlightedIndex] = useState(0)
   const [isCreatingDropdownComponent, setIsCreatingDropdownComponent] = useState(false)
   const [isBulkAddingDropdownComponents, setIsBulkAddingDropdownComponents] = useState(false)
-  const [expandedComponentKey, setExpandedComponentKey] = useState<string | null>(null)
+  const [expandedTaskComponentIds, setExpandedTaskComponentIds] = useState<Set<string>>(() => new Set())
   const [confirmRemoveFromTemplate, setConfirmRemoveFromTemplate] = useState<{
     componentBriefingId: number
     scope: ComponentScope
@@ -6891,6 +6906,7 @@ export function TaskContentTab({
   useEffect(() => {
     dirtyOutputKeysRef.current.clear()
     pendingSaveOutputKeysRef.current.clear()
+    setExpandedTaskComponentIds(new Set())
     setSelectedChannelKeyword(null)
   }, [taskId, selectedChannelId])
   const materializeVirtualMainOnFirstSaveRef = useRef(false)
@@ -7043,6 +7059,24 @@ export function TaskContentTab({
     setAutoExpandTaskComponentIds((prev) => {
       const next = new Set(prev)
       next.add(taskComponentId)
+      return next
+    })
+    // Persist expansion by stable task_component_id so AI refetch/stream does not collapse the card.
+    setExpandedTaskComponentIds((prev) => {
+      if (prev.has(taskComponentId)) return prev
+      const next = new Set(prev)
+      next.add(taskComponentId)
+      return next
+    })
+  }, [])
+
+  const handleExpandedTaskComponentChange = useCallback((taskComponentId: string, expanded: boolean) => {
+    setExpandedTaskComponentIds((prev) => {
+      const has = prev.has(taskComponentId)
+      if (expanded === has) return prev
+      const next = new Set(prev)
+      if (expanded) next.add(taskComponentId)
+      else next.delete(taskComponentId)
       return next
     })
   }, [])
@@ -8148,6 +8182,11 @@ export function TaskContentTab({
       for (const row of planRows) next.add(row.task_component_id)
       return next
     })
+    setExpandedTaskComponentIds((prev) => {
+      const next = new Set(prev)
+      for (const row of planRows) next.add(row.task_component_id)
+      return next
+    })
   }, [])
 
   const enqueueGenerationJobs = useCallback(
@@ -8505,6 +8544,26 @@ export function TaskContentTab({
       })
     }
 
+    // Live orchestrated-build preview — overlay only; never write into canonical cache.
+    const buildPreview = taskComponentId
+      ? buildPreviewsForChannel.find((row) => row.componentId === taskComponentId)
+      : undefined
+    if (buildPreview) {
+      const persisted = getOutputForComponent(componentOutputs, component)
+      const previewText = buildPreview.contentText
+      const streamBlocks =
+        Array.isArray(buildPreview.contentJson) && buildPreview.contentJson.length > 0
+          ? (buildPreview.contentJson as OutputContentBlock[])
+          : buildStreamingPreviewBlocks(previewText)
+      return buildOutputRecord(persisted, {
+        content: streamBlocks,
+        content_json: streamBlocks,
+        resolved_content_json: streamBlocks,
+        content_text: previewText,
+        updated_at: buildPreview.updatedAt,
+      })
+    }
+
     const streamedGeneration = taskComponentId
       ? inFlightComponentGenerations.get(taskComponentId)
       : undefined
@@ -8543,7 +8602,7 @@ export function TaskContentTab({
       }
     }
     return getOutputForComponent(componentOutputs, component)
-  }, [componentOutputs, editStreamsForChannel, inFlightComponentGenerations])
+  }, [componentOutputs, editStreamsForChannel, buildPreviewsForChannel, inFlightComponentGenerations])
 
   const setActiveExportComponentId = useCallback((taskComponentId: string | null) => {
     activeOutputTaskComponentIdRef.current = taskComponentId
@@ -10396,18 +10455,45 @@ export function TaskContentTab({
     void runGenerateWithAi(selectedChannelId)
   }, [selectedChannelId, composedOutputCount, runGenerateWithAi])
 
+  const openChannelComponentVersionHistory = useCallback((filterTaskComponentId?: string | null) => {
+    setComponentVersionHistoryFilterId(filterTaskComponentId?.trim() || null)
+    setIsComponentVersionHistoryOpen(true)
+  }, [])
+
   const handleOpenComponentVersionHistory = useCallback(
-    (component: TaskChannelComponent, outputRow: TaskComponentOutput | null) => {
-      const outputId = outputRow?.task_component_output_id
-      if (!outputId) return
-      setComponentVersionHistoryTarget({
-        taskComponentOutputId: outputId,
-        componentTitle: getComponentOutputDisplayTitle(component),
-        currentContentText: outputRow?.content_text ?? null,
-      })
+    (component: TaskChannelComponent, _outputRow: TaskComponentOutput | null) => {
+      openChannelComponentVersionHistory(component.task_component_id ?? null)
     },
-    [],
+    [openChannelComponentVersionHistory],
   )
+
+  const versionHistoryComponentOptions = useMemo(() => {
+    return focusedSelectedComponents
+      .map((component) => {
+        const output = getOutputForComponent(componentOutputs, component)
+        const outputId = output?.task_component_output_id
+        if (!outputId) return null
+        return {
+          taskComponentId: component.task_component_id ?? null,
+          taskComponentOutputId: outputId,
+          title: getComponentOutputDisplayTitle(component),
+          currentContentText: output?.content_text ?? null,
+        }
+      })
+      .filter((row): row is NonNullable<typeof row> => row != null)
+  }, [componentOutputs, focusedSelectedComponents])
+
+  const isAnyOutputSaving = useMemo(() => {
+    for (const saving of isSavingOutput.values()) {
+      if (saving) return true
+    }
+    return false
+  }, [isSavingOutput])
+
+  const channelLastSavedLabel = useMemo(() => {
+    if (!focusedWorkspaceLatestUpdatedAt) return null
+    return formatCompactRelativeTime(focusedWorkspaceLatestUpdatedAt)
+  }, [focusedWorkspaceLatestUpdatedAt])
 
   const handleComponentVersionRestored = useCallback(
     (restored: RolledBackTaskComponentOutput) => {
@@ -12403,6 +12489,11 @@ export function TaskContentTab({
       })
 
       if (error) throw error
+
+      bumpAndInvalidateHomeSidebarRecent(queryClient, "tasks", {
+        id: String(taskId),
+        title: taskTitle?.trim() || `Task ${taskId}`,
+      })
 
       await refreshComponents()
 
@@ -15964,14 +16055,57 @@ ${componentList}`
                       ) : null}
                     </div>
                     <div className="mt-2 flex items-center justify-between gap-3 px-2 text-xs text-gray-500">
-                      <span>
-                        Last saved at: {focusedWorkspaceLatestUpdatedAt ? new Date(focusedWorkspaceLatestUpdatedAt).toLocaleString() : "No updates yet"}
-                      </span>
+                      {isAnyOutputSaving ? (
+                        <span className="inline-flex items-center gap-1.5">
+                          <Loader2 className="h-3 w-3 animate-spin" />
+                          Saving…
+                        </span>
+                      ) : channelLastSavedLabel ? (
+                        <button
+                          type="button"
+                          onClick={() => openChannelComponentVersionHistory(null)}
+                          className="rounded px-0.5 tabular-nums transition-colors hover:text-gray-700"
+                          title={
+                            focusedWorkspaceLatestUpdatedAt
+                              ? `${new Date(focusedWorkspaceLatestUpdatedAt).toLocaleString()} · Version history`
+                              : "Version history"
+                          }
+                        >
+                          Last saved {channelLastSavedLabel}
+                        </button>
+                      ) : (
+                        <span>No updates yet</span>
+                      )}
                       <span>Words: {focusedWorkspaceWordCount.toLocaleString()}</span>
                     </div>
                   </div>
                 </div>
               ) : (
+                <>
+                <div className="mb-2 flex items-center justify-between gap-2 px-0.5">
+                  {isAnyOutputSaving ? (
+                    <span className="inline-flex items-center gap-1.5 text-[11px] text-muted-foreground">
+                      <Loader2 className="h-3 w-3 animate-spin" />
+                      Saving…
+                    </span>
+                  ) : channelLastSavedLabel ? (
+                    <button
+                      type="button"
+                      onClick={() => openChannelComponentVersionHistory(null)}
+                      className="rounded px-0.5 text-[11px] tabular-nums text-muted-foreground transition-colors hover:text-foreground"
+                      title={
+                        focusedWorkspaceLatestUpdatedAt
+                          ? `${new Date(focusedWorkspaceLatestUpdatedAt).toLocaleString()} · Version history`
+                          : "Version history"
+                      }
+                      aria-label="Open channel version history"
+                    >
+                      Last saved {channelLastSavedLabel}
+                    </button>
+                  ) : (
+                    <span className="text-[11px] text-muted-foreground">No saves yet</span>
+                  )}
+                </div>
                 <DndContext
                   sensors={sensors}
                   collisionDetection={closestCenter}
@@ -16236,6 +16370,8 @@ ${componentList}`
                         autoExpandTaskComponentIds={autoExpandTaskComponentIds}
                         autoExpandOnlyAfterMountRef={didMountRef}
                         onAutoExpandConsumed={handleAutoExpandConsumed}
+                        expandedTaskComponentIds={expandedTaskComponentIds}
+                        onExpandedTaskComponentChange={handleExpandedTaskComponentChange}
                         onDuplicateComponent={handleDuplicateComponent}
                         componentKey={(getComponentKeyForSelectedRow(component) || component.component_key) ?? ''}
                         availableByKeyForTemplate={availableByKey}
@@ -16294,6 +16430,7 @@ ${componentList}`
                   </div>
                   </SortableContext>
                 </DndContext>
+                </>
               )}
             </div>
           )}
@@ -16516,20 +16653,29 @@ ${componentList}`
       ) : null}
 
       <ComponentOutputVersionHistoryDialog
-        open={componentVersionHistoryTarget != null}
+        open={isComponentVersionHistoryOpen}
         onOpenChange={(open) => {
-          if (!open) setComponentVersionHistoryTarget(null)
+          setIsComponentVersionHistoryOpen(open)
+          if (!open) setComponentVersionHistoryFilterId(null)
         }}
-        taskComponentOutputId={componentVersionHistoryTarget?.taskComponentOutputId ?? null}
-        componentTitle={componentVersionHistoryTarget?.componentTitle ?? "Component output"}
-        currentContentText={componentVersionHistoryTarget?.currentContentText ?? null}
-        onBeforeRestore={async () => {
-          if (!selectedChannelId || !componentVersionHistoryTarget) return
+        taskId={taskId}
+        channelId={selectedChannelId}
+        channelLabel={channels.find((channel) => channel.channel_id === selectedChannelId)?.name}
+        componentOptions={versionHistoryComponentOptions}
+        initialFilterTaskComponentId={componentVersionHistoryFilterId}
+        onBeforeRestore={async (version) => {
+          if (!selectedChannelId) return
+          const title =
+            versionHistoryComponentOptions.find(
+              (option) =>
+                option.taskComponentId === version.task_component_id
+                || option.taskComponentOutputId === version.task_component_output_id,
+            )?.title ?? "component"
           await ensureTaskChannelSnapshotOnce({
             taskId,
             channelId: selectedChannelId,
             changeSource: "manual_before_edit",
-            changeSummary: `Before restoring component version: ${componentVersionHistoryTarget.componentTitle}`,
+            changeSummary: `Before restoring component version: ${title}`,
           })
         }}
         onRestored={handleComponentVersionRestored}

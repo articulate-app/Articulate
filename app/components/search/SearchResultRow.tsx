@@ -1,8 +1,8 @@
 "use client"
 
-import { MessageSquare, Search } from "lucide-react"
+import { Search } from "lucide-react"
 import { UserAvatar } from "@/components/UserAvatar"
-import { cn } from "@/lib/utils"
+import { cn, formatCompactDateDisplay } from "@/lib/utils"
 import {
   getGlobalSearchEntityLabel,
   type GlobalSearchDocument,
@@ -66,24 +66,34 @@ function formatCompactDateForMention(value: string | null): string | null {
   return new Intl.DateTimeFormat(undefined, { day: "numeric", month: "short" }).format(date)
 }
 
-function formatCompactDate(value: string | null | undefined, options?: { overdue?: boolean }): string | null {
-  if (options?.overdue) return "Overdue"
-  if (!value) return null
-  const date = new Date(value)
-  if (Number.isNaN(date.getTime())) return null
+function isPublicationTaskSection(sectionType?: string): boolean {
+  return Boolean(sectionType && /publication/.test(sectionType))
+}
 
-  const today = new Date()
-  const dateStart = new Date(date.getFullYear(), date.getMonth(), date.getDate())
-  const todayStart = new Date(today.getFullYear(), today.getMonth(), today.getDate())
-  const diffDays = Math.round((dateStart.getTime() - todayStart.getTime()) / 86_400_000)
+function resolveTaskDateValue(
+  payload: GlobalSearchDisplayPayload,
+  raw: Record<string, unknown>,
+  sectionType?: string,
+): string | null {
+  const preferPublication = isPublicationTaskSection(sectionType)
+  const delivery =
+    getMetaValueByLabel(payload, "delivery_date") ??
+    (typeof raw.delivery_date === "string" ? raw.delivery_date : null)
+  const publication =
+    getMetaValueByLabel(payload, "publication_date") ??
+    (typeof raw.publication_date === "string" ? raw.publication_date : null)
+  if (preferPublication) return publication ?? delivery
+  return delivery ?? publication
+}
 
-  if (diffDays === 0) return "Today"
-  if (diffDays === 1) return "Tomorrow"
-  if (diffDays < 0) return "Overdue"
-  return new Intl.DateTimeFormat(undefined, {
-    day: "numeric",
-    month: "short",
-  }).format(date)
+function isTaskDateOverdue(
+  payload: GlobalSearchDisplayPayload,
+  sectionType?: string,
+): boolean {
+  if (isPublicationTaskSection(sectionType)) {
+    return getMetaBooleanByLabel(payload, "is_publication_overdue")
+  }
+  return getMetaBooleanByLabel(payload, "is_overdue") || Boolean(sectionType && /overdue/.test(sectionType))
 }
 
 function getFacetAvatars(raw: Record<string, unknown>): Array<{ id: string; name: string | null; photo: string | null }> {
@@ -167,41 +177,69 @@ function LeftVisual({
 function ProjectMarker({ payload }: { payload: GlobalSearchDisplayPayload }) {
   const logoUrl = getPublicAssetUrl(payload.left?.logo ?? payload.logo)
   const color = payload.left?.color ?? payload.color
+  const projectName = payload.left?.label?.trim() || "Project"
 
   if (logoUrl) {
-    return <img src={logoUrl} alt="" className="h-3.5 w-3.5 rounded-sm object-cover" aria-hidden="true" />
+    return (
+      <img
+        src={logoUrl}
+        alt=""
+        title={projectName}
+        className="h-4 w-4 shrink-0 rounded-sm object-cover"
+        aria-hidden="true"
+      />
+    )
   }
 
   if (color) {
-    return <span className="inline-flex h-3.5 w-3.5 rounded-sm" style={{ backgroundColor: color }} aria-hidden="true" />
+    return (
+      <span
+        title={projectName}
+        className="inline-flex h-3 w-3 shrink-0 rounded-full"
+        style={{ backgroundColor: color }}
+        aria-hidden="true"
+      />
+    )
   }
 
-  return null
+  return (
+    <span
+      title={projectName}
+      className="inline-flex h-3 w-3 shrink-0 rounded-full bg-gray-300"
+      aria-hidden="true"
+    />
+  )
 }
 
-function AvatarStack({ payload, raw, max = 3 }: { payload: GlobalSearchDisplayPayload; raw: Record<string, unknown>; max?: number }) {
+function resolveResultAvatars(
+  payload: GlobalSearchDisplayPayload,
+  raw: Record<string, unknown>,
+): Array<{ id: string | number | null; name: string | null; photo: string | null }> {
   const payloadAvatars = (payload.avatars ?? []).map((avatar) => ({
     id: avatar.id ?? null,
     name: avatar.name ?? null,
     photo: getPublicAssetUrl(avatar.photo ?? null),
   }))
+  if (payloadAvatars.length > 0) return payloadAvatars
+
   const facetAvatars = getFacetAvatars(raw).map((avatar) => ({
     id: avatar.id,
     name: avatar.name,
     photo: getPublicAssetUrl(avatar.photo ?? null),
   }))
-  const watcherPhotos = (payload.watcher_photos ?? [])
-    .slice(0, max)
-    .map((photo, index) => ({
-      id: `watcher:${index}`,
-      name: null,
-      photo: getPublicAssetUrl(photo),
-    }))
-  const avatars = (payloadAvatars.length > 0 ? payloadAvatars : facetAvatars.length > 0 ? facetAvatars : watcherPhotos).slice(0, max)
-  const extraCount = Math.max(
-    0,
-    (payloadAvatars.length > 0 ? payloadAvatars.length : facetAvatars.length > 0 ? facetAvatars.length : watcherPhotos.length) - max,
-  )
+  if (facetAvatars.length > 0) return facetAvatars
+
+  return (payload.watcher_photos ?? []).map((photo, index) => ({
+    id: `watcher:${index}`,
+    name: null,
+    photo: getPublicAssetUrl(photo),
+  }))
+}
+
+function AvatarStack({ payload, raw, max = 3 }: { payload: GlobalSearchDisplayPayload; raw: Record<string, unknown>; max?: number }) {
+  const allAvatars = resolveResultAvatars(payload, raw)
+  const avatars = allAvatars.slice(0, max)
+  const extraCount = Math.max(0, allAvatars.length - max)
   if (avatars.length === 0) return null
 
   return (
@@ -217,6 +255,19 @@ function AvatarStack({ payload, raw, max = 3 }: { payload: GlobalSearchDisplayPa
         </div>
       ) : null}
     </div>
+  )
+}
+
+function TaskAssigneeAvatar({ payload, raw }: { payload: GlobalSearchDisplayPayload; raw: Record<string, unknown> }) {
+  const assignee = resolveResultAvatars(payload, raw)[0]
+  if (!assignee) return null
+  return (
+    <UserAvatar
+      name={assignee.name ?? null}
+      photoUrl={assignee.photo}
+      size="xs"
+      className="!h-5 !w-5 !min-h-5 !min-w-5"
+    />
   )
 }
 
@@ -275,39 +326,83 @@ export function SearchResultRow({
   const isMention = item.entity_type === "mention"
   const isTask = item.entity_type === "task"
   const isProject = item.entity_type === "project"
+  const isUser = item.entity_type === "user"
   const isAiThread = item.entity_type === "ai_thread"
   const isPreview = variant === "preview"
   const isUnread = isMention && getMetaBooleanByLabel(payload, "is_unread")
   const mentionDateLabel = isMention ? formatCompactDateForMention(getMentionDisplayDate(payload)) : null
   const previewTitle = isMention ? payload.preview?.trim() || "New mention" : payload.title
   const previewSubtitle = isMention ? payload.title : payload.subtitle
-  const taskProjectName = payload.subtitle?.trim() || getMetaValueByLabel(payload, "project") || null
-  const isTaskOverdueSection = sectionType ? /overdue/.test(sectionType) : false
-  const taskDateValue =
-    getMetaValueByLabel(payload, "delivery_date") ??
-    getMetaValueByLabel(payload, "publication_date") ??
-    (typeof item.raw.delivery_date === "string" ? item.raw.delivery_date : null) ??
-    (typeof item.raw.publication_date === "string" ? item.raw.publication_date : null)
-  const taskDateLabel = isTask ? formatCompactDate(taskDateValue, { overdue: isTaskOverdueSection }) : null
+  const taskDateValue = isTask ? resolveTaskDateValue(payload, item.raw, sectionType) : null
+  const taskDateLabel = isTask ? formatCompactDateDisplay(taskDateValue) || null : null
+  const taskDateOverdue = isTask ? isTaskDateOverdue(payload, sectionType) : false
   const aiDateLabel = isAiThread
     ? formatRelativeTime(getMetaValueByLabel(payload, "last_message_at") ?? getMetaValueByLabel(payload, "created_at"))
     : null
   const showLeftVisual = !(isTask || isMention || isAiThread || (isPreview && (isMention || isTask)))
-  const showMeta = !isPreview
+  const mentionSenderAvatar = isMention
+    ? (payload.avatars?.[0] ?? null)
+    : null
+  const showMeta = !isPreview && !isUser
   const showBadges = !isPreview
-  const showSubtitle = !(isPreview && isProject) && !isProject && !isMention
+  // Tasks use the compact row layout (marker + title | avatar + date) — never subtitle/meta text.
+  // Users: name + avatar only (hide email subtitle).
+  const showSubtitle = !(isPreview && isProject) && !isProject && !isMention && !isTask && !isUser
+  // Home: hide thread participant stacks; mentions show sender on the left instead.
+  const showRightAvatarStack = !(isMention || isTask || isUser || (isPreview && isAiThread))
+
+  if (isTask) {
+    return (
+      <button
+        type="button"
+        onClick={() => onSelect(item)}
+        className={cn(
+          "flex w-full items-center gap-2 px-4 py-2 text-left transition hover:bg-gray-50",
+          className,
+        )}
+      >
+        <div className="flex min-w-0 flex-1 items-center gap-2">
+          <ProjectMarker payload={payload} />
+          <span className="block min-w-0 flex-1 truncate text-sm font-medium text-gray-900">
+            {previewTitle}
+          </span>
+        </div>
+        <div className="ml-2 flex shrink-0 items-center justify-end gap-2">
+          <TaskAssigneeAvatar payload={payload} raw={item.raw} />
+          {taskDateLabel ? (
+            <span
+              className={cn(
+                "whitespace-nowrap text-xs",
+                taskDateOverdue ? "font-medium text-red-600" : "text-gray-500",
+              )}
+            >
+              {taskDateLabel}
+            </span>
+          ) : null}
+        </div>
+      </button>
+    )
+  }
 
   return (
     <button
       type="button"
       onClick={() => onSelect(item)}
       className={cn(
-        "flex w-full items-center gap-3 px-3 text-left transition hover:bg-gray-50",
+        "flex w-full items-center gap-3 px-4 text-left transition hover:bg-gray-50",
         isProject ? "py-1.5" : "py-2",
         className,
       )}
     >
-      {showLeftVisual ? (
+      {isMention ? (
+        <div className="shrink-0">
+          <UserAvatar
+            name={mentionSenderAvatar?.name ?? payload.title ?? null}
+            photoUrl={getPublicAssetUrl(mentionSenderAvatar?.photo ?? null)}
+            size="xs"
+          />
+        </div>
+      ) : showLeftVisual ? (
         <div className="shrink-0">
           <LeftVisual payload={payload} isProject={isProject} />
         </div>
@@ -322,23 +417,15 @@ export function SearchResultRow({
         ) : null}
         <div className="flex min-w-0 items-center gap-2">
           {isUnread ? <span className="h-2 w-2 shrink-0 rounded-full bg-blue-500" aria-hidden="true" /> : null}
-          {isTask ? (
-            <div className="flex min-w-0 items-center gap-1.5">
-              <span className={cn("truncate text-sm font-medium text-gray-900", isUnread && "font-semibold")}>
-                {previewTitle}
-              </span>
-              {taskProjectName ? (
-                <span className="inline-flex min-w-0 items-center gap-1.5 text-xs text-gray-500">
-                  <ProjectMarker payload={payload} />
-                  <span className="truncate">{taskProjectName}</span>
-                </span>
-              ) : null}
-            </div>
-          ) : (
-            <div className={cn("truncate text-sm font-medium text-gray-900", isUnread && "font-semibold")}>
-              {previewTitle}
-            </div>
-          )}
+          <div
+            className={cn(
+              "truncate text-sm text-gray-900",
+              isMention ? "font-normal" : "font-medium",
+              isUnread && !isMention && "font-semibold",
+            )}
+          >
+            {previewTitle}
+          </div>
           {mentionDateLabel ? <div className="shrink-0 whitespace-nowrap text-xs text-gray-500">{mentionDateLabel}</div> : null}
         </div>
         {isAiThread ? (
@@ -348,32 +435,19 @@ export function SearchResultRow({
         ) : showSubtitle && previewSubtitle ? (
           <div className="truncate text-xs text-gray-500">{previewSubtitle}</div>
         ) : null}
-        {payload.preview && !isMention && !isTask && !isAiThread && !isProject && (!isMention || !isPreview) ? (
+        {payload.preview && !isMention && !isAiThread && !isProject && (!isMention || !isPreview) ? (
           <div className="mt-1 line-clamp-1 text-xs text-gray-500">{payload.preview}</div>
         ) : null}
-        {showBadges && !isTask && !isAiThread ? <BadgesLine payload={payload} /> : null}
-        {showMeta && !isTask && !isAiThread ? (
+        {showBadges && !isAiThread ? <BadgesLine payload={payload} /> : null}
+        {showMeta && !isAiThread ? (
           <div className="mt-1">
             <MetaLine payload={payload} />
           </div>
         ) : null}
       </div>
       <div className="shrink-0 flex items-center gap-2">
-        {isPreview && isMention && !(payload.avatars?.length ?? 0) ? (
-          <div className="flex h-6 w-6 items-center justify-center rounded-full border border-gray-200 text-gray-400">
-            <MessageSquare className="h-3.5 w-3.5" />
-          </div>
-        ) : null}
-        <AvatarStack payload={payload} raw={item.raw} max={isProject || isAiThread ? 5 : isTask ? 1 : 3} />
-        {isTask && taskDateLabel ? (
-          <span
-            className={cn(
-              "whitespace-nowrap text-xs",
-              taskDateLabel === "Overdue" ? "font-medium text-red-600" : "text-gray-500",
-            )}
-          >
-            {taskDateLabel}
-          </span>
+        {showRightAvatarStack ? (
+          <AvatarStack payload={payload} raw={item.raw} max={isProject || isAiThread ? 5 : 3} />
         ) : null}
         {isAiThread && aiDateLabel ? <span className="whitespace-nowrap text-xs text-gray-500">{aiDateLabel}</span> : null}
       </div>

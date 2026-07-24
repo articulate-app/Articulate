@@ -15,7 +15,18 @@ export type AiContextSource =
   | "text_selection"
   | "ambient"
 
-export type AiSelectedContextType = "general" | "task" | "component_output"
+export type AiSelectedContextType =
+  | "general"
+  | "task"
+  | "component_output"
+  | "artifact_text_selection"
+  | "artifact_block"
+  | "artifact_document"
+  | "artifact_asset"
+  | "artifact_image_point"
+  | "artifact_image_rect"
+  | "artifact_video_time"
+  | "artifact_video_region"
 
 export type AiTargetContext = {
   selectedContextType: AiSelectedContextType

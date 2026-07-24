@@ -27,6 +27,8 @@ interface TaskFiltersProps {
   noWrapper?: boolean // If true, don't render SlidePanel wrapper
   /** When true, hide the Project filter control (e.g. when already scoped to a project). */
   hideProjectFilter?: boolean
+  /** When true, hide Assigned To (e.g. when already scoped to a user). */
+  hideAssigneeFilter?: boolean
   /**
    * Canonical commit: same pipeline as pills. When provided, Apply/Clear call this instead of
    * onApplyFilters + syncFiltersToUrl. Must update URL (router.replace) + store (setFilters)
@@ -59,7 +61,7 @@ interface FilterOption {
   color?: string
 }
 
-export function TaskFilters({ isOpen, onClose, onApplyFilters, activeFilters, filterOptions, noWrapper = false, hideProjectFilter = false, commitFilters }: TaskFiltersProps) {
+export function TaskFilters({ isOpen, onClose, onApplyFilters, activeFilters, filterOptions, noWrapper = false, hideProjectFilter = false, hideAssigneeFilter = false, commitFilters }: TaskFiltersProps) {
   const [filters, setFilters] = useState<TaskFilters>(activeFilters)
   const router = useRouter()
   const pathname = usePathname()
@@ -138,14 +140,12 @@ export function TaskFilters({ isOpen, onClose, onApplyFilters, activeFilters, fi
     const today = new Date()
     const startOfToday = new Date(today.getFullYear(), today.getMonth(), today.getDate())
     const endOfToday = new Date(today.getFullYear(), today.getMonth(), today.getDate() + 1)
+    const shouldSetAssignee =
+      !hideAssigneeFilter && (kind === "assigned_to_me" || kind === "due_today")
     const nextFilters: TaskFilters = {
       ...emptyFilters,
       assignedTo:
-        kind === "assigned_to_me" || kind === "due_today"
-          ? currentUserId != null
-            ? [String(currentUserId)]
-            : []
-          : [],
+        shouldSetAssignee && currentUserId != null ? [String(currentUserId)] : [],
       deliveryDate:
         kind === "due_today"
           ? {
@@ -221,13 +221,15 @@ export function TaskFilters({ isOpen, onClose, onApplyFilters, activeFilters, fi
               >
                 Due today
               </button>
-              <button
-                type="button"
-                onClick={() => applyQuickFilter("assigned_to_me")}
-                className="rounded-full bg-gray-100 px-3 py-1 text-xs font-medium text-gray-700 hover:bg-gray-200"
-              >
-                Assigned to me
-              </button>
+              {!hideAssigneeFilter ? (
+                <button
+                  type="button"
+                  onClick={() => applyQuickFilter("assigned_to_me")}
+                  className="rounded-full bg-gray-100 px-3 py-1 text-xs font-medium text-gray-700 hover:bg-gray-200"
+                >
+                  Assigned to me
+                </button>
+              ) : null}
               <button
                 type="button"
                 onClick={() => applyQuickFilter("delivery_overdue")}
@@ -267,6 +269,7 @@ export function TaskFilters({ isOpen, onClose, onApplyFilters, activeFilters, fi
           </div>
 
           {/* Assigned To */}
+          {!hideAssigneeFilter && (
           <div className="space-y-2">
             <label className="text-sm font-medium">Assigned To</label>
             <MultiSelect
@@ -275,6 +278,7 @@ export function TaskFilters({ isOpen, onClose, onApplyFilters, activeFilters, fi
               onChange={vals => setFilters(f => ({ ...f, assignedTo: vals }))}
             />
           </div>
+          )}
 
           {/* Status - Using deduplicated status names */}
           <div className="space-y-2">

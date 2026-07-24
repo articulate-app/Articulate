@@ -1,11 +1,13 @@
 import { describe, expect, it } from "vitest"
 import { parseClarificationRequestAction } from "../app/lib/ai/chat"
 import {
+  aliasClarificationMessageIdInContentJson,
   buildClarificationDedupeKey,
   buildClarificationResponsePayload,
   buildClarificationUserMessageContentJson,
   clarificationActionToRequest,
   clarificationHasExplicitComponentContext,
+  findClarificationAnswerForRequest,
   idsFromClarificationOption,
   parseClarificationFromMessageContentJson,
   parseClarificationOption,
@@ -13,9 +15,11 @@ import {
   reduceClarificationRequest,
   resolveActiveClarificationFromMessages,
   resolveClarificationDisplayForMessage,
+  resolveClarificationUserDisplayMessage,
   serializeClarificationRequestPayload,
   valuesFromSelectedClarificationOptions,
 } from "../features/ai-chat/ai-clarification"
+import { resolveUserMessageDisplayContent } from "../features/ai-chat/resolve-user-message-display-content"
 
 describe("ai clarification parsing", () => {
   it("parses target-scope clarification actions without component context", () => {
@@ -59,6 +63,24 @@ describe("ai clarification parsing", () => {
     expect(action?.question).toContain("Rewrite the whole component")
     expect(action?.options).toHaveLength(2)
     expect(action?.allow_free_text).toBe(false)
+  })
+
+  it("parses request_plan_id from stream clarification actions and pending_request", () => {
+    const direct = parseClarificationRequestAction({
+      type: "clarification_request",
+      question: "Which structure?",
+      options: [{ id: "broad_seo_article", label: "Broad SEO article" }],
+      request_plan_id: "plan-abc",
+    })
+    expect(direct?.request_plan_id).toBe("plan-abc")
+
+    const nested = parseClarificationRequestAction({
+      type: "clarification_request",
+      question: "Which structure?",
+      options: [{ id: "broad_seo_article", label: "Broad SEO article" }],
+      pending_request: { request_plan_id: "plan-from-pending", text: "Apply blog structure" },
+    })
+    expect(nested?.request_plan_id).toBe("plan-from-pending")
   })
 
   it("hydrates clarification requests from persisted assistant content_json", () => {
@@ -392,6 +414,132 @@ describe("ai clarification parsing", () => {
     expect(display?.answered).toBe(true)
     expect(display?.answer?.selectedOptionIds).toEqual(["blog", "linkedin"])
     expect(display?.request.question).toContain("channels")
+  })
+
+  it("merges clarifications that share a request_plan_id", () => {
+    const first = parseClarificationRequestRecord(
+      {
+        type: "clarification_request",
+        question: "Which structure?",
+        options: [{ id: "a", label: "A" }],
+        request_plan_id: "plan-shared",
+      },
+      { assistantMessageId: "assistant-old" },
+    )!
+    const second = parseClarificationRequestRecord(
+      {
+        type: "clarification_request",
+        question: "Confirm structure scope?",
+        options: [
+          { id: "broad_seo_article", label: "Broad SEO article" },
+          { id: "narrow_guide", label: "Narrow guide" },
+        ],
+        request_plan_id: "plan-shared",
+      },
+      { assistantMessageId: "assistant-new" },
+    )!
+    const merged = reduceClarificationRequest(first, second)
+    expect(merged.request_plan_id).toBe("plan-shared")
+    expect(merged.assistantMessageId).toBe("assistant-new")
+    expect(merged.question).toContain("Confirm structure")
+    expect(merged.options.map((option) => option.id)).toEqual([
+      "broad_seo_article",
+      "narrow_guide",
+    ])
+  })
+
+  it("restores answered state by clarification_message_id after temp→persisted alias", () => {
+    const request = parseClarificationRequestRecord(
+      {
+        type: "clarification_request",
+        question: "Which structure?",
+        options: [{ id: "broad_seo_article", label: "Broad SEO article" }],
+        request_plan_id: "plan-1",
+      },
+      { assistantMessageId: "assistant-persisted" },
+    )!
+    const contentJson = aliasClarificationMessageIdInContentJson(
+      {
+        display_message: "Broad SEO article",
+        clarification_response: {
+          clarification_message_id: "temp-assistant",
+          selected_option: "broad_seo_article",
+          selected_options: ["broad_seo_article"],
+          free_text: null,
+        },
+      },
+      "temp-assistant",
+      "assistant-persisted",
+    )
+    const messages = [
+      {
+        id: "assistant-persisted",
+        thread_id: "t1",
+        role: "assistant" as const,
+        content: "",
+        content_json: {
+          clarification_request: serializeClarificationRequestPayload(request),
+        },
+        created_at: "2026-01-01T00:00:01Z",
+      },
+      {
+        id: "user-2",
+        thread_id: "t1",
+        role: "user" as const,
+        content: "Broad SEO article",
+        content_json: contentJson,
+        created_at: "2026-01-01T00:00:02Z",
+      },
+    ]
+    const answer = findClarificationAnswerForRequest(messages, request, {
+      afterMessageIndex: 0,
+      assistantMessage: messages[0],
+    })
+    expect(answer?.selectedOptionIds).toEqual(["broad_seo_article"])
+    expect(resolveClarificationDisplayForMessage(messages, 0)?.answered).toBe(true)
+  })
+
+  it("renders clarification user bubbles from display_message, not option ids", () => {
+    expect(
+      resolveUserMessageDisplayContent("broad_seo_article", {
+        display_message: "Broad SEO article",
+        clarification_response: {
+          clarification_message_id: "assistant-1",
+          selected_option: "broad_seo_article",
+          selected_options: ["broad_seo_article"],
+        },
+      }),
+    ).toBe("Broad SEO article")
+
+    expect(
+      resolveClarificationUserDisplayMessage({
+        content: "broad_seo_article",
+        contentJson: {
+          clarification_response: {
+            clarification_message_id: "assistant-1",
+            selected_options: ["broad_seo_article", "narrow_guide"],
+            free_text: null,
+          },
+        },
+        optionLabelById: new Map([
+          ["broad_seo_article", "Broad SEO article"],
+          ["narrow_guide", "Narrow guide"],
+        ]),
+      }),
+    ).toBe("Broad SEO article, Narrow guide")
+
+    expect(
+      resolveClarificationUserDisplayMessage({
+        content: "",
+        contentJson: {
+          clarification_response: {
+            clarification_message_id: "assistant-1",
+            selected_options: [],
+            free_text: "Custom brief",
+          },
+        },
+      }),
+    ).toBe("Custom brief")
   })
 
   it("returns opaque selected values without deriving intent", () => {

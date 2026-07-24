@@ -6,6 +6,7 @@ import { useSortable } from '@dnd-kit/sortable'
 import { CSS } from '@dnd-kit/utilities'
 import { GripVertical } from 'lucide-react'
 import { cn } from '@/lib/utils'
+import { ObjectListColumnHeaderContent } from '../search/object-list-column-header'
 
 /** Column id -> display label for DragOverlay */
 export const COLUMN_LABELS: Record<string, string> = {
@@ -243,16 +244,14 @@ export function CompactTaskTableHeader({
 }) {
   const dateLabel = dateField === 'publication_date' ? 'Publish date' : 'Due date'
   return (
-    <thead className="task-header sticky top-0 z-40 bg-white border-b shadow-sm">
+    <thead className="task-header sticky top-0 z-40 border-b bg-white shadow-sm">
       <tr data-row-type="header" className="task-row" style={{ gridTemplateColumns: 'minmax(0, 1fr)' }}>
         <th className="task-cell task-cell-span-full task-header-cell px-3 py-1.5 text-left text-xs font-medium text-gray-500">
-          <div className="flex w-full min-w-0 items-center gap-2">
-            <span className="min-w-0 flex-1 truncate">Title</span>
-            <div className="ml-2 flex shrink-0 items-center justify-end gap-3">
-              <span className="shrink-0">Assignee</span>
-              <span className="w-[5.5rem] shrink-0 text-right">{dateLabel}</span>
-            </div>
-          </div>
+          <ObjectListColumnHeaderContent
+            primary="Title"
+            secondary="Assignee"
+            tertiary={dateLabel}
+          />
         </th>
       </tr>
     </thead>

@@ -1,10 +1,15 @@
 import { useState, useCallback, useRef, useEffect } from 'react';
 import { useQuery } from '@tanstack/react-query';
 
+import type { KeywordMonthlySearchVolume } from '../lib/keyword-ideas-metrics';
+
+export type { KeywordMonthlySearchVolume };
+
 export interface KeywordIdea {
   keyword: string;
   avgMonthlySearches: number;
   competitionIndex: number;
+  monthlySearchVolumes?: KeywordMonthlySearchVolume[];
 }
 
 export interface KeywordIdeasResponse {
@@ -48,16 +53,23 @@ export function useKeywordPlanner(
   const { enabled = true, pageSize = 15 } = options;
   const abortControllerRef = useRef<AbortController | null>(null);
 
-  // Debounce the keyword input
+  // Debounce the keyword input (flush immediately when a manual search enables the query)
   const [debouncedKeyword, setDebouncedKeyword] = useState(filters.keyword);
+  const wasEnabledRef = useRef(enabled);
   
   useEffect(() => {
+    const justEnabled = enabled && !wasEnabledRef.current;
+    wasEnabledRef.current = enabled;
+    if (justEnabled) {
+      setDebouncedKeyword(filters.keyword);
+      return;
+    }
     const timer = setTimeout(() => {
       setDebouncedKeyword(filters.keyword);
     }, 350); // 350ms debounce
 
     return () => clearTimeout(timer);
-  }, [filters.keyword]);
+  }, [filters.keyword, enabled]);
 
   // Create query key that includes all filter parameters
   const queryKey = [
@@ -136,8 +148,8 @@ export function useKeywordPlanner(
     refetch();
   }, [refetch]);
 
-  // Check if we have valid filters for search
-  const canSearch = debouncedKeyword.trim().length > 0;
+  // Check if we have valid filters for search (use live input so the CTA enables immediately)
+  const canSearch = filters.keyword.trim().length > 0;
 
   // Get competition level as human-readable string
   const getCompetitionLevel = useCallback((competitionIndex: number): string => {

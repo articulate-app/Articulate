@@ -4,7 +4,7 @@ import { cn } from "@/lib/utils"
 import { useEffect, useState, useRef, useCallback, useMemo, Dispatch, SetStateAction } from "react"
 import { Thread } from '../../types/task'
 import { Button } from "../ui/button"
-import { Trash2, Copy, Upload, Image as ImageIcon, X, ChevronLeft, ChevronsLeft, Maximize2, Minimize2, ChevronRight, ChevronDown, PanelRight, ExternalLink, Bot, MoreHorizontal, Plus, Loader2, Check, Star, MessageCircle, RefreshCw, Share2, Download, ClipboardCopy, History } from "lucide-react"
+import { Trash2, Copy, Upload, Image as ImageIcon, X, ChevronLeft, ChevronsLeft, Maximize2, Minimize2, ChevronRight, ChevronDown, PanelRight, ExternalLink, Bot, MoreHorizontal, Plus, Loader2, Check, Star, RefreshCw, Share2, Download, ClipboardCopy, History } from "lucide-react"
 import { RichTextEditor } from "../ui/rich-text-editor"
 import {
   COMPONENT_OUTPUT_EDITOR_CLASS,
@@ -21,6 +21,8 @@ import { getTaskById } from '../../../lib/services/tasks'
 import type { Task as BaseTask, ReviewData } from '../../lib/types/tasks'
 import { updateItemInStore } from '../../../hooks/use-infinite-query'
 import { useQuery, useQueryClient, type QueryClient } from '@tanstack/react-query'
+import { bumpAndInvalidateHomeSidebarRecent } from '../../lib/home-sidebar-recents-cache'
+import { trackGlobalObjectOpen } from '../../lib/services/global-search'
 import { flushSync } from 'react-dom'
 import { Dropzone, type DropzoneHandle } from '../dropzone'
 import { useTaskAttachmentsUpload } from '../../hooks/use-task-attachments-upload'
@@ -40,7 +42,6 @@ import {
   updateTaskInCaches,
   normalizeTask,
 } from './task-cache-utils'
-import { ShareButton } from '../ui/share-button'
 import { useRouter, useSearchParams, usePathname } from 'next/navigation';
 import { ParentTaskSelect } from './ParentTaskSelect';
 import debounce from 'lodash.debounce';
@@ -51,10 +52,18 @@ import { getTypesenseUpdater, removeTaskFromTypesenseStore } from '../../store/t
 import { useTaskGrouping } from '../../store/task-grouping'
 import { useMobileDetection } from '../../hooks/use-mobile-detection';
 import { TaskReviewSummary } from './TaskReviewSummary';
-import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from '../ui/dropdown-menu'
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuSub,
+  DropdownMenuSubContent,
+  DropdownMenuSubTrigger,
+  DropdownMenuTrigger,
+} from '../ui/dropdown-menu'
 import { TaskContentTab } from '../../../features/tasks/components/TaskContentTab'
+import { ArtifactWorkspace } from '../../../features/artifacts/ArtifactWorkspace'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '../ui/select'
-import { IconTooltip } from '../ui/icon-tooltip'
 import { UserAvatar } from "@/components/UserAvatar";
 import { ProjectBadge } from "@/components/ProjectBadge";
 import { Command, CommandEmpty, CommandGroup, CommandInput, CommandItem, CommandList } from "../ui/command"
@@ -73,7 +82,7 @@ import { TaskOverviewPreviews } from "./task-overview-previews"
 
 const EMPTY_ARR: any[] = []
 const NONE_OPTION = "__none__"
-const TASK_TABS = ["overview", "attachments", "content", "activity", "reviews", "comments"] as const
+const TASK_TABS = ["overview", "attachments", "content", "artifacts", "activity", "reviews", "comments"] as const
 
 type TaskTab = (typeof TASK_TABS)[number]
 
@@ -1911,6 +1920,13 @@ export function TaskDetails({
         if (data) {
           updateTaskInCaches(queryClient, data)
           getTypesenseUpdater()?.(data)
+          bumpAndInvalidateHomeSidebarRecent(queryClient, "tasks", {
+            id: String(taskId),
+            title:
+              (typeof data.title === "string" && data.title.trim()) ||
+              `Task ${taskId}`,
+          })
+          void trackGlobalObjectOpen({ entityType: "task", entityId: String(taskId) }).catch(() => {})
         }
       } catch (err) {
         toast({
@@ -1958,6 +1974,17 @@ export function TaskDetails({
     // are recomputed by the DB trigger, so they are stripped from the payload.
     const canonicalPatch = buildCanonicalTaskPatch({ [field]: value, ...extraFields, ...overdueFields });
     enqueueTaskPatchLocal(String(task.id), canonicalPatch, requiresListInvalidation);
+
+    // Keep the home sidebar Recents list in sync with field edits (delivery date, briefing, etc.).
+    const sidebarTitle =
+      (typeof (field === "title" ? value : task.title) === "string" &&
+        String(field === "title" ? value : task.title).trim()) ||
+      `Task ${task.id}`
+    bumpAndInvalidateHomeSidebarRecent(queryClient, "tasks", {
+      id: String(task.id),
+      title: sidebarTitle,
+    })
+    void trackGlobalObjectOpen({ entityType: "task", entityId: String(task.id) }).catch(() => {})
   };
 
   // Add this after imports
@@ -2819,14 +2846,6 @@ export function TaskDetails({
     showAllCommentThreadsView()
   }, [handleViewThreadHistory, openCommentThreadView, showAllCommentThreadsView, setTaskTab])
 
-  const handleToggleTaskCommentsPanel = useCallback(() => {
-    if (isCommentsTabActive) {
-      setTaskTab("overview")
-      return
-    }
-    handleOpenTaskCommentsPanel(null)
-  }, [isCommentsTabActive, handleOpenTaskCommentsPanel, setTaskTab])
-
   useEffect(() => {
     if (!isCommentsTabActive || !selectedTask || isSuggestionMode) return
     void handleViewThreadHistory()
@@ -3573,61 +3592,6 @@ export function TaskDetails({
           
           {/* Actions - right aligned */}
           <div className="flex items-center gap-2">
-            {!isSuggestionMode && task && commentsPanelProps && (
-              <IconTooltip label={isCommentsTabActive ? "On comments tab" : "Open comments"}>
-                <button
-                  type="button"
-                  className={cn(
-                    "inline-flex items-center justify-center h-8 w-8 rounded transition focus:outline-none focus:ring-2 focus:ring-blue-400",
-                    isCommentsTabActive
-                      ? "bg-blue-50 text-blue-600 hover:bg-blue-100"
-                      : "text-gray-500 hover:bg-gray-100"
-                  )}
-                  aria-label={isCommentsTabActive ? "On comments tab" : "Open comments"}
-                  aria-pressed={isCommentsTabActive}
-                  onClick={handleToggleTaskCommentsPanel}
-                >
-                  <MessageCircle className="w-4 h-4" />
-                </button>
-              </IconTooltip>
-            )}
-            {!isSuggestionMode && taskIdNum ? (
-              <>
-                <IconTooltip label="Copy all content">
-                  <button
-                    type="button"
-                    className={cn(
-                      "inline-flex items-center justify-center h-8 w-8 rounded transition focus:outline-none focus:ring-2 focus:ring-blue-400",
-                      canCopyAllChannelContent
-                        ? "text-gray-500 hover:bg-gray-100"
-                        : "text-gray-300 cursor-not-allowed",
-                    )}
-                    aria-label="Copy all content"
-                    disabled={!canCopyAllChannelContent}
-                    onClick={() => {
-                      if (!canCopyAllChannelContent) return
-                      setTaskTab("content")
-                      window.dispatchEvent(new CustomEvent("task-details:copy-outputs", { detail: { taskId: taskIdNum } }))
-                    }}
-                  >
-                    <ClipboardCopy className="w-4 h-4" />
-                  </button>
-                </IconTooltip>
-                <IconTooltip label="Download">
-                  <button
-                    type="button"
-                    className="inline-flex items-center justify-center h-8 w-8 rounded text-gray-500 hover:bg-gray-100 transition focus:outline-none focus:ring-2 focus:ring-blue-400"
-                    aria-label="Download"
-                    onClick={() => {
-                      setTaskTab("content")
-                      window.dispatchEvent(new CustomEvent("task-details:download-outputs", { detail: { taskId: taskIdNum } }))
-                    }}
-                  >
-                    <Download className="w-4 h-4" />
-                  </button>
-                </IconTooltip>
-              </>
-            ) : null}
             {/* Actions dropdown menu */}
             {!isSuggestionMode ? (
               <DropdownMenu>
@@ -3680,29 +3644,51 @@ export function TaskDetails({
                     Content history
                   </DropdownMenuItem>
                 ) : null}
-                {!isSuggestionMode && taskIdNum ? (
-                  <DropdownMenuItem
-                    onClick={() => {
-                      setTaskTab("content")
-                      window.dispatchEvent(new CustomEvent("task-details:download-outputs", { detail: { taskId: taskIdNum } }))
-                    }}
-                  >
-                    <Download className="w-4 h-4 mr-2" />
-                    Download
-                  </DropdownMenuItem>
-                ) : null}
-                <DropdownMenuItem onClick={() => {
-                  if (typeof window !== 'undefined') {
-                    navigator.clipboard.writeText(window.location.href);
-                    toast({
-                      title: 'Link copied',
-                      description: 'Task link copied to clipboard',
-                    });
-                  }
-                }}>
-                  <Share2 className="w-4 h-4 mr-2" />
-                  Copy Link
-                </DropdownMenuItem>
+                <DropdownMenuSub>
+                  <DropdownMenuSubTrigger className="gap-2">
+                    <Share2 className="w-4 h-4" />
+                    Share
+                    <ChevronRight className="ml-auto h-4 w-4 shrink-0 opacity-60" />
+                  </DropdownMenuSubTrigger>
+                  <DropdownMenuSubContent>
+                    {taskIdNum ? (
+                      <DropdownMenuItem
+                        onClick={() => {
+                          setTaskTab("content")
+                          window.dispatchEvent(new CustomEvent("task-details:download-outputs", { detail: { taskId: taskIdNum } }))
+                        }}
+                      >
+                        <Download className="w-4 h-4 mr-2" />
+                        Download
+                      </DropdownMenuItem>
+                    ) : null}
+                    <DropdownMenuItem onClick={() => {
+                      if (typeof window !== 'undefined') {
+                        navigator.clipboard.writeText(window.location.href);
+                        toast({
+                          title: 'Link copied',
+                          description: 'Task link copied to clipboard',
+                        });
+                      }
+                    }}>
+                      <Share2 className="w-4 h-4 mr-2" />
+                      Copy Link
+                    </DropdownMenuItem>
+                    {taskIdNum ? (
+                      <DropdownMenuItem
+                        disabled={!canCopyAllChannelContent}
+                        onClick={() => {
+                          if (!canCopyAllChannelContent) return
+                          setTaskTab("content")
+                          window.dispatchEvent(new CustomEvent("task-details:copy-outputs", { detail: { taskId: taskIdNum } }))
+                        }}
+                      >
+                        <ClipboardCopy className="w-4 h-4 mr-2" />
+                        Copy all content
+                      </DropdownMenuItem>
+                    ) : null}
+                  </DropdownMenuSubContent>
+                </DropdownMenuSub>
                 {!isSuggestionMode && taskIdNum ? (
                   <DropdownMenuItem onClick={handleQuickFiveStarReview}>
                     <Star className="w-4 h-4 mr-2" />
@@ -3774,6 +3760,9 @@ export function TaskDetails({
                 </TabsTrigger>
                 <TabsTrigger value="content" className={tabTriggerClassName}>
                   Content
+                </TabsTrigger>
+                <TabsTrigger value="artifacts" className={tabTriggerClassName}>
+                  Artifacts
                 </TabsTrigger>
                 <TabsTrigger value="activity" className={tabTriggerClassName}>
                   Activity
@@ -4581,6 +4570,17 @@ export function TaskDetails({
                     />
                   </div>
                 )}
+            </section>
+          ) : null}
+
+          {!isSuggestionMode && activeTaskTab === "artifacts" && taskIdNum ? (
+            <section className="p-4 pb-0">
+              <ArtifactWorkspace
+                taskId={taskIdNum}
+                defaultChannelId={activeChannelId}
+                defaultLanguageId={task?.language_id ? Number(task.language_id) : null}
+                projectId={task?.project_id_int ?? null}
+              />
             </section>
           ) : null}
 

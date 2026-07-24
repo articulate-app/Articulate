@@ -13,24 +13,19 @@ import { useGlobalSearchController } from "../hooks/use-global-search-controller
 import type { TaskEditFields } from "../hooks/use-task-edit-fields";
 import type { FilterOptions } from "../lib/services/filters";
 import { useMobileDetection } from "../hooks/use-mobile-detection";
-import { KeywordPlannerPane } from "../components/KeywordPlannerPane";
 import { Sidebar } from "../components/ui/Sidebar";
 import { TaskComposerTray } from "../components/tasks/TaskComposerTray";
 import { MobileTaskComposerSheet } from "../components/tasks/MobileTaskComposerSheet";
-import { ensureGlobalThread } from "../../features/ai-chat/ai-utils";
 import { buildNewAiThreadParams } from "../lib/ai-thread-route";
-import { hasTaskSelectionInUrl, isTaskDetailsFocusContext, preserveTaskDetailsFocusWhenOpeningAi } from "../components/tasks/ai-pane-focus-url";
-import { toast } from "../components/ui/use-toast";
-import { cn } from "@/lib/utils";
 import { TasksSidebarProvider } from "../contexts/tasks-sidebar-context";
 import { GlobalSearchProvider } from "../contexts/global-search-context";
 import { dispatchTasksShallowNavigation } from "../lib/tasks-shallow-nav";
+import { cn } from "@/lib/utils";
 import {
   ensureDefaultGroupOrderInSearchParams,
   parseActiveGroupByFromParam,
   parseExplicitGroupOrderParam,
 } from "../lib/tasks-grouping-url";
-
 // Transform editFields data to filter options format (same as in TasksLayout)
 function transformEditFieldsToFilterOptions(editFields: TaskEditFields, users: any[] = []): FilterOptions {
   // Deduplicate project statuses by name
@@ -87,9 +82,57 @@ export default function TasksLayout({ children, modal }: LayoutProps) {
   // Mobile detection
   const isMobile = useMobileDetection();
   
-  // Sidebar state (for mobile/desktop collapsed)
-  const [isSidebarCollapsed, setIsSidebarCollapsed] = useState(true);
+  // Mobile sidebar overlay + desktop rail.
   const [isMobileMenuOpen, setIsMobileMenuOpen] = useState(false);
+  const [isSidebarCollapsed, setIsSidebarCollapsed] = useState(false);
+  const SIDEBAR_WIDTH_KEY = "articulate-sidebar-width";
+  const SIDEBAR_MIN_WIDTH = 200;
+  const SIDEBAR_MAX_WIDTH = 420;
+  const SIDEBAR_DEFAULT_WIDTH = 256;
+  const [sidebarWidth, setSidebarWidth] = useState(SIDEBAR_DEFAULT_WIDTH);
+  const [isResizingSidebar, setIsResizingSidebar] = useState(false);
+  const sidebarWidthRef = React.useRef(sidebarWidth);
+  sidebarWidthRef.current = sidebarWidth;
+
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    try {
+      const raw = window.localStorage.getItem(SIDEBAR_WIDTH_KEY);
+      const parsed = raw ? Number(raw) : NaN;
+      if (Number.isFinite(parsed)) {
+        setSidebarWidth(Math.min(SIDEBAR_MAX_WIDTH, Math.max(SIDEBAR_MIN_WIDTH, parsed)));
+      }
+    } catch {
+      // ignore
+    }
+  }, []);
+
+  useEffect(() => {
+    if (!isResizingSidebar) return;
+    const onMove = (event: MouseEvent) => {
+      const next = Math.min(SIDEBAR_MAX_WIDTH, Math.max(SIDEBAR_MIN_WIDTH, event.clientX));
+      setSidebarWidth(next);
+    };
+    const onUp = () => {
+      setIsResizingSidebar(false);
+      try {
+        window.localStorage.setItem(SIDEBAR_WIDTH_KEY, String(sidebarWidthRef.current));
+      } catch {
+        // ignore
+      }
+      document.body.style.cursor = "";
+      document.body.style.userSelect = "";
+    };
+    document.body.style.cursor = "col-resize";
+    document.body.style.userSelect = "none";
+    window.addEventListener("mousemove", onMove);
+    window.addEventListener("mouseup", onUp);
+    return () => {
+      window.removeEventListener("mousemove", onMove);
+      window.removeEventListener("mouseup", onUp);
+    };
+  }, [isResizingSidebar]);
+
   // Global search/filter state from Zustand
   const {
     filters,
@@ -140,9 +183,6 @@ export default function TasksLayout({ children, modal }: LayoutProps) {
   // Filter pane open state
   const [isFilterOpen, setIsFilterOpen] = useState(false);
   
-  // Keyword Planner state
-  const [isKeywordPlannerOpen, setIsKeywordPlannerOpen] = useState(false);
-  
 
   // Get access token for task edit fields
   const supabase = createClientComponentClient();
@@ -171,43 +211,17 @@ export default function TasksLayout({ children, modal }: LayoutProps) {
     setIsFilterOpen(true);
   };
 
-  // Handler for sidebar toggle (hamburger) - for mobile, toggle mobile menu
+  // Handler for sidebar toggle (desktop collapse + mobile drawer).
   const handleSidebarToggle = () => {
     if (isMobile) {
       setIsMobileMenuOpen((v) => !v);
-    } else {
-      setIsSidebarCollapsed((v) => !v);
+      return;
     }
+    setIsSidebarCollapsed((v) => !v);
   };
 
   const handleMobileMenuClose = () => {
     setIsMobileMenuOpen(false);
-  };
-
-  // Handler for keyword planner toggle
-  const handleKeywordPlannerClick = () => setIsKeywordPlannerOpen((v) => !v);
-  
-  // Handler for AI chat toggle
-  const handleAiChatClick = async () => {
-    try {
-      const threadId = await ensureGlobalThread()
-      const baseParams = new URLSearchParams(searchParams.toString())
-      const newParams = preserveTaskDetailsFocusWhenOpeningAi(baseParams)
-      if (!(isTaskDetailsFocusContext(baseParams) && hasTaskSelectionInUrl(baseParams))) {
-        newParams.delete("focus")
-      }
-      if (!newParams.get("aiThreadId")) {
-        newParams.set("aiThreadId", threadId)
-      }
-      shallowReplaceUrl(`${pathname}?${newParams.toString()}`)
-      dispatchTasksShallowNavigation()
-    } catch (error: any) {
-      toast({
-        title: "Error",
-        description: error.message || "Failed to open AI chat",
-        variant: "destructive",
-      })
-    }
   };
 
   const handleNewAiThreadClick = useCallback(() => {
@@ -263,29 +277,11 @@ export default function TasksLayout({ children, modal }: LayoutProps) {
               onClearSearch={globalSearch.clearSearch}
               onFilterClick={handleFilterClick}
               onSidebarToggle={handleSidebarToggle}
-              onKeywordPlannerClick={handleKeywordPlannerClick}
-              isKeywordPlannerActive={isKeywordPlannerOpen}
-              onAiChatClick={handleAiChatClick}
               onNewAiThreadClick={handleNewAiThreadClick}
             />
           )}
 
           <div className="flex min-h-0 flex-1 w-full overflow-hidden">
-            {!isMobile ? (
-              <div
-                className={cn(
-                  "h-full overflow-hidden border-r border-gray-200 transition-all duration-300 ease-in-out z-20 flex-shrink-0",
-                  isSidebarCollapsed ? "w-16" : "w-64",
-                )}
-              >
-                <Sidebar
-                  isCollapsed={isSidebarCollapsed}
-                  isMobileMenuOpen={isMobileMenuOpen}
-                  onClose={handleMobileMenuClose}
-                />
-              </div>
-            ) : null}
-
             {isMobile ? (
               <div className="w-0 min-w-0 overflow-hidden">
                 <Sidebar
@@ -294,12 +290,35 @@ export default function TasksLayout({ children, modal }: LayoutProps) {
                   onClose={handleMobileMenuClose}
                 />
               </div>
-            ) : null}
+            ) : (
+              <div
+                className={cn(
+                  "relative flex shrink-0 flex-col border-r border-gray-200 bg-white",
+                  !isResizingSidebar && "transition-[width] duration-200",
+                )}
+                style={{ width: isSidebarCollapsed ? 64 : sidebarWidth }}
+              >
+                <Sidebar isCollapsed={isSidebarCollapsed} />
+                {!isSidebarCollapsed ? (
+                  <div
+                    role="separator"
+                    aria-orientation="vertical"
+                    aria-label="Resize sidebar"
+                    title="Drag to resize"
+                    onMouseDown={(event) => {
+                      event.preventDefault();
+                      setIsResizingSidebar(true);
+                    }}
+                    className="absolute inset-y-0 right-0 z-20 w-1.5 cursor-col-resize hover:bg-gray-300/80 active:bg-gray-400/80"
+                  />
+                ) : null}
+              </div>
+            )}
 
             <div className="flex-1 overflow-hidden flex flex-row">
               {React.cloneElement(children as React.ReactElement, {
                 isSidebarOpen: isMobile ? isMobileMenuOpen : true,
-                isSidebarCollapsed,
+                isSidebarCollapsed: isMobile ? true : isSidebarCollapsed,
                 onSidebarToggle: handleSidebarToggle,
               })}
               {modal}
@@ -314,13 +333,6 @@ export default function TasksLayout({ children, modal }: LayoutProps) {
                   activeFilters={filters}
                   filterOptions={filterOptions}
                   commitFilters={commitFilters}
-                />
-              )}
-
-              {!isMobile && (
-                <KeywordPlannerPane
-                  isOpen={isKeywordPlannerOpen}
-                  onClose={() => setIsKeywordPlannerOpen(false)}
                 />
               )}
             </div>

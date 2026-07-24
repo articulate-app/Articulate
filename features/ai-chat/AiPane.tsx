@@ -8,8 +8,9 @@ import { ResizablePanel } from "../../app/components/ui/resizable-panel"
 import { Plus, X, X as XIcon, MoreHorizontal, Edit2, Trash2, Maximize2, Minimize2, Copy, XCircle } from "lucide-react"
 import { useCreateThread, useRenameThread, useSoftDeleteThread } from "./hooks"
 import { getSupabaseBrowser } from "../../lib/supabase-browser"
-import { useRouter, useSearchParams, usePathname } from "next/navigation"
+import { useSearchParams } from "next/navigation"
 import { TASKS_SHALLOW_NAV_EVENT } from "../../app/lib/tasks-shallow-nav"
+import { mergeWorkspaceUrlState } from "../../app/lib/workspace-url-state"
 import { ensureProjectThread, ensureGlobalThread } from "./ai-utils"
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from "../../app/components/ui/dropdown-menu"
 import { Dialog, DialogContent, DialogTitle, DialogFooter } from "../../app/components/ui/dialog"
@@ -20,8 +21,9 @@ import { useQueryClient } from "@tanstack/react-query"
 import { invokeEdgeFunctionFetch } from "@/lib/edge-functions"
 import { resolveAutoThreadSelection } from "./thread-selection-guards"
 import { logAiChatDebug } from "./debug"
-import { AI_PANE_TAB_STRIP_CLASS } from "./tab-strip-tokens"
+import { AI_PANE_TAB_ACTIVE_CLASS, AI_PANE_TAB_FILLER_CLASS, AI_PANE_TAB_INACTIVE_CLASS, AI_PANE_TAB_STRIP_CLASS } from "./tab-strip-tokens"
 import { toPersistedAiThreadId } from "./thread-id"
+import { isPlaceholderAiThreadTitle } from "./ai-thread-title"
 import type { AiActiveFieldContext } from "./active-field-context"
 
 interface AiPaneProps {
@@ -142,117 +144,118 @@ function AiPaneTabStrip({
   if (allTabs.length === 0) return null
 
   return (
-    <div
-      ref={scrollRef}
-      className="ai-chat-tabs-scroll min-h-0 min-w-0 flex-1 self-stretch overflow-x-auto overflow-y-hidden"
-    >
-      <div className={AI_PANE_TAB_STRIP_CLASS}>
-        {allTabs.map((tab) => {
-          const isOptimistic = isOptimisticThreadTab(tab)
-          const tabId = isOptimistic ? tab.optimisticId : tab.id
-          const isActive = isOptimistic
-            ? activeOptimisticId === tab.optimisticId
-            : active?.id === tab.id
-          return (
-          <div
-            key={isOptimistic ? `optimistic-${tab.optimisticId}` : tab.id}
-            className={`flex h-full min-h-14 shrink-0 cursor-pointer self-stretch border-r border-gray-200 bg-white ${
-              isActive
-                ? 'font-semibold text-gray-900'
-                : 'font-normal text-gray-600'
-            }`}
-            onClick={() => {
-              if (isOptimistic) return
-              onTabClick(tab)
-            }}
-            onDoubleClick={() => {
-              if (isOptimistic) return
-              onStartEdit(tab)
-            }}
-          >
-            <div className="flex h-full min-h-0 min-w-0 flex-1 items-center gap-1 px-3">
-              {editingTabId === tabId && !isOptimistic ? (
-                <input
-                  type="text"
-                  value={editTitle}
-                  onChange={(e) => setEditTitle(e.target.value)}
-                  onKeyDown={onTitleKeyDown}
-                  onBlur={() => onRename(tabId)}
-                  className="text-sm bg-transparent border-none outline-none px-1 py-0.5 border border-gray-300 rounded min-w-0 flex-1"
-                  autoFocus
-                  onClick={(e) => e.stopPropagation()}
-                />
-              ) : (
-                <>
-                  {(() => {
-                    const persistedDisplayTitle = isOptimistic
-                      ? null
-                      : displayTitleByThreadId?.[tab.id]
-                    const displayTitle = persistedDisplayTitle ?? tab.title
-                    const fallbackTitle = isOptimistic ? "Creating chat..." : "New chat"
-                    return (
-                      <span
-                        className="text-sm truncate max-w-20 flex-1"
-                        title={displayTitle || fallbackTitle}
-                      >
-                        {displayTitle || fallbackTitle}
-                      </span>
-                    )
-                  })()}
-                  {!isOptimistic ? (
-                  <DropdownMenu modal={false}>
-                    <DropdownMenuTrigger asChild>
-                      <button
-                        type="button"
-                        onClick={(e) => e.stopPropagation()}
-                        className="p-0.5 rounded text-gray-500 hover:bg-gray-100 hover:text-gray-900"
-                        title="More options"
-                      >
-                        <MoreHorizontal className="w-3 h-3" />
-                      </button>
-                    </DropdownMenuTrigger>
-                    <DropdownMenuContent align="end">
-                      <DropdownMenuItem
-                        onClick={(e) => {
-                          e.stopPropagation()
-                          onStartEdit(tab)
-                        }}
-                      >
-                        <Edit2 className="w-3 h-3 mr-2" />
-                        Rename
-                      </DropdownMenuItem>
-                      <DropdownMenuItem
-                        onClick={(e) => {
-                          e.stopPropagation()
-                          onDeleteClick(tab.id)
-                        }}
-                        className="text-red-600"
-                      >
-                        <Trash2 className="w-3 h-3 mr-2" />
-                        Delete
-                      </DropdownMenuItem>
-                    </DropdownMenuContent>
-                  </DropdownMenu>
-                  ) : null}
-                  {!isOptimistic ? (
-                  <button
-                    type="button"
-                    onClick={(e) => {
-                      e.stopPropagation()
-                      onCloseTab(tabId)
-                    }}
-                    className="p-0.5 rounded text-gray-500 hover:bg-gray-100 hover:text-gray-900"
-                    title="Close tab"
-                  >
-                    <XIcon className="w-3 h-3" />
-                  </button>
-                  ) : null}
-                </>
-              )}
+    <div className="flex min-h-0 min-w-0 flex-1 items-stretch">
+      <div
+        ref={scrollRef}
+        className="ai-chat-tabs-scroll min-h-0 min-w-0 overflow-x-auto overflow-y-hidden"
+      >
+        <div className={AI_PANE_TAB_STRIP_CLASS}>
+          {allTabs.map((tab) => {
+            const isOptimistic = isOptimisticThreadTab(tab)
+            const tabId = isOptimistic ? tab.optimisticId : tab.id
+            const isActive = isOptimistic
+              ? activeOptimisticId === tab.optimisticId
+              : active?.id === tab.id
+            return (
+            <div
+              key={isOptimistic ? `optimistic-${tab.optimisticId}` : tab.id}
+              className={`flex h-full min-h-14 shrink-0 cursor-pointer self-stretch border-r border-gray-200 bg-white ${
+                isActive ? AI_PANE_TAB_ACTIVE_CLASS : AI_PANE_TAB_INACTIVE_CLASS
+              }`}
+              onClick={() => {
+                if (isOptimistic) return
+                onTabClick(tab)
+              }}
+              onDoubleClick={() => {
+                if (isOptimistic) return
+                onStartEdit(tab)
+              }}
+            >
+              <div className="flex h-full min-h-0 min-w-0 flex-1 items-center gap-1 px-3">
+                {editingTabId === tabId && !isOptimistic ? (
+                  <input
+                    type="text"
+                    value={editTitle}
+                    onChange={(e) => setEditTitle(e.target.value)}
+                    onKeyDown={onTitleKeyDown}
+                    onBlur={() => onRename(tabId)}
+                    className="text-sm bg-transparent border-none outline-none px-1 py-0.5 border border-gray-300 rounded min-w-0 flex-1"
+                    autoFocus
+                    onClick={(e) => e.stopPropagation()}
+                  />
+                ) : (
+                  <>
+                    {(() => {
+                      const persistedDisplayTitle = isOptimistic
+                        ? null
+                        : displayTitleByThreadId?.[tab.id]
+                      const displayTitle = persistedDisplayTitle ?? tab.title
+                      const fallbackTitle = isOptimistic ? "Creating chat..." : "New chat"
+                      return (
+                        <span
+                          className="text-sm truncate max-w-20 flex-1"
+                          title={displayTitle || fallbackTitle}
+                        >
+                          {displayTitle || fallbackTitle}
+                        </span>
+                      )
+                    })()}
+                    {!isOptimistic ? (
+                    <DropdownMenu modal={false}>
+                      <DropdownMenuTrigger asChild>
+                        <button
+                          type="button"
+                          onClick={(e) => e.stopPropagation()}
+                          className="p-0.5 rounded text-gray-500 hover:bg-gray-100 hover:text-gray-900"
+                          title="More options"
+                        >
+                          <MoreHorizontal className="w-3 h-3" />
+                        </button>
+                      </DropdownMenuTrigger>
+                      <DropdownMenuContent align="end">
+                        <DropdownMenuItem
+                          onClick={(e) => {
+                            e.stopPropagation()
+                            onStartEdit(tab)
+                          }}
+                        >
+                          <Edit2 className="w-3 h-3 mr-2" />
+                          Rename
+                        </DropdownMenuItem>
+                        <DropdownMenuItem
+                          onClick={(e) => {
+                            e.stopPropagation()
+                            onDeleteClick(tab.id)
+                          }}
+                          className="text-red-600"
+                        >
+                          <Trash2 className="w-3 h-3 mr-2" />
+                          Delete
+                        </DropdownMenuItem>
+                      </DropdownMenuContent>
+                    </DropdownMenu>
+                    ) : null}
+                    {!isOptimistic ? (
+                    <button
+                      type="button"
+                      onClick={(e) => {
+                        e.stopPropagation()
+                        onCloseTab(tabId)
+                      }}
+                      className="p-0.5 rounded text-gray-500 hover:bg-gray-100 hover:text-gray-900"
+                      title="Close tab"
+                    >
+                      <XIcon className="w-3 h-3" />
+                    </button>
+                    ) : null}
+                  </>
+                )}
+              </div>
             </div>
-          </div>
-        )})}
+          )})}
+        </div>
       </div>
+      <div className={AI_PANE_TAB_FILLER_CLASS} aria-hidden />
     </div>
   )
 }
@@ -263,7 +266,6 @@ export function AiPane(props: AiPaneProps) {
 }
 
 function AiPaneInner({ isOpen, onClose, onExpand, initialScope = 'global', projectId, taskId, inline = false, contentTypeTitle, activeChannelId, activeFieldContext, externalThreadId, disableUrlSync = false, isExpanded = false, forceNewThread = false, onForceNewThreadConsumed }: AiPaneProps) {
-  const pathname = usePathname()
   const nextSearchParams = useSearchParams()
   const searchParams = useSyncedTasksSearchParams(nextSearchParams)
 
@@ -282,7 +284,6 @@ function AiPaneInner({ isOpen, onClose, onExpand, initialScope = 'global', proje
   const renameThread = useRenameThread()
   const deleteThread = useSoftDeleteThread()
   const queryClient = useQueryClient()
-  const router = useRouter()
   const isUpdatingFromStateRef = useRef(false)
   const previousActiveIdRef = useRef<string | null>(null)
   const bootstrapScopeReadyRef = useRef(false)
@@ -303,17 +304,15 @@ function AiPaneInner({ isOpen, onClose, onExpand, initialScope = 'global', proje
   const navigateToThreadId = useCallback(
     (threadId: string | null, reason: string) => {
       if (disableUrlSync) return
-      const currentParams = new URLSearchParams(searchParams.toString())
-      if (threadId) {
-        currentParams.set("aiThreadId", threadId)
-      } else {
-        currentParams.delete("aiThreadId")
-      }
-      const newUrl = currentParams.toString() ? `?${currentParams.toString()}` : ""
-      logAiChatDebug("router.replace", { reason, threadId, url: `${pathname}${newUrl}` })
-      router.replace(`${pathname}${newUrl}`, { scroll: false })
+      // Patch live location instead of router.replace(searchParams). Next's searchParams
+      // lag behind shallow prefs writes (settings=open), and a full replace would wipe them.
+      logAiChatDebug("workspace-url.merge", { reason, threadId })
+      mergeWorkspaceUrlState(
+        { aiThreadId: threadId },
+        { source: `ai-pane:${reason}`, mode: "replace" },
+      )
     },
-    [disableUrlSync, pathname, router, searchParams]
+    [disableUrlSync],
   )
   const clearThreadFromUrl = useCallback(() => {
     navigateToThreadId(null, "clearThreadFromUrl")
@@ -327,7 +326,43 @@ function AiPaneInner({ isOpen, onClose, onExpand, initialScope = 'global', proje
     setActive((prev) => (prev?.id === threadId ? { ...prev, title } : prev))
   }, [])
 
+  const clearStreamingThreadTitle = useCallback((threadId: string) => {
+    setStreamingThreadTitlesById((prev) => {
+      if (!(threadId in prev)) return prev
+      const next = { ...prev }
+      delete next[threadId]
+      return next
+    })
+  }, [])
+
+  const getLocalThreadTitle = useCallback(
+    (threadId: string): string | null => {
+      const fromActive = active?.id === threadId ? active.title : null
+      const fromTab = openTabs.find((tab) => tab.id === threadId)?.title ?? null
+      const local = (fromActive ?? fromTab ?? "").trim()
+      // Treat "New chat" as unset so Protocol V2 titles can still apply.
+      if (!local || isPlaceholderAiThreadTitle(local)) return null
+      return local
+    },
+    [active, openTabs],
+  )
+
+  const getCachedThreadTitle = useCallback(
+    (threadId: string): string | null => {
+      const cachedLists = queryClient.getQueriesData<AiThread[]>({ queryKey: ["ai-threads"] })
+      for (const [, list] of cachedLists) {
+        if (!Array.isArray(list)) continue
+        const match = list.find((thread) => thread.id === threadId)
+        const title = match?.title != null ? String(match.title).trim() : ""
+        if (title && !isPlaceholderAiThreadTitle(title)) return title
+      }
+      return null
+    },
+    [queryClient],
+  )
+
   const handleThreadTitlePreview = useCallback((threadId: string, title: string | null) => {
+    // Provisional titles only update the open-chat header; sidebar/list caches stay put.
     setStreamingThreadTitlesById((prev) => {
       if (!title || title.trim().length === 0) {
         if (!(threadId in prev)) return prev
@@ -342,20 +377,45 @@ function AiPaneInner({ isOpen, onClose, onExpand, initialScope = 'global', proje
   const handleThreadTitlePersist = useCallback(
     (threadId: string, title: string) => {
       const normalizedTitle = title.trim()
-      if (!normalizedTitle) return
-      updateThreadTitleLocalState(threadId, normalizedTitle)
-      setStreamingThreadTitlesById((prev) => {
-        if (!(threadId in prev)) return prev
-        const next = { ...prev }
-        delete next[threadId]
-        return next
-      })
-      queryClient.setQueryData(['ai-threads'], (old: AiThread[] | undefined) => {
+      if (!normalizedTitle) {
+        clearStreamingThreadTitle(threadId)
+        return
+      }
+
+      // Never overwrite a non-empty title already set by the user.
+      if (getLocalThreadTitle(threadId)) {
+        clearStreamingThreadTitle(threadId)
+        return
+      }
+
+      // Prefer a title already returned by a newer fetch; sync it into open tabs.
+      const cachedTitle = getCachedThreadTitle(threadId)
+      const titleToApply = cachedTitle || normalizedTitle
+
+      updateThreadTitleLocalState(threadId, titleToApply)
+      clearStreamingThreadTitle(threadId)
+      queryClient.setQueriesData<AiThread[]>({ queryKey: ["ai-threads"] }, (old) => {
         if (!Array.isArray(old)) return old
-        return old.map((thread) => (thread.id === threadId ? { ...thread, title: normalizedTitle } : thread))
+        return old.map((thread) =>
+          thread.id === threadId && isPlaceholderAiThreadTitle(thread.title)
+            ? { ...thread, title: titleToApply }
+            : thread,
+        )
+      })
+      // Background reconcile with DB (backend persists the title); keep selection/scroll intact.
+      void queryClient.invalidateQueries({ queryKey: ["ai-threads"], refetchType: "active" })
+      void queryClient.invalidateQueries({
+        queryKey: ["ai-thread-context", threadId],
+        refetchType: "active",
       })
     },
-    [queryClient, updateThreadTitleLocalState]
+    [
+      clearStreamingThreadTitle,
+      getCachedThreadTitle,
+      getLocalThreadTitle,
+      queryClient,
+      updateThreadTitleLocalState,
+    ],
   )
 
   const handleScopeModeChange = useCallback((scope: "task" | "global" | "project", projectScopeId?: number | null) => {
@@ -570,15 +630,18 @@ function AiPaneInner({ isOpen, onClose, onExpand, initialScope = 'global', proje
         return
       }
       
-      const currentThreadId = searchParams.get('aiThreadId')
+      const liveThreadId =
+        typeof window !== "undefined"
+          ? new URLSearchParams(window.location.search).get("aiThreadId")
+          : searchParams.get("aiThreadId")
       // Only update URL if it's different from current active thread
       // This prevents loops while still keeping URL in sync
-      if (currentThreadId !== active.id) {
+      if (liveThreadId !== active.id) {
         isUpdatingFromStateRef.current = true
         previousActiveIdRef.current = active.id
         navigateToThreadId(active.id, "active-thread-effect")
         
-        // Reset flag after router update completes
+        // Reset flag after URL update completes
         // Use requestAnimationFrame for immediate next frame, minimal delay
         requestAnimationFrame(() => {
           isUpdatingFromStateRef.current = false
@@ -911,7 +974,7 @@ function AiPaneInner({ isOpen, onClose, onExpand, initialScope = 'global', proje
     return (
       <div className="h-full flex flex-col bg-white">
         {/* Simplified header with tabs on left, controls on right */}
-        <div className={`${COMPACT_PANE_HEADER_ROW_CLASS} !items-stretch border-b border-gray-200 bg-white pl-0 pr-3 shrink-0`}>
+        <div className={`${COMPACT_PANE_HEADER_ROW_CLASS} !items-stretch bg-white pl-0 pr-3 shrink-0`}>
           {/* Left side: Tabs */}
           <div className="flex min-h-0 min-w-0 flex-1 items-stretch">
             <AiPaneTabStrip
@@ -933,7 +996,7 @@ function AiPaneInner({ isOpen, onClose, onExpand, initialScope = 'global', proje
           </div>
           
           {/* Right side: Essential controls only */}
-          <div className="flex items-center gap-2">
+          <div className="flex items-center gap-2 border-b border-gray-200">
             <HistoryDropdown 
               onSelectThread={handleSelectThread}
               activeThreadId={active?.id}
@@ -1043,7 +1106,7 @@ function AiPaneInner({ isOpen, onClose, onExpand, initialScope = 'global', proje
       >
         <div className="h-full flex flex-col">
           {/* Simplified header with tabs on left, controls on right */}
-          <div className={`${COMPACT_PANE_HEADER_ROW_CLASS} !items-stretch border-b border-gray-200 bg-white pl-0 pr-3 shrink-0`}>
+          <div className={`${COMPACT_PANE_HEADER_ROW_CLASS} !items-stretch bg-white pl-0 pr-3 shrink-0`}>
             {/* Left side: Tabs */}
             <div className="flex min-h-0 min-w-0 flex-1 items-stretch">
               <AiPaneTabStrip
@@ -1065,7 +1128,7 @@ function AiPaneInner({ isOpen, onClose, onExpand, initialScope = 'global', proje
             </div>
             
             {/* Right side: Essential controls only */}
-            <div className="flex items-center gap-2">
+            <div className="flex items-center gap-2 border-b border-gray-200">
               <HistoryDropdown 
                 onSelectThread={handleSelectThread}
                 activeThreadId={active?.id}

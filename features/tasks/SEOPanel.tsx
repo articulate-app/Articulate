@@ -4,6 +4,8 @@ import React, { useState, useCallback, useEffect, useMemo, useRef } from 'react'
 import { Button } from '../../app/components/ui/button'
 import { Input } from '../../app/components/ui/input'
 import { Check, AlertCircle, Info, Star, X, ChevronDown, ChevronRight, Loader2, Globe2 } from 'lucide-react'
+import { AddDashedButton } from '../../app/components/ui/add-dashed-button'
+import { SeoKeywordResearchInline } from './components/seo-keyword-research-inline'
 import { toast } from '../../app/components/ui/use-toast'
 import { createClientComponentClient } from '@supabase/auth-helpers-nextjs'
 import debounce from 'lodash.debounce'
@@ -16,6 +18,7 @@ import { regions } from '../../app/lib/geoLanguageMaps'
 import { useSeoCompetitorSnapshot } from './hooks/use-seo-competitor-snapshot'
 import { useKeywordIdeasMetrics } from './hooks/use-keyword-ideas-metrics'
 import { Popover, PopoverContent, PopoverTrigger } from '../../app/components/ui/popover'
+import { IconTooltip } from '../../app/components/ui/icon-tooltip'
 import { useCurrentUserStore } from '../../app/store/current-user'
 import { KeywordMetricSeparator, KeywordMetricStat } from './components/keyword-metric-stat'
 
@@ -205,6 +208,7 @@ export function SEOPanel({
   const [taskLanguageName, setTaskLanguageName] = useState<string | null>(null)
   const [taskLanguageCode, setTaskLanguageCode] = useState<string | null>(null)
   const [isKeywordSuggestionsOpen, setIsKeywordSuggestionsOpen] = useState(false)
+  const [addKeywordMode, setAddKeywordMode] = useState<'type' | 'research'>('type')
   const [isLoadingKeywordSuggestions, setIsLoadingKeywordSuggestions] = useState(false)
   const [suggestedKeywords, setSuggestedKeywords] = useState<SuggestedKeyword[]>([])
   const [hasLoadedKeywordSuggestions, setHasLoadedKeywordSuggestions] = useState(false)
@@ -1273,9 +1277,28 @@ export function SEOPanel({
     if (typeof value !== "number" || !Number.isFinite(value) || value <= 0) {
       return "text-gray-400"
     }
-    if (value < 1000) return "text-gray-500"
-    if (value < 10000) return "text-gray-600"
-    return "text-blue-600"
+    if (value < 1000) return "text-slate-600"
+    if (value < 10000) return "text-sky-700"
+    if (value < 50000) return "text-blue-700"
+    return "text-indigo-700"
+  }, [])
+
+  /** Soft chip styles for collapsed keyword metrics (density / SV). */
+  const getDensityChipClass = useCallback((density: number) => {
+    const tone = getDensityColor(density).color
+    if (tone.includes("green")) return "bg-emerald-50 text-emerald-700"
+    if (tone.includes("yellow")) return "bg-amber-50 text-amber-700"
+    return "bg-red-50 text-red-700"
+  }, [])
+
+  const getSearchVolumeChipClass = useCallback((value: number | null | undefined) => {
+    if (typeof value !== "number" || !Number.isFinite(value) || value <= 0) {
+      return "bg-gray-50 text-gray-400"
+    }
+    if (value < 1000) return "bg-slate-50 text-slate-600"
+    if (value < 10000) return "bg-sky-50 text-sky-700"
+    if (value < 50000) return "bg-blue-50 text-blue-700"
+    return "bg-indigo-50 text-indigo-700"
   }, [])
 
   const getKeywordDifficultyTone = useCallback((value: number | null | undefined) => {
@@ -1326,83 +1349,155 @@ export function SEOPanel({
 
   const selectedCountryLabel = SEO_REGION_OPTIONS.find((option) => option.value === seoRegionId)?.label ?? "All countries"
 
+  const researchRegionId = seoRegionId > 0 ? String(seoRegionId) : ""
+
   const addKeywordComposer = (
-    <div className="group relative rounded-md border border-border/80 bg-background">
-      <div className="flex min-w-0 items-center gap-1.5 px-3 py-2">
-        <div className="min-w-0 flex-1">
-          <Input
-            ref={addKeywordInputRef}
-            placeholder="Add keyword"
-            value={newKeywordValue}
-            onChange={(event) => setNewKeywordValue(event.target.value)}
-            onFocus={() => {
-              setIsKeywordSuggestionsOpen(true)
-              void loadKeywordSuggestionsIfNeeded()
-            }}
-            onKeyDown={(event) => {
-              if (event.key === "Enter") {
-                event.preventDefault()
-                void handleAddKeyword()
-              }
-              if (event.key === "Escape") {
-                event.preventDefault()
-                setIsKeywordSuggestionsOpen(false)
-                setNewKeywordValue("")
-              }
-            }}
-            className="h-8 min-h-0 w-full min-w-0 border-0 bg-transparent px-0 py-0 text-sm font-normal leading-5 shadow-none focus-visible:ring-0 focus-visible:outline-none"
+    <Popover
+      open={isKeywordSuggestionsOpen}
+      onOpenChange={(open) => {
+        setIsKeywordSuggestionsOpen(open)
+        if (open) {
+          setAddKeywordMode("type")
+          void loadKeywordSuggestionsIfNeeded()
+          requestAnimationFrame(() => addKeywordInputRef.current?.focus())
+        } else {
+          setNewKeywordValue("")
+          setAddKeywordMode("type")
+        }
+      }}
+    >
+      <PopoverTrigger asChild>
+        <AddDashedButton
+          label="Add keyword"
+          className="mt-0"
+          disabled={isUpdatingKeywords || isLoading}
+        />
+      </PopoverTrigger>
+      <PopoverContent
+        align="start"
+        sideOffset={6}
+        className="w-[var(--radix-popover-trigger-width)] rounded-lg border border-gray-200 bg-white p-0 shadow-lg"
+        onOpenAutoFocus={(event) => {
+          event.preventDefault()
+          addKeywordInputRef.current?.focus()
+        }}
+        onCloseAutoFocus={(event) => event.preventDefault()}
+      >
+        {/* Keep both modes mounted so switching tabs does not dismiss the popover. */}
+        <div className={addKeywordMode === "type" ? "block" : "hidden"}>
+          <div className="space-y-3 p-3">
+            <div className="flex items-center justify-between gap-2">
+              <div className="text-sm font-medium text-gray-900">Add keyword</div>
+              <Button
+                type="button"
+                size="sm"
+                variant="outline"
+                className="h-7 px-2 text-xs"
+                onMouseDown={(event) => event.preventDefault()}
+                onClick={() => setAddKeywordMode("research")}
+              >
+                Search for keywords
+              </Button>
+            </div>
+            <div className="flex items-center gap-2">
+              <Input
+                ref={addKeywordInputRef}
+                placeholder="Type a keyword"
+                value={newKeywordValue}
+                onChange={(event) => setNewKeywordValue(event.target.value)}
+                onKeyDown={(event) => {
+                  if (event.key === "Enter") {
+                    event.preventDefault()
+                    void handleAddKeyword()
+                  }
+                  if (event.key === "Escape") {
+                    event.preventDefault()
+                    setIsKeywordSuggestionsOpen(false)
+                    setNewKeywordValue("")
+                  }
+                }}
+                className="h-8 min-w-0 flex-1 text-sm"
+                disabled={isUpdatingKeywords || isLoading}
+              />
+              <Button
+                type="button"
+                size="sm"
+                className="h-8 shrink-0 px-3 text-xs"
+                disabled={isUpdatingKeywords || isLoading || !newKeywordValue.trim()}
+                onClick={() => { void handleAddKeyword() }}
+              >
+                Add
+              </Button>
+            </div>
+          </div>
+          <div className="border-t border-gray-100">
+            {isLoadingKeywordSuggestions ? (
+              <div className="flex items-center gap-1.5 px-3 py-3 text-xs text-gray-500">
+                <Loader2 className="h-3.5 w-3.5 animate-spin text-gray-400" />
+                Loading suggestions…
+              </div>
+            ) : suggestedKeywords.length > 0 ? (
+              <div className="max-h-56 overflow-y-auto py-1">
+                {suggestedKeywords.map((suggestion) => (
+                  <button
+                    key={`${suggestion.keyword}-${suggestion.source ?? "local"}`}
+                    type="button"
+                    className="flex w-full items-center gap-2 px-3 py-1.5 text-left text-sm text-gray-700 transition-colors hover:bg-gray-50"
+                    onMouseDown={(event) => {
+                      event.preventDefault()
+                    }}
+                    onClick={() => {
+                      void handleSuggestedKeywordClick(suggestion.keyword)
+                    }}
+                  >
+                    <span className="min-w-0 flex-1 truncate">{suggestion.keyword}</span>
+                    {(suggestion.volume != null || suggestion.competitionIndex != null) ? (
+                      <span className="inline-flex shrink-0 items-center gap-1 text-xs text-gray-500">
+                        <KeywordMetricStat metric="volume">{formatMetricValue(suggestion.volume)}</KeywordMetricStat>
+                        <KeywordMetricSeparator />
+                        <KeywordMetricStat metric="difficulty">
+                          {formatMetricValue(suggestion.competitionIndex)}
+                        </KeywordMetricStat>
+                      </span>
+                    ) : null}
+                  </button>
+                ))}
+              </div>
+            ) : (
+              <p className="px-3 py-3 text-xs text-gray-500">No keyword suggestions yet. Type one above to add it.</p>
+            )}
+          </div>
+        </div>
+
+        <div className={addKeywordMode === "research" ? "block" : "hidden"}>
+          <div className="flex items-center justify-between gap-2 border-b border-gray-100 px-3 py-2.5">
+            <div className="text-sm font-medium text-gray-900">Search for keywords</div>
+            <Button
+              type="button"
+              size="sm"
+              variant="ghost"
+              className="h-7 px-2 text-xs"
+              onMouseDown={(event) => event.preventDefault()}
+              onClick={() => {
+                setAddKeywordMode("type")
+                requestAnimationFrame(() => addKeywordInputRef.current?.focus())
+              }}
+            >
+              Type a keyword
+            </Button>
+          </div>
+          <SeoKeywordResearchInline
+            initialRegionId={researchRegionId}
+            existingKeywords={currentKeywordsSet}
             disabled={isUpdatingKeywords || isLoading}
+            autoFocus={addKeywordMode === "research"}
+            onSelectKeyword={async (keyword) => {
+              await handleAddKeyword(keyword)
+            }}
           />
         </div>
-        <Button
-          type="button"
-          size="sm"
-          variant="outline"
-          className="h-7 shrink-0 px-2 text-xs"
-          disabled={isUpdatingKeywords || isLoading || !newKeywordValue.trim()}
-          onClick={() => { void handleAddKeyword() }}
-        >
-          Add
-        </Button>
-      </div>
-      {isKeywordSuggestionsOpen ? (
-        <div className="border-t border-gray-100 px-3 pb-2 pt-1.5">
-          {isLoadingKeywordSuggestions ? (
-            <div className="inline-flex items-center gap-1 text-[11px] text-gray-500">
-              <Loader2 className="h-3 w-3 animate-spin text-gray-400" />
-              Loading suggestions...
-            </div>
-          ) : suggestedKeywords.length > 0 ? (
-            <div className="flex flex-wrap gap-1.5">
-              {suggestedKeywords.map((suggestion) => (
-                <button
-                  key={`${suggestion.keyword}-${suggestion.source ?? "local"}`}
-                  type="button"
-                  className="inline-flex items-center gap-1 rounded-full border border-gray-200 bg-gray-50 px-2 py-1 text-[11px] text-gray-700 transition-colors hover:border-gray-300 hover:bg-white"
-                  onMouseDown={(event) => {
-                    event.preventDefault()
-                  }}
-                  onClick={() => {
-                    void handleSuggestedKeywordClick(suggestion.keyword)
-                  }}
-                >
-                  <span className="truncate max-w-[220px]">{suggestion.keyword}</span>
-                  {(suggestion.volume != null || suggestion.competitionIndex != null) ? (
-                    <span className="inline-flex items-center gap-1">
-                      <KeywordMetricStat metric="volume">{formatMetricValue(suggestion.volume)}</KeywordMetricStat>
-                      <KeywordMetricSeparator />
-                      <KeywordMetricStat metric="difficulty">
-                        {formatMetricValue(suggestion.competitionIndex)}
-                      </KeywordMetricStat>
-                    </span>
-                  ) : null}
-                </button>
-              ))}
-            </div>
-          ) : null}
-        </div>
-      ) : null}
-    </div>
+      </PopoverContent>
+    </Popover>
   )
 
   const toggleKeywordTopResults = useCallback((keyword: string) => {
@@ -1601,33 +1696,33 @@ export function SEOPanel({
           {keywordRows.map((row) => {
             const metric = getKeywordMetric(row.keyword)
             const isEditingRow = isEditingSelectedKeyword && editingOriginalValue === row.keyword
-            const isTopResultsExpanded = isTaskChannel && expandedTopResultsKeyword === row.keyword
+            const isKeywordExpanded = expandedTopResultsKeyword === row.keyword
+            const densityChipClass = getDensityChipClass(row.density)
+            const volumeChipClass = getSearchVolumeChipClass(metric?.volume)
             return (
               <div
                 key={row.keyword}
                 className={`group relative overflow-hidden rounded-md border border-border/80 bg-background transition-colors ${
-                  isTopResultsExpanded ? "border-border ring-1 ring-border/30" : ""
+                  isKeywordExpanded ? "border-border ring-1 ring-border/30" : ""
                 }`}
               >
                 <div className="flex min-w-0 items-center gap-1.5 px-3 py-2">
-                  {isTaskChannel ? (
-                    <button
-                      type="button"
-                      className="inline-flex h-6 w-6 shrink-0 items-center justify-center rounded text-muted-foreground hover:bg-accent hover:text-gray-600"
-                      aria-label={isTopResultsExpanded ? "Collapse top results" : "Expand top results"}
-                      aria-expanded={isTopResultsExpanded}
-                      onClick={(event) => {
-                        event.stopPropagation()
-                        toggleKeywordTopResults(row.keyword)
-                      }}
-                    >
-                      <ChevronDown
-                        className={`h-4 w-4 transition-transform duration-150 ${
-                          isTopResultsExpanded ? "rotate-0" : "-rotate-90"
-                        }`}
-                      />
-                    </button>
-                  ) : null}
+                  <button
+                    type="button"
+                    className="inline-flex h-6 w-6 shrink-0 items-center justify-center rounded text-muted-foreground hover:bg-accent hover:text-gray-600"
+                    aria-label={isKeywordExpanded ? "Collapse keyword details" : "Expand keyword details"}
+                    aria-expanded={isKeywordExpanded}
+                    onClick={(event) => {
+                      event.stopPropagation()
+                      toggleKeywordTopResults(row.keyword)
+                    }}
+                  >
+                    <ChevronDown
+                      className={`h-4 w-4 transition-transform duration-150 ${
+                        isKeywordExpanded ? "rotate-0" : "-rotate-90"
+                      }`}
+                    />
+                  </button>
                   <div
                     className="flex h-8 min-w-0 flex-1 items-center"
                     onDoubleClick={() => {
@@ -1663,17 +1758,53 @@ export function SEOPanel({
                     )}
                   </div>
                   {!isEditingRow ? (
-                    <div className="hidden shrink-0 items-center gap-1.5 sm:flex">
+                    <div className="flex shrink-0 items-center gap-1">
+                      <IconTooltip label="Share of words in content that match this keyword" side="top">
+                        <span
+                          className={`inline-flex min-w-[2.25rem] items-center justify-center rounded-md px-1.5 py-0.5 text-[11px] font-medium tabular-nums ${densityChipClass}`}
+                        >
+                          {row.density.toFixed(0)}%
+                        </span>
+                      </IconTooltip>
+                      {metric?.isLoading ? (
+                        <Loader2 className="h-3.5 w-3.5 animate-spin text-gray-300" />
+                      ) : (
+                        <IconTooltip label="Average monthly search volume" side="top">
+                          <span
+                            className={`inline-flex min-w-[2.5rem] items-center justify-center rounded-md px-1.5 py-0.5 text-[11px] font-medium tabular-nums ${volumeChipClass}`}
+                          >
+                            {formatMetricValue(metric?.volume)}
+                          </span>
+                        </IconTooltip>
+                      )}
+                    </div>
+                  ) : null}
+                  <button
+                    type="button"
+                    className="rounded p-1 text-gray-400 opacity-50 transition-opacity hover:text-red-500 group-hover:opacity-100"
+                    title="Remove keyword"
+                    aria-label="Remove keyword"
+                    onClick={(event) => {
+                      event.stopPropagation()
+                      handleRemoveKeyword(row.keyword)
+                    }}
+                  >
+                    <X className="h-3.5 w-3.5" />
+                  </button>
+                </div>
+                {isKeywordExpanded ? (
+                  <div className="space-y-2 border-t border-gray-100 px-3 pb-2 pt-1.5">
+                    <div className="flex flex-wrap items-center gap-1.5">
                       <KeywordMetricStat metric="uses">{row.occurrences.toLocaleString()}</KeywordMetricStat>
                       <KeywordMetricSeparator />
                       <KeywordMetricStat metric="density" valueClassName={getDensityColor(row.density).color}>
                         {row.density.toFixed(0)}%
                       </KeywordMetricStat>
+                      <KeywordMetricSeparator />
                       {metric?.isLoading ? (
                         <Loader2 className="h-3 w-3 animate-spin text-gray-300" />
                       ) : (
                         <>
-                          <KeywordMetricSeparator />
                           <KeywordMetricStat metric="volume" valueClassName={getSearchVolumeTone(metric?.volume)}>
                             {formatMetricValue(metric?.volume)}
                           </KeywordMetricStat>
@@ -1683,61 +1814,21 @@ export function SEOPanel({
                           </KeywordMetricStat>
                         </>
                       )}
+                      <button
+                        type="button"
+                        className="ml-auto inline-flex items-center gap-1 rounded px-1.5 py-0.5 text-xs text-gray-500 hover:bg-gray-50 hover:text-gray-700"
+                        title="Make primary"
+                        aria-label="Make primary"
+                        onClick={(event) => {
+                          event.stopPropagation()
+                          handleMakeDefaultKeyword(row.keyword)
+                        }}
+                      >
+                        <Star className={`h-3.5 w-3.5 ${row.isPrimary ? "fill-gray-600 text-gray-600" : "text-gray-300"}`} />
+                        {row.isPrimary ? "Primary" : "Make primary"}
+                      </button>
                     </div>
-                  ) : null}
-                  <div className="flex shrink-0 items-center gap-0.5 opacity-50 transition-opacity group-hover:opacity-100">
-                    <button
-                      type="button"
-                      className="rounded p-1 text-gray-400 hover:text-gray-600"
-                      title="Make primary"
-                      aria-label="Make primary"
-                      onClick={(event) => {
-                        event.stopPropagation()
-                        handleMakeDefaultKeyword(row.keyword)
-                      }}
-                    >
-                      <Star className={`h-3.5 w-3.5 ${row.isPrimary ? "fill-gray-600 text-gray-600" : "text-gray-300"}`} />
-                    </button>
-                    <button
-                      type="button"
-                      className="rounded p-1 text-gray-400 hover:text-red-500"
-                      title="Remove keyword"
-                      aria-label="Remove keyword"
-                      onClick={(event) => {
-                        event.stopPropagation()
-                        handleRemoveKeyword(row.keyword)
-                      }}
-                    >
-                      <X className="h-3.5 w-3.5" />
-                    </button>
-                  </div>
-                </div>
-                {!isEditingRow ? (
-                  <div className="flex items-center gap-1.5 px-2 pb-1.5 sm:hidden">
-                    <KeywordMetricStat metric="uses">{row.occurrences.toLocaleString()}</KeywordMetricStat>
-                    <KeywordMetricSeparator />
-                    <KeywordMetricStat metric="density" valueClassName={getDensityColor(row.density).color}>
-                      {row.density.toFixed(0)}%
-                    </KeywordMetricStat>
-                    {!metric?.isLoading ? (
-                      <>
-                        <KeywordMetricSeparator />
-                        <KeywordMetricStat metric="volume" valueClassName={getSearchVolumeTone(metric?.volume)}>
-                          {formatMetricValue(metric?.volume)}
-                        </KeywordMetricStat>
-                        <KeywordMetricSeparator />
-                        <KeywordMetricStat metric="difficulty" valueClassName={getKeywordDifficultyTone(metric?.competition)}>
-                          {formatMetricValue(metric?.competition)}
-                        </KeywordMetricStat>
-                      </>
-                    ) : (
-                      <Loader2 className="h-3 w-3 animate-spin text-gray-300" />
-                    )}
-                  </div>
-                ) : null}
-                {isTopResultsExpanded ? (
-                  <div className="border-t border-gray-100 px-2 pb-2 pt-1.5">
-                    {renderTopResultsContent(row.keyword)}
+                    {isTaskChannel ? renderTopResultsContent(row.keyword) : null}
                   </div>
                 ) : null}
               </div>

@@ -2,6 +2,7 @@
 
 import { useMemo } from "react";
 import { useSearchParams } from "next/navigation";
+import { useTasksScope } from "../contexts/tasks-scope-context";
 
 /** URL param keys (pills + filter pane) -> RPC filter keys. Same as unified-grouped-task-list. */
 const FILTER_MAPPING: Record<string, string> = {
@@ -20,6 +21,8 @@ const FILTER_MAPPING: Record<string, string> = {
  */
 export function useTasksUrlFilters(): Record<string, string | string[]> {
   const params = useSearchParams();
+  const { scope } = useTasksScope();
+  const scopeAssigneeId = scope.type === "user" ? scope.userId : undefined;
   return useMemo(() => {
     const out: Record<string, string | string[]> = {};
     for (const [urlKey, filterKey] of Object.entries(FILTER_MAPPING)) {
@@ -36,6 +39,9 @@ export function useTasksUrlFilters(): Record<string, string | string[]> {
     if (deliveryDateTo) out["delivery_date_lt"] = deliveryDateTo;
     if (publicationDateFrom) out["publication_date_gte"] = publicationDateFrom;
     if (publicationDateTo) out["publication_date_lt"] = publicationDateTo;
+    if (scopeAssigneeId != null && Number.isFinite(scopeAssigneeId)) {
+      out["assigned_to_name"] = String(scopeAssigneeId);
+    }
     return out;
-  }, [params.toString()]);
+  }, [params.toString(), scopeAssigneeId]);
 }

@@ -42,15 +42,25 @@ export type WorkUnitAuditPersistedOrderItem = {
 
 export type WorkUnitAuditRepair = {
   validationIssues: string[]
+  /** Raw issue rows for aggregation (codes + component titles). */
+  validationIssueRows: unknown[]
   succeeded: boolean | null
   remainingIssues: string[]
+  remainingIssueRows: unknown[]
+  errorCode: string | null
+  errorMessage: string | null
 }
 
 export type WorkUnitComponentAudit = {
   unitId: string
   discoveryStarted: boolean
   discoveryOrder: string[]
+  /** @deprecated Prefer `selectedComponents` — kept for callers that still read this field. */
   currentComponents: WorkUnitAuditCurrentComponent[]
+  /** Active/selected task components discovered for this unit. */
+  selectedComponents: WorkUnitAuditCurrentComponent[]
+  /** Inactive task components available for reuse (never labeled as selected). */
+  inactiveComponents: WorkUnitAuditCurrentComponent[]
   reusableGroups: WorkUnitAuditReusableGroup[]
   requiredComponents: WorkUnitAuditRequiredComponent[]
   decisions: WorkUnitAuditDecision[]
@@ -58,6 +68,32 @@ export type WorkUnitComponentAudit = {
   persistedOrder: WorkUnitAuditPersistedOrderItem[]
   repair: WorkUnitAuditRepair | null
   hasAnyTrace: boolean
+}
+
+/** User-facing label for structure actions (never "Created" for reactivation). */
+export function formatStructureActionLabel(action: string | null | undefined): string {
+  const normalized = (action ?? "").trim().toLowerCase()
+  if (!normalized) return "Used"
+  if (
+    normalized === "reactivate_existing"
+    || normalized === "reactivate"
+    || normalized === "reactivated"
+  ) {
+    return "Reused and reactivated"
+  }
+  if (normalized === "replace_existing" || normalized === "reuse" || normalized === "reuse_existing") {
+    return "Reused"
+  }
+  if (normalized.startsWith("create") || normalized === "created") {
+    return "Created"
+  }
+  if (normalized.startsWith("deactivate") || normalized === "deactivate_existing") {
+    return "Deactivated"
+  }
+  if (normalized === "keep" || normalized === "keep_existing") {
+    return "Kept"
+  }
+  return action?.trim() || "Used"
 }
 
 function toTrimmedString(value: unknown): string | null {
@@ -84,6 +120,14 @@ function asRecord(value: unknown): Record<string, unknown> | null {
     : null
 }
 
+function parseIssueRows(value: unknown): unknown[] {
+  if (!Array.isArray(value)) {
+    const single = toTrimmedString(value)
+    return single ? [single] : []
+  }
+  return value.filter((row) => row != null)
+}
+
 function parseIssueList(value: unknown): string[] {
   if (!Array.isArray(value)) {
     const single = toTrimmedString(value)
@@ -102,6 +146,7 @@ function parseIssueList(value: unknown): string[] {
       ?? toTrimmedString(record.issue)
       ?? toTrimmedString(record.error)
       ?? toTrimmedString(record.reason)
+      ?? toTrimmedString(record.code)
     if (message) out.push(message)
   }
   return out
@@ -286,6 +331,8 @@ function emptyAudit(unitId: string): WorkUnitComponentAudit {
     discoveryStarted: false,
     discoveryOrder: [],
     currentComponents: [],
+    selectedComponents: [],
+    inactiveComponents: [],
     reusableGroups: [],
     requiredComponents: [],
     decisions: [],
@@ -343,12 +390,60 @@ export function reduceWorkUnitComponentAudit(
       )
       if (order.length > 0) audit.discoveryOrder = order
 
-      const current = firstNonEmptyList(
-        parseCurrentComponents(payload.current_components),
-        parseCurrentComponents(payload.currentComponents),
-        parseCurrentComponents(payload.components),
+      const selectedIds = Array.isArray(payload.selected_component_ids)
+        ? payload.selected_component_ids
+        : Array.isArray(payload.selectedComponentIds)
+          ? payload.selectedComponentIds
+          : null
+      // Never label post-preparation `current_components` as user-selected when
+      // `selected_component_ids` is empty/absent.
+      const selected = firstNonEmptyList(
+        parseCurrentComponents(payload.selected_components),
+        parseCurrentComponents(payload.selectedComponents),
+        selectedIds != null && selectedIds.length > 0
+          ? parseCurrentComponents(payload.current_components)
+          : [],
+        selectedIds != null && selectedIds.length > 0
+          ? parseCurrentComponents(payload.currentComponents)
+          : [],
       )
-      if (current.length > 0) audit.currentComponents = current
+      if (selected.length > 0) {
+        audit.selectedComponents = selected
+        audit.currentComponents = selected
+      }
+
+      const inactive = firstNonEmptyList(
+        parseCurrentComponents(payload.inactive_components),
+        parseCurrentComponents(payload.inactiveComponents),
+        parseCurrentComponents(payload.inactive_task_components),
+        parseCurrentComponents(payload.inactiveTaskComponents),
+      )
+      if (inactive.length > 0) audit.inactiveComponents = inactive
+
+      // Active components for display (not labeled "selected" unless selection ids exist).
+      if (selected.length === 0) {
+        const active = firstNonEmptyList(
+          parseCurrentComponents(payload.active_components),
+          parseCurrentComponents(payload.activeComponents),
+          parseCurrentComponents(payload.current_components),
+          parseCurrentComponents(payload.currentComponents),
+        )
+        // Keep currentComponents as active inventory for legacy readers, but leave
+        // selectedComponents empty so the UI does not call them "selected".
+        if (active.length > 0) audit.currentComponents = active
+      }
+
+      // Legacy payloads that only send `components` without selected/inactive split.
+      if (
+        selected.length === 0
+        && inactive.length === 0
+        && audit.currentComponents.length === 0
+      ) {
+        const legacy = parseCurrentComponents(payload.components)
+        if (legacy.length > 0) {
+          audit.currentComponents = legacy
+        }
+      }
 
       const groups = firstNonEmptyList(
         parseReusableGroups(payload.reusable_groups),
@@ -363,6 +458,18 @@ export function reduceWorkUnitComponentAudit(
       )
       if (required.length > 0) audit.requiredComponents = required
 
+      audit.hasAnyTrace = true
+      continue
+    }
+
+    if (isEventType(eventType, "required_structure_prepared")) {
+      const finalStructure = firstNonEmptyList(
+        parseFinalStructure(payload.actions),
+        parseFinalStructure(payload.component_actions),
+        parseFinalStructure(payload.components),
+        parseFinalStructure(payload.final_structure),
+      )
+      if (finalStructure.length > 0) audit.finalStructure = finalStructure
       audit.hasAnyTrace = true
       continue
     }
@@ -399,44 +506,58 @@ export function reduceWorkUnitComponentAudit(
     }
 
     if (isEventType(eventType, "repair_started")) {
+      const issueRows = firstNonEmptyList(
+        parseIssueRows(payload.validation_issues),
+        parseIssueRows(payload.issues),
+        parseIssueRows(payload.errors),
+      )
       repair = {
-        validationIssues: firstNonEmptyList(
-          parseIssueList(payload.validation_issues),
-          parseIssueList(payload.issues),
-          parseIssueList(payload.errors),
-        ),
+        validationIssues: parseIssueList(issueRows),
+        validationIssueRows: issueRows,
         succeeded: null,
         remainingIssues: [],
+        remainingIssueRows: [],
+        errorCode: null,
+        errorMessage: null,
       }
       audit.hasAnyTrace = true
       continue
     }
 
     if (isEventType(eventType, "repair_finished")) {
-      const base: {
-        validationIssues: string[]
-        succeeded: boolean | null
-        remainingIssues: string[]
-      } = repair ?? {
-        validationIssues: parseIssueList(payload.validation_issues),
-        succeeded: null,
-        remainingIssues: [],
-      }
+      const issueRows: unknown[] = firstNonEmptyList(
+        repair?.validationIssueRows ?? [],
+        parseIssueRows(payload.validation_issues),
+        parseIssueRows(payload.issues),
+      )
+      const remainingRows: unknown[] = firstNonEmptyList(
+        parseIssueRows(payload.remaining_issues),
+        parseIssueRows(payload.remainingIssues),
+        parseIssueRows(payload.unresolved_issues),
+      )
       repair = {
         validationIssues: firstNonEmptyList(
-          base.validationIssues,
-          parseIssueList(payload.validation_issues),
-          parseIssueList(payload.issues),
+          repair?.validationIssues ?? [],
+          parseIssueList(issueRows),
         ),
+        validationIssueRows: issueRows,
         succeeded:
           toBoolean(payload.succeeded)
           ?? toBoolean(payload.ok)
           ?? toBoolean(payload.repair_succeeded),
-        remainingIssues: firstNonEmptyList(
-          parseIssueList(payload.remaining_issues),
-          parseIssueList(payload.remainingIssues),
-          parseIssueList(payload.unresolved_issues),
-        ),
+        remainingIssues: parseIssueList(remainingRows),
+        remainingIssueRows: remainingRows,
+        errorCode:
+          toTrimmedString(payload.error_code)
+          ?? toTrimmedString(payload.code)
+          ?? repair?.errorCode
+          ?? null,
+        errorMessage:
+          toTrimmedString(payload.error_message)
+          ?? toTrimmedString(payload.error)
+          ?? toTrimmedString(payload.message)
+          ?? repair?.errorMessage
+          ?? null,
       }
       audit.hasAnyTrace = true
     }

@@ -38,6 +38,8 @@ export type WorkspaceUrlState = {
   splitView?: string
   topView?: string
   bottomView?: string
+  settings?: string
+  settingsCategory?: string
 }
 
 export type WorkspaceUrlPatch = Record<string, string | number | boolean | null | undefined>
@@ -78,6 +80,8 @@ const KNOWN_KEYS: Array<keyof WorkspaceUrlState> = [
   "splitView",
   "topView",
   "bottomView",
+  "settings",
+  "settingsCategory",
 ]
 
 let latestWorkspaceUrlRevision = 0

@@ -1,6 +1,6 @@
 "use client"
 
-import React, { useState, useEffect, useMemo, useRef, useCallback, startTransition } from 'react'
+import React, { useState, useEffect, useMemo, useRef, useCallback, startTransition, forwardRef, useImperativeHandle } from 'react'
 import { useSearchParams, useRouter, usePathname } from 'next/navigation'
 import { DocumentsSummaryCards } from '../../components/documents/DocumentsSummaryCards'
 import { DocumentsFilters } from '../../components/documents/DocumentsFilters'
@@ -23,6 +23,10 @@ import { useTaskEditFields } from '../../hooks/use-task-edit-fields'
 import { SearchFilterBar } from '../../components/ui/search-filter-bar'
 import { FilterBadges } from '../../../components/ui/filter-badges'
 import { parseDocumentsFiltersFromUrl, parseDocumentsSortFromUrl, parseGroupingModeFromUrl, buildDocumentsTrailingQuery } from '../../lib/services/documents'
+import {
+  DOCUMENTS_ALL_TIME_DATE_FROM,
+  isDocumentsAllTimeDateFrom,
+} from '../../lib/services/documents-postgrest-rpc'
 import { supabaseRpcFetch } from '../../lib/services/documents-postgrest-rpc'
 import { useDebounce } from '../../hooks/use-debounce'
 import { useQueryClient, useQuery } from '@tanstack/react-query'
@@ -34,6 +38,8 @@ import { CreditNoteCreateModal } from '../../components/credit-notes/CreditNoteC
 import { optimisticallyUpdateTotals, type DocumentGroupTotals } from '../../lib/services/document-group-totals'
 import { getDocumentGroupKey, getDefaultSortForGrouping, type GroupingMode } from '../../lib/utils/document-grouping'
 import type { DocumentsFilters as DocumentsFiltersType, DocumentsSortConfig, DocumentRow } from '../../lib/types/documents'
+import { Dialog, DialogContent, DialogTitle } from '../../components/ui/dialog'
+import { cn } from '@/lib/utils'
 
 interface DocumentsPageProps {
   onFilterClick?: () => void
@@ -43,21 +49,89 @@ interface DocumentsPageProps {
   onSearchChange?: (value: string) => void
   isSidebarCollapsed?: boolean
   onSidebarToggle?: () => void
+  /** Compact team-settings embed: local state, no page chrome URL sync. */
+  embedded?: boolean
+  /** Scope list to docs where this team is from OR to (identical from/to filter arrays). */
+  involvingTeamId?: number
+  involvingTeamName?: string
+  /** Open document details in a dialog instead of fixed right panes. */
+  detailsAsModal?: boolean
+  /** Hide the From team column (useful in team-scoped views). */
+  hideFromColumn?: boolean
+  /** Preview mode: show only this many docs + See all. */
+  previewLimit?: number
+  onSeeAll?: () => void
+  /** Hide Add in the filter bar when the parent renders it elsewhere. */
+  hideAddMenu?: boolean
 }
 
-export function DocumentsPage({ 
+export type DocumentsPageHandle = {
+  openCreateInvoice: () => void
+  openCreatePayment: () => void
+  openCreateCreditNote: () => void
+  openFilters: () => void
+}
+
+function buildEmptyDocumentsFilters(involvingTeamId?: number): DocumentsFiltersType {
+  const teamKey = involvingTeamId && involvingTeamId > 0 ? String(involvingTeamId) : null
+  return {
+    q: '',
+    direction: '',
+    kind: [],
+    status: [],
+    currency: '',
+    fromTeam: teamKey ? [teamKey] : [],
+    toTeam: teamKey ? [teamKey] : [],
+    // Team billing defaults to All Time — rolling 6-month window hides older issued invoices.
+    fromDate: teamKey ? DOCUMENTS_ALL_TIME_DATE_FROM : '',
+    toDate: '',
+    projects: [],
+  }
+}
+
+export const DocumentsPage = forwardRef<DocumentsPageHandle, DocumentsPageProps>(function DocumentsPage({ 
   onFilterClick: layoutOnFilterClick,
   isFilterOpen: layoutIsFilterOpen,
   setIsFilterOpen: layoutSetIsFilterOpen,
   searchValue: layoutSearchValue,
   onSearchChange: layoutOnSearchChange,
   isSidebarCollapsed,
-  onSidebarToggle
-}: DocumentsPageProps = {}) {
+  onSidebarToggle,
+  embedded = false,
+  involvingTeamId,
+  involvingTeamName,
+  detailsAsModal = false,
+  hideFromColumn = false,
+  previewLimit,
+  onSeeAll,
+  hideAddMenu = false,
+}: DocumentsPageProps = {}, ref) {
   const router = useRouter()
   const pathname = usePathname()
   const params = useSearchParams()
   const queryClient = useQueryClient()
+  const useModalDetails = detailsAsModal || embedded
+  const involvingTeamKey =
+    involvingTeamId && involvingTeamId > 0 ? String(involvingTeamId) : null
+
+  const withInvolvingTeamScope = useCallback((next: DocumentsFiltersType): DocumentsFiltersType => {
+    if (!involvingTeamKey) return next
+    // Counterparty filter: other teams in toTeam mean account ↔ counterparty either side.
+    // Empty / account-only toTeam keeps involving-OR (docs touching this team on either side).
+    const counterparties = (next.toTeam ?? []).filter((id) => id !== involvingTeamKey)
+    if (counterparties.length > 0) {
+      return {
+        ...next,
+        fromTeam: [involvingTeamKey],
+        toTeam: counterparties,
+      }
+    }
+    return {
+      ...next,
+      fromTeam: [involvingTeamKey],
+      toTeam: [involvingTeamKey],
+    }
+  }, [involvingTeamKey])
   
   // State for selected document and filters
   const [selectedDocument, setSelectedDocument] = useState<DocumentRow | null>(null)
@@ -213,21 +287,20 @@ export function DocumentsPage({
   const [isCreateInvoiceModalOpen, setIsCreateInvoiceModalOpen] = useState(false)
   const [isCreatePaymentModalOpen, setIsCreatePaymentModalOpen] = useState(false)
   const [isCreateCreditNoteModalOpen, setIsCreateCreditNoteModalOpen] = useState(false)
-  
+
   const isFilterOpen = layoutIsFilterOpen !== undefined ? layoutIsFilterOpen : localIsFilterOpen
   const setIsFilterOpen = layoutSetIsFilterOpen || setLocalIsFilterOpen
-  const [filters, setFilters] = useState<DocumentsFiltersType>({
-    q: '',
-    direction: '', // No default - let user choose
-    kind: [], // No default - show all types
-    status: [],
-    currency: '',
-    fromTeam: [],
-    toTeam: [],
-    fromDate: '',
-    toDate: '',
-    projects: [],
-  })
+
+  useImperativeHandle(ref, () => ({
+    openCreateInvoice: () => setIsCreateInvoiceModalOpen(true),
+    openCreatePayment: () => setIsCreatePaymentModalOpen(true),
+    openCreateCreditNote: () => setIsCreateCreditNoteModalOpen(true),
+    openFilters: () => setIsFilterOpen(true),
+  }), [setIsFilterOpen])
+
+  const [filters, setFilters] = useState<DocumentsFiltersType>(() =>
+    buildEmptyDocumentsFilters(involvingTeamId),
+  )
   const [sort, setSort] = useState<DocumentsSortConfig>({ 
     field: 'doc_date', 
     direction: 'desc' 
@@ -300,6 +373,12 @@ export function DocumentsPage({
   // Hydrate from URL on mount (only once)
   useEffect(() => {
     if (isHydrated.current) return
+
+    if (embedded) {
+      setFilters(buildEmptyDocumentsFilters(involvingTeamId))
+      isHydrated.current = true
+      return
+    }
     
     const urlFilters = parseDocumentsFiltersFromUrl(new URLSearchParams(params.toString()))
     const urlSort = parseDocumentsSortFromUrl(new URLSearchParams(params.toString()))
@@ -470,6 +549,8 @@ export function DocumentsPage({
     relatedDocId?: number | null, // null means explicitly remove, undefined means preserve current
     relatedDocType?: string | null // null means explicitly remove, undefined means preserve current
   ) => {
+    if (embedded) return
+
     // ✅ Start with CURRENT URL params to preserve everything
     const searchParams = new URLSearchParams(params.toString())
     
@@ -584,7 +665,7 @@ export function DocumentsPage({
         router.replace(newUrl, { scroll: false })
       })
     }
-  }, [params, pathname, router])
+  }, [embedded, params, pathname, router])
 
   // Track if we need to update URL after modal closes
   const pendingUrlUpdateRef = useRef<{ filters: DocumentsFiltersType; sort: DocumentsSortConfig } | null>(null)
@@ -607,7 +688,7 @@ export function DocumentsPage({
     pendingUrlUpdateRef.current = null
     
     console.log('[DocumentsPage] Debounced search changed:', debouncedSearch)
-    const newFilters = { ...filters, q: debouncedSearch }
+    const newFilters = withInvolvingTeamScope({ ...filters, q: debouncedSearch })
     setFilters(newFilters)
     // Use startTransition to defer router call and prevent blocking
     startTransition(() => {
@@ -657,8 +738,9 @@ export function DocumentsPage({
 
   // Handle filter changes
   const handleFiltersChange = (newFilters: DocumentsFiltersType) => {
-    setFilters(newFilters)
-    updateUrl(newFilters, sort)
+    const scoped = withInvolvingTeamScope(newFilters)
+    setFilters(scoped)
+    updateUrl(scoped, sort)
   }
 
   // Handle sort changes
@@ -863,7 +945,7 @@ export function DocumentsPage({
       })
     }
     
-    if (filters.fromTeam.length > 0) {
+    if (filters.fromTeam.length > 0 && !involvingTeamKey) {
       badges.push({
         id: 'fromTeam',
         label: 'From Team',
@@ -872,7 +954,7 @@ export function DocumentsPage({
       })
     }
     
-    if (filters.toTeam.length > 0) {
+    if (filters.toTeam.length > 0 && !involvingTeamKey) {
       badges.push({
         id: 'toTeam',
         label: 'To Team',
@@ -881,22 +963,44 @@ export function DocumentsPage({
       })
     }
 
+    if (involvingTeamKey) {
+      const counterparties = filters.toTeam.filter((id) => id !== involvingTeamKey)
+      if (counterparties.length > 0) {
+        badges.push({
+          id: 'counterparty',
+          label: 'Counterparty',
+          value: counterparties.join(', '),
+          onRemove: () =>
+            handleFiltersChange({
+              ...filters,
+              fromTeam: [involvingTeamKey],
+              toTeam: [involvingTeamKey],
+            }),
+        })
+      }
+    }
+
     if (filters.projects.length > 0) {
       badges.push({
         id: 'projects',
-        label: 'Projects',
+        label: 'Project',
         value: filters.projects.join(', '),
         onRemove: () => handleFiltersChange({ ...filters, projects: [] })
       })
     }
     
-    if (filters.fromDate || filters.toDate) {
+    if ((filters.fromDate || filters.toDate) && !(isDocumentsAllTimeDateFrom(filters.fromDate) && !filters.toDate)) {
       const dateRange = [filters.fromDate, filters.toDate].filter(Boolean).join(' - ')
       badges.push({
         id: 'dateRange',
         label: 'Date Range',
         value: dateRange,
-        onRemove: () => handleFiltersChange({ ...filters, fromDate: '', toDate: '' })
+        onRemove: () =>
+          handleFiltersChange({
+            ...filters,
+            fromDate: involvingTeamKey ? DOCUMENTS_ALL_TIME_DATE_FROM : '',
+            toDate: '',
+          }),
       })
     }
     
@@ -904,18 +1008,7 @@ export function DocumentsPage({
   }
 
   const handleClearAllFilters = () => {
-    const emptyFilters: DocumentsFiltersType = {
-      q: '',
-      direction: '',
-      kind: [],
-      status: [],
-      currency: '',
-      fromTeam: [],
-      toTeam: [],
-      fromDate: '',
-      toDate: '',
-      projects: [],
-    }
+    const emptyFilters = buildEmptyDocumentsFilters(involvingTeamId)
     setFilters(emptyFilters)
     setSearchInput('')
     updateUrl(emptyFilters, sort)
@@ -926,15 +1019,9 @@ export function DocumentsPage({
 
   if (!isClient) {
     return (
-      <div className="flex h-screen bg-white">
+      <div className={`flex bg-white ${embedded ? 'h-full' : 'h-screen'}`}>
         <div className="flex-1 flex flex-col min-w-0">
-          <div className="bg-white border-b border-gray-200 px-6 py-4">
-            <div className="flex items-center justify-between">
-              <h1 className="text-2xl font-semibold text-gray-900">Documents (Unified) --- Test</h1>
-              <div className="w-20 h-8 bg-gray-200 animate-pulse rounded"></div>
-            </div>
-          </div>
-          <div className="flex-1 flex items-center justify-center">
+          <div className="flex flex-1 items-center justify-center">
             <div className="text-gray-500">Loading...</div>
           </div>
         </div>
@@ -942,35 +1029,66 @@ export function DocumentsPage({
     )
   }
 
+  const detailsPane = selectedDocument ? (
+    <DocumentDetailsPane
+      key={`doc-${selectedDocument.doc_id}-${selectedDocument.doc_kind}`}
+      document={selectedDocument}
+      onClose={handleDocumentDetailsClose}
+      onDocumentUpdate={handleDocumentUpdate}
+      onDocumentDelete={handleDocumentDelete}
+      onDocumentCreate={handleDocumentCreate}
+      menuAction={menuAction}
+      onMenuActionHandled={() => setMenuAction(null)}
+      onMenuAction={setMenuAction}
+      onRelatedDocumentSelect={handleRelatedDocumentSelect}
+      showCloseButton
+    />
+  ) : null
+
+  const embeddedHiddenColumns = hideFromColumn
+    ? (['doc_number', 'direction', 'total_amount', 'from_team_name'] as const)
+    : ([] as const)
+
   return (
-    <div className="flex h-full relative">
+    <div className="relative flex h-full min-h-0 flex-col">
       {/* Main Content */}
-      <div className={`flex-1 flex flex-col min-w-0 transition-all duration-200 ${selectedDocument ? (isThirdPaneOpen ? 'w-[calc(100%-768px)]' : 'w-[calc(100%-384px)]') : 'w-full'}`}>
-      {/* Summary Cards */}
-      <div className="bg-white border-b border-gray-200 px-6 py-4">
-        <DocumentsSummaryCards 
-          filters={filters} 
-          onTimeFrameChange={(timeFrame) => {
-            // Handle time frame change - you can implement date filtering logic here
-            console.log('Time frame changed:', timeFrame)
-          }}
+      <div className={`flex min-h-0 flex-1 flex-col transition-all duration-200 ${
+        !useModalDetails && selectedDocument
+          ? (isThirdPaneOpen ? 'w-[calc(100%-768px)]' : 'w-[calc(100%-384px)]')
+          : 'w-full'
+      }`}>
+      {!embedded ? (
+        <div className="shrink-0 border-b border-gray-200 bg-white px-6 py-4">
+          <DocumentsSummaryCards
+            filters={filters}
+            onTimeFrameChange={(timeFrame) => {
+              console.log('Time frame changed:', timeFrame)
+            }}
+          />
+        </div>
+      ) : null}
+
+      {/* Unified Filter Bar */}
+      <div className={embedded ? 'shrink-0' : undefined}>
+        <DocumentsUnifiedFilterBar
+          filters={filters}
+          onFiltersChange={handleFiltersChange}
+          activeFilterBadges={activeFilterBadges}
+          onClearAllFilters={handleClearAllFilters}
+          onAddInvoice={() => setIsCreateInvoiceModalOpen(true)}
+          onAddPayment={() => setIsCreatePaymentModalOpen(true)}
+          onAddCreditNote={() => setIsCreateCreditNoteModalOpen(true)}
+          compactFilters={embedded}
+          involvingTeamId={involvingTeamId}
+          searchValue={embedded ? searchInput : undefined}
+          onSearchChange={embedded ? setSearchInput : undefined}
+          showAddMenu={!hideAddMenu}
         />
       </div>
 
-      {/* Unified Filter Bar */}
-      <DocumentsUnifiedFilterBar
-        filters={filters}
-        onFiltersChange={handleFiltersChange}
-        activeFilterBadges={activeFilterBadges}
-        onClearAllFilters={handleClearAllFilters}
-        onAddInvoice={() => setIsCreateInvoiceModalOpen(true)}
-        onAddPayment={() => setIsCreatePaymentModalOpen(true)}
-        onAddCreditNote={() => setIsCreateCreditNoteModalOpen(true)}
-      />
-
 
       {/* Table */}
-      <div className="flex-1 min-h-0">
+      <div className={cn('min-h-0', previewLimit == null ? 'flex-1' : undefined)}>
         <DocumentsTableGrouped
           filters={filters}
           sort={sort}
@@ -978,34 +1096,47 @@ export function DocumentsPage({
           onDocumentSelect={handleDocumentSelect}
           selectedDocument={selectedDocument}
           trailingQuery={trailingQuery}
-          hasRightPaneOpen={!!selectedDocument}
+          hasRightPaneOpen={!useModalDetails && !!selectedDocument}
           groupingMode={groupingMode}
           onGroupingModeChange={handleGroupingModeChange}
           optimisticGroupTotals={optimisticGroupTotals}
+          hiddenColumnIds={[...embeddedHiddenColumns]}
+          columnsStorageKey={embedded ? 'documentsTable:columns:team-billing' : 'documentsTable:columns'}
+          fillHeight={embedded && previewLimit == null}
+          compactDates={embedded}
+          listVariant={embedded ? 'activity' : 'table'}
+          previewLimit={previewLimit}
+          onSeeAll={onSeeAll}
         />
       </div>
       </div>
 
-      {/* Right Pane */}
-      {selectedDocument && (
+      {/* Details: modal (team settings) or fixed right panes (standalone page) */}
+      {useModalDetails ? (
+        <Dialog
+          open={!!selectedDocument}
+          onOpenChange={(open) => {
+            if (!open) handleDocumentDetailsClose()
+          }}
+        >
+          <DialogContent
+            showCloseButton={false}
+            className="flex h-[min(90vh,880px)] w-[min(96vw,720px)] max-w-none flex-col gap-0 overflow-hidden p-0 sm:rounded-lg"
+          >
+            <DialogTitle className="sr-only">Document details</DialogTitle>
+            <div className="min-h-0 flex-1 overflow-auto">
+              {detailsPane}
+            </div>
+          </DialogContent>
+        </Dialog>
+      ) : selectedDocument ? (
         <div className={`fixed top-0 bg-white border-l border-gray-200 flex flex-col h-screen z-40 shadow-lg transition-all duration-200 ${isThirdPaneOpen ? 'right-96 w-96' : 'right-0 w-96'}`}>
-          <DocumentDetailsPane
-            key={`doc-${selectedDocument.doc_id}-${selectedDocument.doc_kind}`}
-            document={selectedDocument}
-            onClose={handleDocumentDetailsClose}
-            onDocumentUpdate={handleDocumentUpdate}
-            onDocumentDelete={handleDocumentDelete}
-            onDocumentCreate={handleDocumentCreate}
-            menuAction={menuAction}
-            onMenuActionHandled={() => setMenuAction(null)}
-            onMenuAction={setMenuAction}
-            onRelatedDocumentSelect={handleRelatedDocumentSelect}
-          />
+          {detailsPane}
         </div>
-      )}
+      ) : null}
 
       {/* Third Pane - Related Document Details */}
-      {selectedRelatedDocument && (
+      {!useModalDetails && selectedRelatedDocument && (
         <div className="fixed top-0 right-0 w-96 bg-white border-l border-gray-200 flex flex-col h-screen z-50 shadow-lg">
           <div className="flex-1 overflow-auto">
             {/* Third pane content will be rendered here based on relatedDocumentType */}
@@ -1198,6 +1329,14 @@ export function DocumentsPage({
           setIsCreateInvoiceModalOpen(false)
         }}
         sortConfig={{ field: 'invoice_date', direction: 'desc' }}
+        fromContext={
+          involvingTeamId
+            ? {
+                issuerTeamId: involvingTeamId,
+                issuerTeamName: involvingTeamName,
+              }
+            : undefined
+        }
       />
 
       <SharedPaymentCreateModal
@@ -1209,6 +1348,14 @@ export function DocumentsPage({
         }}
         initialStep={1}
         sortConfig={{ field: 'payment_date', direction: 'desc' }}
+        fromContext={
+          involvingTeamId
+            ? {
+                payerTeamId: involvingTeamId,
+                payerTeamName: involvingTeamName,
+              }
+            : undefined
+        }
       />
 
       <CreditNoteCreateModal
@@ -1315,4 +1462,4 @@ export function DocumentsPage({
       />
     </div>
   )
-}
+})

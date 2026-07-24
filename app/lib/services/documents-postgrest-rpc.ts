@@ -86,6 +86,13 @@ export function getDocumentsDefaultDateFrom(): string {
   return formatDateYYYYMMDD(startOfMonthUtc)
 }
 
+/** Explicit lower bound used when the UI "All Time" filter is selected (RPC always requires p_date_from). */
+export const DOCUMENTS_ALL_TIME_DATE_FROM = '1970-01-01'
+
+export function isDocumentsAllTimeDateFrom(fromDate?: string | null): boolean {
+  return !fromDate || fromDate === DOCUMENTS_ALL_TIME_DATE_FROM
+}
+
 function pickSearchOrClause(orValues: string[]): string | null {
   // Prefer the "global search" OR clause that contains doc_number/from_team_name/to_team_name.
   const preferred = orValues.find((v) =>

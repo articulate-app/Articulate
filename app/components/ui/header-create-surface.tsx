@@ -12,18 +12,23 @@ interface HeaderCreateSurfaceProps {
   onSuccess: () => void
   /** Called when the AI chat pill is selected (after `onClose`). */
   onAiPillSelect?: () => void
+  /**
+   * Desktop header picks the create type via "Add task" dropdown, so pills stay hidden.
+   * Mobile drawer still shows pills when true.
+   */
+  showTypePills?: boolean
   className?: string
 }
 
 /**
- * Shared create UI: object pills + form panel. Used by desktop create popup and mobile create drawer.
- * Task is the default selection; callers should call `flow.openCreateForm("task")` when opening.
+ * Create form panel. Desktop: type chosen from header dropdown. Mobile: optional type pills.
  */
 export function HeaderCreateSurface({
   flow,
   onClose,
   onSuccess,
   onAiPillSelect,
+  showTypePills = false,
   className,
 }: HeaderCreateSurfaceProps) {
   const { openCreateForm, createType } = flow
@@ -42,7 +47,9 @@ export function HeaderCreateSurface({
 
   return (
     <div className={cn("flex min-h-0 flex-1 flex-col overflow-hidden", className)}>
-      <CreateObjectPills value={createType} onValueChange={handlePillChange} className="shrink-0" />
+      {showTypePills ? (
+        <CreateObjectPills value={createType} onValueChange={handlePillChange} className="shrink-0" />
+      ) : null}
       <div className="flex min-h-0 flex-1 flex-col overflow-hidden">
         <HeaderCreateFlowPanel flow={flow} onCancel={onClose} onSuccess={onSuccess} />
       </div>

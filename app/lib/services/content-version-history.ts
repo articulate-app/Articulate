@@ -90,6 +90,23 @@ export async function fetchTaskComponentOutputVersions(
   return (data ?? []).map((row) => normalizeComponentVersionRow(row as Record<string, unknown>))
 }
 
+/** All component-output versions for a task × channel, newest first. */
+export async function fetchTaskChannelComponentOutputVersions(
+  taskId: number,
+  channelId: number,
+): Promise<TaskComponentOutputVersion[]> {
+  const supabase = getSupabaseBrowser()
+  const { data, error } = await supabase
+    .from("task_component_output_versions")
+    .select(COMPONENT_VERSION_SELECT)
+    .eq("task_id", taskId)
+    .eq("channel_id", channelId)
+    .order("created_at", { ascending: false })
+
+  if (error) throw error
+  return (data ?? []).map((row) => normalizeComponentVersionRow(row as Record<string, unknown>))
+}
+
 export async function fetchTaskChannelContentVersions(
   taskId: number,
   channelId: number,

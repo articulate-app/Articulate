@@ -5,6 +5,7 @@ import { useSearchParams } from "next/navigation"
 import { useInfiniteQuery, useQueryClient } from "@tanstack/react-query"
 import { Loader2 } from "lucide-react"
 import { SearchResultRow } from "./SearchResultRow"
+import { ObjectListColumnHeader, getObjectListColumnHeaderLabels } from "./object-list-column-header"
 import type { GlobalSearchDocument } from "../../lib/global-search-types"
 import {
   fetchMentionsInbox,
@@ -196,6 +197,7 @@ export function MentionsFullResultsPane({
   return (
     <div className="flex h-full min-h-0 flex-col bg-white">
       <div ref={scrollContainerRef} className="min-h-0 flex-1 overflow-auto">
+        <ObjectListColumnHeader {...getObjectListColumnHeaderLabels("mention")} />
         {query.isLoading ? (
           <div className="flex h-full items-center justify-center px-6 text-sm text-gray-500">
             <Loader2 className="mr-2 h-4 w-4 animate-spin" />
@@ -209,7 +211,8 @@ export function MentionsFullResultsPane({
           <div className="pb-4">
             {groupedItems.map((group) => (
               <section key={group.label} className="pt-2">
-                <div className="sticky top-0 z-10 bg-white px-3 py-1 text-xs font-medium uppercase tracking-wide text-gray-500">
+                {/* Sit under the shared 36px column header (top-9). */}
+                <div className="sticky top-9 z-10 bg-white px-3 py-1.5 text-xs font-medium text-gray-500">
                   {group.label}
                 </div>
                 <div className="divide-y divide-gray-200">

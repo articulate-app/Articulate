@@ -5,7 +5,7 @@ import { resolveLeftPaneObject } from '../app/lib/left-pane-object'
 /**
  * Mirrors TasksLayout `navigateToLeftObject`: build the next section URL from the current params.
  * The `object` query param is the source of truth, so on mobile the content renderer branches on the
- * resolved left-pane object (tasks vs. projects/users/teams/mentions/ai-chats).
+ * resolved left-pane object (tasks vs. projects/users/mentions/ai-chats).
  */
 function switchObject(currentUrl: string, targetSection: ReturnType<typeof leftObjectToSectionKey>): {
   url: string
@@ -51,10 +51,15 @@ describe('Mobile object pill switching', () => {
   })
 
   it('round-trips across every object (URL is the single source of truth)', () => {
-    const objects = ['all', 'tasks', 'projects', 'users', 'teams', 'mentions', 'ai_chats'] as const
+    const objects = ['tasks', 'projects', 'users', 'mentions', 'ai_chats'] as const
     for (const object of objects) {
       const { params, pathname } = switchObject(TASK_LIST_URL, leftObjectToSectionKey(object))
       expect(resolveLeftPaneObject(params, pathname)).toBe(object)
     }
+  })
+
+  it('legacy homepage ("all") resolves to tasks', () => {
+    const { params, pathname } = switchObject(TASK_LIST_URL, leftObjectToSectionKey('all'))
+    expect(resolveLeftPaneObject(params, pathname)).toBe('tasks')
   })
 })

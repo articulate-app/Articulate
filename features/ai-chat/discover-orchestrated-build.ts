@@ -1,6 +1,6 @@
 import {
   AI_ORCHESTRATED_BUILD_ENTITY_TYPE,
-  AI_START_ORCHESTRATED_BUILD_TOOL,
+  isBuildDispatchTool,
 } from "../../app/lib/ai/ai-orchestrated-build-types"
 import type { AiChatChangePreviewEvent } from "../../app/lib/ai/chat"
 import type { AiChangePreview } from "../../app/store/ai-change-preview-stream"
@@ -56,13 +56,18 @@ function extractBuildIdFromRecord(row: Record<string, unknown>): string | null {
   return null
 }
 
+/**
+ * True for build-dispatch previews (`ai_start_orchestrated_build` /
+ * `ai_start_artifact_build`) — process start, not a content mutation card.
+ * Kept as a render guard for older persisted events that still emit these.
+ */
 export function isOrchestratedBuildChangePreview(
   preview: Pick<AiChangePreview | AiChatChangePreviewEvent, "entity_type" | "entity_id" | "tool_name"> & {
     build_id?: string | null
   },
 ): boolean {
   if (preview.entity_type === AI_ORCHESTRATED_BUILD_ENTITY_TYPE) return true
-  if (preview.tool_name === AI_START_ORCHESTRATED_BUILD_TOOL) return true
+  if (isBuildDispatchTool(preview.tool_name)) return true
   if (isValidBuildId(preview.build_id)) return true
   if (isValidBuildId(preview.entity_id)) return true
   return false
@@ -104,7 +109,7 @@ function discoverFromToolResultRow(row: unknown): DiscoveredOrchestratedBuild | 
     toTrimmedString(record.tool_name)
     ?? toTrimmedString(record.name)
     ?? toTrimmedString(record.tool)
-  const isStartTool = toolName === AI_START_ORCHESTRATED_BUILD_TOOL
+  const isStartTool = isBuildDispatchTool(toolName)
   const result =
     record.result && typeof record.result === "object"
       ? (record.result as Record<string, unknown>)

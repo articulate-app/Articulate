@@ -1,6 +1,6 @@
 "use client"
 
-import { useState } from "react"
+import { useCallback, useState, type ReactNode } from "react"
 import { cn } from "@/lib/utils"
 import { TaskOverviewPreviewSection } from "../tasks/task-overview-preview-section"
 import { useProjectActivityFeedInfinite } from "../../hooks/use-project-activity-feed-infinite"
@@ -9,6 +9,7 @@ import { CommentsTab } from "./CommentsTab"
 type OverviewFeedFilter = "all" | "updates" | "comments"
 
 const ACTIVITY_PAGE_SIZE = 40
+const PREVIEW_MAX_ROWS = 5
 
 const FEED_FILTER_OPTIONS: { value: OverviewFeedFilter; label: string }[] = [
   { value: "all", label: "All" },
@@ -28,6 +29,11 @@ export function ProjectOverviewUpdatesComments({
   onViewAllComments,
 }: ProjectOverviewUpdatesCommentsProps) {
   const [feedFilter, setFeedFilter] = useState<OverviewFeedFilter>("all")
+  const [headerActions, setHeaderActions] = useState<ReactNode>(null)
+
+  const handleHeaderActionsChange = useCallback((actions: ReactNode | null) => {
+    setHeaderActions(actions)
+  }, [])
 
   const {
     logs: activityLogs,
@@ -69,12 +75,15 @@ export function ProjectOverviewUpdatesComments({
       onViewAll={feedFilter === "comments" ? onViewAllComments : onViewAllActivity}
       viewAllLabel={feedFilter === "comments" ? "All comments" : "View all"}
       belowTitle={filterPills}
+      headerActions={headerActions}
       isLoading={isActivityLoading && activityLogs.length === 0 && feedFilter !== "comments"}
       isError={!!activityError && feedFilter !== "comments"}
     >
       <CommentsTab
         projectId={projectId}
         variant="preview"
+        previewMaxRows={PREVIEW_MAX_ROWS}
+        onHeaderActionsChange={handleHeaderActionsChange}
         activityLogs={activityLogs}
         feedFilter={feedFilter}
         onLoadMoreActivity={fetchNextActivityPage}

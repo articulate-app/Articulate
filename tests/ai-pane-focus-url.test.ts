@@ -70,6 +70,20 @@ describe("ai pane focus url helpers", () => {
     expect(next.get("taskAiOpen")).toBe("true")
   })
 
+  it("moves rightThreadId into centerThreadId when opening ai", () => {
+    const current = new URLSearchParams(
+      "layout=right&rightView=details&object=all&rightThreadId=8935&rightMentionId=8935",
+    )
+    const next = preserveTaskDetailsFocusWhenOpeningAi(current)
+
+    expect(next.get("rightView")).toBe("ai")
+    expect(next.get("taskAiOpen")).toBe("true")
+    expect(next.get("centerThreadId")).toBe("8935")
+    expect(next.get("centerMentionId")).toBe("8935")
+    expect(next.get("rightThreadId")).toBeNull()
+    expect(next.get("rightMentionId")).toBeNull()
+  })
+
   it("preserves ai pane state when selecting a newly created task", () => {
     const current = new URLSearchParams(
       "layout=right&rightView=ai&taskAiOpen=true&object=task&mode=grouped&project=111&centerTaskId=13167&aiThreadId=de35b6e5-c5aa-4193-8740-84f84646e482"

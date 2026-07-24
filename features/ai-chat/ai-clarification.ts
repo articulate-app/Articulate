@@ -284,14 +284,19 @@ function parseClarificationContext(row: Record<string, unknown>): AiClarificatio
   }
 }
 
-/** Upsert by assistant message_id so stream + message_output never duplicate. */
+/** Upsert by request_plan_id + message_id so stream + message_output never duplicate. */
 export function buildClarificationDedupeKey(args: {
   assistantMessageId?: string | null
   runId?: string | null
+  requestPlanId?: string | null
+  request_plan_id?: string | null
   question?: string
 }): string {
-  const messageId = args.assistantMessageId?.trim()
+  const messageId = args.assistantMessageId?.trim() || ""
+  const planId = (args.requestPlanId ?? args.request_plan_id)?.trim() || ""
+  if (planId && messageId) return `${planId}:${messageId}`
   if (messageId) return messageId
+  if (planId) return `plan:${planId}`
   const runId = args.runId?.trim()
   if (runId) return runId
   return (args.question ?? "").trim()
@@ -343,6 +348,35 @@ export function reduceClarificationRequest(
     && !normalized.assistantMessageId.startsWith("temp-")
   ) {
     return { ...previous, ...normalized, id: dedupeKey }
+  }
+
+  // Same durable request plan: update the existing pending clarification instead of
+  // spawning an unrelated workflow card.
+  if (
+    previous.request_plan_id
+    && normalized.request_plan_id
+    && previous.request_plan_id === normalized.request_plan_id
+  ) {
+    return {
+      ...previous,
+      ...normalized,
+      id: dedupeKey,
+      options: normalized.options.length > 0 ? normalized.options : previous.options,
+      picker: normalized.picker ?? previous.picker,
+      question: normalized.question || previous.question,
+      allow_multiple: normalized.allow_multiple || previous.allow_multiple,
+      min_selections: normalized.min_selections ?? previous.min_selections,
+      max_selections: normalized.max_selections ?? previous.max_selections,
+      allow_free_text: normalized.allow_free_text || previous.allow_free_text,
+      pending_request:
+        normalized.pending_request !== undefined
+          ? normalized.pending_request
+          : previous.pending_request,
+      request_plan_id: normalized.request_plan_id,
+      context: normalized.context ?? previous.context,
+      assistantMessageId: normalized.assistantMessageId ?? previous.assistantMessageId,
+      runId: normalized.runId ?? previous.runId,
+    }
   }
 
   return normalized
@@ -419,6 +453,49 @@ export type ClarificationDisplayForMessage = {
   answer: ClarificationAnswerState | null
 }
 
+function clarificationMessageIdsForMatch(
+  request: AiClarificationRequest,
+  assistantMessage?: AiMessage | null,
+): Set<string> {
+  const ids = new Set<string>()
+  const push = (value: string | null | undefined) => {
+    const trimmed = typeof value === "string" ? value.trim() : ""
+    if (trimmed) ids.add(trimmed)
+  }
+  push(request.assistantMessageId)
+  push(request.id)
+  push(assistantMessage?.id)
+  const reconciledMessageId =
+    assistantMessage == null
+      ? null
+      : (assistantMessage as unknown as { reconciled_message_id?: unknown }).reconciled_message_id
+  const reconciled = typeof reconciledMessageId === "string" ? reconciledMessageId : null
+  push(reconciled)
+  return ids
+}
+
+/** Find a submitted clarification answer matched by clarification_message_id (option ids, not labels). */
+export function findClarificationAnswerForRequest(
+  messages: AiMessage[],
+  request: AiClarificationRequest,
+  options?: { afterMessageIndex?: number; assistantMessage?: AiMessage | null },
+): ClarificationAnswerState | null {
+  const matchIds = clarificationMessageIdsForMatch(request, options?.assistantMessage)
+  if (matchIds.size === 0) return null
+  const startIndex = (options?.afterMessageIndex ?? -1) + 1
+  for (let index = startIndex; index < messages.length; index += 1) {
+    const parsed = parseClarificationAnswerFromUserMessage(messages[index])
+    if (!parsed) continue
+    if (!matchIds.has(parsed.clarificationMessageId)) continue
+    return {
+      selectedOptionIds: parsed.selectedOptionIds,
+      freeText: parsed.freeText,
+      value: parsed.value,
+    }
+  }
+  return null
+}
+
 export function resolveClarificationDisplayForMessage(
   messages: AiMessage[],
   messageIndex: number,
@@ -430,19 +507,10 @@ export function resolveClarificationDisplayForMessage(
   })
   if (!request) return null
 
-  const clarificationMessageId = request.assistantMessageId ?? request.id
-  let answer: ClarificationAnswerState | null = null
-  for (let index = messageIndex + 1; index < messages.length; index += 1) {
-    const parsed = parseClarificationAnswerFromUserMessage(messages[index])
-    if (!parsed) continue
-    if (parsed.clarificationMessageId !== clarificationMessageId) continue
-    answer = {
-      selectedOptionIds: parsed.selectedOptionIds,
-      freeText: parsed.freeText,
-      value: parsed.value,
-    }
-    break
-  }
+  const answer = findClarificationAnswerForRequest(messages, request, {
+    afterMessageIndex: messageIndex,
+    assistantMessage: message,
+  })
 
   return {
     request,
@@ -789,6 +857,89 @@ export function buildClarificationResponsePayload(args: {
     ...(value !== null && value !== undefined ? { value } : {}),
     ...(entityRef ? { entity_ref: entityRef } : {}),
   }
+}
+
+/**
+ * When an assistant clarification message is reconciled from a temp id to a
+ * persisted id, rewrite matching user `clarification_response.clarification_message_id`
+ * so answered-state restore stays keyed by the durable message id.
+ */
+export function aliasClarificationMessageIdInContentJson(
+  contentJson: unknown,
+  fromMessageId: string,
+  toMessageId: string,
+): unknown {
+  if (!fromMessageId || !toMessageId || fromMessageId === toMessageId) return contentJson
+  if (!contentJson || typeof contentJson !== "object" || Array.isArray(contentJson)) {
+    return contentJson
+  }
+  const root = contentJson as Record<string, unknown>
+  const response =
+    root.clarification_response && typeof root.clarification_response === "object"
+      ? (root.clarification_response as Record<string, unknown>)
+      : null
+  if (!response) return contentJson
+  const currentId =
+    typeof response.clarification_message_id === "string"
+      ? response.clarification_message_id.trim()
+      : ""
+  if (currentId !== fromMessageId) return contentJson
+  return {
+    ...root,
+    clarification_response: {
+      ...response,
+      clarification_message_id: toMessageId,
+    },
+  }
+}
+
+/** Prefer human labels / free text over internal option ids for user bubbles. */
+export function resolveClarificationUserDisplayMessage(args: {
+  content?: string | null
+  contentJson?: unknown
+  optionLabelById?: Map<string, string> | null
+}): string {
+  const contentJson =
+    args.contentJson && typeof args.contentJson === "object"
+      ? (args.contentJson as Record<string, unknown>)
+      : null
+  const displayMessage =
+    typeof contentJson?.display_message === "string" ? contentJson.display_message.trim() : ""
+  if (displayMessage) return displayMessage
+
+  const response =
+    contentJson?.clarification_response && typeof contentJson.clarification_response === "object"
+      ? (contentJson.clarification_response as Record<string, unknown>)
+      : null
+  if (!response) return (args.content ?? "").trim()
+
+  const freeText =
+    typeof response.free_text === "string" && response.free_text.trim()
+      ? response.free_text.trim()
+      : null
+  if (freeText) return freeText
+
+  const selectedIds = Array.isArray(response.selected_options)
+    ? response.selected_options
+        .filter((id): id is string => typeof id === "string")
+        .map((id) => id.trim())
+        .filter(Boolean)
+    : typeof response.selected_option === "string" && response.selected_option.trim()
+      ? [response.selected_option.trim()]
+      : []
+  if (selectedIds.length > 0 && args.optionLabelById) {
+    const labels = selectedIds
+      .map((id) => args.optionLabelById?.get(id)?.trim() || "")
+      .filter(Boolean)
+    if (labels.length > 0) return labels.join(", ")
+  }
+
+  // Never surface raw option ids as the bubble copy.
+  const content = (args.content ?? "").trim()
+  if (content && !selectedIds.includes(content) && !selectedIds.every((id) => content.includes(id))) {
+    return content
+  }
+  return ""
 }
 
 export function buildClarificationUserMessageContentJson(args: {

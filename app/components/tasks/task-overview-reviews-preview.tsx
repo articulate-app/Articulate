@@ -7,6 +7,7 @@ import { TaskOverviewPreviewSection } from "./task-overview-preview-section"
 import { AddReviewInlineCard } from "./AddReviewInlineCard"
 import { useInViewport } from "@/hooks/use-in-viewport"
 import { taskReviewsQueryKey, useTaskReviewsQuery } from "@/hooks/use-task-reviews-query"
+import { AddDashedButton } from "../ui/add-dashed-button"
 
 const PREVIEW_REVIEW_LIMIT = 2
 
@@ -82,19 +83,6 @@ export function TaskOverviewReviewsPreview({
         isEmpty={isEmpty}
         emptyMessage="Add review"
         onEmptyClick={() => setIsAddingReview(true)}
-        headerActions={
-          !isEmpty && !isAddingReview ? (
-            <button
-              type="button"
-              className="inline-flex h-7 w-7 items-center justify-center rounded text-gray-500 hover:bg-gray-100 hover:text-gray-700"
-              onClick={() => setIsAddingReview(true)}
-              title="Add review"
-              aria-label="Add review"
-            >
-              +
-            </button>
-          ) : null
-        }
       >
         <div className="space-y-3">
           {isAddingReview ? (
@@ -140,6 +128,13 @@ export function TaskOverviewReviewsPreview({
               ) : null}
             </div>
           ))}
+          {!isAddingReview ? (
+            <AddDashedButton
+              label="Add review"
+              className="mt-0"
+              onClick={() => setIsAddingReview(true)}
+            />
+          ) : null}
         </div>
       </TaskOverviewPreviewSection>
     </div>

@@ -1,11 +1,11 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { useSearchParams } from "next/navigation";
 import * as DialogPrimitive from "@radix-ui/react-dialog";
 import { createClientComponentClient } from "@supabase/auth-helpers-nextjs";
 import { useRouter } from "next/navigation";
-import { X, User, Bell, Shield, CreditCard, Sparkles } from "lucide-react";
+import { X, User, Bell, Shield, CreditCard, Sparkles, Users, ChevronLeft, FolderKanban, Wrench } from "lucide-react";
 import { Input } from "../ui/input";
 import { Button } from "../ui/button";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "../ui/select";
@@ -18,15 +18,30 @@ import {
   DEFAULT_DAILY_CAPACITY_HOURS,
 } from "../../lib/services/user-workload-settings";
 import { AiTokenLimitsSettingsPanel } from "./ai-token-limits-settings";
+import { SettingsBillingPanel } from "./settings-billing-panel";
+import { SettingsTeamsPanel, type SettingsTeamsDetailState } from "./settings-teams-panel";
+import { UserProjectsSettingsSection } from "../users/user-projects-settings-section";
+import { UserSkillsSettingsSection } from "../users/user-skills-settings-section";
 import { cn } from "@/lib/utils";
 
-type SettingsCategory = "account" | "notifications" | "security" | "billing" | "ai-limits";
+type SettingsCategory =
+  | "account"
+  | "notifications"
+  | "security"
+  | "billing"
+  | "teams"
+  | "projects"
+  | "skills"
+  | "ai-limits";
 
 const CATEGORIES: { id: SettingsCategory; label: string; icon: typeof User }[] = [
   { id: "account", label: "Account", icon: User },
   { id: "notifications", label: "Notifications", icon: Bell },
   { id: "security", label: "Security", icon: Shield },
   { id: "billing", label: "Billing", icon: CreditCard },
+  { id: "teams", label: "Teams", icon: Users },
+  { id: "projects", label: "Projects", icon: FolderKanban },
+  { id: "skills", label: "Skills", icon: Wrench },
   { id: "ai-limits", label: "AI limits", icon: Sparkles },
 ];
 
@@ -51,7 +66,23 @@ export function SettingsPanel({ open, onClose }: SettingsPanelProps) {
   const [createdAt, setCreatedAt] = useState<string | null>(null);
   const [email, setEmail] = useState<string>("");
   const [userId, setUserId] = useState<string>("");
+  const [teamsDetail, setTeamsDetail] = useState<SettingsTeamsDetailState>({ open: false });
+  const [teamsBackRequestId, setTeamsBackRequestId] = useState(0);
+  const [isBillingHistoryExpanded, setIsBillingHistoryExpanded] = useState(false);
+  const [billingHistoryBackRequestId, setBillingHistoryBackRequestId] = useState(0);
   const router = useRouter();
+
+  const handleTeamsDetailChange = useCallback((next: SettingsTeamsDetailState) => {
+    setTeamsDetail((prev) => {
+      if (!next.open && !prev.open) return prev
+      if (next.open && prev.open && next.title === prev.title) return prev
+      return next
+    })
+  }, []);
+
+  const handleBillingHistoryExpandedChange = useCallback((expanded: boolean) => {
+    setIsBillingHistoryExpanded(expanded)
+  }, []);
 
   const attachmentsUpload = useTaskAttachmentsUpload({
     tableName: "users",
@@ -66,17 +97,54 @@ export function SettingsPanel({ open, onClose }: SettingsPanelProps) {
 
   useEffect(() => {
     if (!open) return;
-    const requested = searchParams.get("settingsCategory");
+
+    // DropdownMenu can leave body pointer-events:none when opening this dialog from the avatar menu.
+    const clearPointerEvents = () => {
+      document.body.style.pointerEvents = "";
+    };
+    clearPointerEvents();
+    const clearTimers = [
+      window.setTimeout(clearPointerEvents, 0),
+      window.setTimeout(clearPointerEvents, 50),
+      window.setTimeout(clearPointerEvents, 150),
+    ];
+
+    const liveParams =
+      typeof window !== "undefined"
+        ? new URLSearchParams(window.location.search)
+        : searchParams;
+    const requested = liveParams.get("settingsCategory");
     if (
       requested === "account"
       || requested === "notifications"
       || requested === "security"
       || requested === "billing"
+      || requested === "teams"
+      || requested === "projects"
+      || requested === "skills"
       || requested === "ai-limits"
     ) {
       setActiveCategory(requested);
     }
+
+    return () => {
+      clearTimers.forEach((id) => window.clearTimeout(id));
+    };
   }, [open, searchParams]);
+
+  useEffect(() => {
+    if (!open) {
+      setTeamsDetail({ open: false })
+      setIsBillingHistoryExpanded(false)
+      return
+    }
+    if (activeCategory !== "teams") {
+      setTeamsDetail({ open: false })
+    }
+    if (activeCategory !== "billing") {
+      setIsBillingHistoryExpanded(false)
+    }
+  }, [open, activeCategory]);
 
   useEffect(() => {
     if (!open) return;
@@ -286,13 +354,45 @@ export function SettingsPanel({ open, onClose }: SettingsPanelProps) {
   );
 
   const renderBilling = () => (
-    <div className="flex flex-col items-center justify-center gap-2 py-12 text-center">
-      <CreditCard className="h-8 w-8 text-gray-300" />
-      <p className="text-sm text-gray-500">No billing information yet.</p>
-    </div>
+    <SettingsBillingPanel
+      isActive={open && activeCategory === "billing"}
+      onBillingHistoryExpandedChange={handleBillingHistoryExpandedChange}
+      billingHistoryBackRequestId={billingHistoryBackRequestId}
+    />
   );
 
   const renderAiLimits = () => <AiTokenLimitsSettingsPanel />;
+
+  const renderMyProjects = () => {
+    const numericUserId = Number(userId)
+    if (!Number.isFinite(numericUserId) || numericUserId <= 0) {
+      return <div className="py-12 text-center text-sm text-gray-500">Loading projects...</div>
+    }
+    return <UserProjectsSettingsSection userId={numericUserId} />
+  }
+
+  const renderMySkills = () => {
+    const numericUserId = Number(userId)
+    if (!Number.isFinite(numericUserId) || numericUserId <= 0) {
+      return <div className="py-12 text-center text-sm text-gray-500">Loading skills...</div>
+    }
+    return <UserSkillsSettingsSection userId={numericUserId} />
+  }
+
+  const renderTeams = () => {
+    const numericUserId = Number(userId)
+    if (!Number.isFinite(numericUserId) || numericUserId <= 0) {
+      return <div className="py-12 text-center text-sm text-gray-500">Loading teams...</div>
+    }
+    return (
+      <SettingsTeamsPanel
+        userId={numericUserId}
+        isActive={open && activeCategory === "teams"}
+        onDetailOpenChange={handleTeamsDetailChange}
+        backRequestId={teamsBackRequestId}
+      />
+    )
+  }
 
   const renderCategory = () => {
     switch (activeCategory) {
@@ -304,6 +404,12 @@ export function SettingsPanel({ open, onClose }: SettingsPanelProps) {
         return renderSecurity();
       case "billing":
         return renderBilling();
+      case "teams":
+        return renderTeams();
+      case "projects":
+        return renderMyProjects();
+      case "skills":
+        return renderMySkills();
       case "ai-limits":
         return renderAiLimits();
       default:
@@ -312,6 +418,8 @@ export function SettingsPanel({ open, onClose }: SettingsPanelProps) {
   };
 
   const activeLabel = CATEGORIES.find(c => c.id === activeCategory)?.label ?? "Settings";
+  const isTeamsDetailOpen = activeCategory === "teams" && teamsDetail.open;
+  const isBillingHistoryFull = activeCategory === "billing" && isBillingHistoryExpanded;
 
   return (
     <DialogPrimitive.Root open={open} onOpenChange={(o) => { if (!o) onClose?.(); }}>
@@ -323,10 +431,9 @@ export function SettingsPanel({ open, onClose }: SettingsPanelProps) {
         >
           <DialogPrimitive.Title className="sr-only">Settings</DialogPrimitive.Title>
 
-          {/* Category sidebar */}
           <aside className="flex w-52 shrink-0 flex-col border-r border-gray-100 bg-gray-50/60 p-3">
             <div className="px-2 pb-2 pt-1 text-base font-semibold text-gray-900">Settings</div>
-            <nav className="mt-1 space-y-0.5">
+            <nav className="mt-1 min-h-0 flex-1 space-y-0.5 overflow-y-auto">
               {CATEGORIES.map(({ id, label, icon: Icon }) => (
                 <button
                   key={id}
@@ -346,10 +453,33 @@ export function SettingsPanel({ open, onClose }: SettingsPanelProps) {
             </nav>
           </aside>
 
-          {/* Content */}
           <div className="flex min-w-0 flex-1 flex-col">
             <div className="flex items-center justify-between border-b border-gray-100 px-6 py-4">
-              <h2 className="text-sm font-medium text-gray-900">{activeLabel}</h2>
+              <div className="flex min-w-0 items-center gap-1">
+                {isTeamsDetailOpen || isBillingHistoryFull ? (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      if (isBillingHistoryFull) {
+                        setBillingHistoryBackRequestId((id) => id + 1)
+                        return
+                      }
+                      setTeamsBackRequestId((id) => id + 1)
+                    }}
+                    className="inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-md text-gray-600 transition-colors hover:bg-gray-100 hover:text-gray-900"
+                    aria-label={isBillingHistoryFull ? "Back to billing" : "Back to teams"}
+                  >
+                    <ChevronLeft className="h-4 w-4" />
+                  </button>
+                ) : null}
+                <h2 className="truncate text-sm font-medium text-gray-900">
+                  {isBillingHistoryFull
+                    ? "Billing history"
+                    : isTeamsDetailOpen
+                      ? (teamsDetail.title ?? "Team")
+                      : activeLabel}
+                </h2>
+              </div>
               <DialogPrimitive.Close
                 aria-label="Close settings"
                 className="inline-flex h-7 w-7 items-center justify-center rounded-md text-gray-500 transition-colors hover:bg-gray-100 hover:text-gray-700 focus:outline-none"
@@ -358,7 +488,14 @@ export function SettingsPanel({ open, onClose }: SettingsPanelProps) {
               </DialogPrimitive.Close>
             </div>
 
-            <div className="min-h-0 flex-1 overflow-auto px-6 py-5">
+            <div
+              className={cn(
+                "min-h-0 flex-1",
+                // Keep scrollbar on the content edge (same as teams list). Full history
+                // owns padding internally so its nested list scrollbar also aligns.
+                isBillingHistoryFull ? "overflow-hidden p-0" : "overflow-auto px-6 py-5",
+              )}
+            >
               {loading ? (
                 <div className="flex items-center justify-center py-12 text-sm text-gray-500">Loading settings...</div>
               ) : error && !profile ? (

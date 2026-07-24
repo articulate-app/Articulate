@@ -1,6 +1,6 @@
 import {
   AI_ORCHESTRATED_BUILD_ENTITY_TYPE,
-  AI_START_ORCHESTRATED_BUILD_TOOL,
+  isBuildDispatchTool,
 } from "../../app/lib/ai/ai-orchestrated-build-types"
 import {
   useAiChangePreviewStreamStore,
@@ -51,7 +51,8 @@ function readPreflightFlags(record: Record<string, unknown>): {
 }
 
 /**
- * Detect skipped preflight from `ai_start_orchestrated_build` tool results.
+ * Detect skipped preflight from build-dispatch tool results
+ * (`ai_start_orchestrated_build` / `ai_start_artifact_build`).
  * When true, no `ai_build_jobs` row / running build card should be created.
  */
 export function parseOrchestratedBuildPreflightSkip(
@@ -66,7 +67,7 @@ export function parseOrchestratedBuildPreflightSkip(
     ?? toTrimmedString(record.name)
     ?? toTrimmedString(record.tool)
   const isStartTool =
-    toolName === AI_START_ORCHESTRATED_BUILD_TOOL
+    isBuildDispatchTool(toolName)
     || record.entity_type === AI_ORCHESTRATED_BUILD_ENTITY_TYPE
     || result.entity_type === AI_ORCHESTRATED_BUILD_ENTITY_TYPE
 
@@ -132,7 +133,7 @@ export function discoverOrchestratedBuildPreflightSkipsFromContentJson(
 function isOrchestratedBuildPreview(entry: AiChangePreviewEntry): boolean {
   return (
     entry.entity_type === AI_ORCHESTRATED_BUILD_ENTITY_TYPE
-    || entry.tool_name === AI_START_ORCHESTRATED_BUILD_TOOL
+    || isBuildDispatchTool(entry.tool_name)
   )
 }
 

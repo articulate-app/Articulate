@@ -38,6 +38,8 @@ interface DocumentDetailsPaneProps {
   onMenuActionHandled?: () => void
   onMenuAction?: (action: string) => void
   onRelatedDocumentSelect?: (document: any, type: string) => void
+  /** Hide the header close control when a parent dialog already provides one. */
+  showCloseButton?: boolean
 }
 
 const formatCurrency = (amount: number, currencyCode: string): string => {
@@ -57,7 +59,7 @@ const formatDate = (dateString: string): string => {
   })
 }
 
-export function DocumentDetailsPane({ document, onClose, onDocumentUpdate, onDocumentDelete, onDocumentCreate, menuAction, onMenuActionHandled, onMenuAction, onRelatedDocumentSelect }: DocumentDetailsPaneProps) {
+export function DocumentDetailsPane({ document, onClose, onDocumentUpdate, onDocumentDelete, onDocumentCreate, menuAction, onMenuActionHandled, onMenuAction, onRelatedDocumentSelect, showCloseButton = true }: DocumentDetailsPaneProps) {
   const queryClient = useQueryClient()
   const supabase = createClientComponentClient()
   
@@ -220,66 +222,75 @@ export function DocumentDetailsPane({ document, onClose, onDocumentUpdate, onDoc
     onDocumentUpdate(updatedDocument)
   }
   
-  // Handle menu actions from parent
-  useEffect(() => {
-    if (menuAction) {
-      setMenuActionState(menuAction)
-      onMenuActionHandled?.()
-      
-      // Handle credit note specific actions
-      if (document.direction === 'ar' && document.doc_kind === 'credit_note') {
-        switch (menuAction) {
-          case 'edit-credit-note':
-            setIsEditCreditNoteOpen(true)
-            break
-          case 'void-credit-note':
-            // Void functionality is handled in CreditNoteDetailsPane
-            break
-          case 'delete-credit-note':
-            setShowDeleteConfirmation(true)
-            break
-        }
+  const applyMenuAction = (action: string) => {
+    setMenuActionState(action)
+
+    // Credit note actions handled here
+    if (document.direction === 'ar' && document.doc_kind === 'credit_note') {
+      switch (action) {
+        case 'edit-credit-note':
+          setIsEditCreditNoteOpen(true)
+          break
+        case 'void-credit-note':
+          // Void functionality is handled in CreditNoteDetailsPane
+          break
+        case 'delete-credit-note':
+          setShowDeleteConfirmation(true)
+          break
       }
-      
-              // Handle payment specific actions
-              if (document.direction === 'ar' && document.doc_kind === 'payment') {
-                switch (menuAction) {
-                  case 'edit-payment':
-                    setIsEditPaymentOpen(true)
-                    break
-                  case 'select-invoice':
-                    setIsSelectInvoiceOpen(true)
-                    break
-                  case 'delete-payment':
-                    setShowDeletePaymentConfirmation(true)
-                    break
-                }
-              }
-              
-              // Handle supplier payment specific actions
-              if (document.direction === 'ap' && document.doc_kind === 'payment') {
-                switch (menuAction) {
-                  case 'edit-payment':
-                    setIsEditPaymentOpen(true)
-                    break
-                  case 'delete-payment':
-                    setShowDeleteSupplierPaymentConfirmation(true)
-                    break
-                }
-              }
-              
-              // Handle invoice deletion actions
-              if ((document.direction === 'ar' && document.doc_kind === 'invoice') || 
-                  (document.direction === 'ap' && document.doc_kind === 'invoice')) {
-                switch (menuAction) {
-                  case 'delete-invoice':
-                    setShowDeleteInvoiceConfirmation(true)
-                    break
-                  // AP invoice menu actions are handled by SupplierInvoiceDetailsPane via menuAction prop
-                }
-              }
     }
-  }, [menuAction, onMenuActionHandled, document])
+
+    // AR payment actions
+    if (document.direction === 'ar' && document.doc_kind === 'payment') {
+      switch (action) {
+        case 'edit-payment':
+          setIsEditPaymentOpen(true)
+          break
+        case 'select-invoice':
+          setIsSelectInvoiceOpen(true)
+          break
+        case 'delete-payment':
+          setShowDeletePaymentConfirmation(true)
+          break
+      }
+    }
+
+    // AP payment actions
+    if (document.direction === 'ap' && document.doc_kind === 'payment') {
+      switch (action) {
+        case 'edit-payment':
+          setIsEditPaymentOpen(true)
+          break
+        case 'delete-payment':
+          setShowDeleteSupplierPaymentConfirmation(true)
+          break
+      }
+    }
+
+    // Invoice deletion
+    if (
+      (document.direction === 'ar' && document.doc_kind === 'invoice') ||
+      (document.direction === 'ap' && document.doc_kind === 'invoice')
+    ) {
+      switch (action) {
+        case 'delete-invoice':
+          setShowDeleteInvoiceConfirmation(true)
+          break
+      }
+    }
+  }
+
+  // Handle menu actions from parent (list / external triggers)
+  useEffect(() => {
+    if (!menuAction) return
+    applyMenuAction(menuAction)
+    onMenuActionHandled?.()
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- run only when parent action changes
+  }, [menuAction])
+
+  const triggerMenuAction = (action: string) => {
+    applyMenuAction(action)
+  }
   const [isExpanded, setIsExpanded] = useState(false)
 
   // Determine the pane type based on document direction and kind
@@ -614,8 +625,8 @@ export function DocumentDetailsPane({ document, onClose, onDocumentUpdate, onDoc
             onInvoiceUpdate={handleInvoiceUpdate}
             {...commonProps}
             onRelatedDocumentSelect={onRelatedDocumentSelect}
-            menuAction={menuAction}
-            onMenuActionHandled={onMenuActionHandled}
+            menuAction={menuActionState}
+            onMenuActionHandled={() => setMenuActionState(null)}
           />
         )
       
@@ -802,20 +813,20 @@ export function DocumentDetailsPane({ document, onClose, onDocumentUpdate, onDoc
               <Mail className="w-4 h-4 mr-2" />
               Send invoice email
             </DropdownMenuItem>
-            <DropdownMenuItem onClick={() => onMenuAction?.('add-invoice-order')}>
+            <DropdownMenuItem onClick={() => triggerMenuAction('add-invoice-order')}>
               <Plus className="w-4 h-4 mr-2" />
               Add invoice order
             </DropdownMenuItem>
-            <DropdownMenuItem onClick={() => onMenuAction?.('add-payment')}>
+            <DropdownMenuItem onClick={() => triggerMenuAction('add-payment')}>
               <Plus className="w-4 h-4 mr-2" />
               Add payment
             </DropdownMenuItem>
-            <DropdownMenuItem onClick={() => onMenuAction?.('upload-invoice')}>
+            <DropdownMenuItem onClick={() => triggerMenuAction('upload-invoice')}>
               <Plus className="w-4 h-4 mr-2" />
               Upload invoice
             </DropdownMenuItem>
             <DropdownMenuItem 
-              onClick={() => onMenuAction?.('delete-invoice')}
+              onClick={() => triggerMenuAction('delete-invoice')}
               className="text-red-600 focus:text-red-600"
             >
               <Trash2 className="w-4 h-4 mr-2" />
@@ -831,20 +842,20 @@ export function DocumentDetailsPane({ document, onClose, onDocumentUpdate, onDoc
               <Copy className="w-4 h-4 mr-2" />
               Copy link
             </DropdownMenuItem>
-            <DropdownMenuItem onClick={() => onMenuAction?.('add-production-order')}>
+            <DropdownMenuItem onClick={() => triggerMenuAction('add-production-order')}>
               <Plus className="w-4 h-4 mr-2" />
               Add production order
             </DropdownMenuItem>
-            <DropdownMenuItem onClick={() => onMenuAction?.('add-payment')}>
+            <DropdownMenuItem onClick={() => triggerMenuAction('add-payment')}>
               <Plus className="w-4 h-4 mr-2" />
               Add payment
             </DropdownMenuItem>
-            <DropdownMenuItem onClick={() => onMenuAction?.('add-credit-note')}>
+            <DropdownMenuItem onClick={() => triggerMenuAction('add-credit-note')}>
               <Plus className="w-4 h-4 mr-2" />
               Add credit note
             </DropdownMenuItem>
             <DropdownMenuItem 
-              onClick={() => onMenuAction?.('delete-invoice')}
+              onClick={() => triggerMenuAction('delete-invoice')}
               className="text-red-600 focus:text-red-600"
             >
               <Trash2 className="w-4 h-4 mr-2" />
@@ -860,16 +871,16 @@ export function DocumentDetailsPane({ document, onClose, onDocumentUpdate, onDoc
               <Copy className="w-4 h-4 mr-2" />
               Copy link
             </DropdownMenuItem>
-            <DropdownMenuItem onClick={() => onMenuAction?.('edit-credit-note')}>
+            <DropdownMenuItem onClick={() => triggerMenuAction('edit-credit-note')}>
               <Edit className="w-4 h-4 mr-2" />
               Edit
             </DropdownMenuItem>
-            <DropdownMenuItem onClick={() => onMenuAction?.('void-credit-note')}>
+            <DropdownMenuItem onClick={() => triggerMenuAction('void-credit-note')}>
               <AlertTriangle className="w-4 h-4 mr-2" />
               Void
             </DropdownMenuItem>
             <DropdownMenuItem 
-              onClick={() => onMenuAction?.('delete-credit-note')}
+              onClick={() => triggerMenuAction('delete-credit-note')}
               className="text-red-600 focus:text-red-600"
             >
               <Trash2 className="w-4 h-4 mr-2" />
@@ -881,12 +892,12 @@ export function DocumentDetailsPane({ document, onClose, onDocumentUpdate, onDoc
       case 'ap:credit_note':
         return (
           <>
-            <DropdownMenuItem onClick={() => onMenuAction?.('edit-credit-note')}>
+            <DropdownMenuItem onClick={() => triggerMenuAction('edit-credit-note')}>
               <Edit className="w-4 h-4 mr-2" />
               Edit
             </DropdownMenuItem>
             <DropdownMenuItem 
-              onClick={() => onMenuAction?.('delete-credit-note')}
+              onClick={() => triggerMenuAction('delete-credit-note')}
               className="text-red-600 focus:text-red-600"
             >
               <AlertTriangle className="w-4 h-4 mr-2" />
@@ -923,16 +934,16 @@ export function DocumentDetailsPane({ document, onClose, onDocumentUpdate, onDoc
               <Copy className="w-4 h-4 mr-2" />
               Copy link
             </DropdownMenuItem>
-            <DropdownMenuItem onClick={() => onMenuAction?.('edit-payment')}>
+            <DropdownMenuItem onClick={() => triggerMenuAction('edit-payment')}>
               <Edit className="w-4 h-4 mr-2" />
               Edit Payment
             </DropdownMenuItem>
-            <DropdownMenuItem onClick={() => onMenuAction?.('select-invoice')}>
+            <DropdownMenuItem onClick={() => triggerMenuAction('select-invoice')}>
               <Plus className="w-4 h-4 mr-2" />
               Select Invoice
             </DropdownMenuItem>
             <DropdownMenuItem 
-              onClick={() => onMenuAction?.('delete-payment')}
+              onClick={() => triggerMenuAction('delete-payment')}
               className="text-red-600 focus:text-red-600"
             >
               <Trash2 className="w-4 h-4 mr-2" />
@@ -944,12 +955,12 @@ export function DocumentDetailsPane({ document, onClose, onDocumentUpdate, onDoc
       case 'ap:payment':
         return (
           <>
-            <DropdownMenuItem onClick={() => onMenuAction?.('edit-payment')}>
+            <DropdownMenuItem onClick={() => triggerMenuAction('edit-payment')}>
               <Edit className="w-4 h-4 mr-2" />
               Edit
             </DropdownMenuItem>
             <DropdownMenuItem 
-              onClick={() => onMenuAction?.('delete-payment')}
+              onClick={() => triggerMenuAction('delete-payment')}
               className="text-red-600 focus:text-red-600"
             >
               <AlertTriangle className="w-4 h-4 mr-2" />
@@ -984,13 +995,15 @@ export function DocumentDetailsPane({ document, onClose, onDocumentUpdate, onDoc
               <MoreHorizontal className="h-4 w-4" />
             </Button>
           </DropdownMenuTrigger>
-          <DropdownMenuContent align="end">
+          <DropdownMenuContent align="end" className="z-[80]">
             {renderMenuActions()}
           </DropdownMenuContent>
         </DropdownMenu>
-        <Button variant="ghost" size="sm" onClick={onClose}>
-          <X className="w-4 h-4" />
-        </Button>
+        {showCloseButton ? (
+          <Button variant="ghost" size="sm" onClick={onClose}>
+            <X className="w-4 h-4" />
+          </Button>
+        ) : null}
       </div>
       <div className="flex-1 overflow-auto min-h-0">
         {renderDetailComponent()}
@@ -1009,7 +1022,7 @@ export function DocumentDetailsPane({ document, onClose, onDocumentUpdate, onDoc
 
           {/* Delete Confirmation Dialog */}
           <Dialog open={showDeleteConfirmation} onOpenChange={setShowDeleteConfirmation}>
-            <DialogContent>
+            <DialogContent className="z-[80]">
               <DialogHeader>
                 <DialogTitle>Delete Credit Note</DialogTitle>
                 <DialogDescription>
@@ -1106,7 +1119,7 @@ export function DocumentDetailsPane({ document, onClose, onDocumentUpdate, onDoc
 
           {/* Delete Payment Confirmation Dialog */}
           <Dialog open={showDeletePaymentConfirmation} onOpenChange={setShowDeletePaymentConfirmation}>
-            <DialogContent>
+            <DialogContent className="z-[80]">
               <DialogHeader>
                 <DialogTitle>Delete Payment</DialogTitle>
                 <DialogDescription>
@@ -1187,7 +1200,7 @@ export function DocumentDetailsPane({ document, onClose, onDocumentUpdate, onDoc
         
           {/* Delete Supplier Payment Confirmation Dialog */}
           <Dialog open={showDeleteSupplierPaymentConfirmation} onOpenChange={setShowDeleteSupplierPaymentConfirmation}>
-            <DialogContent>
+            <DialogContent className="z-[80]">
               <DialogHeader>
                 <DialogTitle>Delete Supplier Payment</DialogTitle>
                 <DialogDescription>
@@ -1215,7 +1228,7 @@ export function DocumentDetailsPane({ document, onClose, onDocumentUpdate, onDoc
         (document.direction === 'ap' && document.doc_kind === 'invoice')) && (
         <>
           <Dialog open={showDeleteInvoiceConfirmation} onOpenChange={setShowDeleteInvoiceConfirmation}>
-            <DialogContent>
+            <DialogContent className="z-[80]">
               <DialogHeader>
                 <DialogTitle>Delete Invoice</DialogTitle>
                 <DialogDescription>
@@ -1241,7 +1254,7 @@ export function DocumentDetailsPane({ document, onClose, onDocumentUpdate, onDoc
       {/* Send Invoice Email Modal (AR invoices only) */}
       {document.direction === 'ar' && document.doc_kind === 'invoice' && (
         <Dialog open={isSendInvoiceEmailOpen} onOpenChange={setIsSendInvoiceEmailOpen}>
-          <DialogContent>
+          <DialogContent className="z-[80]">
             <DialogHeader>
               <DialogTitle>Send invoice {document.doc_number}?</DialogTitle>
               <DialogDescription>

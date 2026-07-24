@@ -18,10 +18,17 @@ interface KeywordIdeasRequest {
   pageSize?: number;
 }
 
+interface KeywordMonthlySearchVolume {
+  year: number;
+  month: number;
+  monthlySearches: number;
+}
+
 interface KeywordIdea {
   keyword: string;
   avgMonthlySearches: number;
   competitionIndex: number;
+  monthlySearchVolumes: KeywordMonthlySearchVolume[];
 }
 
 interface KeywordIdeasResponse {
@@ -35,7 +42,53 @@ interface GoogleAdsKeywordIdea {
   keywordIdeaMetrics: {
     avgMonthlySearches: string;
     competitionIndex: string;
+    monthlySearchVolumes?: unknown;
   };
+}
+
+const MONTH_NAME_TO_NUMBER: Record<string, number> = {
+  JANUARY: 1,
+  FEBRUARY: 2,
+  MARCH: 3,
+  APRIL: 4,
+  MAY: 5,
+  JUNE: 6,
+  JULY: 7,
+  AUGUST: 8,
+  SEPTEMBER: 9,
+  OCTOBER: 10,
+  NOVEMBER: 11,
+  DECEMBER: 12,
+};
+
+function parseMonthlySearchVolumes(raw: unknown): KeywordMonthlySearchVolume[] {
+  if (!Array.isArray(raw)) return [];
+  const rows: KeywordMonthlySearchVolume[] = [];
+  for (const entry of raw) {
+    if (!entry || typeof entry !== "object") continue;
+    const record = entry as Record<string, unknown>;
+    const year = Number(record.year);
+    const monthRaw = record.month;
+    const month =
+      typeof monthRaw === "number"
+        ? monthRaw
+        : typeof monthRaw === "string"
+        ? (MONTH_NAME_TO_NUMBER[monthRaw.toUpperCase()] ?? Number(monthRaw))
+        : NaN;
+    const monthlySearches = Number(
+      record.monthlySearches ?? record.monthly_searches,
+    );
+    if (!Number.isFinite(year) || !Number.isFinite(month) || month < 1 || month > 12) {
+      continue;
+    }
+    rows.push({
+      year,
+      month,
+      monthlySearches: Number.isFinite(monthlySearches) ? monthlySearches : 0,
+    });
+  }
+  rows.sort((a, b) => a.year - b.year || a.month - b.month);
+  return rows;
 }
 
 interface GoogleAdsResponse {
@@ -444,6 +497,7 @@ Deno.serve(async (req) => {
             keyword: "Unknown",
             avgMonthlySearches: 0,
             competitionIndex: 0,
+            monthlySearchVolumes: [],
           };
         }
 
@@ -454,6 +508,9 @@ Deno.serve(async (req) => {
             0,
           competitionIndex:
             parseInt(String(item.keywordIdeaMetrics?.competitionIndex), 10) || 0,
+          monthlySearchVolumes: parseMonthlySearchVolumes(
+            item.keywordIdeaMetrics?.monthlySearchVolumes,
+          ),
         };
       } catch (itemError) {
         console.warn(
@@ -465,6 +522,7 @@ Deno.serve(async (req) => {
           keyword: "Unknown",
           avgMonthlySearches: 0,
           competitionIndex: 0,
+          monthlySearchVolumes: [],
         };
       }
     });

@@ -165,6 +165,8 @@ export interface UseTaskGroupTasksQueryOptions {
   project?: string;
   /** When in project scope, pass current projectId so p_project_ids is never omitted. */
   scopeProjectId?: number | null;
+  /** When in user scope, pass current userId so p_assignee_ids is never omitted. */
+  scopeAssigneeId?: number | null;
   filters?: { [key: string]: string | string[] };
   groupBy: string | null;
   rowSortBy?: string;
@@ -510,6 +512,7 @@ export function useTaskGroupTasksQuery({
   q,
   project,
   scopeProjectId,
+  scopeAssigneeId,
   filters = {},
   groupBy,
   rowSortBy,
@@ -660,6 +663,14 @@ export function useTaskGroupTasksQuery({
           assigneeIds = ids;
         }
       }
+      // In user scope, never send null; enforce at hook layer so UI cannot omit.
+      if (
+        (!assigneeIds || assigneeIds.length === 0) &&
+        scopeAssigneeId != null &&
+        Number.isFinite(scopeAssigneeId)
+      ) {
+        assigneeIds = [scopeAssigneeId];
+      }
 
       // Convert content type filter. Accept numeric ID (from pills/filter pane) or title (lookup).
       const contentTypeParam = filtersVal['content_type_title'];
@@ -793,7 +804,7 @@ export function useTaskGroupTasksQuery({
         p_publication_date_lt: p_publication_date_lt,
       };
     },
-    [q, project, scopeProjectId, filters, groupBy, rowSortBy, rowSortOrder, perPage],
+    [q, project, scopeProjectId, scopeAssigneeId, filters, groupBy, rowSortBy, rowSortOrder, perPage],
   );
 
   const resetState = useCallback(() => {

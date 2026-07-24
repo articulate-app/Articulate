@@ -263,4 +263,17 @@ export async function getMinimalProjects() {
   return { data, error }
 }
 
+/**
+ * Get minimal teams list (for membership pickers).
+ */
+export async function getMinimalTeams() {
+  const { data, error } = await supabase
+    .from('teams')
+    .select('id, title, active')
+    .eq('active', true)
+    .order('title')
+
+  return { data: data as Array<{ id: number; title: string; active: boolean | null }> | null, error }
+}
+
 

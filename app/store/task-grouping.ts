@@ -25,7 +25,10 @@ export const useTaskGrouping = create<TaskGroupingState>(
   ((set, get) => ({
     selectedGroupBy: null,
     expandedGroups: new Set<string>(),
-    setGroupBy: (groupBy: GroupByField) => set({ selectedGroupBy: groupBy, expandedGroups: new Set<string>() }),
+    setGroupBy: (groupBy: GroupByField) => {
+      if (get().selectedGroupBy === groupBy) return
+      set({ selectedGroupBy: groupBy, expandedGroups: new Set<string>() })
+    },
     toggleGroup: (groupKey: string) => {
       const expandedGroups = new Set<string>(get().expandedGroups)
       if (expandedGroups.has(groupKey)) {

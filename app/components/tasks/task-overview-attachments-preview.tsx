@@ -5,6 +5,7 @@ import { File, Loader2 } from "lucide-react"
 import { useTaskAttachmentsUpload } from "@/hooks/use-task-attachments-upload"
 import { TaskOverviewPreviewSection } from "./task-overview-preview-section"
 import { useInViewport } from "@/hooks/use-in-viewport"
+import { AddDashedButton } from "../ui/add-dashed-button"
 
 const PREVIEW_ATTACHMENT_LIMIT = 4
 
@@ -70,19 +71,6 @@ export function TaskOverviewAttachmentsPreview({
         isEmpty={isEmpty}
         emptyMessage="Add attachment"
         onEmptyClick={openFilePicker}
-        headerActions={
-          !isEmpty ? (
-            <button
-              type="button"
-              className="inline-flex h-7 w-7 items-center justify-center rounded text-gray-500 hover:bg-gray-100 hover:text-gray-700"
-              onClick={openFilePicker}
-              title="Add attachment"
-              aria-label="Add attachment"
-            >
-              +
-            </button>
-          ) : null
-        }
       >
         <ul className="space-y-1">
           {previewAttachments.map((att) => (
@@ -115,6 +103,12 @@ export function TaskOverviewAttachmentsPreview({
         {attachmentsUpload.uploadError ? (
           <p className="mt-1 text-xs text-red-600">{attachmentsUpload.uploadError}</p>
         ) : null}
+        <AddDashedButton
+          label="Add attachment"
+          className="mt-2"
+          onClick={openFilePicker}
+          disabled={attachmentsUpload.isUploading}
+        />
       </TaskOverviewPreviewSection>
     </div>
   )

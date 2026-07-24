@@ -1,8 +1,8 @@
 "use client"
 
-import React, { useCallback, useEffect, useMemo, useRef, useState } from "react"
+import React, { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react"
 import { formatDistanceToNow } from "date-fns"
-import { AlertCircle, Loader2, Reply } from "lucide-react"
+import { AlertCircle, Clock3, Loader2, Plus, Reply } from "lucide-react"
 import { usePathname, useRouter, useSearchParams } from "next/navigation"
 import { createClientComponentClient } from "@supabase/auth-helpers-nextjs"
 import { useQuery } from "@tanstack/react-query"
@@ -11,12 +11,20 @@ import {
   useUserSharedMentionsInfinite,
   type UserSharedMentionRow,
 } from "../../hooks/use-user-shared-comment-threads"
-import type { UserTask } from "../../lib/services/users"
+import {
+  createUserThread,
+  listUserDmThreadsWithUser,
+  type UserTask,
+} from "../../lib/services/users"
+import type { UserDmThread } from "../../types/chat"
 import { getImageUrl } from "../../lib/public-media"
 import { UserAvatar } from "../UserAvatar"
 import { AddCommentInput } from "../comments-section/add-comment-input"
 import { Badge } from "../ui/badge"
 import { Button } from "../ui/button"
+import { Popover, PopoverContent, PopoverTrigger } from "../ui/popover"
+import { toast } from "../ui/use-toast"
+import { UserScrollableList } from "./user-scrollable-list"
 
 const CONTEXT_LABELS: Record<UserSharedMentionRow["thread_context_type"], string> = {
   direct: "Direct thread",
@@ -24,6 +32,8 @@ const CONTEXT_LABELS: Record<UserSharedMentionRow["thread_context_type"], string
   project: "Project thread",
   task: "Task thread",
 }
+
+const EMPTY_DM_THREADS: UserDmThread[] = []
 
 function toNumberList(value: unknown): number[] {
   if (Array.isArray(value)) {
@@ -53,15 +63,36 @@ function toCommentExcerpt(html: string | null | undefined): string {
   return plain
 }
 
+function formatCommentDateShort(dateString: string): string {
+  return new Date(dateString).toLocaleDateString("en-US", {
+    month: "short",
+    day: "numeric",
+  })
+}
+
 export function UserSharedCommentsTab({
   profileUserId,
   isActive,
   onOpenTaskKeepingDetail,
+  variant = "default",
+  previewMaxRows = 5,
+  onHeaderActionsChange,
 }: {
   profileUserId: number
   isActive: boolean
   onOpenTaskKeepingDetail?: (task: UserTask) => void
+  /**
+   * `preview` — overview section (capped scroll + inline composer).
+   * `tab` — comments tab (fill height, composer pinned to bottom).
+   * `default` — legacy card list.
+   */
+  variant?: "default" | "preview" | "tab"
+  previewMaxRows?: number
+  /** Mount thread selector / new-thread controls in the overview section header. */
+  onHeaderActionsChange?: (actions: ReactNode | null) => void
 }) {
+  const isPreview = variant === "preview" || variant === "tab"
+  const isTabLayout = variant === "tab"
   const supabase = useMemo(() => createClientComponentClient(), [])
   const router = useRouter()
   const pathname = usePathname()
@@ -82,10 +113,27 @@ export function UserSharedCommentsTab({
 
   const sentinelRef = useRef<HTMLDivElement | null>(null)
   const [composerThreadId, setComposerThreadId] = useState<number | null>(null)
+  const [isThreadSelectorOpen, setIsThreadSelectorOpen] = useState(false)
+  const [isCreatingThread, setIsCreatingThread] = useState(false)
   const [replyTarget, setReplyTarget] = useState<{
     threadId: number
     replyTo: { id: number; author?: string; preview: string }
   } | null>(null)
+
+  const {
+    data: dmThreadsData,
+    isLoading: isDmThreadsLoading,
+    refetch: refetchDmThreads,
+  } = useQuery({
+    queryKey: ["user-dm-threads", profileUserId],
+    enabled: isActive && profileUserId > 0 && (isPreview || isThreadSelectorOpen),
+    queryFn: async () => {
+      const result = await listUserDmThreadsWithUser(profileUserId)
+      if (result.error) throw result.error
+      return (result.data as UserDmThread[]) || []
+    },
+  })
+  const dmThreads = dmThreadsData ?? EMPTY_DM_THREADS
 
   const openRightPane = useCallback(
     (patch: Record<string, string | number | null | undefined>, options?: { replace?: boolean }) => {
@@ -126,6 +174,8 @@ export function UserSharedCommentsTab({
   }, [fetchNextPage, hasNextPage, isFetchingNextPage])
 
   useEffect(() => {
+    // Preview/tab layouts use UserScrollableList's own sentinel observer.
+    if (isPreview) return
     const sentinel = sentinelRef.current
     if (!sentinel) return
 
@@ -146,7 +196,7 @@ export function UserSharedCommentsTab({
 
     observer.observe(sentinel)
     return () => observer.disconnect()
-  }, [hasNextPage, isFetchingNextPage, isActive, mentions.length, onLoadMore])
+  }, [hasNextPage, isFetchingNextPage, isActive, isPreview, mentions.length, onLoadMore])
 
   const openTaskFromThread = useCallback(
     (taskId: number) => {
@@ -188,7 +238,6 @@ export function UserSharedCommentsTab({
 
   const openMentionThread = useCallback(
     (mention: UserSharedMentionRow, options?: { focusComposer?: boolean }) => {
-      console.log("open mention thread", mention.thread_id, mention.mention_id)
       openRightPane({
         rightView: "details",
         tab: "comments",
@@ -202,6 +251,157 @@ export function UserSharedCommentsTab({
     },
     [openRightPane],
   )
+
+  const selectDmThread = useCallback(
+    (threadId: number) => {
+      setComposerThreadId(threadId)
+      setReplyTarget(null)
+      openRightPane({
+        tab: "comments",
+        detailType: "user",
+        detailId: profileUserId,
+        rightView: "thread-chat",
+        rightThreadId: threadId,
+        rightMentionId: null,
+        rightComposerFocus: "1",
+      })
+    },
+    [openRightPane, profileUserId],
+  )
+
+  const handleStartThread = useCallback(async () => {
+    if (isCreatingThread) return
+    setIsCreatingThread(true)
+    try {
+      const { data: thread, error } = await createUserThread(profileUserId, "Chat")
+      if (error) throw error
+      const threadId =
+        typeof thread === "object" && thread && "id" in thread
+          ? Number((thread as { id: number }).id)
+          : Number(thread)
+      if (!Number.isFinite(threadId)) throw new Error("Failed to create thread")
+      setComposerThreadId(threadId)
+      setReplyTarget(null)
+      void refetchDmThreads()
+      openRightPane({
+        tab: "comments",
+        detailType: "user",
+        detailId: profileUserId,
+        rightView: "thread-chat",
+        rightThreadId: threadId,
+        rightMentionId: null,
+        rightComposerFocus: "1",
+      })
+    } catch (err: any) {
+      toast({
+        title: "Error",
+        description: err?.message || "Failed to create thread",
+        variant: "destructive",
+      })
+    } finally {
+      setIsCreatingThread(false)
+    }
+  }, [isCreatingThread, openRightPane, profileUserId, refetchDmThreads])
+
+  const headerActions = useMemo(() => {
+    if (!isPreview) return null
+    return (
+      <div className="flex items-center gap-1">
+        <Popover
+          open={isThreadSelectorOpen}
+          onOpenChange={(open) => {
+            setIsThreadSelectorOpen(open)
+            if (open) void refetchDmThreads()
+          }}
+        >
+          <PopoverTrigger asChild>
+            <Button
+              type="button"
+              variant="ghost"
+              size="sm"
+              className="h-7 w-7 p-0"
+              disabled={isDmThreadsLoading}
+              title="Thread selector"
+              aria-label="Thread selector"
+            >
+              <Clock3 className="h-4 w-4" />
+            </Button>
+          </PopoverTrigger>
+          <PopoverContent align="end" side="bottom" className="w-[min(92vw,380px)] p-0">
+            <div className="max-h-72 overflow-y-auto">
+              {dmThreads.length > 0 ? (
+                dmThreads.map((thread) => (
+                  <button
+                    key={`dm-thread-${thread.id}`}
+                    type="button"
+                    className={`flex w-full flex-col items-start gap-1 border-b border-gray-100 px-3 py-2 text-left text-xs last:border-b-0 hover:bg-gray-50 ${
+                      composerThreadId === thread.id ? "bg-yellow-50" : ""
+                    }`}
+                    onClick={() => {
+                      selectDmThread(thread.id)
+                      setIsThreadSelectorOpen(false)
+                    }}
+                  >
+                    <div className="flex w-full items-center justify-between gap-2">
+                      <span className="truncate font-medium">
+                        {thread.title?.trim() || thread.last_comment?.replace(/<[^>]*>/g, " ").trim() || "Thread"}
+                      </span>
+                      <span className="text-[10px] text-gray-500">#{thread.id}</span>
+                    </div>
+                    <div className="flex w-full flex-wrap items-center gap-1 text-[10px] text-gray-500">
+                      <span className="rounded bg-gray-100 px-1.5 py-0.5">direct</span>
+                      <span>
+                        {thread.last_message_at
+                          ? new Date(thread.last_message_at).toLocaleString()
+                          : "No activity"}
+                      </span>
+                    </div>
+                  </button>
+                ))
+              ) : (
+                <div className="px-3 py-2 text-xs text-gray-500">
+                  No threads yet. Start a new conversation.
+                </div>
+              )}
+            </div>
+          </PopoverContent>
+        </Popover>
+        <Button
+          type="button"
+          variant="outline"
+          size="sm"
+          className="h-7 px-2 text-xs"
+          onClick={() => void handleStartThread()}
+          disabled={isCreatingThread}
+          title="Start thread"
+          aria-label="Start thread"
+        >
+          {isCreatingThread ? (
+            <Loader2 className="mr-1 h-3.5 w-3.5 animate-spin" />
+          ) : (
+            <Plus className="mr-1 h-3.5 w-3.5" />
+          )}
+          Thread
+        </Button>
+      </div>
+    )
+  }, [
+    composerThreadId,
+    dmThreads,
+    handleStartThread,
+    isCreatingThread,
+    isDmThreadsLoading,
+    isPreview,
+    isThreadSelectorOpen,
+    refetchDmThreads,
+    selectDmThread,
+  ])
+
+  useEffect(() => {
+    if (!onHeaderActionsChange) return
+    onHeaderActionsChange(headerActions)
+    return () => onHeaderActionsChange(null)
+  }, [headerActions, onHeaderActionsChange])
 
   const currentUserAvatarUrl = getImageUrl(currentUserAvatar || null)
   const activeComposerThreadId = replyTarget?.threadId ?? composerThreadId
@@ -280,7 +480,7 @@ export function UserSharedCommentsTab({
 
   if (!currentUserId) {
     return (
-      <div className="rounded-lg border border-dashed border-gray-300 bg-white px-4 py-12 text-center">
+      <div className={isPreview ? "py-6 text-center" : "rounded-lg border border-dashed border-gray-300 bg-white px-4 py-12 text-center"}>
         <p className="text-sm text-gray-600">Sign in to see comments shared with this user.</p>
       </div>
     )
@@ -288,8 +488,8 @@ export function UserSharedCommentsTab({
 
   if (isLoading) {
     return (
-      <div className="flex flex-col items-center justify-center gap-3 py-24 text-gray-500">
-        <Loader2 className="h-8 w-8 animate-spin" />
+      <div className={`flex flex-col items-center justify-center gap-3 text-gray-500 ${isPreview ? "py-8" : "py-24"}`}>
+        <Loader2 className="h-6 w-6 animate-spin" />
         <p className="text-sm">Loading shared mentions…</p>
       </div>
     )
@@ -297,15 +497,151 @@ export function UserSharedCommentsTab({
 
   if (isError) {
     return (
-      <div className="flex flex-col items-center justify-center gap-4 rounded-lg border border-red-200 bg-red-50 px-6 py-12 text-center">
-        <AlertCircle className="h-10 w-10 text-red-500" aria-hidden />
-        <div className="space-y-1">
-          <p className="text-sm font-medium text-red-800">Could not load comments</p>
-          <p className="text-xs text-red-700">{error instanceof Error ? error.message : String(error)}</p>
-        </div>
+      <div className="flex flex-col items-center justify-center gap-3 py-8 text-center">
+        <AlertCircle className="h-5 w-5 text-red-500" aria-hidden />
+        <p className="text-sm text-red-700">{error instanceof Error ? error.message : String(error)}</p>
         <Button type="button" variant="outline" size="sm" onClick={() => void refetch()}>
           Try again
         </Button>
+      </div>
+    )
+  }
+
+  const visibleRows = mentionRows
+
+  const compactCommentsList =
+    visibleRows.length === 0 ? (
+      <p className="py-4 text-sm text-gray-500">No comments with this user yet.</p>
+    ) : (
+      <UserScrollableList
+        fill={isTabLayout}
+        hasMore={!!hasNextPage}
+        onLoadMore={onLoadMore}
+        isLoadingMore={isFetchingNextPage}
+        maxRows={isTabLayout ? 5 : "comments"}
+      >
+        <ul className="flex flex-col py-1">
+          {visibleRows.map((row, idx) => {
+            const authorName =
+              row.mention_created_by_name ||
+              row.mention_created_by_email ||
+              "Unknown user"
+            const excerpt = toCommentExcerpt(row.comment)
+            const relativeTime = row.created_at
+              ? formatDistanceToNow(new Date(row.created_at), { addSuffix: true })
+              : null
+            const shortDate = row.created_at ? formatCommentDateShort(row.created_at) : null
+            const contextHint = row.task_id
+              ? row.task_title?.trim() || hydratedTaskTitles.get(Number(row.task_id)) || "Task"
+              : row.project_id
+                ? row.project_name?.trim() || hydratedProjectNames.get(Number(row.project_id)) || "Project"
+                : CONTEXT_LABELS[row.thread_context_type]
+
+            return (
+              <li key={`${row.thread_id}-${row.mention_id}`}>
+                {idx > 0 ? <div className="border-t border-gray-200" /> : null}
+                <div className="group w-full py-1.5">
+                  <div className="flex min-h-0 items-center gap-2">
+                    <UserAvatar
+                      name={authorName}
+                      photoUrl={getImageUrl(row.mention_created_by_photo)}
+                    />
+                    <span className="min-w-0 truncate text-sm font-medium text-gray-900">
+                      {authorName}
+                    </span>
+                    <div className="ml-auto flex shrink-0 items-center gap-1 whitespace-nowrap text-right text-xs text-muted-foreground">
+                      {relativeTime ? <span className="block">{relativeTime}</span> : null}
+                      {shortDate ? <span className="block">{shortDate}</span> : null}
+                      <button
+                        type="button"
+                        className="inline-flex h-5 w-5 items-center justify-center rounded text-gray-500 hover:bg-gray-100 hover:text-gray-700 md:opacity-0 md:transition-opacity md:group-hover:opacity-100"
+                        aria-label="Reply to thread"
+                        title="Reply in thread"
+                        onClick={(event) => {
+                          event.preventDefault()
+                          event.stopPropagation()
+                          setComposerThreadId(Number(row.thread_id))
+                          setReplyTarget({
+                            threadId: Number(row.thread_id),
+                            replyTo: {
+                              id: Number(row.mention_id),
+                              author: authorName,
+                              preview: excerpt.slice(0, 120) || "message",
+                            },
+                          })
+                        }}
+                      >
+                        <Reply className="h-3.5 w-3.5" />
+                      </button>
+                    </div>
+                  </div>
+                  <div className="mt-0.5 pl-10 text-left">
+                    <span
+                      className="line-clamp-2 text-sm text-gray-700"
+                      style={{ wordBreak: "break-word" }}
+                    >
+                      {excerpt || "No message preview"}
+                    </span>
+                    {contextHint ? (
+                      <span className="mt-0.5 block truncate text-xs text-gray-500">{contextHint}</span>
+                    ) : null}
+                  </div>
+                </div>
+              </li>
+            )
+          })}
+        </ul>
+      </UserScrollableList>
+    )
+
+  const composer = (
+    <div className="flex items-start gap-2">
+      <UserAvatar
+        name={currentUserName || "You"}
+        photoUrl={currentUserAvatarUrl}
+        size="sm"
+        className="mt-3"
+      />
+      <div className="min-w-0 flex-1">
+        <AddCommentInput
+          key={`user-comments-input-${variant}-${profileUserId}-${activeComposerThreadId ?? "new"}-${replyTarget?.replyTo.id ?? "none"}`}
+          taskId={0}
+          threadScope="direct"
+          targetUserId={profileUserId}
+          threadId={activeComposerThreadId}
+          compactMode
+          replyTo={replyTarget?.replyTo ?? null}
+          onClearReply={() => setReplyTarget(null)}
+          onCommentAdded={() => {
+            setReplyTarget(null)
+            void refetch()
+            void refetchDmThreads()
+          }}
+          onThreadCreated={(thread) => {
+            const nextThreadId = Number(thread.id)
+            if (!Number.isFinite(nextThreadId)) return
+            setComposerThreadId(nextThreadId)
+            void refetchDmThreads()
+          }}
+        />
+      </div>
+    </div>
+  )
+
+  if (isTabLayout) {
+    return (
+      <div className="flex h-full min-h-0 flex-col">
+        <div className="min-h-0 flex-1 overflow-hidden px-6 pt-2">{compactCommentsList}</div>
+        <div className="shrink-0 border-t border-gray-200 bg-white px-6 py-3">{composer}</div>
+      </div>
+    )
+  }
+
+  if (variant === "preview") {
+    return (
+      <div className="flex flex-col gap-2">
+        {compactCommentsList}
+        <div className="mt-1 border-t border-gray-100 pt-3">{composer}</div>
       </div>
     )
   }

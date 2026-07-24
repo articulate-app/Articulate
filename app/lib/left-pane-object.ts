@@ -1,57 +1,57 @@
 import { getCurrentObjectRoute, type SearchObjectRoute } from "./search-routing"
 
 export const LEFT_PANE_OBJECTS = [
-  "all",
   "tasks",
   "projects",
   "mentions",
   "users",
-  "teams",
   "ai_chats",
 ] as const
 
-export type LeftPaneObject = (typeof LEFT_PANE_OBJECTS)[number]
+export type LeftPaneObject = (typeof LEFT_PANE_OBJECTS)[number] | "all"
 
-const LEFT_PANE_OBJECT_SET = new Set<string>(LEFT_PANE_OBJECTS)
+const LEFT_PANE_OBJECT_SET = new Set<string>([...LEFT_PANE_OBJECTS, "all"])
 
 export function isLeftPaneObject(value: string | null | undefined): value is LeftPaneObject {
   return typeof value === "string" && LEFT_PANE_OBJECT_SET.has(value)
 }
 
 export function normalizeLeftPaneObject(value: string | null | undefined): LeftPaneObject {
-  if (value === "all") return "all"
+  // Homepage ("all") was removed from the switcher; map legacy URLs to tasks.
+  if (value === "all") return "tasks"
   if (value === "ai-threads") return "ai_chats"
-  if (value === "ai_chats") return "ai_chats"
-  return isLeftPaneObject(value) ? value : "tasks"
+  return isLeftPaneObject(value) && value !== "all" ? value : "tasks"
 }
 
 export function leftPaneObjectFromPath(pathname: string): LeftPaneObject {
-  if (pathname === "/") return "all"
+  if (pathname === "/") return "tasks"
   if (pathname === "/projects" || pathname.startsWith("/projects/")) return "projects"
   if (pathname === "/mentions" || pathname.startsWith("/mentions/")) return "mentions"
   if (pathname === "/users" || pathname.startsWith("/users/")) return "users"
-  if (pathname === "/teams" || pathname.startsWith("/teams/")) return "teams"
+  // Teams moved to user/project preferences — legacy /teams URLs fall back to tasks.
+  if (pathname === "/teams" || pathname.startsWith("/teams/")) return "tasks"
   if (pathname === "/ai-threads" || pathname.startsWith("/ai-threads/")) return "ai_chats"
   return "tasks"
 }
 
 function objectRouteToLeftPaneObject(value: SearchObjectRoute): LeftPaneObject {
-  if (value === "all") return "all"
+  if (value === "all") return "tasks"
   if (value === "task") return "tasks"
   if (value === "project") return "projects"
   if (value === "mention") return "mentions"
   if (value === "user") return "users"
-  if (value === "team") return "teams"
-  return "ai_chats"
+  if (value === "ai_thread") return "ai_chats"
+  // Teams are no longer left-pane objects.
+  if (value === "team") return "tasks"
+  return "tasks"
 }
 
-export type PrimarySectionKey = "tasks" | "projects" | "mentions" | "users" | "teams" | "ai-threads"
+export type PrimarySectionKey = "tasks" | "projects" | "mentions" | "users" | "ai-threads"
 
 export function getPrimarySectionFromPath(pathname: string): PrimarySectionKey | null {
   if (pathname.startsWith("/tasks")) return "tasks"
   if (pathname.startsWith("/projects")) return "projects"
   if (pathname.startsWith("/users")) return "users"
-  if (pathname.startsWith("/teams")) return "teams"
   if (pathname.startsWith("/mentions")) return "mentions"
   if (pathname.startsWith("/ai-threads")) return "ai-threads"
   return null
@@ -62,7 +62,6 @@ export function leftPaneObjectToPath(value: LeftPaneObject): string {
   if (value === "projects") return "/projects"
   if (value === "mentions") return "/mentions"
   if (value === "users") return "/users"
-  if (value === "teams") return "/teams"
   if (value === "ai_chats") return "/ai-threads"
   return "/tasks"
 }
@@ -73,7 +72,6 @@ export function leftPaneObjectLabel(value: LeftPaneObject): string {
   if (value === "projects") return "Projects"
   if (value === "mentions") return "Mentions"
   if (value === "users") return "Users"
-  if (value === "teams") return "Teams"
   return "AI chats"
 }
 
@@ -82,20 +80,18 @@ export function leftPaneObjectLabel(value: LeftPaneObject): string {
  * On task views the object toggle is secondary to contextual (task) controls, so only the leanest
  * objects are eligible to be promoted to visible pills.
  */
-export const OBJECT_PILL_PRIORITY: LeftPaneObject[] = ["all", "tasks", "projects"]
+export const OBJECT_PILL_PRIORITY: LeftPaneObject[] = ["tasks", "projects"]
 
 /**
  * Full greedy-fit priority for visible pills (used on non-task views where there is room to expose
  * more object types). Mentions is least-used so it sinks to the bottom / overflow first.
  */
 export const OBJECT_PILL_VISIBLE_PRIORITY: LeftPaneObject[] = [
-  "all",
   "tasks",
   "projects",
   "users",
-  "teams",
-  "ai_chats",
   "mentions",
+  "ai_chats",
 ]
 
 /** Width thresholds (px of the *available* left-pane toolbar space, not the viewport). */
@@ -209,13 +205,13 @@ export function resolveLeftPaneObject(params: { get: (key: string) => string | n
     const q = params.get("q")?.trim() ?? ""
     const explicitType = params.get("type")
     if (q.length > 0 && !explicitType) {
-      return "all"
+      return "tasks"
     }
     const explicitObject = params.get("leftObject") ?? params.get("leftView")
     if (explicitObject) {
       return normalizeLeftPaneObject(explicitObject)
     }
-    return "all"
+    return "tasks"
   }
   const fromCanonicalPath = leftPaneObjectFromPath(pathname)
   if (fromCanonicalPath !== "tasks" || pathname.startsWith("/tasks")) {

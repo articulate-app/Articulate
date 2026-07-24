@@ -1,5 +1,9 @@
 export type CenterPaneEntity = "task" | "project" | "user" | "team" | "thread"
 
+export const KEYWORD_RESEARCH_CENTER_VIEW = "keyword-research"
+/** Seed query for the keyword research middle-pane tab (from top search, etc.). */
+export const KEYWORD_RESEARCH_QUERY_PARAM = "krQuery"
+
 export type ActiveCenterSelection =
   | { type: "task-suggestion"; id: string }
   | { type: "task"; id: string }
@@ -7,6 +11,7 @@ export type ActiveCenterSelection =
   | { type: "project"; id: string }
   | { type: "team"; id: string }
   | { type: "thread"; id: string }
+  | { type: "keyword-research" }
 
 type ReadableParams = { get: (key: string) => string | null }
 
@@ -38,6 +43,9 @@ export function getActiveCenterSelection(params: ReadableParams): ActiveCenterSe
   if (centerTeamId) return { type: "team", id: centerTeamId }
   const centerThreadId = nonEmpty(params.get("centerThreadId"))
   if (centerThreadId) return { type: "thread", id: centerThreadId }
+  if (params.get("centerView") === KEYWORD_RESEARCH_CENTER_VIEW) {
+    return { type: "keyword-research" }
+  }
   return null
 }
 
@@ -50,7 +58,10 @@ export function clearActiveCenterSelectionParams(next: URLSearchParams) {
   next.delete("centerProjectId")
   next.delete("centerTeamId")
   next.delete("centerThreadId")
+  next.delete("centerMentionId")
   next.delete("centerTab")
+  next.delete("centerView")
+  next.delete(KEYWORD_RESEARCH_QUERY_PARAM)
   next.delete("rightTaskId")
   next.delete("id")
 }
@@ -61,7 +72,10 @@ function clearCenterPaneSelection(next: URLSearchParams) {
   next.delete("centerUserId")
   next.delete("centerTeamId")
   next.delete("centerThreadId")
+  next.delete("centerMentionId")
   next.delete("centerTab")
+  next.delete("centerView")
+  next.delete(KEYWORD_RESEARCH_QUERY_PARAM)
 }
 
 function clearGenericSelection(next: URLSearchParams) {
@@ -97,13 +111,18 @@ export function buildCenterPaneSelectionSearchParams(args: {
   entity: CenterPaneEntity
   id: string | number
   tab?: string | null
+  /** Focused mention within a thread (center-pane thread selection). */
+  mentionId?: string | number | null
 }): URLSearchParams {
-  const { currentSearchParams, entity, id, tab } = args
+  const { currentSearchParams, entity, id, tab, mentionId = null } = args
   const next = new URLSearchParams(currentSearchParams.toString())
   clearGenericSelection(next)
   clearCenterPaneSelection(next)
   clearRightPaneSelection(next)
   clearCenterSplitLayout(next)
+  next.delete("itemKind")
+  next.delete("centerSuggestionId")
+  next.delete("stackTeamId")
   next.set("layout", "right")
 
   if (entity === "task") {
@@ -130,5 +149,55 @@ export function buildCenterPaneSelectionSearchParams(args: {
   }
 
   next.set("centerThreadId", String(id))
+  if (mentionId != null && String(mentionId).trim()) {
+    next.set("centerMentionId", String(mentionId))
+  } else {
+    next.delete("centerMentionId")
+  }
   return next
+}
+
+/** Apply a middle-pane tab selection (including suggestions) onto URL search params. */
+export function buildCenterPaneTabSelectionSearchParams(args: {
+  currentSearchParams: URLSearchParams
+  kind: "task" | "suggestion" | "project" | "user" | "team" | "thread" | "keyword-research"
+  id: string | number
+  /** Optional seed keyword when opening keyword research. */
+  keywordQuery?: string | null
+}): URLSearchParams {
+  const { currentSearchParams, kind, id, keywordQuery = null } = args
+  if (kind === "keyword-research") {
+    const next = new URLSearchParams(currentSearchParams.toString())
+    clearGenericSelection(next)
+    clearCenterPaneSelection(next)
+    clearRightPaneSelection(next)
+    clearCenterSplitLayout(next)
+    next.delete("itemKind")
+    next.delete("centerSuggestionId")
+    next.delete("stackTeamId")
+    next.set("layout", "right")
+    next.set("centerView", KEYWORD_RESEARCH_CENTER_VIEW)
+    const trimmedQuery = typeof keywordQuery === "string" ? keywordQuery.trim() : ""
+    if (trimmedQuery) next.set(KEYWORD_RESEARCH_QUERY_PARAM, trimmedQuery)
+    else next.delete(KEYWORD_RESEARCH_QUERY_PARAM)
+    return next
+  }
+  if (kind === "suggestion") {
+    const next = new URLSearchParams(currentSearchParams.toString())
+    clearGenericSelection(next)
+    clearCenterPaneSelection(next)
+    clearRightPaneSelection(next)
+    clearCenterSplitLayout(next)
+    next.set("layout", "right")
+    next.set("itemKind", "suggestion")
+    next.set("centerSuggestionId", String(id))
+    next.delete("centerTaskId")
+    next.delete("stackTeamId")
+    return next
+  }
+  return buildCenterPaneSelectionSearchParams({
+    currentSearchParams,
+    entity: kind,
+    id,
+  })
 }

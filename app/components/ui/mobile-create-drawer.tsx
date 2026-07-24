@@ -42,6 +42,7 @@ export function MobileCreateDrawer({ isOpen, onClose, onNewAiThreadClick }: Mobi
         onClose={handleClose}
         onSuccess={handleClose}
         onAiPillSelect={onNewAiThreadClick}
+        showTypePills
       />
     </ResizableBottomSheet>
   )

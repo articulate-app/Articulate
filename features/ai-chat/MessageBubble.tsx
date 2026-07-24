@@ -26,6 +26,7 @@ import { resolveUserMessageDisplayContent } from "./resolve-user-message-display
 import type { AiMessageSegment } from "./composer-inline-editor"
 import { parseAiMessageChangeSet } from "./ai-message-change-set"
 import { AssistantMessageRestoreFooter } from "./AssistantMessageRestoreFooter"
+import { shouldSuppressBuildAckChatBubble } from "./component-linked-message-output"
 
 interface MessageBubbleProps {
   msg: AiMessage
@@ -70,6 +71,8 @@ interface MessageBubbleProps {
   traceCards?: React.ReactNode
   /** Request Plan V3 execution-plan audit card (live or persisted). */
   requestPlanCard?: React.ReactNode
+  /** Progressive execution timeline (user-safe steps; never chain-of-thought). */
+  executionTimeline?: React.ReactNode
   /** Compact clarification card for ambiguous component edits. */
   clarificationCard?: React.ReactNode
   /** Visible terminal failure/interruption card for assistant runs. */
@@ -285,6 +288,7 @@ export function MessageBubble({
   orchestratedBuild = null,
   traceCards = null,
   requestPlanCard = null,
+  executionTimeline = null,
   clarificationCard = null,
   runFailureCard = null,
 }: MessageBubbleProps) {
@@ -487,11 +491,24 @@ export function MessageBubble({
   const hasOrchestratedBuild = Boolean(orchestratedBuild) && !isMine
   const hasTraceCards = Boolean(traceCards) && !isMine
   const hasRequestPlanCard = Boolean(requestPlanCard) && !isMine
+  const hasExecutionTimeline = Boolean(executionTimeline) && !isMine
   const introHtml = (assistantIntroHtml ?? "").trim()
   const outroHtml = (assistantOutroHtml ?? "").trim()
   const hasIntroHtml = introHtml.length > 0
   const hasOutroHtml = outroHtml.length > 0
-  const hasAssistantPlainContent = Boolean(msg.content?.trim()) || hasStructuredBlocks
+  const suppressBuildAckBubble =
+    !isMine
+    && msg.role === "assistant"
+    && shouldSuppressBuildAckChatBubble({
+      content: msg.content,
+      content_json: msg.content_json,
+      ...(msg.content_json && typeof msg.content_json === "object" && !Array.isArray(msg.content_json)
+        ? (msg.content_json as Record<string, unknown>)
+        : {}),
+    })
+  const hasAssistantPlainContent =
+    !suppressBuildAckBubble
+    && (Boolean(msg.content?.trim()) || hasStructuredBlocks)
   const assistantChangeSet = useMemo(
     () => (msg.role === "assistant" ? parseAiMessageChangeSet(msg.content_json) : null),
     [msg.content_json, msg.role],
@@ -500,6 +517,7 @@ export function MessageBubble({
     !isEditing
     && !isMine
     && msg.role === "assistant"
+    && !suppressBuildAckBubble
     && (
       resolvedCopyableAssistantText.length > 0
       || hasStructuredBlocks
@@ -508,6 +526,7 @@ export function MessageBubble({
       || hasOrchestratedBuild
       || hasTraceCards
       || hasRequestPlanCard
+      || hasExecutionTimeline
       || hasIntroHtml
       || hasOutroHtml
       || Boolean(msg.content?.trim())
@@ -522,6 +541,7 @@ export function MessageBubble({
     || hasOrchestratedBuild
     || hasTraceCards
     || hasRequestPlanCard
+    || hasExecutionTimeline
     || hasIntroHtml
     || hasOutroHtml
     || Boolean(clarificationCard)
@@ -562,6 +582,9 @@ export function MessageBubble({
           data-message-role={msg.role}
           className={`rounded-lg px-3 py-2 text-sm break-words max-w-full min-w-0 overflow-x-hidden ${isMine ? "bg-gray-100" : "bg-white"}`}
         >
+          {hasExecutionTimeline && !isEditing ? (
+            <div className="mb-3 w-full min-w-0 max-w-full">{executionTimeline}</div>
+          ) : null}
           {hasTraceCards && !isEditing ? (
             <div className="mb-3 w-full min-w-0 max-w-full">{traceCards}</div>
           ) : null}
@@ -599,7 +622,8 @@ export function MessageBubble({
             </div>
           ) : isMine && (userDisplayContent || msg.content) ? (
             renderUserMessage(userDisplayContent || msg.content || "")
-          ) : hasInlinePreview || hasIntroHtml || hasOutroHtml ? (
+          ) : suppressBuildAckBubble ? null
+          : hasInlinePreview || hasIntroHtml || hasOutroHtml ? (
             <div className="space-y-3">
               {hasIntroHtml ? renderAssistantHtml(introHtml) : null}
               {componentEditPreview ? <div className="w-full min-w-0 max-w-full">{componentEditPreview}</div> : null}
