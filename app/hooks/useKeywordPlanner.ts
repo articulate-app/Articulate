@@ -50,7 +50,7 @@ export function useKeywordPlanner(
   filters: KeywordPlannerFilters,
   options: UseKeywordPlannerOptions = {}
 ) {
-  const { enabled = true, pageSize = 30 } = options;
+  const { enabled = true, pageSize = 40 } = options;
   const abortControllerRef = useRef<AbortController | null>(null);
 
   // Debounce the keyword input (flush immediately when a manual search enables the query)

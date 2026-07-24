@@ -5,7 +5,7 @@ The Keyword Planner feature allows users to get keyword ideas from Google Ads AP
 
 ## Required Environment Variables
 
-Add these to your `.env.local` file:
+Add these to your `.env.local` file (and Vercel if used):
 
 ```bash
 # Google Ads API Configuration
@@ -14,9 +14,16 @@ GOOGLE_ADS_DEVELOPER_TOKEN=your_developer_token_here
 GOOGLE_ADS_CLIENT_ID=your_client_id_here
 GOOGLE_ADS_CLIENT_SECRET=your_client_secret_here
 GOOGLE_ADS_REFRESH_TOKEN=your_refresh_token_here
+
+# DataForSEO (related keywords) — optional in Next if the Supabase edge function is deployed
+# Prefer setting these as Supabase Edge secrets: DATAFORSEO_ID, DATAFORSEO_SECRET
+DATAFORSEO_ID=your_dataforseo_login
+DATAFORSEO_SECRET=your_dataforseo_password
 ```
 
 **Note**: The system automatically exchanges your refresh token for fresh access tokens, so you only need to provide the refresh token once.
+
+Related keywords are fetched via DataForSEO Labs (`related_keywords/live`). The Next.js route calls DataForSEO directly when `DATAFORSEO_ID` / `DATAFORSEO_SECRET` are present; otherwise it falls back to the Supabase edge function `related-keywords`, which reads the same secret names.
 
 ## Setup Instructions
 
@@ -47,7 +54,8 @@ GOOGLE_ADS_REFRESH_TOKEN=your_refresh_token_here
 ## Features
 
 - **Real-time data**: Uses Google Ads API for accurate search volume and competition data
-- **Autocomplete expansion**: Google Suggest (alphabet expansion) fills related keywords when Keyword Planner returns few ideas; missing metrics are enriched via `generateKeywordHistoricalMetrics`
+- **Autocomplete expansion**: Google Suggest (alphabet expansion) fills related long-tails
+- **Related keywords**: DataForSEO Labs related keywords (Google “searches related to”) for semantic neighbours that do not contain the seed text
 - **Caching**: 2-minute cache to improve performance and reduce API calls
 - **Rate limiting**: 3 requests per 5 seconds per IP to respect API limits
 - **Error handling**: Graceful error states with retry functionality
@@ -57,7 +65,8 @@ GOOGLE_ADS_REFRESH_TOKEN=your_refresh_token_here
 
 ## API Endpoints
 
-- `POST /api/keyword-ideas` - Get keyword ideas (Google Ads + Google Autocomplete expansion)
+- `POST /api/keyword-ideas` - Get keyword ideas (Google Ads + Autocomplete + DataForSEO related)
+- Supabase edge `related-keywords` - DataForSEO related keywords (uses `DATAFORSEO_ID` / `DATAFORSEO_SECRET`)
 
 ## Security Notes
 

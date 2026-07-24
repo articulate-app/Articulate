@@ -5,9 +5,11 @@ import { useSearchParams } from "next/navigation"
 import {
   AlertCircle,
   Bookmark,
+  Check,
   ChevronDown,
   ChevronUp,
   Clock,
+  Copy,
   Loader2,
   RefreshCw,
   Search,
@@ -16,6 +18,7 @@ import {
 import { cn } from "@/lib/utils"
 import { Button } from "./ui/button"
 import { Input } from "./ui/input"
+import { toast } from "./ui/use-toast"
 import {
   Select,
   SelectContent,
@@ -138,6 +141,8 @@ export function KeywordPlannerPane({
   const [isSavedKeywordsOpen, setIsSavedKeywordsOpen] = useState(false)
   const [lastSearchedKeyword, setLastSearchedKeyword] = useState<string | null>(null)
   const [isKeywordHistoryOpen, setIsKeywordHistoryOpen] = useState(false)
+  const [copiedKeyword, setCopiedKeyword] = useState<string | null>(null)
+  const copiedKeywordTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const lastSeededQueryRef = useRef<string | null>(null)
   const resultsIdentityRef = useRef<string | null>(null)
   const keywordInputRef = useRef<HTMLInputElement>(null)
@@ -249,6 +254,33 @@ export function KeywordPlannerPane({
     setFilters((prev) => ({ ...prev, [field]: value }))
   }, [])
 
+  const handleCopyKeyword = useCallback(async (keyword: string) => {
+    try {
+      await navigator.clipboard.writeText(keyword)
+      if (copiedKeywordTimeoutRef.current) {
+        clearTimeout(copiedKeywordTimeoutRef.current)
+      }
+      setCopiedKeyword(keyword)
+      copiedKeywordTimeoutRef.current = setTimeout(() => {
+        setCopiedKeyword((current) => (current === keyword ? null : current))
+      }, 1500)
+    } catch {
+      toast({
+        title: "Copy failed",
+        description: "Could not copy the keyword to the clipboard.",
+        variant: "destructive",
+      })
+    }
+  }, [])
+
+  useEffect(() => {
+    return () => {
+      if (copiedKeywordTimeoutRef.current) {
+        clearTimeout(copiedKeywordTimeoutRef.current)
+      }
+    }
+  }, [])
+
   // Auto-expand only when a new results set arrives — never re-open after the user collapses.
   useEffect(() => {
     const results = data?.results
@@ -270,8 +302,20 @@ export function KeywordPlannerPane({
 
   const sortedResults = useMemo(() => {
     if (!data?.results) return []
-    return [...data.results].sort((a, b) => b.avgMonthlySearches - a.avgMonthlySearches)
-  }, [data?.results])
+
+    const seedKey = (lastSearchedKeyword || filters.keyword).trim().toLowerCase()
+    const rows = [...data.results]
+    if (!seedKey) {
+      return rows.sort((a, b) => b.avgMonthlySearches - a.avgMonthlySearches)
+    }
+
+    const seedIndex = rows.findIndex(
+      (row) => row.keyword.trim().toLowerCase() === seedKey,
+    )
+    const seed = seedIndex >= 0 ? rows.splice(seedIndex, 1)[0] : null
+    rows.sort((a, b) => b.avgMonthlySearches - a.avgMonthlySearches)
+    return seed ? [seed, ...rows] : rows
+  }, [data?.results, filters.keyword, lastSearchedKeyword])
 
   const historySuggestions = useMemo(() => {
     const query = filters.keyword.trim().toLowerCase()
@@ -609,13 +653,13 @@ export function KeywordPlannerPane({
                   <li key={result.keyword} className="border-b border-gray-100">
                     <div
                       className={cn(
-                        "group flex items-center gap-1 rounded-md py-1.5 transition-colors hover:bg-gray-50",
+                        "group flex items-start gap-1 rounded-md py-1.5 transition-colors hover:bg-gray-50",
                         isExpanded && "bg-gray-50",
                       )}
                     >
                       <button
                         type="button"
-                        className="inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-md text-gray-500 hover:bg-gray-100 hover:text-gray-900"
+                        className="mt-0.5 inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-md text-gray-500 hover:bg-gray-100 hover:text-gray-900"
                         aria-label={isExpanded ? "Hide top results" : "Show top results"}
                         aria-expanded={isExpanded}
                         onClick={() => toggleExpanded(result.keyword)}
@@ -629,13 +673,16 @@ export function KeywordPlannerPane({
 
                       <button
                         type="button"
-                        className="flex min-w-0 flex-1 items-center gap-3 py-1 text-left"
+                        className="flex min-w-0 flex-1 items-start gap-3 py-1 text-left"
                         onClick={() => toggleExpanded(result.keyword)}
                       >
-                        <span className="min-w-0 flex-1 truncate text-sm text-gray-900">
+                        <span
+                          className="min-w-0 flex-1 whitespace-normal break-words text-sm leading-5 text-gray-900"
+                          title={result.keyword}
+                        >
                           {result.keyword}
                         </span>
-                        <span className="inline-flex shrink-0 items-center gap-1.5">
+                        <span className="inline-flex shrink-0 items-center gap-1.5 pt-0.5">
                           <KeywordVolumeSparkline volumes={result.monthlySearchVolumes} />
                           <KeywordMetricStat
                             metric="volume"
@@ -653,7 +700,29 @@ export function KeywordPlannerPane({
                         </span>
                       </button>
 
-                      <div className="flex shrink-0 items-center gap-0.5 pr-1 opacity-0 transition-opacity group-hover:opacity-100 focus-within:opacity-100">
+                      <div className="mt-0.5 flex shrink-0 items-center gap-0.5 pr-1">
+                        <Button
+                          type="button"
+                          variant="ghost"
+                          size="icon"
+                          className="h-8 w-8 text-gray-500 hover:bg-gray-100 hover:text-gray-900"
+                          aria-label={
+                            copiedKeyword === result.keyword
+                              ? "Keyword copied"
+                              : `Copy keyword ${result.keyword}`
+                          }
+                          title={copiedKeyword === result.keyword ? "Copied" : "Copy keyword"}
+                          onClick={(event) => {
+                            event.stopPropagation()
+                            void handleCopyKeyword(result.keyword)
+                          }}
+                        >
+                          {copiedKeyword === result.keyword ? (
+                            <Check className="h-3.5 w-3.5 text-emerald-600" />
+                          ) : (
+                            <Copy className="h-3.5 w-3.5" />
+                          )}
+                        </Button>
                         <AddKeywordToProjectPopover
                           keyword={result}
                           languageId={filters.languageId}

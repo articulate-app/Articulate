@@ -18,8 +18,8 @@ export function emptyKeywordIdea(keyword: string): KeywordIdeaRow {
 }
 
 /**
- * Merge Google Ads ideas + Autocomplete suggestions + historical metrics.
- * Always keeps the seed keyword in the final page so exact-match metrics still work.
+ * Merge Google Ads ideas + Autocomplete + Related (DataForSEO) + historical metrics.
+ * Seed keyword is always first; remaining rows are sorted by volume desc.
  */
 export function mergeKeywordIdeas(
   seedKeyword: string,
@@ -27,6 +27,7 @@ export function mergeKeywordIdeas(
   autocompleteSuggestions: string[],
   historicalIdeas: KeywordIdeaRow[],
   pageSize: number,
+  relatedIdeas: KeywordIdeaRow[] = [],
 ): KeywordIdeaRow[] {
   const byKey = new Map<string, KeywordIdeaRow>()
   const seedKey = normalizeKeywordKey(seedKeyword)
@@ -56,6 +57,18 @@ export function mergeKeywordIdeas(
         ...idea,
         keyword: existing.keyword || normalizedKeyword,
       })
+      return
+    }
+
+    // Prefer the richer volume when both already have metrics.
+    if (
+      incomingHasMetrics &&
+      idea.avgMonthlySearches > existing.avgMonthlySearches
+    ) {
+      byKey.set(key, {
+        ...idea,
+        keyword: existing.keyword || normalizedKeyword,
+      })
     }
   }
 
@@ -64,6 +77,7 @@ export function mergeKeywordIdeas(
   }
 
   for (const idea of adsIdeas) upsert(idea)
+  for (const idea of relatedIdeas) upsert(idea)
   for (const idea of historicalIdeas) upsert(idea)
 
   for (const suggestion of autocompleteSuggestions) {
@@ -72,21 +86,20 @@ export function mergeKeywordIdeas(
     upsert(emptyKeywordIdea(suggestion.trim().replace(/\s+/g, " ")))
   }
 
-  const sorted = [...byKey.values()].sort((a, b) => {
+  const seedIdea = seedKey ? byKey.get(seedKey) : undefined
+  if (seedIdea) {
+    byKey.delete(seedKey)
+  }
+
+  const rest = [...byKey.values()].sort((a, b) => {
     if (b.avgMonthlySearches !== a.avgMonthlySearches) {
       return b.avgMonthlySearches - a.avgMonthlySearches
     }
     return a.keyword.localeCompare(b.keyword)
   })
 
-  const limited = sorted.slice(0, pageSize)
-  if (!seedKey) return limited
+  const restLimit = seedIdea ? Math.max(0, pageSize - 1) : pageSize
+  const limitedRest = rest.slice(0, restLimit)
 
-  const seedIdea = byKey.get(seedKey)
-  if (!seedIdea) return limited
-  if (limited.some((idea) => normalizeKeywordKey(idea.keyword) === seedKey)) {
-    return limited
-  }
-
-  return [...limited.slice(0, Math.max(0, pageSize - 1)), seedIdea]
+  return seedIdea ? [seedIdea, ...limitedRest] : limitedRest
 }

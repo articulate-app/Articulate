@@ -56,7 +56,7 @@ export function SeoKeywordResearchInline({
     triggerSearch,
   } = useKeywordPlanner(searchFilters, {
     enabled: hasSearched && searchFilters.keyword.trim().length > 0,
-    pageSize: 30,
+    pageSize: 40,
   })
 
   useEffect(() => {
@@ -188,7 +188,9 @@ export function SeoKeywordResearchInline({
                 onMouseDown={(event) => event.preventDefault()}
                 onClick={() => void handleSelect(idea)}
               >
-                <span className="min-w-0 flex-1 truncate">{idea.keyword}</span>
+                <span className="min-w-0 flex-1 whitespace-normal break-words leading-5">
+                  {idea.keyword}
+                </span>
                 <span className="inline-flex shrink-0 items-center gap-1 text-xs text-gray-500">
                   <KeywordMetricStat metric="volume">
                     {formatMetricValue(idea.avgMonthlySearches)}

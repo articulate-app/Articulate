@@ -9,6 +9,7 @@ import {
   normalizeKeywordKey,
 } from '../../lib/google-autocomplete';
 import { emptyKeywordIdea, mergeKeywordIdeas } from '../../lib/keyword-ideas-merge';
+import { fetchRelatedKeywordIdeas } from '../../lib/dataforseo-related-keywords';
 
 interface KeywordIdeasRequest {
   keyword: string;
@@ -58,8 +59,8 @@ const rateLimitMap = new Map<string, { count: number; resetTime: number }>();
 const RATE_LIMIT_REQUESTS = 3;
 const RATE_LIMIT_WINDOW = 5 * 1000; // 5 seconds
 
-const DEFAULT_PAGE_SIZE = 30;
-const MAX_PAGE_SIZE = 50;
+const DEFAULT_PAGE_SIZE = 40;
+const MAX_PAGE_SIZE = 60;
 const AUTOCOMPLETE_FETCH_LIMIT = 50;
 
 function getClientIP(request: NextRequest): string {
@@ -273,8 +274,8 @@ export async function POST(request: NextRequest) {
 
     const trimmedKeyword = keyword.trim();
 
-    // Create cache key (v2: includes autocomplete expansion)
-    const cacheKey = `v2-${trimmedKeyword.toLowerCase()}-${regionId || 'any'}-${languageId || 'any'}-${pageSize}`;
+    // Create cache key (v3: Ads + Autocomplete + DataForSEO related)
+    const cacheKey = `v3-${trimmedKeyword.toLowerCase()}-${regionId || 'any'}-${languageId || 'any'}-${pageSize}`;
     
     // Check cache first
     const cachedResponse = getCachedResponse(cacheKey);
@@ -295,8 +296,8 @@ export async function POST(request: NextRequest) {
     const customerId = process.env.GOOGLE_ADS_CUSTOMER_ID!;
     const developerToken = process.env.GOOGLE_ADS_DEVELOPER_TOKEN!;
 
-    // Expand ideas via Autocomplete in parallel with Google Ads Keyword Planner
-    const [adsSettled, autocompleteSettled] = await Promise.allSettled([
+    // Expand ideas: Google Ads + Autocomplete + DataForSEO related (in parallel)
+    const [adsSettled, autocompleteSettled, relatedSettled] = await Promise.allSettled([
       fetchGenerateKeywordIdeas({
         accessToken,
         customerId,
@@ -312,6 +313,13 @@ export async function POST(request: NextRequest) {
         regionId,
         limit: Math.max(AUTOCOMPLETE_FETCH_LIMIT, pageSize),
         expandAlphabet: true,
+      }),
+      fetchRelatedKeywordIdeas({
+        keyword: trimmedKeyword,
+        languageId,
+        regionId,
+        depth: 2,
+        limit: Math.max(AUTOCOMPLETE_FETCH_LIMIT, pageSize),
       }),
     ]);
 
@@ -369,9 +377,19 @@ export async function POST(request: NextRequest) {
       console.warn('Google Autocomplete failed:', autocompleteSettled.reason);
     }
 
-    const adsKeys = new Set(adsIdeas.map((idea) => normalizeKeywordKey(idea.keyword)));
+    const relatedIdeas =
+      relatedSettled.status === 'fulfilled' ? relatedSettled.value : [];
+
+    if (relatedSettled.status === 'rejected') {
+      console.warn('DataForSEO related keywords failed:', relatedSettled.reason);
+    }
+
+    const knownMetricKeys = new Set([
+      ...adsIdeas.map((idea) => normalizeKeywordKey(idea.keyword)),
+      ...relatedIdeas.map((idea) => normalizeKeywordKey(idea.keyword)),
+    ]);
     const missingFromAds = autocompleteSuggestions.filter(
-      (suggestion) => !adsKeys.has(normalizeKeywordKey(suggestion)),
+      (suggestion) => !knownMetricKeys.has(normalizeKeywordKey(suggestion)),
     );
 
     const historicalIdeas =
@@ -392,6 +410,7 @@ export async function POST(request: NextRequest) {
       autocompleteSuggestions,
       historicalIdeas,
       pageSize,
+      relatedIdeas,
     );
 
     const responseData: KeywordIdeasResponse = {
