@@ -9,7 +9,9 @@ import "jsr:@supabase/functions-js/edge-runtime.d.ts";
  *   accessing a client via a manager. If unset, `GOOGLE_ADS_CUSTOMER_ID` is used (same as Next route).
  * - GOOGLE_ADS_DEVELOPER_TOKEN
  *
- * Matches app/api/keyword-ideas/route.ts behavior; login-customer-id is configurable for MCC setups.
+ * Matches app/api/keyword-ideas/route.ts Google Ads metrics behavior.
+ * Autocomplete expansion for keyword research lives in the Next.js route only;
+ * this edge function is used for exact-keyword metric enrichment.
  */
 interface KeywordIdeasRequest {
   keyword: string;

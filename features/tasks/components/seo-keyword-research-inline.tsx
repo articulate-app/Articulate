@@ -56,7 +56,7 @@ export function SeoKeywordResearchInline({
     triggerSearch,
   } = useKeywordPlanner(searchFilters, {
     enabled: hasSearched && searchFilters.keyword.trim().length > 0,
-    pageSize: 20,
+    pageSize: 30,
   })
 
   useEffect(() => {

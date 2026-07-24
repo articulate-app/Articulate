@@ -16,7 +16,6 @@ import {
 } from "./ui/command"
 import { toast } from "./ui/use-toast"
 import { cn } from "@/lib/utils"
-import { createClient } from "../lib/supabase/client"
 import { ADS_LANGUAGE_ID_TO_PROJECT_CODE } from "../lib/keyword-ideas-metrics"
 import type { KeywordIdea } from "../hooks/useKeywordPlanner"
 
@@ -45,8 +44,7 @@ export function AddKeywordToProjectPopover({
   className,
 }: AddKeywordToProjectPopoverProps) {
   const queryClient = useQueryClient()
-  const supabase = useMemo(() => createClient(), [])
-  const functionsClient = useMemo(() => createClientComponentClient(), [])
+  const supabase = useMemo(() => createClientComponentClient(), [])
   const [open, setOpen] = useState(false)
   const [search, setSearch] = useState("")
   const [isSaving, setIsSaving] = useState(false)
@@ -55,16 +53,16 @@ export function AddKeywordToProjectPopover({
   const { data: projects = [], isLoading: isLoadingProjects } = useQuery({
     queryKey: ["projects-minimal"],
     queryFn: async (): Promise<ProjectOption[]> => {
-      const { data, error } = await (supabase as any)
+      const { data, error } = await supabase
         .from("v_projects_minimal")
         .select("id, name, color, logo")
         .order("name")
       if (error) throw error
-      return ((data ?? []) as ProjectOption[])
-        .filter((row): row is ProjectOption => typeof row?.id === "number" && Boolean(row?.name))
-        .map((row) => ({
-          id: row.id,
-          name: row.name,
+      return (data ?? [])
+        .filter((row: any) => row?.id != null && row?.name)
+        .map((row: any) => ({
+          id: Number(row.id),
+          name: String(row.name),
           color: row.color ?? null,
           logo: row.logo ?? null,
         }))
@@ -106,7 +104,7 @@ export function AddKeywordToProjectPopover({
         description: "Checking rankings for this project…",
       })
 
-      const { error: fnError } = await functionsClient.functions.invoke(
+      const { error: fnError } = await supabase.functions.invoke(
         "sync-project-keyword-rankings",
         { body: { project_id: projectId } },
       )

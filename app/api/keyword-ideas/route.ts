@@ -1,11 +1,14 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { getFreshAccessToken, validateGoogleAdsConfig } from '../../lib/googleAdsAuth';
-import { createClientComponentClient } from '@supabase/auth-helpers-nextjs';
-import { getCurrentUser } from '../../../lib/utils/getCurrentUser';
 import {
   parseMonthlySearchVolumes,
   type KeywordMonthlySearchVolume,
 } from '../../lib/keyword-ideas-metrics';
+import {
+  fetchGoogleAutocompleteSuggestions,
+  normalizeKeywordKey,
+} from '../../lib/google-autocomplete';
+import { emptyKeywordIdea, mergeKeywordIdeas } from '../../lib/keyword-ideas-merge';
 
 interface KeywordIdeasRequest {
   keyword: string;
@@ -28,16 +31,21 @@ interface KeywordIdeasResponse {
 }
 
 interface GoogleAdsKeywordIdea {
-  text: string;
-  keywordIdeaMetrics: {
-    avgMonthlySearches: string;
-    competitionIndex: string;
+  text?: string;
+  keywordIdeaMetrics?: {
+    avgMonthlySearches?: string;
+    competitionIndex?: string;
+    monthlySearchVolumes?: unknown;
+  };
+  keywordMetrics?: {
+    avgMonthlySearches?: string;
+    competitionIndex?: string;
     monthlySearchVolumes?: unknown;
   };
 }
 
 interface GoogleAdsResponse {
-  results: GoogleAdsKeywordIdea[];
+  results?: GoogleAdsKeywordIdea[];
   nextPageToken?: string;
 }
 
@@ -49,6 +57,10 @@ const CACHE_DURATION = 2 * 60 * 1000; // 2 minutes
 const rateLimitMap = new Map<string, { count: number; resetTime: number }>();
 const RATE_LIMIT_REQUESTS = 3;
 const RATE_LIMIT_WINDOW = 5 * 1000; // 5 seconds
+
+const DEFAULT_PAGE_SIZE = 30;
+const MAX_PAGE_SIZE = 50;
+const AUTOCOMPLETE_FETCH_LIMIT = 50;
 
 function getClientIP(request: NextRequest): string {
   return request.headers.get('x-forwarded-for')?.split(',')[0] || 
@@ -89,6 +101,149 @@ function setCachedResponse(cacheKey: string, data: KeywordIdeasResponse): void {
   cache.set(cacheKey, { data, timestamp: Date.now() });
 }
 
+function buildGeoLanguagePayload(regionId?: string, languageId?: string) {
+  const payload: Record<string, unknown> = {};
+  if (regionId && regionId !== '') {
+    payload.geoTargetConstants = [`geoTargetConstants/${regionId}`];
+  }
+  if (languageId && languageId !== '') {
+    payload.language = `languageConstants/${languageId}`;
+  }
+  return payload;
+}
+
+function mapGoogleAdsIdea(item: GoogleAdsKeywordIdea, index: number): KeywordIdea {
+  try {
+    if (!item || typeof item !== 'object') {
+      console.warn(`Invalid keyword item at index ${index}:`, item);
+      return emptyKeywordIdea('Unknown');
+    }
+
+    const metrics = item.keywordIdeaMetrics ?? item.keywordMetrics;
+    return {
+      keyword: item.text || 'Unknown',
+      avgMonthlySearches: parseInt(String(metrics?.avgMonthlySearches ?? ''), 10) || 0,
+      competitionIndex: parseInt(String(metrics?.competitionIndex ?? ''), 10) || 0,
+      monthlySearchVolumes: parseMonthlySearchVolumes(metrics?.monthlySearchVolumes),
+    };
+  } catch (itemError) {
+    console.warn(`Error processing keyword item at index ${index}:`, itemError, item);
+    return emptyKeywordIdea('Unknown');
+  }
+}
+
+async function fetchGenerateKeywordIdeas(args: {
+  accessToken: string;
+  customerId: string;
+  developerToken: string;
+  keyword: string;
+  regionId?: string;
+  languageId?: string;
+  pageSize: number;
+}): Promise<GoogleAdsResponse> {
+  const payload = {
+    keywordSeed: { keywords: [args.keyword.trim()] },
+    keywordPlanNetwork: 'GOOGLE_SEARCH',
+    pageSize: args.pageSize,
+    ...buildGeoLanguagePayload(args.regionId, args.languageId),
+  };
+
+  const googleAdsUrl =
+    `https://googleads.googleapis.com/v22/customers/${args.customerId}:generateKeywordIdeas`;
+
+  console.log('Google Ads API Request:', {
+    url: googleAdsUrl,
+    customerId: args.customerId,
+    developerToken: args.developerToken
+      ? '***' + args.developerToken.slice(-4)
+      : 'missing',
+    accessToken: args.accessToken ? '***' + args.accessToken.slice(-8) : 'missing',
+    payload,
+  });
+
+  const response = await fetch(googleAdsUrl, {
+    method: 'POST',
+    headers: {
+      Authorization: `Bearer ${args.accessToken}`,
+      'developer-token': args.developerToken,
+      'login-customer-id': args.customerId,
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify(payload),
+    signal: AbortSignal.timeout(10000),
+  });
+
+  if (!response.ok) {
+    const errorText = await response.text();
+    console.error('Google Ads API error:', response.status, errorText);
+    const err = new Error(`Google Ads API error: ${response.status}`) as Error & {
+      status?: number;
+      details?: string;
+    };
+    err.status = response.status;
+    err.details = errorText;
+    throw err;
+  }
+
+  return (await response.json()) as GoogleAdsResponse;
+}
+
+/**
+ * Enrich exact keywords with volume/competition via Keyword Plan historical metrics.
+ * Soft-fails to [] so autocomplete suggestions still surface without metrics.
+ */
+async function fetchKeywordHistoricalMetrics(args: {
+  accessToken: string;
+  customerId: string;
+  developerToken: string;
+  keywords: string[];
+  regionId?: string;
+  languageId?: string;
+}): Promise<KeywordIdea[]> {
+  const keywords = args.keywords
+    .map((k) => k.trim())
+    .filter(Boolean)
+    .slice(0, 50);
+
+  if (keywords.length === 0) return [];
+
+  const payload = {
+    keywords,
+    keywordPlanNetwork: 'GOOGLE_SEARCH',
+    ...buildGeoLanguagePayload(args.regionId, args.languageId),
+  };
+
+  const url =
+    `https://googleads.googleapis.com/v22/customers/${args.customerId}:generateKeywordHistoricalMetrics`;
+
+  try {
+    const response = await fetch(url, {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${args.accessToken}`,
+        'developer-token': args.developerToken,
+        'login-customer-id': args.customerId,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify(payload),
+      signal: AbortSignal.timeout(10000),
+    });
+
+    if (!response.ok) {
+      const errorText = await response.text();
+      console.warn('Google Ads historical metrics error:', response.status, errorText);
+      return [];
+    }
+
+    const data = (await response.json()) as GoogleAdsResponse;
+    if (!Array.isArray(data.results)) return [];
+    return data.results.map((item, index) => mapGoogleAdsIdea(item, index));
+  } catch (error) {
+    console.warn('Google Ads historical metrics failed:', error);
+    return [];
+  }
+}
+
 export async function POST(request: NextRequest) {
   const startTime = Date.now();
   
@@ -104,7 +259,9 @@ export async function POST(request: NextRequest) {
 
     // Parse request body
     const body: KeywordIdeasRequest = await request.json();
-    const { keyword, regionId, languageId, pageSize = 15 } = body;
+    const rawPageSize = body.pageSize ?? DEFAULT_PAGE_SIZE;
+    const pageSize = Math.max(1, Math.min(MAX_PAGE_SIZE, rawPageSize));
+    const { keyword, regionId, languageId } = body;
 
     // Validate required fields
     if (!keyword || keyword.trim().length === 0) {
@@ -114,8 +271,10 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    // Create cache key
-    const cacheKey = `${keyword.toLowerCase().trim()}-${regionId || 'any'}-${languageId || 'any'}-${pageSize}`;
+    const trimmedKeyword = keyword.trim();
+
+    // Create cache key (v2: includes autocomplete expansion)
+    const cacheKey = `v2-${trimmedKeyword.toLowerCase()}-${regionId || 'any'}-${languageId || 'any'}-${pageSize}`;
     
     // Check cache first
     const cachedResponse = getCachedResponse(cacheKey);
@@ -133,71 +292,46 @@ export async function POST(request: NextRequest) {
 
     // Get fresh access token
     const accessToken = await getFreshAccessToken();
-
-    // Build Google Ads API request payload
-    const payload: any = {
-      keywordSeed: { keywords: [keyword.trim()] },
-      keywordPlanNetwork: "GOOGLE_SEARCH",
-      pageSize: pageSize,
-    };
-
-    // Add optional parameters
-    if (regionId && regionId !== "") {
-      payload.geoTargetConstants = [`geoTargetConstants/${regionId}`];
-    }
-
-    if (languageId && languageId !== "") {
-      payload.language = `languageConstants/${languageId}`;
-    }
-
-    // Make request to Google Ads API
     const customerId = process.env.GOOGLE_ADS_CUSTOMER_ID!;
     const developerToken = process.env.GOOGLE_ADS_DEVELOPER_TOKEN!;
-    const googleAdsUrl = `https://googleads.googleapis.com/v22/customers/${customerId}:generateKeywordIdeas`;
-    
-    // Debug logging
-    console.log('Google Ads API Request:', {
-      url: googleAdsUrl,
-      customerId,
-      developerToken: developerToken ? '***' + developerToken.slice(-4) : 'missing',
-      accessToken: accessToken ? '***' + accessToken.slice(-8) : 'missing',
-      payload
-    });
-    
-    const response = await fetch(googleAdsUrl, {
-      method: 'POST',
-      headers: {
-        'Authorization': `Bearer ${accessToken}`,
-        'developer-token': developerToken,
-        'login-customer-id': customerId,
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify(payload),
-      signal: AbortSignal.timeout(10000), // 10 second timeout
-    });
 
-    if (!response.ok) {
-      const errorText = await response.text();
-      console.error('Google Ads API error:', response.status, errorText);
-      
+    // Expand ideas via Autocomplete in parallel with Google Ads Keyword Planner
+    const [adsSettled, autocompleteSettled] = await Promise.allSettled([
+      fetchGenerateKeywordIdeas({
+        accessToken,
+        customerId,
+        developerToken,
+        keyword: trimmedKeyword,
+        regionId,
+        languageId,
+        pageSize,
+      }),
+      fetchGoogleAutocompleteSuggestions({
+        keyword: trimmedKeyword,
+        languageId,
+        regionId,
+        limit: Math.max(AUTOCOMPLETE_FETCH_LIMIT, pageSize),
+        expandAlphabet: true,
+      }),
+    ]);
+
+    if (adsSettled.status === 'rejected') {
+      const err = adsSettled.reason as Error & { status?: number; details?: string };
       return NextResponse.json(
-        { 
-          error: { 
-            code: response.status, 
-            message: `Google Ads API error: ${response.status}`,
-            details: errorText
-          } 
+        {
+          error: {
+            code: err.status || 500,
+            message: err.message || 'Google Ads API error',
+            details: err.details,
+          },
         },
-        { status: response.status }
+        { status: err.status || 500 }
       );
     }
 
-    const googleAdsData: GoogleAdsResponse = await response.json();
-    
-    // Debug logging to see the actual response structure
+    const googleAdsData = adsSettled.value;
     console.log('Google Ads API Response:', JSON.stringify(googleAdsData, null, 2));
-    
-    // Validate response structure
+
     if (!googleAdsData || typeof googleAdsData !== 'object') {
       console.error('Invalid Google Ads response: not an object', googleAdsData);
       return NextResponse.json(
@@ -225,41 +359,40 @@ export async function POST(request: NextRequest) {
         { status: 500 }
       );
     }
-    
-    // Transform the response with additional safety checks
-    const results: KeywordIdea[] = googleAdsData.results.map((item, index) => {
-      try {
-        if (!item || typeof item !== 'object') {
-          console.warn(`Invalid keyword item at index ${index}:`, item);
-          return {
-            keyword: 'Unknown',
-            avgMonthlySearches: 0,
-            competitionIndex: 0,
-            monthlySearchVolumes: [],
-          };
-        }
-        
-        return {
-          keyword: item.text || 'Unknown',
-          avgMonthlySearches: parseInt(item.keywordIdeaMetrics?.avgMonthlySearches) || 0,
-          competitionIndex: parseInt(item.keywordIdeaMetrics?.competitionIndex) || 0,
-          monthlySearchVolumes: parseMonthlySearchVolumes(
-            item.keywordIdeaMetrics?.monthlySearchVolumes,
-          ),
-        };
-      } catch (itemError) {
-        console.warn(`Error processing keyword item at index ${index}:`, itemError, item);
-        return {
-          keyword: 'Unknown',
-          avgMonthlySearches: 0,
-          competitionIndex: 0,
-          monthlySearchVolumes: [],
-        };
-      }
-    });
 
-    // Sort by monthly searches (descending)
-    results.sort((a, b) => b.avgMonthlySearches - a.avgMonthlySearches);
+    const adsIdeas = googleAdsData.results.map((item, index) => mapGoogleAdsIdea(item, index));
+
+    const autocompleteSuggestions =
+      autocompleteSettled.status === 'fulfilled' ? autocompleteSettled.value : [];
+
+    if (autocompleteSettled.status === 'rejected') {
+      console.warn('Google Autocomplete failed:', autocompleteSettled.reason);
+    }
+
+    const adsKeys = new Set(adsIdeas.map((idea) => normalizeKeywordKey(idea.keyword)));
+    const missingFromAds = autocompleteSuggestions.filter(
+      (suggestion) => !adsKeys.has(normalizeKeywordKey(suggestion)),
+    );
+
+    const historicalIdeas =
+      missingFromAds.length > 0
+        ? await fetchKeywordHistoricalMetrics({
+            accessToken,
+            customerId,
+            developerToken,
+            keywords: missingFromAds,
+            regionId,
+            languageId,
+          })
+        : [];
+
+    const results = mergeKeywordIdeas(
+      trimmedKeyword,
+      adsIdeas,
+      autocompleteSuggestions,
+      historicalIdeas,
+      pageSize,
+    );
 
     const responseData: KeywordIdeasResponse = {
       elapsedMs: Date.now() - startTime,
@@ -308,4 +441,4 @@ export async function POST(request: NextRequest) {
       { status: 500 }
     );
   }
-} 
+}

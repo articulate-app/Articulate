@@ -47,6 +47,7 @@ GOOGLE_ADS_REFRESH_TOKEN=your_refresh_token_here
 ## Features
 
 - **Real-time data**: Uses Google Ads API for accurate search volume and competition data
+- **Autocomplete expansion**: Google Suggest (alphabet expansion) fills related keywords when Keyword Planner returns few ideas; missing metrics are enriched via `generateKeywordHistoricalMetrics`
 - **Caching**: 2-minute cache to improve performance and reduce API calls
 - **Rate limiting**: 3 requests per 5 seconds per IP to respect API limits
 - **Error handling**: Graceful error states with retry functionality
@@ -56,7 +57,7 @@ GOOGLE_ADS_REFRESH_TOKEN=your_refresh_token_here
 
 ## API Endpoints
 
-- `POST /api/keyword-ideas` - Get keyword ideas from Google Ads API
+- `POST /api/keyword-ideas` - Get keyword ideas (Google Ads + Google Autocomplete expansion)
 
 ## Security Notes
 
