@@ -18,7 +18,7 @@ type CenterPaneTabBarProps = {
   tabs: PaneTabStripItem[]
   activeKey: string | null
   onSelect: (key: string) => void
-  onClose: (key: string) => void
+  onClose: (key: string | string[]) => void
   onCloseAll: () => void
   /** Same callbacks as the header search preview — opens items as middle-pane tabs. */
   searchValue?: string
@@ -48,19 +48,27 @@ export function CenterPaneTabBar({
   onShowAll,
 }: CenterPaneTabBarProps) {
   const [isAddOpen, setIsAddOpen] = useState(false)
+  const [selectedTabKeys, setSelectedTabKeys] = useState<string[]>([])
+  const multiSelectedCount = selectedTabKeys.length > 1 ? selectedTabKeys.length : 0
 
   return (
     <div
-      className={`${COMPACT_PANE_HEADER_ROW_CLASS} !items-stretch shrink-0 bg-white pl-0 pr-2`}
+      className={`${COMPACT_PANE_HEADER_ROW_CLASS} !items-stretch shrink-0 border-b border-gray-200 bg-white pl-0 pr-2`}
     >
       <div className="flex min-h-0 min-w-0 flex-1 items-stretch">
         {tabs.length > 0 ? (
-          <PaneTabStrip tabs={tabs} activeKey={activeKey} onSelect={onSelect} onClose={onClose} />
+          <PaneTabStrip
+            tabs={tabs}
+            activeKey={activeKey}
+            onSelect={onSelect}
+            onClose={onClose}
+            onSelectionChange={setSelectedTabKeys}
+          />
         ) : (
-          <div className="min-w-0 flex-1 border-b border-gray-200" aria-hidden />
+          <div className="min-w-0 flex-1" aria-hidden />
         )}
       </div>
-      <div className="flex items-center gap-0.5 border-b border-gray-200">
+      <div className="flex items-center gap-0.5 self-stretch">
         <Popover open={isAddOpen} onOpenChange={setIsAddOpen}>
           <PopoverTrigger asChild>
             <button
@@ -112,6 +120,17 @@ export function CenterPaneTabBar({
               </button>
             </DropdownMenuTrigger>
             <DropdownMenuContent align="end">
+              {multiSelectedCount > 0 ? (
+                <DropdownMenuItem
+                  onClick={() => {
+                    onClose(selectedTabKeys)
+                    setSelectedTabKeys([])
+                  }}
+                >
+                  <XCircle className="mr-2 h-4 w-4" />
+                  Close {multiSelectedCount} selected tabs
+                </DropdownMenuItem>
+              ) : null}
               <DropdownMenuItem onClick={onCloseAll}>
                 <XCircle className="mr-2 h-4 w-4" />
                 Close all tabs

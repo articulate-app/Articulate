@@ -192,16 +192,16 @@ export function TaskFilters({ isOpen, onClose, onApplyFilters, activeFilters, fi
 
   const handleClearFilters = () => {
     setFilters(emptyFilters)
-    setContentVisibility({ showTasks: true, showSuggestions: true })
+    setContentVisibility({ showTasks: true, showSuggestions: false })
     if (commitFilters) {
-      commitFilters(emptyFilters, { showTasks: true, showSuggestions: true })
-      setPlannerVisibility({ showTasks: true, showSuggestions: true })
+      commitFilters(emptyFilters, { showTasks: true, showSuggestions: false })
+      setPlannerVisibility({ showTasks: true, showSuggestions: false })
       onClose()
     } else {
       onApplyFilters(emptyFilters, emptyFilters)
       writeFiltersToUrlAndStoreLegacy(emptyFilters)
-      setPlannerVisibility({ showTasks: true, showSuggestions: true })
-      syncPlannerToUrl({ showTasks: true, showSuggestions: true })
+      setPlannerVisibility({ showTasks: true, showSuggestions: false })
+      syncPlannerToUrl({ showTasks: true, showSuggestions: false })
     }
   }
 
@@ -247,28 +247,6 @@ export function TaskFilters({ isOpen, onClose, onApplyFilters, activeFilters, fi
             </div>
           </div>
 
-          {/* Assigned To */}
-          <div className="space-y-2">
-            <label className="text-sm font-medium">Content</label>
-            <MultiSelect
-              options={[
-                { id: 'tasks', label: 'Tasks' },
-                { id: 'suggestions', label: 'Suggestions' },
-              ]}
-              value={[
-                ...(contentVisibility.showTasks ? ['tasks'] : []),
-                ...(contentVisibility.showSuggestions ? ['suggestions'] : []),
-              ]}
-              onChange={(vals) =>
-                setContentVisibility({
-                  showTasks: vals.includes('tasks'),
-                  showSuggestions: vals.includes('suggestions'),
-                })
-              }
-            />
-          </div>
-
-          {/* Assigned To */}
           {!hideAssigneeFilter && (
           <div className="space-y-2">
             <label className="text-sm font-medium">Assigned To</label>

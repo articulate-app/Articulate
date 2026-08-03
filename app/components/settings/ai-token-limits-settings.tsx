@@ -1,7 +1,8 @@
 "use client"
 
-import { useEffect, useMemo, useRef, useState } from "react"
+import { useEffect, useMemo, useState } from "react"
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query"
+import { subDays } from "date-fns"
 import { AlertCircle, Loader2 } from "lucide-react"
 import {
   Bar,
@@ -17,6 +18,7 @@ import { Button } from "../ui/button"
 import { Input } from "../ui/input"
 import { Label } from "../ui/label"
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "../ui/select"
+import { DateRangePicker } from "../ui/date-range-picker"
 import {
   formatCompactTokenCount,
   formatExactTokenCount,
@@ -28,7 +30,6 @@ import {
 import {
   MY_AI_USAGE_QUERY_KEY,
   TEAM_AI_USAGE_GRANULARITY,
-  addDaysToDateString,
   bucketStartToDateString,
   fetchMyAiUsageTimeseries,
   fillTeamAiUsageSeries,
@@ -44,7 +45,10 @@ import { getUserTeamsWithRoles, type UserTeamWithRole } from "@/lib/services/use
 import { useCurrentUserStore } from "../../store/current-user"
 import { mergeWorkspaceUrlState } from "../../lib/workspace-url-state"
 
-type RangePreset = "7" | "30" | "90" | "period"
+type DateRangeValue = {
+  from?: Date
+  to?: Date
+}
 
 type ChartDatum = TeamAiUsageSeriesPoint & {
   label: string
@@ -54,24 +58,19 @@ const PROMPT_BAR_COLOR = "#2563eb"
 const COMPLETION_BAR_COLOR = "#93c5fd"
 const POLICIES_QUERY_KEY = "ai-token-limit-policies"
 
-function buildRangeForPreset(
-  preset: RangePreset,
-  timeZone: string,
-  periodStart: string | null,
-): { from: string; to: string } {
-  const today = getDateStringInTimezone(new Date(), timeZone)
-  if (preset === "period" && periodStart) {
-    const periodDate = bucketStartToDateString(periodStart, timeZone)
-    return {
-      from: periodDate <= today ? periodDate : today,
-      to: today,
-    }
-  }
-  const days = preset === "7" ? 7 : preset === "90" ? 90 : 30
-  return {
-    from: addDaysToDateString(today, -(days - 1)),
-    to: today,
-  }
+function getDefaultDateRange(days = 29): DateRangeValue {
+  const to = new Date()
+  return { from: subDays(to, days), to }
+}
+
+function parseDateStringLocal(value: string): Date | null {
+  const match = /^(\d{4})-(\d{2})-(\d{2})$/.exec(value)
+  if (!match) return null
+  const year = Number(match[1])
+  const month = Number(match[2])
+  const day = Number(match[3])
+  const date = new Date(year, month - 1, day)
+  return Number.isNaN(date.getTime()) ? null : date
 }
 
 function MetricRow({
@@ -323,13 +322,14 @@ function PersonalLimitEditor({
 export function AiTokenLimitsSettingsPanel() {
   const publicUserId = useCurrentUserStore((s) => s.publicUserId)
   const fallbackTimezone = useMemo(() => resolveDefaultTeamTimezone(), [])
-  const knownPeriodStartRef = useRef<string | null>(null)
-  const [preset, setPreset] = useState<RangePreset>("30")
+  const [dateRange, setDateRange] = useState<DateRangeValue>(() => getDefaultDateRange(29))
 
-  const activeRange = useMemo(
-    () => buildRangeForPreset(preset, fallbackTimezone, knownPeriodStartRef.current),
-    [preset, fallbackTimezone],
-  )
+  const dateFrom = dateRange.from
+    ? getDateStringInTimezone(dateRange.from, fallbackTimezone)
+    : null
+  const dateTo = dateRange.to
+    ? getDateStringInTimezone(dateRange.to, fallbackTimezone)
+    : dateFrom
 
   const { data: teams } = useQuery({
     queryKey: ["user-teams", publicUserId],
@@ -351,63 +351,55 @@ export function AiTokenLimitsSettingsPanel() {
   } = useQuery<MyAiUsageResponse>({
     queryKey: [
       MY_AI_USAGE_QUERY_KEY,
-      activeRange.from,
-      activeRange.to,
-      preset,
+      dateFrom,
+      dateTo,
       TEAM_AI_USAGE_GRANULARITY,
     ],
-    enabled: !!publicUserId && publicUserId > 0,
+    enabled: !!publicUserId && publicUserId > 0 && !!dateFrom && !!dateTo,
     placeholderData: (previous) => previous,
     retry: 1,
-    queryFn: async () => {
-      const range = buildRangeForPreset(preset, fallbackTimezone, knownPeriodStartRef.current)
-      return fetchMyAiUsageTimeseries({
-        dateFrom: range.from,
-        dateTo: range.to,
+    queryFn: async () =>
+      fetchMyAiUsageTimeseries({
+        dateFrom: dateFrom!,
+        dateTo: dateTo!,
         timezone: fallbackTimezone,
         granularity: TEAM_AI_USAGE_GRANULARITY,
-      })
-    },
+      }),
   })
-
-  if (data?.summary.period_start) {
-    knownPeriodStartRef.current = data.summary.period_start
-  }
 
   const summary = data?.summary
   const chartTimezone = data?.timezone || fallbackTimezone
   const hasFiniteLimit = summary?.limit_tokens != null && summary.limit_tokens > 0
-  const periodStart = knownPeriodStartRef.current
+  const periodStart = summary?.period_start
+    ? bucketStartToDateString(summary.period_start, chartTimezone)
+    : null
   const resetLabel = formatUsageResetDateTime(summary?.resets_at, chartTimezone)
 
   const chartData = useMemo<ChartDatum[]>(() => {
-    if (!data) return []
+    if (!data || !dateFrom || !dateTo) return []
     return fillTeamAiUsageSeries(
       data.series,
-      data.date_from || activeRange.from,
-      data.date_to || activeRange.to,
+      data.date_from || dateFrom,
+      data.date_to || dateTo,
       chartTimezone,
     ).map((point) => ({
       ...point,
       label: formatBucketAxisLabel(point.bucket_start, chartTimezone),
     }))
-  }, [activeRange.from, activeRange.to, chartTimezone, data])
+  }, [chartTimezone, data, dateFrom, dateTo])
 
   const hasChartActivity = chartData.some(
     (point) => point.total_tokens > 0 || point.call_count > 0,
   )
   const showInitialLoading = isLoading && !data
 
-  const rangeOptions: Array<{ id: RangePreset; label: string }> = [
-    { id: "7", label: "Last 7 days" },
-    { id: "30", label: "Last 30 days" },
-    { id: "90", label: "Last 90 days" },
-  ]
-  if (periodStart) {
-    rangeOptions.push({ id: "period", label: "Current period" })
+  const applyCurrentPeriod = () => {
+    if (!periodStart) return
+    const from = parseDateStringLocal(periodStart)
+    const to = new Date()
+    if (!from) return
+    setDateRange({ from, to })
   }
-  const activeRangeLabel =
-    rangeOptions.find((option) => option.id === preset)?.label ?? "Last 30 days"
 
   const todayTokens = summary?.today_tokens ?? 0
   const todayPercent = hasFiniteLimit
@@ -465,18 +457,20 @@ export function AiTokenLimitsSettingsPanel() {
           </p>
         </div>
         <div className="flex flex-wrap items-center gap-3">
-          <Select value={preset} onValueChange={(value) => setPreset(value as RangePreset)}>
-            <SelectTrigger className="h-8 w-auto gap-1 border-0 bg-transparent px-2 text-gray-900 hover:bg-gray-100 focus:ring-0 focus:ring-offset-0">
-              <SelectValue>{activeRangeLabel}</SelectValue>
-            </SelectTrigger>
-            <SelectContent>
-              {rangeOptions.map((option) => (
-                <SelectItem key={option.id} value={option.id}>
-                  {option.label}
-                </SelectItem>
-              ))}
-            </SelectContent>
-          </Select>
+          <div className="w-full sm:w-64">
+            <DateRangePicker value={dateRange} onChange={setDateRange} />
+          </div>
+          {periodStart ? (
+            <Button
+              type="button"
+              variant="outline"
+              size="sm"
+              className="h-8"
+              onClick={applyCurrentPeriod}
+            >
+              Current period
+            </Button>
+          ) : null}
           <button
             type="button"
             onClick={openTeams}

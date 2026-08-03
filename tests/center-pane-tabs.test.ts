@@ -33,7 +33,22 @@ describe("resolveActiveCenterPaneTab", () => {
     expect(active?.title).toBe("Write brief")
   })
 
-  it("resolves keyword research center view", () => {
+  it("resolves research center view", () => {
+    const active = resolveActiveCenterPaneTab({
+      selectedTaskId: null,
+      isSuggestion: false,
+      selectedDetailTarget: null,
+      centerView: "research",
+    })
+    expect(active).toEqual({
+      key: buildCenterPaneTabKey("research", "default"),
+      kind: "research",
+      id: "default",
+      title: "Research",
+    })
+  })
+
+  it("resolves legacy keyword-research center view as research", () => {
     const active = resolveActiveCenterPaneTab({
       selectedTaskId: null,
       isSuggestion: false,
@@ -41,10 +56,25 @@ describe("resolveActiveCenterPaneTab", () => {
       centerView: "keyword-research",
     })
     expect(active).toEqual({
-      key: buildCenterPaneTabKey("keyword-research", "default"),
-      kind: "keyword-research",
+      key: buildCenterPaneTabKey("research", "default"),
+      kind: "research",
       id: "default",
-      title: "Keyword research",
+      title: "Research",
+    })
+  })
+
+  it("resolves create center view", () => {
+    const active = resolveActiveCenterPaneTab({
+      selectedTaskId: null,
+      isSuggestion: false,
+      selectedDetailTarget: null,
+      centerView: "create",
+    })
+    expect(active).toEqual({
+      key: buildCenterPaneTabKey("create", "default"),
+      kind: "create",
+      id: "default",
+      title: "Create",
     })
   })
 })

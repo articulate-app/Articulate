@@ -7,12 +7,14 @@ function hasPersistableUserDisplayMetadata(contentJson: AiUserMessageContentJson
     (contentJson.mention_tags?.length ?? 0) > 0
     || (contentJson.segments?.length ?? 0) > 0
     || (contentJson.display_parts?.length ?? 0) > 0
+    || (contentJson.selection_pills?.length ?? 0) > 0
   )
 }
 
 function serverHasPersistedDisplayMetadata(existing: Record<string, unknown>): boolean {
   if (Array.isArray(existing.mention_tags) && existing.mention_tags.length > 0) return true
   if (Array.isArray(existing.display_parts) && existing.display_parts.length > 0) return true
+  if (Array.isArray(existing.selection_pills) && existing.selection_pills.length > 0) return true
   return false
 }
 

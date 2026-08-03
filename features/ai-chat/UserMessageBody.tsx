@@ -1,6 +1,7 @@
 "use client"
 
 import React, { useMemo, useState } from "react"
+import { usePathname, useSearchParams } from "next/navigation"
 import type { AiContextTag } from "./composer-inline-editor"
 import { chipDisplayText, chipTooltipText } from "./composer-inline-editor"
 import { getMentionChipClassName } from "./mention-chip-styles"
@@ -10,10 +11,15 @@ import {
   parseUserMessageContentJson,
   synthesizePlainTextFromDisplayParts,
   type AiMessageSegment,
+  type AiUserMessageSelectionPillPart,
 } from "./ai-chat-user-message-content"
 import { resolveUserMessageDisplayContent } from "./resolve-user-message-display-content"
 import { AI_CHAT_USER_MESSAGE_CLASS } from "./ai-chat-message-format"
 import { shouldCollapseUserMessage } from "./user-message-collapse"
+import { buildNextUrlForEntityLink, isTasksShellPath } from "./app-entity-links"
+import { shallowPushSearchParams } from "../../app/lib/tasks-shallow-nav"
+import { useCenterPaneTabsStore } from "../../app/store/center-pane-tabs"
+import { cn } from "../../app/lib/utils"
 
 export function UserMentionChip({ tag }: { tag: AiContextTag }) {
   const tooltip = chipTooltipText(tag)
@@ -25,6 +31,112 @@ export function UserMentionChip({ tag }: { tag: AiContextTag }) {
             <span className="min-w-0 truncate whitespace-nowrap">{chipDisplayText(tag)}</span>
           </span>
         </TooltipTrigger>
+        <TooltipContent side="top" className="max-w-xs whitespace-pre-line text-left">
+          {tooltip}
+        </TooltipContent>
+      </Tooltip>
+    </TooltipProvider>
+  )
+}
+
+function selectionPillClassName(pill: AiUserMessageSelectionPillPart): string {
+  if (pill.entity_type === "artifact") {
+    return getMentionChipClassName({ type: "artifact" })
+  }
+  if (pill.entity_type === "component") {
+    return getMentionChipClassName({ type: "task_component" })
+  }
+  return getMentionChipClassName({ type: "task" })
+}
+
+function UserSelectionPill({ pill }: { pill: AiUserMessageSelectionPillPart }) {
+  const pathname = usePathname()
+  const searchParams = useSearchParams()
+  const label = (pill.selected_text || pill.label || "Selection").trim()
+  const truncated = label.length > 72 ? `${label.slice(0, 69)}…` : label
+  const tooltip = pill.tooltip?.trim() || pill.title || label
+  const canNavigate =
+    (pill.entity_type === "artifact" && Boolean(pill.artifact_id))
+    || (pill.entity_type === "component" && Number.isFinite(Number(pill.task_id)))
+
+  const navigate = () => {
+    if (pill.entity_type === "artifact" && pill.artifact_id) {
+      useCenterPaneTabsStore.getState().upsertTab({
+        kind: "artifact",
+        id: pill.artifact_id,
+      })
+      const nextUrl = buildNextUrlForEntityLink({
+        currentPathname: pathname,
+        currentSearchParams: new URLSearchParams(searchParams.toString()),
+        parsedLink: {
+          type: "artifact",
+          id: pill.artifact_id,
+          version: pill.artifact_version_number ?? null,
+        },
+        fromAiChat: true,
+      })
+      if (!nextUrl) return
+      if (isTasksShellPath(pathname)) {
+        const queryStart = nextUrl.indexOf("?")
+        const nextParams = new URLSearchParams(queryStart >= 0 ? nextUrl.slice(queryStart + 1) : "")
+        shallowPushSearchParams(
+          pathname.startsWith("/artifacts") ? "/" : pathname,
+          nextParams,
+          "ai-chat-selection-pill",
+        )
+        return
+      }
+      window.location.assign(nextUrl)
+      return
+    }
+
+    if (pill.entity_type === "component" && Number.isFinite(Number(pill.task_id))) {
+      const nextUrl = buildNextUrlForEntityLink({
+        currentPathname: pathname,
+        currentSearchParams: new URLSearchParams(searchParams.toString()),
+        parsedLink: { type: "task", id: Number(pill.task_id) },
+        fromAiChat: true,
+      })
+      if (!nextUrl) return
+      if (isTasksShellPath(pathname)) {
+        const queryStart = nextUrl.indexOf("?")
+        const nextParams = new URLSearchParams(queryStart >= 0 ? nextUrl.slice(queryStart + 1) : "")
+        shallowPushSearchParams(pathname, nextParams, "ai-chat-selection-pill")
+        return
+      }
+      window.location.assign(nextUrl)
+    }
+  }
+
+  const chip = (
+    <span
+      className={[
+        selectionPillClassName(pill),
+        canNavigate ? "cursor-pointer hover:brightness-[0.98]" : "cursor-default",
+      ].join(" ")}
+      data-ai-history-selection-pill="1"
+      role={canNavigate ? "button" : undefined}
+      tabIndex={canNavigate ? 0 : undefined}
+      onClick={canNavigate ? (event) => {
+        event.preventDefault()
+        event.stopPropagation()
+        navigate()
+      } : undefined}
+      onKeyDown={canNavigate ? (event) => {
+        if (event.key !== "Enter" && event.key !== " ") return
+        event.preventDefault()
+        event.stopPropagation()
+        navigate()
+      } : undefined}
+    >
+      <span className="min-w-0 truncate whitespace-nowrap">{truncated}</span>
+    </span>
+  )
+
+  return (
+    <TooltipProvider delayDuration={200}>
+      <Tooltip>
+        <TooltipTrigger asChild>{chip}</TooltipTrigger>
         <TooltipContent side="top" className="max-w-xs whitespace-pre-line text-left">
           {tooltip}
         </TooltipContent>
@@ -47,45 +159,71 @@ function renderSegment(segment: AiMessageSegment, index: number) {
 export function UserMessageBody({
   content,
   contentJson,
+  forceExpanded = false,
 }: {
   content: string
   contentJson?: unknown
+  /** Latest just-sent turn stays fully visible (scroll anchors it above the reply). */
+  forceExpanded?: boolean
 }) {
-  const [isExpanded, setIsExpanded] = useState(false)
+  const [isSelected, setIsSelected] = useState(false)
   const parsed = parseUserMessageContentJson(contentJson)
   const visibleContent = resolveUserMessageDisplayContent(content, contentJson)
   const segments = inferUserMessageSegments(visibleContent, parsed)
+  const selectionPills = parsed.selection_pills ?? []
   const collapseContent = parsed.display_parts?.length
     ? synthesizePlainTextFromDisplayParts(parsed.display_parts)
-    : visibleContent
-  const isLongMessage = shouldCollapseUserMessage(collapseContent)
-  const isCollapsed = isLongMessage && !isExpanded
+    : [
+        ...selectionPills.map((pill) => pill.label),
+        visibleContent,
+      ].filter(Boolean).join(" ")
+  const isLongMessage = !forceExpanded && shouldCollapseUserMessage(collapseContent)
+  const isCollapsed = isLongMessage && !isSelected
 
   const bodyClassName = useMemo(
     () =>
-      [
+      cn(
         AI_CHAT_USER_MESSAGE_CLASS,
-        "inline",
-        isCollapsed ? "line-clamp-4" : "",
-      ]
-        .filter(Boolean)
-        .join(" "),
+        isCollapsed && "ai-chat-user-message--collapsed",
+      ),
     [isCollapsed],
   )
 
   return (
-    <div className="min-w-0">
-      <div className={bodyClassName}>
-        {segments.map((segment, index) => renderSegment(segment, index))}
-      </div>
-      {isLongMessage ? (
-        <button
-          type="button"
-          onClick={() => setIsExpanded((prev) => !prev)}
-          className="mt-1 text-xs font-medium text-gray-500 hover:text-gray-700"
-        >
-          {isExpanded ? "View less" : "View more"}
-        </button>
+    <div
+      className={cn(
+        "w-fit max-w-full min-w-0 rounded-md outline-none transition-colors",
+        isLongMessage && "cursor-pointer",
+        isSelected && isLongMessage && "bg-muted/40 ring-1 ring-border/70",
+      )}
+      role={isLongMessage ? "button" : undefined}
+      tabIndex={isLongMessage ? 0 : undefined}
+      aria-expanded={isLongMessage ? isSelected : undefined}
+      onClick={() => {
+        if (!isLongMessage) return
+        setIsSelected((prev) => !prev)
+      }}
+      onKeyDown={(event) => {
+        if (!isLongMessage) return
+        if (event.key !== "Enter" && event.key !== " ") return
+        event.preventDefault()
+        setIsSelected((prev) => !prev)
+      }}
+    >
+      {selectionPills.length > 0 || segments.length > 0 ? (
+        <div className={cn(bodyClassName, "w-fit max-w-full")}>
+          {selectionPills.map((pill, index) => (
+            <span
+              key={`selection-${pill.entity_type}-${pill.artifact_id ?? pill.component_id ?? index}`}
+              className="mr-1.5 inline-block max-w-[14rem] align-baseline"
+              onClick={(event) => event.stopPropagation()}
+              onKeyDown={(event) => event.stopPropagation()}
+            >
+              <UserSelectionPill pill={pill} />
+            </span>
+          ))}
+          {segments.map((segment, index) => renderSegment(segment, index))}
+        </div>
       ) : null}
     </div>
   )

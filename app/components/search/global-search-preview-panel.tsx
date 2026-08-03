@@ -26,9 +26,9 @@ const DEFAULT_PREVIEW_TYPES = [
   "task",
   "project",
   "mention",
-  "project_briefing",
   "user",
   "ai_thread",
+  "artifact",
 ] as const satisfies readonly GlobalSearchItemEntityType[]
 
 export type GlobalSearchPreviewPanelProps = {
@@ -194,30 +194,101 @@ export function GlobalSearchPreviewPanel({
     const requestId = previewRequestIdRef.current + 1
     previewRequestIdRef.current = requestId
     const controller = new AbortController()
+    const entityTypes = (
+      selectedTypeFilters.length > 0
+        ? selectedTypeFilters
+        : ([...DEFAULT_PREVIEW_TYPES] as GlobalSearchItemEntityType[])
+    ).filter((type) => type !== "project_briefing" && type !== "team")
+
+    const mergePreviewItems = (
+      tasks: GlobalSearchDocument[],
+      others: GlobalSearchDocument[],
+      limit: number,
+    ) => {
+      const seen = new Set<string>()
+      const merged: GlobalSearchDocument[] = []
+      for (const item of [...tasks, ...others]) {
+        const key = `${item.entity_type}:${item.entity_id ?? item.title}`
+        if (seen.has(key)) continue
+        seen.add(key)
+        merged.push(item)
+        if (merged.length >= limit) break
+      }
+      return merged
+    }
+
     setIsPreviewLoading(true)
+
+    const includeTasks = entityTypes.includes("task")
+    const otherTypes = entityTypes.filter((type) => type !== "task")
+    const shouldSplitTasksFirst =
+      includeTasks && otherTypes.length > 0 && selectedTypeFilters.length === 0
+
+    if (!shouldSplitTasksFirst) {
+      void fetchGlobalSearchPreviewItems({
+        query: debouncedQuery,
+        entityTypes,
+        limit: 7,
+        signal: controller.signal,
+      })
+        .then((items) => {
+          if (previewRequestIdRef.current !== requestId) return
+          setPreviewItems(items)
+        })
+        .catch((error) => {
+          if (controller.signal.aborted) return
+          if (previewRequestIdRef.current !== requestId) return
+          console.error("Failed to load preview items", error)
+          setPreviewItems([])
+        })
+        .finally(() => {
+          if (previewRequestIdRef.current !== requestId) return
+          setIsPreviewLoading(false)
+        })
+      return () => {
+        controller.abort()
+      }
+    }
+
+    // Fast path: paint tasks first, then fill with other entity types.
     void fetchGlobalSearchPreviewItems({
       query: debouncedQuery,
-      entityTypes:
-        selectedTypeFilters.length > 0
-          ? selectedTypeFilters
-          : ([...DEFAULT_PREVIEW_TYPES] as GlobalSearchItemEntityType[]),
-      limit: 7,
+      entityTypes: ["task"],
+      limit: 5,
       signal: controller.signal,
     })
-      .then((items) => {
+      .then((tasks) => {
         if (previewRequestIdRef.current !== requestId) return
-        setPreviewItems(items)
+        setPreviewItems(tasks)
+        setIsPreviewLoading(false)
       })
       .catch((error) => {
         if (controller.signal.aborted) return
         if (previewRequestIdRef.current !== requestId) return
-        console.error("Failed to load preview items", error)
-        setPreviewItems([])
+        console.error("Failed to load preview tasks", error)
       })
-      .finally(() => {
+
+    void fetchGlobalSearchPreviewItems({
+      query: debouncedQuery,
+      entityTypes: otherTypes,
+      limit: 4,
+      signal: controller.signal,
+    })
+      .then((others) => {
         if (previewRequestIdRef.current !== requestId) return
+        setPreviewItems((current) => {
+          const tasks = current.filter((item) => item.entity_type === "task")
+          return mergePreviewItems(tasks, others, 7)
+        })
         setIsPreviewLoading(false)
       })
+      .catch((error) => {
+        if (controller.signal.aborted) return
+        if (previewRequestIdRef.current !== requestId) return
+        console.error("Failed to load preview non-task items", error)
+        setIsPreviewLoading(false)
+      })
+
     return () => {
       controller.abort()
     }
@@ -262,7 +333,12 @@ export function GlobalSearchPreviewPanel({
             onKeyDown={(event) => {
               if (event.key === "Enter") {
                 event.preventDefault()
-                onSearchCommit?.(event.currentTarget.value)
+                const value = event.currentTarget.value
+                if (selectedTypeFilters.length === 0) {
+                  onShowAll?.(value)
+                } else {
+                  onSearchCommit?.(value)
+                }
                 onRequestClose?.()
               } else if (event.key === "Escape") {
                 onRequestClose?.()
@@ -313,10 +389,23 @@ export function GlobalSearchPreviewPanel({
         <button
           type="button"
           onMouseDown={(event) => event.preventDefault()}
-          onClick={() => openKeywordResearch(trimmedQuery)}
+          onClick={(event) => {
+            event.stopPropagation()
+            // Same path as the old "Get search volumes…" row: open Research middle pane
+            // on the keywords tab, seeded with the current draft query.
+            openKeywordResearch(inputValue)
+          }}
           className="inline-flex h-8 shrink-0 items-center justify-center rounded-full bg-gray-100 px-2.5 py-1 text-gray-700 transition-colors hover:bg-gray-200"
-          title="Keyword research"
-          aria-label="Open keyword research"
+          title={
+            trimmedQuery
+              ? `Get search volumes for “${trimmedQuery}”`
+              : "Keyword research"
+          }
+          aria-label={
+            trimmedQuery
+              ? `Get search volumes for ${trimmedQuery}`
+              : "Open keyword research"
+          }
         >
           <Lightbulb className="h-3.5 w-3.5" aria-hidden="true" />
         </button>
@@ -341,10 +430,10 @@ export function GlobalSearchPreviewPanel({
                   onSearchCommit?.(item.term)
                   onRequestClose?.()
                 }}
-                className="flex w-full items-center gap-3 rounded-lg px-3 py-2 text-left text-sm text-gray-700 hover:bg-gray-50"
+                className="flex h-9 w-full items-center gap-3 rounded-lg px-3 text-left text-sm font-normal text-gray-700 hover:bg-gray-50"
               >
-                <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg bg-gray-100 text-gray-500">
-                  <Clock className="h-4 w-4" aria-hidden="true" />
+                <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-gray-100 text-gray-500">
+                  <Clock className="h-3.5 w-3.5" aria-hidden="true" />
                 </span>
                 <span className="min-w-0 truncate">{item.term}</span>
               </button>
@@ -358,13 +447,14 @@ export function GlobalSearchPreviewPanel({
           ) : recentlyOpenedQuery.data?.length === 0 ? (
             <div className="px-3 py-3 text-sm text-gray-500">No recently opened items.</div>
           ) : (
-            <div className="divide-y divide-gray-100">
+            <div>
               {(recentlyOpenedQuery.data ?? []).map((item, index) => (
                 <SearchResultRow
                   key={`recently-opened:${item.entity_type}:${item.entity_id ?? index}`}
                   item={item}
                   onSelect={handleSelectResult}
-                  className="px-2 py-2"
+                  className="h-10 px-3"
+                  variant="preview"
                 />
               ))}
             </div>
@@ -372,20 +462,6 @@ export function GlobalSearchPreviewPanel({
         </div>
       ) : (
         <div className="min-h-0 max-h-[24rem] overflow-y-auto px-2 py-2">
-          {selectedTypeFilters.length === 0 ? (
-            <button
-              type="button"
-              onMouseDown={(event) => event.preventDefault()}
-              onClick={() => openKeywordResearch(trimmedQuery)}
-              className="mb-0.5 flex w-full items-center gap-2 rounded-lg px-3 py-2 text-left text-sm text-gray-700 hover:bg-gray-50"
-            >
-              <Lightbulb className="h-4 w-4 shrink-0 text-gray-400" aria-hidden="true" />
-              <span className="min-w-0 truncate text-gray-900">
-                Get search volumes for “{trimmedQuery}”
-              </span>
-            </button>
-          ) : null}
-
           {isPreviewLoading && previewItems.length === 0 ? (
             <div className="px-3 py-6 text-sm text-gray-500">Searching...</div>
           ) : previewItems.length === 0 ? (

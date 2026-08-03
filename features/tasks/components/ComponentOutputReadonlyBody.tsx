@@ -17,7 +17,7 @@ type ComponentOutputReadonlyBodyProps = {
   fromAiChat?: boolean
 }
 
-/** Read-only component output body — same renderer path as TaskContentTab cards. */
+/** Read-only component/artifact output body. */
 export function ComponentOutputReadonlyBody({
   html,
   highlightTerms,

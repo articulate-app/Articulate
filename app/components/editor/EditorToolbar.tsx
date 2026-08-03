@@ -36,6 +36,7 @@ import {
 } from "@/components/ui/dropdown-menu";
 import { cn } from "@/lib/utils";
 import { useEditorLinkDialog } from "./useEditorLinkDialog";
+import { TableToolbarControls } from "./table-toolbar-controls";
 
 export interface EditorToolbarProps {
   editor: Editor | null;
@@ -227,6 +228,10 @@ export const EditorToolbar: React.FC<EditorToolbarProps> = ({
       >
         <Quote className="h-4 w-4" />
       </ToolbarButton>
+
+      <ToolbarSeparator />
+
+      <TableToolbarControls editor={editor} />
 
       <ToolbarSeparator />
 

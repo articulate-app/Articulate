@@ -8,6 +8,7 @@ const SECTION_TO_PATH: Record<PrimarySectionKey | "all", string> = {
   mentions: "/mentions",
   users: "/users",
   "ai-threads": "/ai-threads",
+  artifacts: "/artifacts",
 }
 
 const LEFT_OBJECT_TO_SECTION: Record<LeftPaneObject, PrimarySectionKey | "all"> = {
@@ -17,6 +18,7 @@ const LEFT_OBJECT_TO_SECTION: Record<LeftPaneObject, PrimarySectionKey | "all"> 
   mentions: "mentions",
   users: "users",
   ai_chats: "ai-threads",
+  artifacts: "artifacts",
 }
 
 const SECTION_TO_OBJECT_ROUTE: Record<PrimarySectionKey | "all", SearchObjectRoute> = {
@@ -26,6 +28,7 @@ const SECTION_TO_OBJECT_ROUTE: Record<PrimarySectionKey | "all", SearchObjectRou
   mentions: "mention",
   users: "user",
   "ai-threads": "ai_thread",
+  artifacts: "artifact",
 }
 
 export function buildSectionSwitchUrl(

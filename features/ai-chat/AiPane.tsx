@@ -1,18 +1,18 @@
 "use client"
 
 import React, { useMemo, useState, useEffect, useRef, useCallback } from "react"
-import type { AiScope, AiThread } from "./types"
+import type { AiScope, AiThread, AiVisibility } from "./types"
 import { ChatWindow } from "./ChatWindow"
 import { HistoryDropdown } from "./HistoryDrawer"
 import { ResizablePanel } from "../../app/components/ui/resizable-panel"
-import { Plus, X, X as XIcon, MoreHorizontal, Edit2, Trash2, Maximize2, Minimize2, Copy, XCircle } from "lucide-react"
-import { useCreateThread, useRenameThread, useSoftDeleteThread } from "./hooks"
+import { Plus, X, X as XIcon, MoreHorizontal, Edit2, Trash2, Maximize2, Minimize2, Copy, XCircle, Users } from "lucide-react"
+import { useCreateThread, useRenameThread, useSoftDeleteThread, useUpdateVisibility } from "./hooks"
 import { getSupabaseBrowser } from "../../lib/supabase-browser"
 import { useSearchParams } from "next/navigation"
 import { TASKS_SHALLOW_NAV_EVENT } from "../../app/lib/tasks-shallow-nav"
 import { mergeWorkspaceUrlState } from "../../app/lib/workspace-url-state"
 import { ensureProjectThread, ensureGlobalThread } from "./ai-utils"
-import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from "../../app/components/ui/dropdown-menu"
+import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuSeparator, DropdownMenuSub, DropdownMenuSubContent, DropdownMenuSubTrigger, DropdownMenuTrigger } from "../../app/components/ui/dropdown-menu"
 import { Dialog, DialogContent, DialogTitle, DialogFooter } from "../../app/components/ui/dialog"
 import { Button } from "../../app/components/ui/button"
 import { toast } from "../../app/components/ui/use-toast"
@@ -22,9 +22,10 @@ import { invokeEdgeFunctionFetch } from "@/lib/edge-functions"
 import { resolveAutoThreadSelection } from "./thread-selection-guards"
 import { logAiChatDebug } from "./debug"
 import { AI_PANE_TAB_ACTIVE_CLASS, AI_PANE_TAB_FILLER_CLASS, AI_PANE_TAB_INACTIVE_CLASS, AI_PANE_TAB_STRIP_CLASS } from "./tab-strip-tokens"
-import { toPersistedAiThreadId } from "./thread-id"
+import { toPersistedAiThreadId, isPersistedAiThreadId } from "./thread-id"
 import { isPlaceholderAiThreadTitle } from "./ai-thread-title"
 import type { AiActiveFieldContext } from "./active-field-context"
+import { AiPaneThreadLibraryMenus } from "./AiPaneThreadLibraryMenus"
 
 interface AiPaneProps {
   isOpen: boolean
@@ -159,7 +160,7 @@ function AiPaneTabStrip({
             return (
             <div
               key={isOptimistic ? `optimistic-${tab.optimisticId}` : tab.id}
-              className={`flex h-full min-h-14 shrink-0 cursor-pointer self-stretch border-r border-gray-200 bg-white ${
+              className={`flex h-full min-h-0 shrink-0 cursor-pointer self-stretch border-r border-gray-200 bg-white ${
                 isActive ? AI_PANE_TAB_ACTIVE_CLASS : AI_PANE_TAB_INACTIVE_CLASS
               }`}
               onClick={() => {
@@ -190,7 +191,7 @@ function AiPaneTabStrip({
                         ? null
                         : displayTitleByThreadId?.[tab.id]
                       const displayTitle = persistedDisplayTitle ?? tab.title
-                      const fallbackTitle = isOptimistic ? "Creating chat..." : "New chat"
+                      const fallbackTitle = "New chat"
                       return (
                         <span
                           className="text-sm truncate max-w-20 flex-1"
@@ -283,6 +284,7 @@ function AiPaneInner({ isOpen, onClose, onExpand, initialScope = 'global', proje
   const createThread = useCreateThread()
   const renameThread = useRenameThread()
   const deleteThread = useSoftDeleteThread()
+  const updateVisibility = useUpdateVisibility()
   const queryClient = useQueryClient()
   const isUpdatingFromStateRef = useRef(false)
   const previousActiveIdRef = useRef<string | null>(null)
@@ -625,6 +627,9 @@ function AiPaneInner({ isOpen, onClose, onExpand, initialScope = 'global', proje
   useEffect(() => {
     if (disableUrlSync) return
     if (active && isOpen) {
+      // Never put optimistic/temp ids in the URL.
+      if (!isPersistedAiThreadId(active.id)) return
+
       // Skip if we're already updating from a state change
       if (isUpdatingFromStateRef.current && previousActiveIdRef.current === active.id) {
         return
@@ -667,18 +672,29 @@ function AiPaneInner({ isOpen, onClose, onExpand, initialScope = 'global', proje
       ? 'project' as const
       : 'global' as const
 
+    const createdAt = new Date().toISOString()
     const nextOptimisticTab: OptimisticThreadTab = {
       optimisticId,
       scope,
       title: null,
-      created_at: new Date().toISOString(),
+      created_at: createdAt,
+    }
+    const optimisticThread: AiThread = {
+      id: optimisticId,
+      scope,
+      visibility: "private",
+      is_collaborative: false,
+      title: null,
+      created_at: createdAt,
+      project_id: scope === "project" ? effectiveProjectId ?? null : null,
+      task_id: scope === "task" ? effectiveTaskId ?? null : null,
     }
     
-    // Show optimistic tab immediately while waiting for persistence.
+    // Show empty chat shell immediately (no blank loading pane).
     isUpdatingFromStateRef.current = true
     previousActiveIdRef.current = null
     setOptimisticTab(nextOptimisticTab)
-    setActive(null)
+    setActive(optimisticThread)
     navigateToThreadId(null, "new-chat-optimistic")
     
     // Reset flag after state update
@@ -861,6 +877,42 @@ function AiPaneInner({ isOpen, onClose, onExpand, initialScope = 'global', proje
     setEditTitle(tab.title || '')
   }
 
+  const handleSetVisibility = async (visibility: AiVisibility) => {
+    if (!active?.id) return
+    const isCollaborative = visibility !== "private"
+    try {
+      const updated = await updateVisibility(active.id, visibility, isCollaborative)
+      setOpenTabs((prev) =>
+        prev.map((tab) =>
+          tab.id === active.id
+            ? { ...tab, visibility: updated.visibility, is_collaborative: updated.is_collaborative }
+            : tab,
+        ),
+      )
+      setActive((prev) =>
+        prev?.id === active.id
+          ? { ...prev, visibility: updated.visibility, is_collaborative: updated.is_collaborative }
+          : prev,
+      )
+      void queryClient.invalidateQueries({ queryKey: ["ai-threads"], refetchType: "active" })
+      toast({
+        title: "Chat sharing updated",
+        description:
+          visibility === "private"
+            ? "Only you can see this chat."
+            : visibility === "project"
+              ? "Project members can see this chat."
+              : "Team members can see this chat.",
+      })
+    } catch (error: any) {
+      toast({
+        title: "Failed to update sharing",
+        description: error?.message ?? "Could not update chat visibility.",
+        variant: "destructive",
+      })
+    }
+  }
+
   const handleRename = async (threadId: string) => {
     try {
       // Optimistically update the tab
@@ -974,7 +1026,7 @@ function AiPaneInner({ isOpen, onClose, onExpand, initialScope = 'global', proje
     return (
       <div className="h-full flex flex-col bg-white">
         {/* Simplified header with tabs on left, controls on right */}
-        <div className={`${COMPACT_PANE_HEADER_ROW_CLASS} !items-stretch bg-white pl-0 pr-3 shrink-0`}>
+        <div className={`${COMPACT_PANE_HEADER_ROW_CLASS} !items-stretch shrink-0 border-b border-gray-200 bg-white pl-0 pr-3`}>
           {/* Left side: Tabs */}
           <div className="flex min-h-0 min-w-0 flex-1 items-stretch">
             <AiPaneTabStrip
@@ -996,7 +1048,7 @@ function AiPaneInner({ isOpen, onClose, onExpand, initialScope = 'global', proje
           </div>
           
           {/* Right side: Essential controls only */}
-          <div className="flex items-center gap-2 border-b border-gray-200">
+          <div className="flex items-center gap-2 self-stretch">
             <HistoryDropdown 
               onSelectThread={handleSelectThread}
               activeThreadId={active?.id}
@@ -1020,7 +1072,41 @@ function AiPaneInner({ isOpen, onClose, onExpand, initialScope = 'global', proje
                   <MoreHorizontal className="w-5 h-5" />
                 </button>
               </DropdownMenuTrigger>
-              <DropdownMenuContent align="end">
+              <DropdownMenuContent align="end" className="min-w-[180px]">
+                <AiPaneThreadLibraryMenus threadId={toPersistedAiThreadId(active?.id)} />
+                <DropdownMenuSeparator />
+                <DropdownMenuSub>
+                  <DropdownMenuSubTrigger className="gap-2" disabled={!active}>
+                    <Users className="w-4 h-4" />
+                    Share chat
+                    {active?.visibility ? (
+                      <span className="ml-auto text-[10px] capitalize text-muted-foreground">
+                        {active.visibility}
+                      </span>
+                    ) : null}
+                  </DropdownMenuSubTrigger>
+                  <DropdownMenuSubContent className="min-w-[180px]">
+                    <DropdownMenuItem
+                      onClick={() => void handleSetVisibility("private")}
+                      disabled={active?.visibility === "private"}
+                    >
+                      Private (only you)
+                    </DropdownMenuItem>
+                    <DropdownMenuItem
+                      onClick={() => void handleSetVisibility("project")}
+                      disabled={!active?.project_id || active?.visibility === "project"}
+                    >
+                      Project members
+                    </DropdownMenuItem>
+                    <DropdownMenuItem
+                      onClick={() => void handleSetVisibility("team")}
+                      disabled={active?.visibility === "team"}
+                    >
+                      Team members
+                    </DropdownMenuItem>
+                  </DropdownMenuSubContent>
+                </DropdownMenuSub>
+                <DropdownMenuSeparator />
                 <DropdownMenuItem onClick={handleCloseAllTabs}>
                   <XCircle className="w-4 h-4 mr-2" />
                   Close all tabs
@@ -1058,7 +1144,7 @@ function AiPaneInner({ isOpen, onClose, onExpand, initialScope = 'global', proje
             {active ? (
               <ChatWindow 
                 thread={active} 
-                taskId={effectiveTaskId} 
+                taskId={taskId ?? effectiveTaskId} 
                 activeChannelId={resolvedActiveChannelId}
                 chatContext={{
                   componentId: searchParams.get('chatComponentId'),
@@ -1106,7 +1192,7 @@ function AiPaneInner({ isOpen, onClose, onExpand, initialScope = 'global', proje
       >
         <div className="h-full flex flex-col">
           {/* Simplified header with tabs on left, controls on right */}
-          <div className={`${COMPACT_PANE_HEADER_ROW_CLASS} !items-stretch bg-white pl-0 pr-3 shrink-0`}>
+          <div className={`${COMPACT_PANE_HEADER_ROW_CLASS} !items-stretch shrink-0 border-b border-gray-200 bg-white pl-0 pr-3`}>
             {/* Left side: Tabs */}
             <div className="flex min-h-0 min-w-0 flex-1 items-stretch">
               <AiPaneTabStrip
@@ -1128,7 +1214,7 @@ function AiPaneInner({ isOpen, onClose, onExpand, initialScope = 'global', proje
             </div>
             
             {/* Right side: Essential controls only */}
-            <div className="flex items-center gap-2 border-b border-gray-200">
+            <div className="flex items-center gap-2 self-stretch">
               <HistoryDropdown 
                 onSelectThread={handleSelectThread}
                 activeThreadId={active?.id}
@@ -1152,7 +1238,41 @@ function AiPaneInner({ isOpen, onClose, onExpand, initialScope = 'global', proje
                     <MoreHorizontal className="w-5 h-5" />
                   </button>
                 </DropdownMenuTrigger>
-                <DropdownMenuContent align="end">
+                <DropdownMenuContent align="end" className="min-w-[180px]">
+                  <AiPaneThreadLibraryMenus threadId={toPersistedAiThreadId(active?.id)} />
+                  <DropdownMenuSeparator />
+                  <DropdownMenuSub>
+                    <DropdownMenuSubTrigger className="gap-2" disabled={!active}>
+                      <Users className="w-4 h-4" />
+                      Share chat
+                      {active?.visibility ? (
+                        <span className="ml-auto text-[10px] capitalize text-muted-foreground">
+                          {active.visibility}
+                        </span>
+                      ) : null}
+                    </DropdownMenuSubTrigger>
+                    <DropdownMenuSubContent className="min-w-[180px]">
+                      <DropdownMenuItem
+                        onClick={() => void handleSetVisibility("private")}
+                        disabled={active?.visibility === "private"}
+                      >
+                        Private (only you)
+                      </DropdownMenuItem>
+                      <DropdownMenuItem
+                        onClick={() => void handleSetVisibility("project")}
+                        disabled={!active?.project_id || active?.visibility === "project"}
+                      >
+                        Project members
+                      </DropdownMenuItem>
+                      <DropdownMenuItem
+                        onClick={() => void handleSetVisibility("team")}
+                        disabled={active?.visibility === "team"}
+                      >
+                        Team members
+                      </DropdownMenuItem>
+                    </DropdownMenuSubContent>
+                  </DropdownMenuSub>
+                  <DropdownMenuSeparator />
                   <DropdownMenuItem onClick={handleCloseAllTabs}>
                     <XCircle className="w-4 h-4 mr-2" />
                     Close all tabs
@@ -1188,7 +1308,7 @@ function AiPaneInner({ isOpen, onClose, onExpand, initialScope = 'global', proje
             {active ? (
               <ChatWindow
                 thread={active}
-                taskId={effectiveTaskId}
+                taskId={taskId ?? effectiveTaskId}
                 activeChannelId={resolvedActiveChannelId}
                 activeFieldContext={activeFieldContext}
                 onScopeModeChange={handleScopeModeChange}

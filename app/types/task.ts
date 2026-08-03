@@ -17,6 +17,7 @@ export interface Task {
   meta_title?: string
   meta_description?: string
   keyword?: string
+  secondary_keywords?: string | null
   delivery_date?: string
   publication_date?: string
   attachment?: string

@@ -8,6 +8,8 @@ export const TASK_PANE_HEADER_ROW_CLASS =
 /**
  * Compact single-line pane header band. Height matches the left-pane object pill
  * toolbar (`h-14` / 56px) so right-pane tab headers align with the left toolbar density.
+ * Tab headers should also apply `border-b border-gray-200` on this same row (not below it)
+ * so the rule lines up with the left toolbar divider.
  */
 export const COMPACT_PANE_HEADER_ROW_CLASS =
   "flex h-14 min-h-14 items-center justify-between gap-2"

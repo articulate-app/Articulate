@@ -104,7 +104,7 @@ function formatTaskActivityLogEntry(
 /**
  * Helper to format the action description for a timeline entry.
  */
-function formatActionDescription(
+export function formatTaskActivityDescription(
   activity: TaskActivity,
   userName: string | null,
   componentTitleById: Map<string, string>
@@ -146,13 +146,13 @@ function UserAvatar({ userId, name, photoUrl }: { userId: number; name: string; 
       <img
         src={photoUrl}
         alt=""
-        className="h-7 w-7 rounded-full object-cover shrink-0 border border-gray-200"
+        className="h-5 w-5 shrink-0 rounded-full object-cover"
       />
     )
   }
   return (
     <div
-      className="h-7 w-7 rounded-full shrink-0 flex items-center justify-center text-xs text-gray-600 bg-gray-100 border border-gray-200"
+      className="flex h-5 w-5 shrink-0 items-center justify-center rounded-full bg-gray-100 text-[10px] text-gray-600"
       aria-hidden
     >
       {initials}
@@ -165,7 +165,7 @@ export function TaskActivityTimeline({
   className,
   compact = false,
   previewLimit = 5,
-  clientSort = "newest",
+  clientSort = "oldest",
 }: TaskActivityTimelineProps) {
   const supabase = useMemo(() => createClientComponentClient(), [])
   const [showAllLogs, setShowAllLogs] = useState(false)
@@ -238,25 +238,34 @@ export function TaskActivityTimeline({
           clientSort,
           (item) => item.created_at,
         )
-        const visibleData = compact ? sorted.slice(0, visibleLimit) : showAllLogs ? sorted : sorted.slice(0, visibleLimit)
+        const windowed =
+          clientSort === "oldest"
+            ? sorted.slice(-visibleLimit)
+            : sorted.slice(0, visibleLimit)
+        const visibleData = compact || !showAllLogs ? windowed : sorted
         const hasMoreLogs = !compact && sorted.length > visibleLimit
         return (
-          <div className="flex flex-col py-1">
+          <div className="flex flex-col">
             <ul className="flex flex-col">
-            {visibleData.map((item, idx) => {
+            {visibleData.map((item) => {
               const info = userMap[item.created_by]
-              const name = info?.name ?? null
+              const name = info?.name?.trim() || `User #${item.created_by}`
               const photoUrl = info?.photoUrl ?? null
+              const description = formatTaskActivityDescription(item, name, componentTitleById)
+              const remainder = description.startsWith(name)
+                ? description.slice(name.length)
+                : ` ${description}`
               return (
-                <li key={item.id}>
-                  {idx > 0 && <div className="border-t border-gray-200" />}
-                  <div className="flex items-center gap-2 py-1.5 min-h-0">
-                    <UserAvatar userId={item.created_by} name={name ?? ''} photoUrl={photoUrl} />
-                    <div className="flex-1 min-w-0 overflow-hidden text-sm text-gray-700 dark:text-gray-300">
-                      <span className="block truncate overflow-hidden whitespace-nowrap">
-                      {formatActionDescription(item, name, componentTitleById)}
-                      </span>
-                    </div>
+                <li key={item.id} className="flex min-h-0 items-center gap-2.5 py-2">
+                  <UserAvatar userId={item.created_by} name={name} photoUrl={photoUrl} />
+                  <div className="flex min-w-0 flex-1 items-center gap-1.5 overflow-hidden text-sm leading-5 text-gray-700 dark:text-gray-300">
+                    <span className="min-w-0 truncate">
+                      <span className="font-medium text-gray-900">{name}</span>
+                      {remainder}
+                    </span>
+                    <span className="shrink-0 text-gray-300" aria-hidden>
+                      ·
+                    </span>
                     <ActivityRowTimestamp value={item.created_at} />
                   </div>
                 </li>

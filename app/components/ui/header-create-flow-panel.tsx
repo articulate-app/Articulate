@@ -23,6 +23,8 @@ export function HeaderCreateFlowPanel({ flow, onCancel, onSuccess }: HeaderCreat
     isSubmittingCreate,
     projectName,
     setProjectName,
+    projectUrl,
+    setProjectUrl,
     projectTeamId,
     setProjectTeamId,
     userEmail,
@@ -91,6 +93,20 @@ export function HeaderCreateFlowPanel({ flow, onCancel, onSuccess }: HeaderCreat
                 onChange={(event) => setProjectName(event.target.value)}
                 placeholder="e.g. Website redesign"
               />
+            </div>
+            <div className="space-y-2">
+              <Label htmlFor="create-project-url">Website URL</Label>
+              <Input
+                id="create-project-url"
+                type="url"
+                value={projectUrl}
+                onChange={(event) => setProjectUrl(event.target.value)}
+                placeholder="https://example.com"
+                disabled={isSubmittingCreate}
+              />
+              <p className="text-xs text-muted-foreground">
+                Optional. Extracts brand colors, fonts, and logo after create.
+              </p>
             </div>
             <div className="space-y-2">
               <Label htmlFor="create-project-team">Team</Label>

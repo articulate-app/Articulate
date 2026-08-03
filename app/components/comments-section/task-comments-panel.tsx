@@ -1,17 +1,17 @@
 "use client"
 
 import React from "react"
-import { formatDistanceToNow } from "date-fns"
 import { ThreadedRealtimeChat } from "../threaded-realtime-chat"
 import { StickyAddCommentInput } from "./sticky-add-comment-input"
 import { ThreadParticipantsInline } from "./thread-participants-inline"
 import { Button } from "../ui/button"
 import { Dialog, DialogContent, DialogTitle, DialogFooter } from "../ui/dialog"
-import { ChevronLeft, Clock3, Plus, Reply } from "lucide-react"
+import { ChevronLeft, Clock3, Plus, Reply, Trash2 } from "lucide-react"
 import { Popover, PopoverContent, PopoverTrigger } from "../ui/popover"
 import { UserAvatar } from "../UserAvatar"
 import { getImageUrl } from "../../lib/public-media"
 import { cn } from "@/lib/utils"
+import { ActivityRowTimestamp, getActivityRelativeTimeLabel } from "../activity-row-timestamp"
 import {
   type OverviewFeedSort,
   sortByUserLabel,
@@ -78,13 +78,78 @@ export interface TaskCommentsPanelProps {
   /** Overview embed: collapse thread list / history until expanded inline */
   embedCollapsed?: boolean
   embedThreadLimit?: number
+  /** Cap visible mentions in the default flat feed when collapsed */
+  embedMentionLimit?: number
   onEmbedExpand?: () => void
+  /** Overview: selected artifact text shown above the pinned composer */
+  pendingArtifactTextQuote?: string | null
+  onClearPendingArtifactTextQuote?: () => void
   /** Overview merged feed: hide All/Open/Resolved filters */
   hideStatusFilter?: boolean
   /** Overview merged feed: toolbar rendered by parent */
   hideThreadToolbar?: boolean
   /** Client-side sort (no API changes) */
   clientSort?: OverviewFeedSort
+  /** Compact single-line composer that expands on focus */
+  minimalComposer?: boolean
+  composerExpanded?: boolean
+  onComposerExpandedChange?: (expanded: boolean) => void
+  onThreadCreated?: (thread: { id: number | string; isOptimistic?: boolean }) => void
+  /** When set, flat feed shows only mentions from this thread */
+  filterThreadId?: number | null
+  /**
+   * Called when the clock picker selects a thread (or clears it).
+   * Overview uses this to switch to Comments and filter — without opening the Comments tab.
+   */
+  onSelectThreadFilter?: (threadId: number | null) => void
+}
+
+function stripHtmlPreview(value: string): string {
+  return String(value)
+    .replace(/<[^>]*>/g, " ")
+    .replace(/&nbsp;/gi, " ")
+    .replace(/\s+/g, " ")
+    .trim()
+}
+
+function ThreadParticipantAvatarStack({
+  participants,
+  max = 3,
+}: {
+  participants: Array<{ id?: number; full_name?: string | null; email?: string | null; photo?: string | null }>
+  max?: number
+}) {
+  const visible = participants.slice(0, max)
+  const overflow = Math.max(0, participants.length - max)
+  if (visible.length === 0) {
+    return (
+      <div className="flex h-6 w-6 shrink-0 items-center justify-center rounded-full bg-gray-100 text-[10px] text-gray-500">
+        —
+      </div>
+    )
+  }
+  return (
+    <div className="flex shrink-0 items-center pl-1">
+      {visible.map((user, index) => {
+        const name = String(user.full_name || user.email || "User")
+        const photoUrl = getImageUrl(user.photo ?? null)
+        return (
+          <div
+            key={user.id ?? `${name}-${index}`}
+            className="-ml-1 first:ml-0"
+            style={{ zIndex: visible.length - index }}
+          >
+            <UserAvatar name={name} photoUrl={photoUrl} size="xs" className="ring-2 ring-white" />
+          </div>
+        )
+      })}
+      {overflow > 0 ? (
+        <span className="-ml-1 inline-flex h-6 min-w-6 items-center justify-center rounded-full bg-gray-100 px-1 text-[10px] font-medium text-gray-600 ring-2 ring-white">
+          +{overflow}
+        </span>
+      ) : null}
+    </div>
+  )
 }
 
 /** Comments header actions: + button and thread switcher. */
@@ -99,6 +164,8 @@ export function TaskCommentsHeaderRow({
   isThreadListLoading: _isThreadListLoading,
   handleViewThreadHistory: _handleViewThreadHistory,
   onThreadNavigate: _onThreadNavigate,
+  filterThreadId: _filterThreadId = null,
+  onSelectThreadFilter: _onSelectThreadFilter,
 }: Pick<
   TaskCommentsPanelProps,
   | "taskIdNum"
@@ -111,8 +178,11 @@ export function TaskCommentsHeaderRow({
   | "isThreadListLoading"
   | "handleViewThreadHistory"
   | "onThreadNavigate"
+  | "filterThreadId"
+  | "onSelectThreadFilter"
 >) {
   const [isThreadSelectorOpen, setIsThreadSelectorOpen] = React.useState(false)
+  const activeFilterId = _filterThreadId ?? null
   const selectorRows = React.useMemo(() => {
     const rows = Array.isArray(_threadsList) ? _threadsList : []
     return rows
@@ -120,13 +190,15 @@ export function TaskCommentsHeaderRow({
         const threadId = Number(thread?.id)
         if (!Number.isFinite(threadId)) return null
         const latestActivityAt = thread?.latest_activity_at ?? thread?.created_at ?? null
+        const participants = Array.isArray(thread?.thread_watchers)
+          ? thread.thread_watchers.map((tw: any) => tw?.users).filter(Boolean)
+          : []
+        const rawPreview = thread?.latest_preview ?? thread?.title ?? "Thread"
         return {
-          raw: thread,
           threadId,
-          preview: thread?.latest_preview ?? thread?.title ?? "Thread",
-          threadType: thread?.thread_type ?? thread?.object_type ?? "general",
-          isResolved: Boolean(thread?.is_resolved ?? thread?.resolved_at),
-          participantCount: Array.isArray(thread?.thread_watchers) ? thread.thread_watchers.length : 0,
+          preview: stripHtmlPreview(String(rawPreview)) || "Thread",
+          mentionCount: Number(thread?.mention_count) || 0,
+          participants,
           latestActivityAt,
         }
       })
@@ -137,6 +209,13 @@ export function TaskCommentsHeaderRow({
         return bTs - aTs
       })
   }, [_threadsList])
+
+  const selectThread = (threadId: number | null) => {
+    _setIsAddingThread(false)
+    _setSelectedThreadId(threadId)
+    _onSelectThreadFilter?.(threadId)
+    setIsThreadSelectorOpen(false)
+  }
 
   return (
     <div className="flex items-center gap-1">
@@ -152,48 +231,56 @@ export function TaskCommentsHeaderRow({
               type="button"
               variant="ghost"
               size="sm"
-              className="h-7 w-7 p-0"
+              className={cn(
+                "h-7 w-7 p-0 text-gray-500",
+                activeFilterId != null && "bg-gray-100 text-gray-900",
+              )}
               disabled={_isThreadListLoading}
-              title="Thread selector"
-              aria-label="Thread selector"
+              title="Filter by thread"
+              aria-label="Filter by thread"
             >
               <Clock3 className="h-4 w-4" />
             </Button>
           </PopoverTrigger>
-          <PopoverContent align="end" side="bottom" className="w-[min(92vw,380px)] p-0">
+          <PopoverContent align="end" side="bottom" className="w-[min(92vw,360px)] p-1">
             <div className="max-h-72 overflow-y-auto">
+              <button
+                type="button"
+                className={cn(
+                  "flex w-full items-center gap-2 rounded-md px-2 py-2 text-left text-sm hover:bg-gray-50",
+                  activeFilterId == null && "bg-gray-50 font-medium",
+                )}
+                onClick={() => selectThread(null)}
+              >
+                <span className="min-w-0 flex-1 truncate text-gray-800">All threads</span>
+              </button>
               {selectorRows.length > 0 ? (
-                selectorRows.map((row: any) => (
-                  <button
-                    key={`thread-selector-${row.threadId}`}
-                    type="button"
-                    className={`flex w-full flex-col items-start gap-1 border-b border-gray-100 px-3 py-2 text-left text-xs last:border-b-0 hover:bg-gray-50 ${_selectedThreadId === row.threadId ? "bg-yellow-50" : ""}`}
-                    onClick={() => {
-                      _setIsAddingThread(false)
-                      _setSelectedThreadId(row.threadId)
-                      _openThreadView?.(row.threadId)
-                      _onThreadNavigate?.(row.raw)
-                      setIsThreadSelectorOpen(false)
-                    }}
-                  >
-                    <div className="flex w-full items-center justify-between gap-2">
-                      <span className="truncate font-medium">{row.preview}</span>
-                      <span className="text-[10px] text-gray-500">#{row.threadId}</span>
-                    </div>
-                    <div className="flex w-full flex-wrap items-center gap-1 text-[10px] text-gray-500">
-                      <span className="rounded bg-gray-100 px-1.5 py-0.5">{row.threadType}</span>
-                      <span className={row.isResolved ? "text-gray-400" : "text-emerald-600"}>
-                        {row.isResolved ? "resolved" : "open"}
-                      </span>
-                      <span>{row.participantCount} participant{row.participantCount === 1 ? "" : "s"}</span>
-                      <span>
-                        {row.latestActivityAt ? new Date(row.latestActivityAt).toLocaleString() : "No activity"}
-                      </span>
-                    </div>
-                  </button>
-                ))
+                selectorRows.map((row: any) => {
+                  const isActive = activeFilterId === row.threadId
+                  return (
+                    <button
+                      key={`thread-selector-${row.threadId}`}
+                      type="button"
+                      className={cn(
+                        "flex w-full items-center gap-2 rounded-md px-2 py-2 text-left hover:bg-gray-50",
+                        isActive && "bg-gray-50",
+                      )}
+                      onClick={() => selectThread(row.threadId)}
+                    >
+                      <ThreadParticipantAvatarStack participants={row.participants} />
+                      <div className="min-w-0 flex-1">
+                        <div className={cn("truncate text-sm text-gray-800", isActive && "font-medium")}>
+                          {row.preview}
+                        </div>
+                        <div className="mt-0.5 text-[11px] text-muted-foreground">
+                          {getActivityRelativeTimeLabel(row.latestActivityAt)}
+                        </div>
+                      </div>
+                    </button>
+                  )
+                })
               ) : (
-                <div className="px-3 py-2 text-xs text-gray-500">No threads found for this task.</div>
+                <div className="px-2 py-3 text-xs text-muted-foreground">No threads for this task.</div>
               )}
             </div>
           </PopoverContent>
@@ -219,24 +306,6 @@ export function TaskCommentsHeaderRow({
         </Button>
     </div>
   )
-}
-
-function stripHtmlPreview(value: string): string {
-  return String(value)
-    .replace(/<[^>]*>/g, " ")
-    .replace(/&nbsp;/gi, " ")
-    .replace(/\s+/g, " ")
-    .trim()
-}
-
-function formatCommentDateShort(dateString: string): string {
-  const date = new Date(dateString)
-  if (Number.isNaN(date.getTime())) return ""
-  return date.toLocaleDateString(undefined, { month: "short", day: "numeric" })
-}
-
-function threadHasOutputAnchor(thread: any): boolean {
-  return typeof thread?.task_component_output_id === "string" && thread.task_component_output_id.length > 0
 }
 
 function resolveMentionAuthor(mention: any, thread?: any): any {
@@ -301,98 +370,70 @@ export function TaskCommentsListPart(props: TaskCommentsPanelProps) {
     currentUserAvatar,
     currentUserEmail,
     currentPublicUserId,
-    latestMentionsByThread,
     onThreadNavigate,
     handleAddThread,
     handleViewThreadHistory,
     isThreadListLoading,
     taskIdNum,
     embedCollapsed = false,
-    embedThreadLimit = 5,
+    embedMentionLimit = 8,
     onEmbedExpand,
     hideStatusFilter = false,
     hideThreadToolbar = false,
-    clientSort = "newest",
+    clientSort = "oldest",
+    filterThreadId = null,
   } = props
+
+  const threadById = React.useMemo(() => {
+    const map = new Map<number, any>()
+    for (const thread of threadsList ?? []) {
+      const threadId = Number(thread?.id)
+      if (Number.isFinite(threadId)) map.set(threadId, thread)
+    }
+    return map
+  }, [threadsList])
 
   const mentionsSorted = React.useMemo(() => {
     if (!Array.isArray(allMentions)) return []
-    return [...allMentions].sort((a: any, b: any) => {
-      const aTs = new Date(a?.created_at ?? 0).getTime()
-      const bTs = new Date(b?.created_at ?? 0).getTime()
-      return bTs - aTs
-    })
-  }, [allMentions])
-  const threadCards = React.useMemo(() => {
-    const mentionCountByThread = new Map<number, number>()
-    const latestByThread = new Map<number, any>()
-    const authorCandidateByThread = new Map<number, any>()
-    const hasUsefulAuthor = (mention: any): boolean => {
-      const candidate = resolveMentionAuthor(mention)
-      const name = String(candidate?.full_name ?? "").trim().toLowerCase()
-      const hasKnownName = name.length > 0 && name !== "unknown user" && name !== "user"
-      const hasAvatar = Boolean(candidate?.photo || candidate?.avatar_url || candidate?.avatar)
-      return hasKnownName || hasAvatar
-    }
-    for (const mention of mentionsSorted) {
-      const threadId = Number(mention?.thread_id)
+    const resolvedByThread = new Map<number, boolean>()
+    for (const thread of threadsList ?? []) {
+      const threadId = Number(thread?.id)
       if (!Number.isFinite(threadId)) continue
-      mentionCountByThread.set(threadId, (mentionCountByThread.get(threadId) ?? 0) + 1)
-      if (!latestByThread.has(threadId)) latestByThread.set(threadId, mention)
-      if (!authorCandidateByThread.has(threadId) && hasUsefulAuthor(mention)) {
-        authorCandidateByThread.set(threadId, mention)
-      }
+      resolvedByThread.set(threadId, Boolean(thread?.is_resolved ?? thread?.resolved_at))
     }
-    const withDerived = (threadsList ?? []).map((thread: any) => {
-      const threadId = Number(thread?.id)
-      const latestMention = latestByThread.get(threadId) ?? null
-      const authorMention = authorCandidateByThread.get(threadId) ?? latestMention
-      const mentionCount = Number.isFinite(Number(thread?.mention_count))
-        ? Number(thread.mention_count)
-        : (mentionCountByThread.get(threadId) ?? 0)
-      const latestActivityAt =
-        thread?.latest_activity_at
-        ?? latestMention?.created_at
-        ?? thread?.updated_at
-        ?? thread?.created_at
-        ?? null
-      const isResolved = Boolean(thread?.is_resolved ?? thread?.resolved_at)
-      return {
-        ...thread,
-        mention_count: mentionCount,
-        latest_preview: thread?.latest_preview ?? latestMention?.comment ?? thread?.title ?? "Thread",
-        latest_activity_at: latestActivityAt,
-        is_resolved: isResolved,
-        author_mention: authorMention,
-      }
+
+    const filtered = allMentions.filter((mention: any) => {
+      const threadId = Number(mention?.thread_id)
+      if (!Number.isFinite(threadId)) return false
+      if (filterThreadId != null && threadId !== Number(filterThreadId)) return false
+      if (hideStatusFilter || commentsStatusFilter === "all") return true
+      const isResolved = resolvedByThread.get(threadId) ?? false
+      if (commentsStatusFilter === "open") return !isResolved
+      if (commentsStatusFilter === "resolved") return isResolved
+      return true
     })
-    const filtered = hideStatusFilter
-      ? withDerived
-      : withDerived.filter((thread: any) => {
-          if (commentsStatusFilter === "open") return !thread.is_resolved
-          if (commentsStatusFilter === "resolved") return !!thread.is_resolved
-          return true
-        })
 
-    const getThreadAuthorName = (thread: any) => {
-      const threadId = Number(thread?.id)
-      const latest = latestByThread.get(threadId) ?? null
-      const author = resolveMentionAuthor(thread?.author_mention ?? latest, thread)
-      return String(author?.full_name ?? "Unknown user")
+    return sortByUserLabel(
+      filtered,
+      (mention: any) => {
+        const author = resolveMentionAuthor(mention, threadById.get(Number(mention?.thread_id)))
+        return String(author?.full_name ?? "Unknown user")
+      },
+      clientSort,
+      (mention: any) => mention?.created_at ?? null,
+    )
+  }, [allMentions, threadsList, commentsStatusFilter, hideStatusFilter, clientSort, threadById, filterThreadId])
+
+  const visibleMentions = React.useMemo(() => {
+    if (!embedCollapsed) return mentionsSorted
+    // Chronological (oldest-first): show the most recent window, still ordered oldest→newest.
+    if (clientSort === "oldest") {
+      return mentionsSorted.slice(-embedMentionLimit)
     }
+    return mentionsSorted.slice(0, embedMentionLimit)
+  }, [mentionsSorted, embedCollapsed, embedMentionLimit, clientSort])
 
-    const getThreadTimestamp = (thread: any) =>
-      thread?.latest_activity_at ?? thread?.created_at ?? null
-
-    return sortByUserLabel(filtered, getThreadAuthorName, clientSort, getThreadTimestamp)
-  }, [threadsList, mentionsSorted, commentsStatusFilter, hideStatusFilter, clientSort])
-
-  const visibleThreadCards = React.useMemo(() => {
-    if (!embedCollapsed) return threadCards
-    return threadCards.slice(0, embedThreadLimit)
-  }, [threadCards, embedCollapsed, embedThreadLimit])
-
-  const hasHiddenThreads = embedCollapsed && threadCards.length > embedThreadLimit
+  const hasHiddenMentions = embedCollapsed && mentionsSorted.length > embedMentionLimit
 
   return (
     <div className="flex h-full min-h-0 flex-col">
@@ -435,87 +476,81 @@ export function TaskCommentsListPart(props: TaskCommentsPanelProps) {
             </div>
           ) : null}
           <div className="min-h-0 flex-1 overflow-y-auto">
-            {Array.isArray(visibleThreadCards) && visibleThreadCards.length > 0 ? (
-              <ul className="flex flex-col py-1">
-                {visibleThreadCards.map((thread: any, idx: number) => {
-                  const threadId = Number(thread?.id)
-                  if (!Number.isFinite(threadId)) return null
-                  const latest = latestMentionsByThread?.[threadId] ?? null
-                  const preview = thread?.latest_preview ?? latest?.comment ?? thread?.title ?? "Thread"
-                  const latestActivityAt = thread?.latest_activity_at ?? latest?.created_at ?? thread?.created_at ?? null
-                  const author = resolveMentionAuthor(thread?.author_mention ?? latest, thread)
+            {visibleMentions.length > 0 ? (
+              <ul className="flex flex-col">
+                {visibleMentions.map((mention: any) => {
+                  const mentionId = Number(mention?.id)
+                  const threadId = Number(mention?.thread_id)
+                  if (!Number.isFinite(mentionId) || !Number.isFinite(threadId)) return null
+                  const thread = threadById.get(threadId)
+                  const author = resolveMentionAuthor(mention, thread)
                   const displayName = String(author?.full_name ?? "Unknown user")
                   const photoUrl = getImageUrl(author?.photo ?? author?.avatar_url ?? author?.avatar ?? null)
-                  const plainPreview = stripHtmlPreview(String(preview))
-                  const relativeTime = latestActivityAt
-                    ? formatDistanceToNow(new Date(latestActivityAt), { addSuffix: true })
-                    : null
-                  const shortDate = latestActivityAt ? formatCommentDateShort(latestActivityAt) : null
+                  const plainPreview = stripHtmlPreview(String(mention?.comment ?? ""))
 
-                  const openThread = () => {
-                    setIsAddingThread(false)
-                    setSelectedThreadId(threadId)
-                    openThreadView?.(threadId)
-                    if (threadHasOutputAnchor(thread)) {
-                      onThreadNavigate?.(thread)
-                    }
-                  }
-
-                  const selectForReply = (event: React.MouseEvent) => {
-                    event.preventDefault()
-                    event.stopPropagation()
+                  const selectForReply = () => {
                     setIsAddingThread(false)
                     setSelectedThreadId(threadId)
                   }
 
                   return (
-                    <li key={threadId}>
-                      {idx > 0 ? <div className="border-t border-gray-200" /> : null}
-                      <div className="group w-full py-1.5">
-                        <div className="flex items-center gap-2 min-h-0">
-                          <UserAvatar name={displayName} photoUrl={photoUrl} />
-                          <span className="min-w-0 truncate text-sm font-medium text-gray-900">
-                            {displayName}
-                          </span>
-                          <div className="ml-auto flex shrink-0 items-center gap-1 text-right text-xs text-muted-foreground whitespace-nowrap">
-                            {relativeTime ? <span className="block">{relativeTime}</span> : null}
-                            {shortDate ? <span className="block">{shortDate}</span> : null}
+                    <li key={mentionId} className="group flex items-start gap-2.5 py-2">
+                      <UserAvatar name={displayName} photoUrl={photoUrl} size="xs" className="mt-0.5 !h-5 !w-5 !min-h-5 !min-w-5 text-[9px]" />
+                      <div className="min-w-0 flex-1">
+                        <div className="flex items-center gap-2">
+                          <div className="flex min-w-0 flex-1 items-center gap-1.5">
                             <button
                               type="button"
-                              className="inline-flex h-5 w-5 items-center justify-center rounded text-gray-500 hover:bg-gray-100 hover:text-gray-700 md:opacity-0 md:group-hover:opacity-100 md:transition-opacity"
-                              aria-label={`Reply to thread ${threadId}`}
-                              title="Reply in thread"
                               onClick={selectForReply}
+                              className="truncate text-left text-sm font-medium leading-5 text-gray-900"
                             >
-                              <Reply className="h-3.5 w-3.5" />
+                              {displayName}
                             </button>
+                            <span className="shrink-0 text-gray-300" aria-hidden>
+                              ·
+                            </span>
+                            <ActivityRowTimestamp value={mention?.created_at} />
                           </div>
+                          <button
+                            type="button"
+                            className="inline-flex h-5 w-5 shrink-0 items-center justify-center rounded text-gray-500 hover:bg-gray-100 hover:text-gray-700 md:opacity-0 md:group-hover:opacity-100"
+                            aria-label="Reply in thread"
+                            title="Reply in thread"
+                            onClick={(event) => {
+                              event.preventDefault()
+                              event.stopPropagation()
+                              selectForReply()
+                            }}
+                          >
+                            <Reply className="h-3.5 w-3.5" />
+                          </button>
                         </div>
                         <button
                           type="button"
-                          onClick={openThread}
-                          className="mt-0.5 block w-full text-left pl-10 hover:bg-gray-50/80 rounded-sm"
+                          onClick={selectForReply}
+                          className="mt-1 w-full text-left text-sm leading-5 text-gray-700"
+                          style={{ wordBreak: "break-word" }}
+                          title={plainPreview || undefined}
                         >
-                          <span
-                            className="line-clamp-2 text-sm text-gray-700"
-                            style={{ wordBreak: "break-word" }}
-                          >
-                            {plainPreview || "No message preview"}
-                          </span>
+                          {plainPreview || "Empty comment"}
                         </button>
                       </div>
                     </li>
                   )
                 })}
               </ul>
-            ) : null}
-            {hasHiddenThreads && onEmbedExpand ? (
+            ) : (
+              <div className="py-6 text-center text-sm text-muted-foreground">
+                No comments yet.
+              </div>
+            )}
+            {hasHiddenMentions && onEmbedExpand ? (
               <button
                 type="button"
                 className="mt-1 text-xs text-gray-500 hover:text-gray-700"
                 onClick={onEmbedExpand}
               >
-                Show {threadCards.length - embedThreadLimit} more thread{threadCards.length - embedThreadLimit === 1 ? "" : "s"}
+                Show {mentionsSorted.length - embedMentionLimit} more comment{mentionsSorted.length - embedMentionLimit === 1 ? "" : "s"}
               </button>
             ) : null}
           </div>
@@ -602,39 +637,106 @@ export function TaskCommentsInputPart(props: TaskCommentsPanelProps) {
     onClearReply,
     currentUserName,
     currentUserAvatar,
+    minimalComposer = false,
+    composerExpanded,
+    onComposerExpandedChange,
   } = props
 
   const composerPhotoUrl =
     getImageUrl(currentUserAvatar || null)
     || (currentUserAvatar?.startsWith("http") ? currentUserAvatar : null)
+  const [localExpanded, setLocalExpanded] = React.useState(false)
+  const [localFocusToken, setLocalFocusToken] = React.useState(0)
+  const isExpanded = composerExpanded ?? localExpanded
+  const setExpanded = onComposerExpandedChange ?? setLocalExpanded
+  const shouldShowFullComposer =
+    !minimalComposer
+    || isExpanded
+    || Boolean(replyTo)
+    || Boolean(props.pendingOutputAnchor)
+    || Boolean(props.pendingArtifactTextQuote)
+
+  React.useEffect(() => {
+    if (replyTo || props.pendingOutputAnchor || props.pendingArtifactTextQuote) {
+      setExpanded(true)
+    }
+  }, [replyTo, props.pendingOutputAnchor, props.pendingArtifactTextQuote, setExpanded])
 
   return (
-    <div className="flex w-full items-start gap-2 bg-white">
+    <div
+      className={cn(
+        "z-10 flex w-full items-start gap-2 bg-white",
+        shouldShowFullComposer ? "pt-2" : "py-1.5",
+      )}
+    >
       <UserAvatar
         name={currentUserName || "You"}
         photoUrl={composerPhotoUrl}
         size="sm"
-        className="mt-2"
+        className={shouldShowFullComposer ? "mt-2" : "mt-0.5"}
       />
       <div className="min-w-0 flex-1">
-        <StickyAddCommentInput
-          taskId={taskIdNum}
-          onCommentAdded={props.onCommentAdded ?? (() => {})}
-          pendingParticipants={pendingParticipants}
-          setPendingParticipants={setPendingParticipants}
-          removedParticipants={removedParticipants}
-          setRemovedParticipants={setRemovedParticipants}
-          activeThreadId={isAddingThread ? null : selectedThreadId}
-          threads={threadsList}
-          latestMentions={latestMentions}
-          handleDeleteThread={handleDeleteThread}
-          replyTo={replyTo}
-          onClearReply={onClearReply}
-          pendingOutputAnchor={props.pendingOutputAnchor ?? null}
-          onConsumePendingOutputAnchor={props.onConsumePendingOutputAnchor}
-          focusComposerToken={props.composerFocusToken ?? 0}
-          embedded
-        />
+        {shouldShowFullComposer ? (
+          <>
+            {props.pendingArtifactTextQuote ? (
+              <div className="mb-2 flex items-start justify-between gap-3 rounded-md border border-gray-200 bg-gray-50 px-3 py-1.5">
+                <div className="min-w-0">
+                  <div className="text-[11px] font-medium text-gray-600">Selected text</div>
+                  <div className="truncate text-xs text-gray-700">
+                    “{props.pendingArtifactTextQuote}”
+                  </div>
+                </div>
+                <button
+                  type="button"
+                  className="shrink-0 text-xs text-gray-500 hover:text-gray-900"
+                  onClick={() => props.onClearPendingArtifactTextQuote?.()}
+                  aria-label="Clear selected text"
+                  title="Clear"
+                >
+                  ×
+                </button>
+              </div>
+            ) : null}
+            <StickyAddCommentInput
+              taskId={taskIdNum}
+              onCommentAdded={() => {
+                props.onClearPendingArtifactTextQuote?.()
+                props.onCommentAdded?.()
+              }}
+              onThreadCreated={props.onThreadCreated}
+              pendingParticipants={pendingParticipants}
+              setPendingParticipants={setPendingParticipants}
+              removedParticipants={removedParticipants}
+              setRemovedParticipants={setRemovedParticipants}
+              activeThreadId={isAddingThread ? null : selectedThreadId}
+              threads={threadsList}
+              latestMentions={latestMentions}
+              handleDeleteThread={handleDeleteThread}
+              replyTo={replyTo}
+              onClearReply={onClearReply}
+              pendingOutputAnchor={props.pendingOutputAnchor ?? null}
+              onConsumePendingOutputAnchor={props.onConsumePendingOutputAnchor}
+              focusComposerToken={(props.composerFocusToken ?? 0) + localFocusToken}
+              embedded
+              onCollapseRequest={
+                minimalComposer
+                  ? () => setExpanded(false)
+                  : undefined
+              }
+            />
+          </>
+        ) : (
+          <button
+            type="button"
+            className="flex h-9 w-full items-center rounded-md border border-gray-200 bg-white px-3 text-left text-sm text-muted-foreground hover:border-gray-300 hover:bg-gray-50"
+            onClick={() => {
+              setExpanded(true)
+              setLocalFocusToken((token) => token + 1)
+            }}
+          >
+            Add a comment...
+          </button>
+        )}
       </div>
     </div>
   )
@@ -645,8 +747,8 @@ export function TaskCommentsFooterPart(props: TaskCommentsPanelProps) {
   const {
     task,
     selectedThreadId,
-    isThreadView = false,
     isAddingThread,
+    threadsList,
     project_watchers,
     allProjectUsers,
     currentUserId,
@@ -658,8 +760,20 @@ export function TaskCommentsFooterPart(props: TaskCommentsPanelProps) {
     isDeleting,
   } = props
 
+  const selectedThreadName = React.useMemo(() => {
+    if (typeof selectedThreadId !== "number") return null
+    const thread = (threadsList ?? []).find(
+      (row: any) => Number(row?.id) === Number(selectedThreadId),
+    )
+    const raw =
+      thread?.latest_preview
+      ?? thread?.title
+      ?? `Thread #${selectedThreadId}`
+    return stripHtmlPreview(String(raw)) || `Thread #${selectedThreadId}`
+  }, [selectedThreadId, threadsList])
+
   return (
-    <div className="shrink-0 flex items-center gap-2 bg-white px-0 py-1">
+    <div className="flex shrink-0 items-center gap-2 bg-white px-0 py-1">
       <span className="shrink-0 text-xs text-gray-500">We'll notify</span>
       <div className="min-w-0 flex-1 overflow-hidden">
         {isAddingThread || !(task as any)?.thread_id ? (
@@ -689,11 +803,6 @@ export function TaskCommentsFooterPart(props: TaskCommentsPanelProps) {
           )
         )}
       </div>
-      {!isThreadView && typeof selectedThreadId === "number" ? (
-        <span className="shrink-0 text-xs text-muted-foreground">
-          Sending to #{selectedThreadId}
-        </span>
-      ) : null}
       {isAddingThread ? (
         <span className="shrink-0 text-xs text-muted-foreground">
           Starting new thread
@@ -705,17 +814,23 @@ export function TaskCommentsFooterPart(props: TaskCommentsPanelProps) {
             type="button"
             variant="ghost"
             size="sm"
-            className="ml-1 shrink-0 text-destructive hover:text-destructive"
+            className="ml-1 h-7 w-7 shrink-0 p-0 text-muted-foreground hover:text-destructive"
             aria-label="Delete thread"
             title="Delete thread"
             onClick={() => setShowDeleteThreadDialog(true)}
           >
-            Delete thread
+            <Trash2 className="h-3.5 w-3.5" />
           </Button>
           <Dialog open={showDeleteThreadDialog} onOpenChange={setShowDeleteThreadDialog}>
             <DialogContent>
               <DialogTitle>Delete Thread</DialogTitle>
-              <div className="py-2">Are you sure you want to delete this thread? This cannot be undone.</div>
+              <div className="py-2">
+                Are you sure you want to delete{" "}
+                <span className="font-medium text-gray-900">
+                  “{selectedThreadName}”
+                </span>
+                ? This cannot be undone.
+              </div>
               <DialogFooter>
                 <Button variant="outline" onClick={() => setShowDeleteThreadDialog(false)} disabled={isDeleting}>
                   Cancel

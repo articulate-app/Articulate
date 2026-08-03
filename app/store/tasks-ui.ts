@@ -95,7 +95,14 @@ export const useTasksUI = create<TasksUIState>((set, get) => ({
   setSelectedTaskId: (id) => set({ selectedTaskId: id }),
   selectedTaskSeed: null,
   setSelectedTaskSeed: (task) => set({ selectedTaskSeed: task }),
-  plannerVisibility: { showTasks: true, showSuggestions: true },
+  // Suggestions live on the project sheet (Suggestions tab), not mixed into planner views.
+  plannerVisibility: { showTasks: true, showSuggestions: false },
   setPlannerVisibility: (patch) =>
-    set((state) => ({ plannerVisibility: { ...state.plannerVisibility, ...patch } })),
+    set((state) => ({
+      plannerVisibility: {
+        ...state.plannerVisibility,
+        ...patch,
+        showSuggestions: false,
+      },
+    })),
 })) 

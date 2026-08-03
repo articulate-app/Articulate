@@ -75,6 +75,11 @@ export function useTaskRealtime(options: UseTaskRealtimeOptions = {}) {
           
           // Update all caches with the new task data
           updateTaskInCaches(queryClient, task)
+
+          // Task-level SEO panels (overview + artifact tabs)
+          queryClient.invalidateQueries({
+            queryKey: ['task-seo', String(task.id)],
+          })
           
           // Also update the InfiniteList stores
           updateItemInStore('tasks', undefined, task)

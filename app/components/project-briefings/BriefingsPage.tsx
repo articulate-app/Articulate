@@ -13,7 +13,9 @@ import { getProjectOverview, type ProjectOverview, uploadProjectFile } from '../
 import { ProjectAnalyticsTab } from '../projects/ProjectAnalyticsTab'
 import { ProjectKeywordTrackingTab } from '../projects/ProjectKeywordTrackingTab'
 import { ProjectAiVisibilityTab } from '../projects/ProjectAiVisibilityTab'
-import { ProjectAiUsageSection } from '../projects/project-ai-usage-section'
+import { ProjectSuggestionsTab } from '../projects/ProjectSuggestionsTab'
+import { FilesTab } from '../projects/FilesTab'
+import { ArtifactWorkspace } from '../../../features/artifacts/ArtifactWorkspace'
 import { ProjectHeaderWatchers } from '../projects/ProjectHeaderWatchers'
 import {
   ProjectSettingsPanel,
@@ -43,17 +45,21 @@ const ALLOWED_TABS = [
   'analytics',
   'ai-visibility',
   'keywords',
-  'ai-usage',
+  'files',
   'tasks',
+  'suggestions',
+  'artifacts',
 ] as const
 
 type TabValue = (typeof ALLOWED_TABS)[number]
 
 function getTabValueFromParams(params: URLSearchParams): TabValue {
   const rawTab = params.get('centerTab') ?? params.get('rightTab') ?? params.get('tab')
+  if (rawTab === "ai-usage") {
+    return "overview"
+  }
   if (
-    rawTab === "files"
-    || rawTab === "briefings"
+    rawTab === "briefings"
     || rawTab === "billing"
     || rawTab === "library"
   ) {
@@ -247,9 +253,6 @@ export function BriefingsPage({
     } else if (rawTab === 'library') {
       openedLegacySettingsRef.current = true
       openProjectSettings('components')
-    } else if (rawTab === 'files') {
-      openedLegacySettingsRef.current = true
-      openProjectSettings('files')
     }
   }, [searchParams, openProjectSettings])
 
@@ -441,10 +444,10 @@ export function BriefingsPage({
               Keyword Tracking
             </TabsTrigger>
             <TabsTrigger
-              value="ai-usage"
+              value="files"
               className={tabTriggerClassName}
             >
-              AI usage
+              Files
             </TabsTrigger>
             <TabsTrigger 
               value="tasks"
@@ -453,6 +456,18 @@ export function BriefingsPage({
               className={tabTriggerClassName}
             >
               Tasks
+            </TabsTrigger>
+            <TabsTrigger
+              value="suggestions"
+              className={tabTriggerClassName}
+            >
+              Suggestions
+            </TabsTrigger>
+            <TabsTrigger
+              value="artifacts"
+              className={tabTriggerClassName}
+            >
+              Artifacts
             </TabsTrigger>
             </TabsList>
           </div>
@@ -486,12 +501,20 @@ export function BriefingsPage({
               <ProjectKeywordTrackingTab projectId={projectId} />
             </TabsContent>
 
-            <TabsContent value="ai-usage" className="h-full m-0 mt-0 p-6">
-              <ProjectAiUsageSection projectId={projectId} />
+            <TabsContent value="files" className="h-full m-0 mt-0 p-6">
+              <FilesTab projectId={projectId} />
             </TabsContent>
 
             <TabsContent value="tasks" className="h-full m-0 mt-0 p-0 overflow-hidden">
               <ProjectTasksTabContent projectId={projectId} />
+            </TabsContent>
+
+            <TabsContent value="suggestions" className="h-full m-0 mt-0 p-0 overflow-auto">
+              <ProjectSuggestionsTab projectId={projectId} />
+            </TabsContent>
+
+            <TabsContent value="artifacts" className="h-full m-0 mt-0 p-6">
+              <ArtifactWorkspace projectId={projectId} layout="navigator" />
             </TabsContent>
           </div>
         </Tabs>

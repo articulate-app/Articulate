@@ -16,6 +16,11 @@ interface KeywordIdeasRequest {
   regionId?: string;
   languageId?: string;
   pageSize?: number;
+  /**
+   * primary = Google Ads only (fast first paint).
+   * full = Ads + autocomplete + DataForSEO related + historical metrics.
+   */
+  phase?: 'primary' | 'full';
 }
 
 interface KeywordIdea {
@@ -29,6 +34,7 @@ interface KeywordIdeasResponse {
   elapsedMs: number;
   results: KeywordIdea[];
   nextPageToken?: string | null;
+  phase?: 'primary' | 'full';
 }
 
 interface GoogleAdsKeywordIdea {
@@ -60,6 +66,7 @@ const RATE_LIMIT_REQUESTS = 3;
 const RATE_LIMIT_WINDOW = 5 * 1000; // 5 seconds
 
 const DEFAULT_PAGE_SIZE = 40;
+const PRIMARY_PAGE_SIZE = 10;
 const MAX_PAGE_SIZE = 60;
 const AUTOCOMPLETE_FETCH_LIMIT = 50;
 
@@ -155,11 +162,10 @@ async function fetchGenerateKeywordIdeas(args: {
   console.log('Google Ads API Request:', {
     url: googleAdsUrl,
     customerId: args.customerId,
-    developerToken: args.developerToken
-      ? '***' + args.developerToken.slice(-4)
-      : 'missing',
-    accessToken: args.accessToken ? '***' + args.accessToken.slice(-8) : 'missing',
-    payload,
+    pageSize: args.pageSize,
+    keyword: args.keyword,
+    regionId: args.regionId || null,
+    languageId: args.languageId || null,
   });
 
   const response = await fetch(googleAdsUrl, {
@@ -263,6 +269,12 @@ export async function POST(request: NextRequest) {
     const rawPageSize = body.pageSize ?? DEFAULT_PAGE_SIZE;
     const pageSize = Math.max(1, Math.min(MAX_PAGE_SIZE, rawPageSize));
     const { keyword, regionId, languageId } = body;
+    const phase: 'primary' | 'full' = body.phase === 'full' ? 'full' : 'primary';
+    // Primary phase uses a smaller page for a faster Google Ads response.
+    const effectivePageSize =
+      phase === 'primary'
+        ? Math.min(pageSize, PRIMARY_PAGE_SIZE)
+        : pageSize;
 
     // Validate required fields
     if (!keyword || keyword.trim().length === 0) {
@@ -274,8 +286,8 @@ export async function POST(request: NextRequest) {
 
     const trimmedKeyword = keyword.trim();
 
-    // Create cache key (v3: Ads + Autocomplete + DataForSEO related)
-    const cacheKey = `v3-${trimmedKeyword.toLowerCase()}-${regionId || 'any'}-${languageId || 'any'}-${pageSize}`;
+    // Create cache key (v4: phased primary/full)
+    const cacheKey = `v4-${phase}-${trimmedKeyword.toLowerCase()}-${regionId || 'any'}-${languageId || 'any'}-${effectivePageSize}`;
     
     // Check cache first
     const cachedResponse = getCachedResponse(cacheKey);
@@ -296,6 +308,64 @@ export async function POST(request: NextRequest) {
     const customerId = process.env.GOOGLE_ADS_CUSTOMER_ID!;
     const developerToken = process.env.GOOGLE_ADS_DEVELOPER_TOKEN!;
 
+    // Fast path: return Google Ads ideas as soon as ready (first paint).
+    if (phase === 'primary') {
+      try {
+        const googleAdsData = await fetchGenerateKeywordIdeas({
+          accessToken,
+          customerId,
+          developerToken,
+          keyword: trimmedKeyword,
+          regionId,
+          languageId,
+          pageSize: effectivePageSize,
+        });
+
+        if (!googleAdsData || typeof googleAdsData !== 'object' || !Array.isArray(googleAdsData.results)) {
+          return NextResponse.json(
+            {
+              error: {
+                code: 500,
+                message: "Invalid response from Google Ads API",
+              },
+            },
+            { status: 500 }
+          );
+        }
+
+        const adsIdeas = googleAdsData.results.map((item, index) => mapGoogleAdsIdea(item, index));
+        const results = mergeKeywordIdeas(
+          trimmedKeyword,
+          adsIdeas,
+          [],
+          [],
+          effectivePageSize,
+          [],
+        );
+
+        const responseData: KeywordIdeasResponse = {
+          elapsedMs: Date.now() - startTime,
+          results,
+          nextPageToken: googleAdsData.nextPageToken || null,
+          phase: 'primary',
+        };
+        setCachedResponse(cacheKey, responseData);
+        return NextResponse.json(responseData);
+      } catch (err) {
+        const error = err as Error & { status?: number; details?: string };
+        return NextResponse.json(
+          {
+            error: {
+              code: error.status || 500,
+              message: error.message || 'Google Ads API error',
+              details: error.details,
+            },
+          },
+          { status: error.status || 500 }
+        );
+      }
+    }
+
     // Expand ideas: Google Ads + Autocomplete + DataForSEO related (in parallel)
     const [adsSettled, autocompleteSettled, relatedSettled] = await Promise.allSettled([
       fetchGenerateKeywordIdeas({
@@ -312,7 +382,9 @@ export async function POST(request: NextRequest) {
         languageId,
         regionId,
         limit: Math.max(AUTOCOMPLETE_FETCH_LIMIT, pageSize),
-        expandAlphabet: true,
+        // Skip alphabet expansion on the critical path — seed + trailing-space is enough
+        // for enrichment and keeps this phase much faster.
+        expandAlphabet: false,
       }),
       fetchRelatedKeywordIdeas({
         keyword: trimmedKeyword,
@@ -338,7 +410,12 @@ export async function POST(request: NextRequest) {
     }
 
     const googleAdsData = adsSettled.value;
-    console.log('Google Ads API Response:', JSON.stringify(googleAdsData, null, 2));
+    if (process.env.NODE_ENV !== 'production') {
+      console.log(
+        'Google Ads API Response: results=',
+        Array.isArray(googleAdsData?.results) ? googleAdsData.results.length : 0,
+      );
+    }
 
     if (!googleAdsData || typeof googleAdsData !== 'object') {
       console.error('Invalid Google Ads response: not an object', googleAdsData);
@@ -417,6 +494,7 @@ export async function POST(request: NextRequest) {
       elapsedMs: Date.now() - startTime,
       results,
       nextPageToken: googleAdsData.nextPageToken || null,
+      phase: 'full',
     };
 
     // Set cache

@@ -1,4 +1,6 @@
 import type { AiContextTag } from "./composer-inline-editor"
+import type { TaggedArtifactRef } from "../../app/lib/artifacts/artifact-types"
+import type { TaggedSourceRef } from "../../app/lib/sources/source-types"
 
 export type TaggedTaskChannelRef = {
   task_id: number
@@ -16,6 +18,8 @@ export type TaggedTaskComponentRef = {
   channel_name?: string
 }
 
+export type { TaggedArtifactRef, TaggedSourceRef }
+
 export type AiChatTaggedRefsPayload = {
   tagged_task_ids: number[]
   tagged_project_ids: number[]
@@ -23,6 +27,10 @@ export type AiChatTaggedRefsPayload = {
   tagged_channel_ids: number[]
   tagged_task_channel_refs: TaggedTaskChannelRef[]
   tagged_task_component_refs: TaggedTaskComponentRef[]
+  tagged_artifact_ids: string[]
+  tagged_artifact_refs: TaggedArtifactRef[]
+  tagged_source_ids: string[]
+  tagged_source_refs: TaggedSourceRef[]
 }
 
 const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
@@ -133,6 +141,39 @@ export function buildAiChatTaggedRefs(tags: AiContextTag[]): AiChatTaggedRefsPay
     })
   }
 
+  const tagged_artifact_refs: TaggedArtifactRef[] = []
+  const artifactIdSet = new Set<string>()
+  for (const t of tags) {
+    if (t.type !== "artifact") continue
+    const artifactId = String(t.artifactId ?? t.id).trim()
+    if (!artifactId || !UUID_PATTERN.test(artifactId)) continue
+    if (artifactIdSet.has(artifactId)) continue
+    artifactIdSet.add(artifactId)
+    tagged_artifact_refs.push({
+      artifact_id: artifactId,
+      artifact_version_number: t.artifactVersionNumber ?? null,
+      title: t.artifactTitle ?? t.label ?? null,
+      task_id: t.taskId != null && t.taskId > 0 ? t.taskId : null,
+      project_id: t.projectId != null && t.projectId > 0 ? t.projectId : null,
+    })
+  }
+
+  const tagged_source_refs: TaggedSourceRef[] = []
+  const sourceIdSet = new Set<string>()
+  for (const t of tags) {
+    if (t.type !== "source") continue
+    const sourceId = String(t.sourceId ?? t.id).trim()
+    if (!sourceId || !UUID_PATTERN.test(sourceId)) continue
+    if (sourceIdSet.has(sourceId)) continue
+    sourceIdSet.add(sourceId)
+    tagged_source_refs.push({
+      source_id: sourceId,
+      title: t.sourceTitle ?? t.label ?? null,
+      task_id: t.taskId != null && t.taskId > 0 ? t.taskId : null,
+      project_id: t.projectId != null && t.projectId > 0 ? t.projectId : null,
+    })
+  }
+
   return {
     tagged_task_ids: Array.from(taskIdSet).sort((a, b) => a - b),
     tagged_project_ids,
@@ -140,5 +181,9 @@ export function buildAiChatTaggedRefs(tags: AiContextTag[]): AiChatTaggedRefsPay
     tagged_channel_ids: Array.from(channelIdSet).sort((a, b) => a - b),
     tagged_task_channel_refs,
     tagged_task_component_refs,
+    tagged_artifact_ids: Array.from(artifactIdSet),
+    tagged_artifact_refs,
+    tagged_source_ids: Array.from(sourceIdSet),
+    tagged_source_refs,
   }
 }

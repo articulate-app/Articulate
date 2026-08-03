@@ -29,6 +29,8 @@ export function getObjectListColumnHeaderLabels(
       return { primary: "Mention", secondary: "From", tertiary: "Date" }
     case "ai_thread":
       return { primary: "Chat", secondary: "", tertiary: "Updated" }
+    case "artifact":
+      return { primary: "Title", secondary: "Type", tertiary: "Updated" }
     case "team":
       return { primary: "Team", secondary: "Members", tertiary: "" }
     case "project_briefing":

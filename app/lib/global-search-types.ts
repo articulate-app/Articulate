@@ -10,7 +10,7 @@ export const GLOBAL_SEARCH_ENTITY_TYPES = [
 ] as const
 
 export type GlobalSearchEntityType = (typeof GLOBAL_SEARCH_ENTITY_TYPES)[number]
-export type GlobalSearchItemEntityType = GlobalSearchEntityType | "ai_thread"
+export type GlobalSearchItemEntityType = GlobalSearchEntityType | "ai_thread" | "artifact"
 export type GlobalSearchResultTab = "all" | GlobalSearchItemEntityType
 
 export type GlobalSearchDisplayPayload = {
@@ -51,6 +51,7 @@ export const GLOBAL_SEARCH_ENTITY_LABELS: Record<GlobalSearchItemEntityType, str
   user: "Users",
   team: "Teams",
   ai_thread: "AI chats",
+  artifact: "Artifacts",
 }
 
 export type GlobalSearchHistoryItem = {
@@ -99,7 +100,7 @@ export type GlobalSearchSection = {
 }
 
 export function isGlobalSearchItemEntityType(value: unknown): value is GlobalSearchItemEntityType {
-  return value === "ai_thread" || isGlobalSearchEntityType(value)
+  return value === "ai_thread" || value === "artifact" || isGlobalSearchEntityType(value)
 }
 
 export function isGlobalSearchEntityType(value: unknown): value is GlobalSearchEntityType {

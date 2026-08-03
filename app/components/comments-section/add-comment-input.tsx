@@ -36,6 +36,8 @@ interface AddCommentInputProps {
   focusComposerToken?: number
   /** Flush layout inside task comments panel (avatar sits outside). */
   embedded?: boolean
+  /** Called when the editor blurs while empty (for collapsible composers). */
+  onCollapseRequest?: () => void
 }
 
 export function AddCommentInput({
@@ -55,6 +57,7 @@ export function AddCommentInput({
   onConsumePendingOutputAnchor,
   focusComposerToken = 0,
   embedded = false,
+  onCollapseRequest,
 }: AddCommentInputProps) {
   const [comment, setComment] = useState("")
   const [isPosting, setIsPosting] = useState(false)
@@ -382,7 +385,12 @@ export function AddCommentInput({
             )
           }
           onFocus={() => setIsFocused(true)}
-          onBlur={() => setIsFocused(false)}
+          onBlur={() => {
+            setIsFocused(false)
+            if (isCommentEmpty(comment) && !replyTo && !pendingOutputAnchor) {
+              onCollapseRequest?.()
+            }
+          }}
         />
         {!compactMode ? (
           <div

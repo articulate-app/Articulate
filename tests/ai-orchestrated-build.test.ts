@@ -14,6 +14,12 @@ import {
   listUnitsForBuild,
   useAiOrchestratedBuildStore,
 } from "../app/store/ai-orchestrated-build-store"
+import { clearPersistedBuildAfterSequence } from "../features/ai-chat/orchestrated-build-sequence-persist"
+import {
+  shouldKeepOrchestratedBuildAliveAcrossThreads,
+  shouldMonitorOrchestratedBuild,
+  shouldPumpOrchestratedBuild,
+} from "../features/ai-chat/orchestrated-build-monitor"
 
 const BUILD_ID = "635c0ae7-9d47-432c-8768-8f30d415376a"
 const UNIT_A = "e92627a5-d0d5-49e1-b5b1-2bd940126f41"
@@ -58,6 +64,38 @@ describe("orchestrated build discovery", () => {
           tool_name: "ai_start_orchestrated_build",
           build_id: BUILD_ID,
           title: "Build started",
+        },
+      ],
+    })
+    expect(builds).toHaveLength(1)
+    expect(builds[0]?.buildId).toBe(BUILD_ID)
+    expect(builds[0]?.source).toBe("tool_result")
+  })
+
+  it("discovers artifact builds from message_output build_ids", () => {
+    const builds = discoverOrchestratedBuildsFromMessageContentJson({
+      output_kind: "artifact_build_control",
+      ui_visibility: "hidden",
+      build_ids: [BUILD_ID],
+      tool_results: [
+        {
+          ok: true,
+          name: "ai_start_artifact_build",
+          data_summary: { build_id: BUILD_ID },
+        },
+      ],
+    })
+    expect(builds).toHaveLength(1)
+    expect(builds[0]?.buildId).toBe(BUILD_ID)
+  })
+
+  it("discovers artifact builds from compact data_summary only", () => {
+    const builds = discoverOrchestratedBuildsFromMessageContentJson({
+      tool_results: [
+        {
+          ok: true,
+          name: "ai_start_artifact_build",
+          data_summary: { build_id: BUILD_ID, title: null },
         },
       ],
     })
@@ -134,6 +172,7 @@ describe("orchestrated build snapshot parse", () => {
 describe("orchestrated build store merge", () => {
   beforeEach(() => {
     useAiOrchestratedBuildStore.setState({ builds: {} })
+    clearPersistedBuildAfterSequence(BUILD_ID)
   })
 
   it("keeps one card per build_id and merges units/events by id/sequence", () => {
@@ -249,6 +288,87 @@ describe("orchestrated build store merge", () => {
     expect(entry?.assistantMessageIds["msg-1"]).toBe(true)
     expect(entry?.assistantMessageIds["temp-1"]).toBeUndefined()
   })
+
+  it("registers history builds without downgrading a live monitor", () => {
+    const store = useAiOrchestratedBuildStore.getState()
+    store.registerBuild({
+      buildId: BUILD_ID,
+      threadId: "thread-1",
+      monitor: "live",
+    })
+    store.registerBuild({
+      buildId: BUILD_ID,
+      threadId: "thread-1",
+      monitor: "history",
+    })
+    expect(store.getBuild(BUILD_ID)?.monitor).toBe("live")
+  })
+
+  it("does not skip unread events when the event page is truncated", () => {
+    const store = useAiOrchestratedBuildStore.getState()
+    store.registerBuild({
+      buildId: BUILD_ID,
+      threadId: "thread-1",
+      monitor: "live",
+    })
+    store.applySnapshot({
+      buildId: BUILD_ID,
+      snapshot: {
+        ok: true,
+        build: {
+          id: BUILD_ID,
+          status: "running",
+          total_units: 1,
+          queued_units: 0,
+          running_units: 1,
+          succeeded_units: 0,
+          failed_units: 0,
+          last_event_sequence: 80,
+        },
+        units: [],
+        events: [
+          { sequence: 1, event_type: "artifact.started", phase: "running", unit_id: UNIT_A, payload: {} },
+          { sequence: 40, event_type: "artifact.preview", phase: "proposed", unit_id: UNIT_A, payload: {} },
+        ],
+        // Server cursor points past the page — client must not jump there.
+        next_sequence: 80,
+      },
+    })
+    expect(store.getBuild(BUILD_ID)?.afterSequence).toBe(40)
+  })
+
+  it("promotes history builds to live when a snapshot is still active", () => {
+    const store = useAiOrchestratedBuildStore.getState()
+    store.registerBuild({
+      buildId: BUILD_ID,
+      threadId: "thread-1",
+      monitor: "history",
+    })
+    store.applySnapshot({
+      buildId: BUILD_ID,
+      statusProbe: true,
+      snapshot: {
+        ok: true,
+        build: {
+          id: BUILD_ID,
+          status: "running",
+          total_units: 1,
+          queued_units: 0,
+          running_units: 1,
+          succeeded_units: 0,
+          failed_units: 0,
+          last_event_sequence: 12,
+        },
+        units: [],
+        events: [],
+        next_sequence: 0,
+      },
+    })
+    const entry = store.getBuild(BUILD_ID)
+    expect(entry?.monitor).toBe("live")
+    expect(entry?.didInitialReconcile).toBe(true)
+    expect(entry?.afterSequence).toBe(12)
+  })
 })
 
 describe("orchestrated build terminal helpers", () => {
@@ -260,6 +380,44 @@ describe("orchestrated build terminal helpers", () => {
     expect(isTerminalAiOrchestratedBuildStatus("failed")).toBe(true)
     expect(isTerminalAiOrchestratedBuildStatus("cancelled")).toBe(true)
     expect(isTerminalAiOrchestratedBuildStatus("running")).toBe(false)
+  })
+
+  it("monitors history builds only for a status probe, then stops when terminal", () => {
+    const historyPending = {
+      monitor: "history" as const,
+      didInitialReconcile: false,
+      didInitialPump: false,
+      build: { status: "queued" as const },
+    }
+    expect(shouldMonitorOrchestratedBuild(historyPending)).toBe(true)
+    expect(shouldPumpOrchestratedBuild(historyPending)).toBe(false)
+
+    const historyDone = {
+      monitor: "history" as const,
+      didInitialReconcile: true,
+      didInitialPump: false,
+      build: { status: "completed" as const },
+    }
+    expect(shouldMonitorOrchestratedBuild(historyDone)).toBe(false)
+    expect(shouldKeepOrchestratedBuildAliveAcrossThreads(historyDone)).toBe(false)
+
+    const historyStillRunning = {
+      monitor: "history" as const,
+      didInitialReconcile: true,
+      didInitialPump: false,
+      build: { status: "running" as const },
+    }
+    expect(shouldMonitorOrchestratedBuild(historyStillRunning)).toBe(true)
+    expect(shouldPumpOrchestratedBuild(historyStillRunning)).toBe(true)
+  })
+
+  it("does not keep unresolved history stubs alive across threads", () => {
+    expect(
+      shouldKeepOrchestratedBuildAliveAcrossThreads({
+        didInitialReconcile: false,
+        build: { status: "queued" },
+      }),
+    ).toBe(false)
   })
 
   it("maps known unit failure codes to concise copy", () => {

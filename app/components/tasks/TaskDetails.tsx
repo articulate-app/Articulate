@@ -4,7 +4,7 @@ import { cn } from "@/lib/utils"
 import { useEffect, useState, useRef, useCallback, useMemo, Dispatch, SetStateAction } from "react"
 import { Thread } from '../../types/task'
 import { Button } from "../ui/button"
-import { Trash2, Copy, Upload, Image as ImageIcon, X, ChevronLeft, ChevronsLeft, Maximize2, Minimize2, ChevronRight, ChevronDown, PanelRight, ExternalLink, Bot, MoreHorizontal, Plus, Loader2, Check, Star, RefreshCw, Share2, Download, ClipboardCopy, History } from "lucide-react"
+import { Trash2, Copy, Upload, Image as ImageIcon, X, ChevronLeft, ChevronsLeft, Maximize2, Minimize2, ChevronRight, ChevronDown, PanelRight, ExternalLink, Bot, MoreHorizontal, Plus, Loader2, Check, Star, RefreshCw, Share2 } from "lucide-react"
 import { RichTextEditor } from "../ui/rich-text-editor"
 import {
   COMPONENT_OUTPUT_EDITOR_CLASS,
@@ -17,7 +17,6 @@ import { Popover, PopoverTrigger, PopoverContent } from "../ui/popover"
 import { Button as UIButton } from "../ui/button"
 // import { getUsersForProject } from '../../lib/services/users'
 import { AddCommentInput } from "../comments-section/add-comment-input"
-import { getTaskById } from '../../../lib/services/tasks'
 import type { Task as BaseTask, ReviewData } from '../../lib/types/tasks'
 import { updateItemInStore } from '../../../hooks/use-infinite-query'
 import { useQuery, useQueryClient, type QueryClient } from '@tanstack/react-query'
@@ -27,6 +26,7 @@ import { flushSync } from 'react-dom'
 import { Dropzone, type DropzoneHandle } from '../dropzone'
 import { useTaskAttachmentsUpload } from '../../hooks/use-task-attachments-upload'
 import { useTaskWatchers } from '../../hooks/use-task-watchers'
+import { fetchThreadMentionsBatch } from '../../hooks/use-thread-mentions-batch'
 import {
   normalizeBootstrapRelatedIdeas,
   type TaskBootstrapTaskWatcher,
@@ -61,7 +61,6 @@ import {
   DropdownMenuSubTrigger,
   DropdownMenuTrigger,
 } from '../ui/dropdown-menu'
-import { TaskContentTab } from '../../../features/tasks/components/TaskContentTab'
 import { ArtifactWorkspace } from '../../../features/artifacts/ArtifactWorkspace'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '../ui/select'
 import { UserAvatar } from "@/components/UserAvatar";
@@ -79,10 +78,15 @@ import { buildGenericTaskPrompt } from "../../../features/ai-chat/ai-utils"
 import { TASK_PANE_HEADER_ROW_CLASS, TASK_PANE_HEADER_SHELL_CLASS } from "./pane-header-tokens"
 import { Tabs, TabsList, TabsTrigger } from "../ui/tabs"
 import { TaskOverviewPreviews } from "./task-overview-previews"
+import { TaskOverviewChannelsPill } from "./task-overview-channels-pill"
+import { TASK_OVERVIEW_COMMENT_DOCK_ID } from "./task-overview-updates-comments"
+import { TaskSeoAndAiSeoTab } from "../../../features/tasks/components/task-seo-and-ai-seo-tab"
 
 const EMPTY_ARR: any[] = []
 const NONE_OPTION = "__none__"
-const TASK_TABS = ["overview", "attachments", "content", "artifacts", "activity", "reviews", "comments"] as const
+const TASK_TABS = ["overview", "attachments", "artifacts", "seo", "activity", "reviews", "comments"] as const
+/** Legacy deep-links used `taskTab=content`; map to Artifacts. */
+const LEGACY_CONTENT_TAB = "content"
 
 type TaskTab = (typeof TASK_TABS)[number]
 
@@ -156,6 +160,7 @@ type Task = Omit<BaseTask, 'id' | 'assigned_to_id' | 'project_id_int' | 'content
   meta_title?: string;
   meta_description?: string;
   keyword?: string;
+  secondary_keywords?: string | null;
   channel_names: string[];
   parent_task_id_int?: number | null;
   copy_post?: string | null;
@@ -203,6 +208,8 @@ const TASK_EDITABLE_SOURCE_FIELDS = new Set<string>([
   'content_type_id',
   'production_type_id',
   'language_id',
+  'keyword',
+  'secondary_keywords',
 ]);
 
 // Denormalized/computed fields recomputed by DB triggers. Never sent from the
@@ -550,6 +557,8 @@ export function TaskDetails({
   const initialTaskTab: TaskTab =
     tabFromUrlRaw === "details"
       ? "overview"
+      : tabFromUrlRaw === LEGACY_CONTENT_TAB
+      ? "artifacts"
       : TASK_TABS.includes(tabFromUrlRaw as TaskTab)
       ? (tabFromUrlRaw as TaskTab)
       : "overview"
@@ -560,8 +569,10 @@ export function TaskDetails({
   const isCommentsTabActive = activeTaskTab === "comments"
 
   const setTaskTab = useCallback(
-    (nextTab: TaskTab) => {
-      const normalizedTab = visibleTaskTabs.includes(nextTab) ? nextTab : "overview"
+    (nextTab: TaskTab | typeof LEGACY_CONTENT_TAB) => {
+      const remapped =
+        nextTab === LEGACY_CONTENT_TAB ? ("artifacts" as TaskTab) : (nextTab as TaskTab)
+      const normalizedTab = visibleTaskTabs.includes(remapped) ? remapped : "overview"
       setLocalTaskTab((prev) => (prev === normalizedTab ? prev : normalizedTab))
       if (disableUrlSync) {
         return
@@ -579,8 +590,11 @@ export function TaskDetails({
         nextParams.delete("rightTaskId")
       }
       nextParams.set("taskTab", normalizedTab)
-      if (normalizedTab === "content") {
-        nextParams.delete("focusOutputs")
+      nextParams.delete("focusOutputs")
+      // Leaving comments must drop deep-link thread params so tabs aren't forced back.
+      if (normalizedTab !== "comments") {
+        nextParams.delete("commentsView")
+        nextParams.delete("commentThreadId")
       }
       nextParams.delete("detailsTab")
       const current = currentParams.toString()
@@ -600,7 +614,6 @@ export function TaskDetails({
 
   const [isTabsHovered, setIsTabsHovered] = useState(false)
   const tabsScrollRef = useRef<HTMLDivElement | null>(null)
-  const [isContentSectionExpanded, setIsContentSectionExpanded] = useState(false);
   
   const rawTaskWatchersBootstrap = (selectedTask as { task_watchers?: TaskBootstrapTaskWatcher[] } | null)
     ?.task_watchers
@@ -669,43 +682,52 @@ export function TaskDetails({
   const [allTaskMentions, setAllTaskMentions] = useState<any[]>(firstThreadMentions)
   const [commentsStatusFilter, setCommentsStatusFilter] = useState<"all" | "open" | "resolved">("all")
   const [isThreadView, setIsThreadView] = useState(false)
+
+  useEffect(() => {
+    if (activeTaskTab !== "comments") {
+      setIsThreadView(false)
+    }
+  }, [activeTaskTab])
   
-  // Add useEffect to reset all thread-related state when task changes
+  // Reset thread-related state only when the task identity changes.
+  // Do NOT depend on watchers / firstThreadMentions — those update after bootstrap and
+  // were wiping the full thread-history fetch (empty overview mentions until clock reload).
   useEffect(() => {
     if (!selectedTask) return;
-    
-    // Reset thread-related state when task changes
+
     const taskThreadId = (selectedTask as any)?.thread_id;
-    
-    // Reset pending participants state
+    const seededMentions = Array.isArray(selectedTask.mentions) ? selectedTask.mentions : EMPTY_ARR;
+
     setPendingParticipants([]);
     setRemovedParticipants([]);
     setIsAddingThread(false);
-    
-    // Default comments panel mode is all-thread/all-mentions.
-    setIsThreadView(false)
+    setIsThreadView(false);
     setSelectedThreadId(null);
     setCommentsStatusFilter("all");
-    setAllTaskMentions(firstThreadMentions);
+    setAllTaskMentions(seededMentions);
     if (taskThreadId) {
-      const seededFirstThread = {
+      setThreadsList([{
         id: taskThreadId,
-        title: 'Thread',
+        title: "Thread",
         created_at: new Date().toISOString(),
-        thread_watchers: Array.isArray(watchers) ? watchers.map((w: any) => ({
-          watcher_id: w.watcher_id,
-          users: w.users
-        })) : [],
-        mention_count: firstThreadMentions.length,
-        latest_activity_at: firstThreadMentions[firstThreadMentions.length - 1]?.created_at ?? new Date().toISOString(),
+        thread_watchers: Array.isArray(watchers)
+          ? watchers.map((w: any) => ({
+              watcher_id: w.watcher_id,
+              users: w.users,
+            }))
+          : [],
+        mention_count: seededMentions.length,
+        latest_activity_at:
+          seededMentions[seededMentions.length - 1]?.created_at ?? new Date().toISOString(),
         is_resolved: false,
         thread_type: "general",
-      };
-      setThreadsList([seededFirstThread]);
+      }]);
     } else {
       setThreadsList([]);
     }
-  }, [selectedTask?.id, (selectedTask as any)?.thread_id, watchers, firstThreadMentions]);
+    // Intentionally only selectedTask.id — see comment above.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [selectedTask?.id]);
 
   const [threadsList, setThreadsList] = useState<any[]>([]);
   const [isThreadListLoading, setIsThreadListLoading] = useState(false);
@@ -717,12 +739,6 @@ export function TaskDetails({
   const [isDeleting, setIsDeleting] = useState(false)
   const [resolvingThreadIds, setResolvingThreadIds] = useState<Set<number>>(new Set())
   const [isAiBuildOpen, setIsAiBuildOpen] = useState(false)
-  const [canCopyAllChannelContent, setCanCopyAllChannelContent] = useState(false)
-  const [copyExportDiagnostics, setCopyExportDiagnostics] = useState({
-    channelId: null as number | null,
-    componentCount: 0,
-    copyableComponentCount: 0,
-  })
   const [pendingOutputAnchor, setPendingOutputAnchor] = useState<{
     taskComponentOutputId: string
     attachmentId: string | null
@@ -731,6 +747,7 @@ export function TaskDetails({
     anchorY: number
     anchorData?: unknown
   } | null>(null)
+  const [pendingArtifactTextQuote, setPendingArtifactTextQuote] = useState<string | null>(null)
   const [commentsComposerFocusToken, setCommentsComposerFocusToken] = useState(0)
   const taskDetailsLayoutRef = useRef<HTMLDivElement | null>(null)
   const [activeChannelId, setActiveChannelId] = useState<number | null>(null)
@@ -740,57 +757,15 @@ export function TaskDetails({
   }, [task?.id])
 
   useEffect(() => {
-    console.log("[task-details-copy-debug-version]", "2026-06-24-copy-debug-v1")
-  }, [])
-
-  useEffect(() => {
-    const onExportActionsState = (event: Event) => {
-      const customEvent = event as CustomEvent<{
-        taskId?: number
-        canCopyAllChannelContent?: boolean
-        channelId?: number | null
-        componentCount?: number
-        copyableComponentCount?: number
-      }>
-      if (customEvent.detail?.taskId !== taskIdNum) return
-      setCanCopyAllChannelContent(!!customEvent.detail?.canCopyAllChannelContent)
-      setCopyExportDiagnostics({
-        channelId: customEvent.detail?.channelId ?? null,
-        componentCount: customEvent.detail?.componentCount ?? 0,
-        copyableComponentCount: customEvent.detail?.copyableComponentCount ?? 0,
-      })
-    }
-    window.addEventListener("task-details:export-actions-state", onExportActionsState as EventListener)
-    return () => {
-      window.removeEventListener("task-details:export-actions-state", onExportActionsState as EventListener)
-    }
-  }, [taskIdNum])
-
-  useEffect(() => {
-    if (!taskIdNum) return
-    console.log("[copy-content-render-header]", {
-      taskId: taskIdNum,
-      channelId: activeChannelId ?? copyExportDiagnostics.channelId,
-      hasComponents: copyExportDiagnostics.componentCount,
-      hasRenderableOutputs: copyExportDiagnostics.copyableComponentCount,
-      canCopyAllChannelContent,
-    })
-  }, [
-    taskIdNum,
-    activeChannelId,
-    copyExportDiagnostics,
-    canCopyAllChannelContent,
-  ])
-
-  useEffect(() => {
     if (!commentThreadIdFromUrl) return
     const parsedThreadId = Number(commentThreadIdFromUrl)
     if (!Number.isFinite(parsedThreadId)) return
-    setTaskTab("comments")
-    setIsThreadView(true)
+    // Deep-link selects the thread for compose; keep the flat all-mentions feed.
+    setLocalTaskTab("comments")
+    setIsThreadView(false)
     setIsAddingThread(false)
     setSelectedThreadId((prev) => (prev === parsedThreadId ? prev : parsedThreadId))
-  }, [commentThreadIdFromUrl, setTaskTab])
+  }, [commentThreadIdFromUrl])
 
   const replaceCommentThreadInUrl = useCallback((threadId: number | null) => {
     const nextParams = new URLSearchParams(searchParams.toString())
@@ -809,7 +784,8 @@ export function TaskDetails({
 
   const openCommentThreadView = useCallback((threadId: number) => {
     if (!Number.isFinite(threadId)) return
-    setIsThreadView(true)
+    // Default: select thread for reply without leaving the aggregated mentions feed.
+    setIsThreadView(false)
     setIsAddingThread(false)
     setSelectedThreadId(threadId)
     replaceCommentThreadInUrl(threadId)
@@ -1278,16 +1254,6 @@ export function TaskDetails({
     }
   }, [isSuggestionMode])
 
-  useEffect(() => {
-    setIsContentSectionExpanded(false)
-  }, [task?.id])
-
-  useEffect(() => {
-    if (activeTaskTab !== "content") {
-      setIsContentSectionExpanded(false)
-    }
-  }, [activeTaskTab])
-
   // Task query key for cache updates (must match useTaskDetails in TasksLayout)
   const taskQueryKey =
     task && accessToken && !isSuggestionMode
@@ -1558,18 +1524,6 @@ export function TaskDetails({
       })
     }
   }, [taskIdNum, supabase, queryClient, task?.id, accessToken])
-
-  // Handle Build with AI from content type editor
-  const handleBuildWithAI = (contentTypeTitle: string, taskId: number) => {
-    // Set AI build state and pass content type context
-    const currentParams = new URLSearchParams(searchParams.toString());
-    currentParams.set('taskAiOpen', 'true');
-    currentParams.set('aiContentType', contentTypeTitle);
-    currentParams.set('aiTaskId', taskId.toString());
-    const merged = mergePreserveParams(currentParams);
-    const newUrl = merged.toString() ? `?${merged.toString()}` : '';
-    router.replace(`${tasksBasePath}${newUrl}`, { scroll: false });
-  };
 
   // Called when subtask form is cancelled (no subtask created)
   const handleSubtaskFormCancel = async () => {
@@ -2300,57 +2254,26 @@ export function TaskDetails({
     setIsThreadListLoading(true);
     setThreadListError(null);
     try {
-      const baseSelect = `
-          id,
-          title,
-          created_at,
-          thread_watchers (
-            watcher_id,
-            users!thread_watchers_watcher_id_fkey (
-              id,
-              full_name,
-              photo
-            )
-          )
-        `
-      const enrichedSelect = `
-          id,
-          title,
-          created_at,
-          updated_at,
-          resolved_at,
-          object_type,
-          task_component_output_id,
-          thread_watchers (
-            watcher_id,
-            users!thread_watchers_watcher_id_fkey (
-              id,
-              full_name,
-              photo
-            )
-          )
-        `
-      let data: any[] | null = null
-      let error: any = null
-
-      const enrichedQuery = await supabase
+      // `threads` has no updated_at / object_type / task_component_output_id columns.
+      const { data, error } = await supabase
         .from('threads')
-        .select(enrichedSelect)
+        .select(`
+          id,
+          title,
+          created_at,
+          resolved_at,
+          thread_type,
+          thread_watchers (
+            watcher_id,
+            users!thread_watchers_watcher_id_fkey (
+              id,
+              full_name,
+              photo
+            )
+          )
+        `)
         .eq('task_id', taskId)
         .order('created_at', { ascending: false });
-
-      data = enrichedQuery.data as any[] | null
-      error = enrichedQuery.error
-
-      if (error) {
-        const fallbackQuery = await supabase
-          .from('threads')
-          .select(baseSelect)
-          .eq('task_id', taskId)
-          .order('created_at', { ascending: false })
-        data = fallbackQuery.data as any[] | null
-        error = fallbackQuery.error
-      }
 
       if (error) throw error;
 
@@ -2365,16 +2288,9 @@ export function TaskDetails({
         .map((thread: any) => Number(thread.id))
         .filter((id: number) => Number.isFinite(id))
 
-      let mentionsRows: any[] = []
-      if (threadIds.length > 0) {
-        const { data: mentionsData, error: mentionsError } = await supabase
-          .from("mentions")
-          .select("id, thread_id, comment, attachment, created_at, created_by, reply_to_id, users:created_by(id, full_name, email, photo)")
-          .in("thread_id", threadIds)
-          .order("created_at", { ascending: true })
-        if (mentionsError) throw mentionsError
-        mentionsRows = mentionsData ?? []
-      }
+      const mentionsRows = threadIds.length > 0
+        ? await fetchThreadMentionsBatch(threadIds)
+        : []
 
       setAllTaskMentions(mentionsRows)
 
@@ -2394,13 +2310,13 @@ export function TaskDetails({
         const mentionCount = threadMentions.length
         const latestActivityAt =
           latestMention?.created_at
-          ?? thread.updated_at
           ?? thread.created_at
           ?? null
         const isResolved = !!thread.resolved_at
         const threadType =
-          thread.object_type
-          ?? (thread.task_component_output_id ? "output_comment" : "general")
+          typeof thread.thread_type === "string" && thread.thread_type.trim()
+            ? thread.thread_type
+            : "general"
         return {
           ...thread,
           mention_count: mentionCount,
@@ -2408,9 +2324,7 @@ export function TaskDetails({
           latest_preview: latestMention?.comment ?? thread.title ?? "Thread",
           is_resolved: isResolved,
           thread_type: threadType,
-          related_component_label: thread.task_component_output_id
-            ? `Output ${String(thread.task_component_output_id).slice(0, 8)}`
-            : null,
+          related_component_label: null,
         }
       }).sort((a: any, b: any) => {
         const aTs = new Date(a.latest_activity_at ?? a.created_at ?? 0).getTime()
@@ -2746,7 +2660,7 @@ export function TaskDetails({
         })
       )
     }
-    setTaskTab("content")
+    setTaskTab("artifacts")
   }, [setTaskTab, taskIdNum])
 
   // Shared props for comments panel (in-pane or modal/drawer). Single source for list/input/footer parts.
@@ -2797,7 +2711,10 @@ export function TaskDetails({
             currentPublicUserId,
             pendingOutputAnchor,
             onConsumePendingOutputAnchor: () => setPendingOutputAnchor(null),
+            pendingArtifactTextQuote,
+            onClearPendingArtifactTextQuote: () => setPendingArtifactTextQuote(null),
             composerFocusToken: commentsComposerFocusToken,
+            onThreadCreated: handleThreadCreated,
           }
         : null,
     [
@@ -2831,8 +2748,10 @@ export function TaskDetails({
       currentUserEmail,
       currentPublicUserId,
       pendingOutputAnchor,
+      pendingArtifactTextQuote,
       commentsComposerFocusToken,
       handleViewThreadHistory,
+      handleThreadCreated,
     ]
   );
 
@@ -3180,6 +3099,35 @@ export function TaskDetails({
     () => filteredLanguages.map(l => ({ value: String(l.id), label: l.long_name })),
     [filteredLanguages]
   );
+  const seedSeoFromTask = useMemo(() => {
+    if (!task) return null
+    const languages = (task as { languages?: unknown }).languages
+    const languageRow = Array.isArray(languages) ? languages[0] : languages
+    const languageName =
+      languageRow && typeof languageRow === "object"
+        ? typeof (languageRow as { long_name?: unknown }).long_name === "string"
+          ? (languageRow as { long_name: string }).long_name
+          : typeof (languageRow as { name?: unknown }).name === "string"
+            ? (languageRow as { name: string }).name
+            : null
+        : null
+    return {
+      primaryKeyword: task.keyword ?? null,
+      secondaryKeywords: task.secondary_keywords ?? null,
+      updatedAt:
+        typeof (task as { updated_at?: unknown }).updated_at === "string"
+          ? (task as { updated_at: string }).updated_at
+          : null,
+      languageCode: task.language_code ?? null,
+      languageName,
+    }
+  }, [
+    task?.keyword,
+    task?.secondary_keywords,
+    task?.language_code,
+    (task as { updated_at?: unknown } | undefined)?.updated_at,
+    (task as { languages?: unknown } | undefined)?.languages,
+  ])
   const projectOptions = useMemo(() => {
     const activeProjects = (editFields?.projects ?? [])
       .filter((opt: any) => opt.active === undefined || opt.active === true)
@@ -3614,36 +3562,6 @@ export function TaskDetails({
                   Duplicate Task
                   </DropdownMenuItem>
                 )}
-                {!isSuggestionMode && taskIdNum ? (
-                  <DropdownMenuItem
-                    onClick={() => {
-                      setTaskTab("content")
-                      window.dispatchEvent(new CustomEvent("task-details:focus-outputs", { detail: { taskId: taskIdNum } }))
-                    }}
-                  >
-                    <Maximize2 className="w-4 h-4 mr-2" />
-                    Focus outputs
-                  </DropdownMenuItem>
-                ) : null}
-                {!isSuggestionMode && taskIdNum ? (
-                  <DropdownMenuItem
-                    onClick={() => {
-                      if (activeTaskTab !== "content" && activeTaskTab !== "overview") {
-                        setTaskTab("content")
-                      }
-                      window.setTimeout(() => {
-                        window.dispatchEvent(
-                          new CustomEvent("task-details:open-content-history", {
-                            detail: { taskId: taskIdNum },
-                          }),
-                        )
-                      }, 0)
-                    }}
-                  >
-                    <History className="w-4 h-4 mr-2" />
-                    Content history
-                  </DropdownMenuItem>
-                ) : null}
                 <DropdownMenuSub>
                   <DropdownMenuSubTrigger className="gap-2">
                     <Share2 className="w-4 h-4" />
@@ -3651,17 +3569,6 @@ export function TaskDetails({
                     <ChevronRight className="ml-auto h-4 w-4 shrink-0 opacity-60" />
                   </DropdownMenuSubTrigger>
                   <DropdownMenuSubContent>
-                    {taskIdNum ? (
-                      <DropdownMenuItem
-                        onClick={() => {
-                          setTaskTab("content")
-                          window.dispatchEvent(new CustomEvent("task-details:download-outputs", { detail: { taskId: taskIdNum } }))
-                        }}
-                      >
-                        <Download className="w-4 h-4 mr-2" />
-                        Download
-                      </DropdownMenuItem>
-                    ) : null}
                     <DropdownMenuItem onClick={() => {
                       if (typeof window !== 'undefined') {
                         navigator.clipboard.writeText(window.location.href);
@@ -3674,19 +3581,6 @@ export function TaskDetails({
                       <Share2 className="w-4 h-4 mr-2" />
                       Copy Link
                     </DropdownMenuItem>
-                    {taskIdNum ? (
-                      <DropdownMenuItem
-                        disabled={!canCopyAllChannelContent}
-                        onClick={() => {
-                          if (!canCopyAllChannelContent) return
-                          setTaskTab("content")
-                          window.dispatchEvent(new CustomEvent("task-details:copy-outputs", { detail: { taskId: taskIdNum } }))
-                        }}
-                      >
-                        <ClipboardCopy className="w-4 h-4 mr-2" />
-                        Copy all content
-                      </DropdownMenuItem>
-                    ) : null}
                   </DropdownMenuSubContent>
                 </DropdownMenuSub>
                 {!isSuggestionMode && taskIdNum ? (
@@ -3758,11 +3652,11 @@ export function TaskDetails({
                 <TabsTrigger value="attachments" className={tabTriggerClassName}>
                   Attachments
                 </TabsTrigger>
-                <TabsTrigger value="content" className={tabTriggerClassName}>
-                  Content
-                </TabsTrigger>
                 <TabsTrigger value="artifacts" className={tabTriggerClassName}>
                   Artifacts
+                </TabsTrigger>
+                <TabsTrigger value="seo" className={tabTriggerClassName}>
+                  SEO and AI SEO
                 </TabsTrigger>
                 <TabsTrigger value="activity" className={tabTriggerClassName}>
                   Activity
@@ -3782,8 +3676,9 @@ export function TaskDetails({
       {/* Main content (task-details body). The comments pane is a sibling <aside> below, so this
           column and the comments column share the same parent height via the top-level flex split. */}
       <div className="relative flex min-h-0 flex-1 flex-col overflow-hidden">
-            <div className="flex-1 min-h-0 overflow-auto overflow-x-hidden">
-          {activeTaskTab === "overview" && (
+        {activeTaskTab === "overview" ? (
+          <div className="flex min-h-0 flex-1 flex-col">
+            <div className="min-h-0 flex-1 overflow-auto overflow-x-hidden">
           <section className="p-4 pb-0">
               {/* Banner is rendered in the header for suggestion mode */}
           {!isSuggestionMode && (
@@ -4290,6 +4185,24 @@ export function TaskDetails({
               </div>
             )}
 
+            {!isSuggestionMode && taskIdNum ? (
+              <>
+                <label className="text-sm font-normal text-gray-400 self-center justify-self-start text-left">
+                  Channels
+                </label>
+                <div className="w-full min-w-0">
+                  <TaskOverviewChannelsPill
+                    taskId={taskIdNum}
+                    projectId={task?.project_id_int ?? currentProjectId ?? null}
+                    bootstrapTaskChannels={(selectedTask as { task_channels?: unknown } | null)?.task_channels}
+                    preferredChannelId={activeChannelId}
+                    onChannelChange={setActiveChannelId}
+                    variant="field"
+                  />
+                </div>
+              </>
+            ) : null}
+
             {showParentField && (
               <>
                 <label className="text-sm font-normal text-gray-400 self-center justify-self-start text-left">Parent Task</label>
@@ -4371,6 +4284,7 @@ export function TaskDetails({
               </div>
             </div>
           </div>
+
           {/* Subtasks section (full width, only once) */}
           {task && String(task.content_type_id) === '39' && (
             <div className="mt-6">
@@ -4436,33 +4350,19 @@ export function TaskDetails({
             </div>
             )}
           </section>
-          )}
 
-          {activeTaskTab === "overview" && !isSuggestionMode && taskIdNum && commentsPanelProps ? (
+          {!isSuggestionMode && taskIdNum && commentsPanelProps ? (
             <TaskOverviewPreviews
               taskId={taskIdNum}
               projectId={task?.project_id_int || undefined}
-              contentTypeId={task?.content_type_id ? Number(task.content_type_id) : undefined}
               languageId={task?.language_id ? Number(task.language_id) : undefined}
-              taskTitle={task?.title || undefined}
-              contentTypeTitle={task?.content_type_title || undefined}
-              taskMetaTitle={task?.meta_title || undefined}
-              taskMetaDescription={task?.meta_description || undefined}
-              taskKeyword={task?.keyword || undefined}
-              taskSlug={(task as any)?.slug || undefined}
-              projectLogoUrl={projectLogoUrl}
-              taskSourceUrls={(task as any)?.source_urls ?? null}
-              taskBuildInstructions={taskBuildInstructions}
               canLoad={canLoadFollowups}
-              bootstrapTaskChannels={(selectedTask as { task_channels?: unknown } | null)?.task_channels}
+              readOnly={!canEdit}
               bootstrapAttachments={displayAttachments}
               reviewData={selectedTask?.review_data}
               preferredChannelId={activeChannelId}
-              onChannelChange={setActiveChannelId}
-              onActiveFieldChange={setTaskFieldContext}
               onNavigateTab={setTaskTab}
               commentsPanelProps={commentsPanelProps}
-              accessToken={accessToken}
               relatedIdeas={relatedIdeas}
               isRelatedIdeasLoading={isRelatedIdeasLoading || isRelatedIdeasFetching}
               isRelatedIdeasRefreshing={isRefreshingRelatedIdeas}
@@ -4471,8 +4371,60 @@ export function TaskDetails({
               onDismissRelatedIdea={(ideaId) => void handleSetRelatedIdeaStatus(ideaId, "dismissed")}
               onAcceptRelatedIdea={(idea) => handleAcceptRelatedIdea(idea as TaskRelatedIdeaRow)}
               onRefreshRelatedIdeas={() => void handleRefreshRelatedIdeas()}
+              seedSeo={seedSeoFromTask}
+              onArtifactTextSelectForComment={(selection) => {
+                if (!selection?.quote) {
+                  setPendingArtifactTextQuote(null)
+                  return
+                }
+                setPendingArtifactTextQuote(selection.quote)
+                setCommentsComposerFocusToken((token) => token + 1)
+              }}
             />
           ) : null}
+            </div>
+            {!isSuggestionMode && commentsPanelProps ? (
+              <div
+                id={TASK_OVERVIEW_COMMENT_DOCK_ID}
+                className="shrink-0 border-t border-gray-100 bg-white px-4 py-2"
+              />
+            ) : null}
+          </div>
+        ) : (
+          <div className="flex min-h-0 flex-1 flex-col overflow-hidden">
+            {activeTaskTab === "comments" && commentsPanelProps ? (
+              <section className="flex min-h-0 flex-1 flex-col p-4 pb-0">
+                <h3 className="mb-3 shrink-0 text-base font-medium text-gray-900">Comments</h3>
+                <div className="flex min-h-0 flex-1 flex-col gap-2">
+                  <div className="min-h-0 flex-1 overflow-y-auto">
+                    <TaskCommentsListPart {...commentsPanelProps} focusOnly />
+                  </div>
+                  <div
+                    ref={commentInputRef}
+                    className="shrink-0 border-t border-gray-100 bg-white pt-1"
+                    data-ai-field-type="comment_input"
+                    data-ai-field-label="Comment"
+                    onFocusCapture={() =>
+                      setTaskFieldContext({
+                        fieldType: "comment_input",
+                        label: `${task?.title?.trim() || "Task"} - Comment`,
+                        entityId: task?.id ?? null,
+                        instructions: null,
+                      })
+                    }
+                  >
+                    <TaskCommentsInputPart
+                      {...commentsPanelProps}
+                      onCommentAdded={() => {
+                        void handleViewThreadHistory({ force: true })
+                      }}
+                    />
+                    <TaskCommentsFooterPart {...commentsPanelProps} />
+                  </div>
+                </div>
+              </section>
+            ) : (
+              <div className="min-h-0 flex-1 overflow-auto overflow-x-hidden">
 
           {/* Attachments section */}
           {!isSuggestionMode && activeTaskTab === "attachments" && (
@@ -4539,40 +4491,6 @@ export function TaskDetails({
 
           )}
 
-          {!isSuggestionMode && activeTaskTab === "content" ? (
-            <section className={cn("p-4 pb-0 min-h-0", isContentSectionExpanded && "min-h-full h-full flex flex-col pt-0")}>
-                {/* Content Tab renders "Content" title + channel pills + rest */}
-                {taskIdNum && canLoadFollowups && (
-                  <div className={cn("min-h-0", isContentSectionExpanded && "flex-1 min-h-0")}>
-                    <TaskContentTab
-                      taskId={taskIdNum}
-                      projectId={task?.project_id_int || undefined}
-                      contentTypeId={task?.content_type_id ? Number(task.content_type_id) : undefined}
-                      languageId={task?.language_id ? Number(task.language_id) : undefined}
-                      taskTitle={task?.title || undefined}
-                      contentTypeTitle={task?.content_type_title || undefined}
-                      taskMetaTitle={task?.meta_title || undefined}
-                      taskMetaDescription={task?.meta_description || undefined}
-                      taskKeyword={task?.keyword || undefined}
-                      taskSlug={(task as any)?.slug || undefined}
-                      projectLogoUrl={projectLogoUrl}
-                      taskSourceUrls={(task as any)?.source_urls ?? null}
-                      canLoad={canLoadFollowups}
-                      onChannelChange={setActiveChannelId}
-                      onActiveFieldChange={setTaskFieldContext}
-                      taskBuildInstructions={taskBuildInstructions}
-                      isSectionExpanded={isContentSectionExpanded}
-                      onToggleSectionExpand={() => setIsContentSectionExpanded((prev) => !prev)}
-                      skipInitialTaskChannelsFetch={!!taskIdNum}
-                      bootstrapTaskChannels={(selectedTask as { task_channels?: unknown } | null)?.task_channels}
-                      accessToken={accessToken}
-                      preferredChannelId={activeChannelId}
-                    />
-                  </div>
-                )}
-            </section>
-          ) : null}
-
           {!isSuggestionMode && activeTaskTab === "artifacts" && taskIdNum ? (
             <section className="p-4 pb-0">
               <ArtifactWorkspace
@@ -4580,6 +4498,16 @@ export function TaskDetails({
                 defaultChannelId={activeChannelId}
                 defaultLanguageId={task?.language_id ? Number(task.language_id) : null}
                 projectId={task?.project_id_int ?? null}
+              />
+            </section>
+          ) : null}
+
+          {!isSuggestionMode && activeTaskTab === "seo" && taskIdNum ? (
+            <section className="min-h-0 flex-1 overflow-auto">
+              <TaskSeoAndAiSeoTab
+                taskId={taskIdNum}
+                readOnly={!canEdit}
+                seedSeo={seedSeoFromTask}
               />
             </section>
           ) : null}
@@ -4619,9 +4547,7 @@ export function TaskDetails({
           )}
 
           {!isSuggestionMode && activeTaskTab === "activity" ? (
-            <section
-              className={cn("p-4 pb-0", isContentSectionExpanded && "hidden")}
-            >
+            <section className="p-4 pb-0">
                 <h3 className="text-base font-medium text-gray-900 mb-3">Activity</h3>
                 {task ? (
                   <TaskActivityTimeline taskId={Number(task.id)} />
@@ -4629,43 +4555,14 @@ export function TaskDetails({
             </section>
           ) : null}
 
-          {!isSuggestionMode && activeTaskTab === "comments" && commentsPanelProps ? (
-            <section className="flex min-h-0 flex-1 flex-col p-4 pb-0">
-              <h3 className="mb-3 text-base font-medium text-gray-900">Comments</h3>
-              <div className="flex min-h-0 flex-1 flex-col gap-2">
-                <div className="min-h-0 flex-1 overflow-y-auto">
-                  <TaskCommentsListPart {...commentsPanelProps} focusOnly />
-                </div>
-                <div
-                  ref={commentInputRef}
-                  data-ai-field-type="comment_input"
-                  data-ai-field-label="Comment"
-                  onFocusCapture={() =>
-                    setTaskFieldContext({
-                      fieldType: "comment_input",
-                      label: `${task?.title?.trim() || "Task"} - Comment`,
-                      entityId: task?.id ?? null,
-                      instructions: null,
-                    })
-                  }
-                >
-                  <TaskCommentsInputPart
-                    {...commentsPanelProps}
-                    onCommentAdded={() => {
-                      void handleViewThreadHistory({ force: true })
-                    }}
-                  />
-                </div>
-                <TaskCommentsFooterPart {...commentsPanelProps} />
               </div>
-            </section>
-          ) : null}
-
-        </div>
+            )}
+          </div>
+        )}
 
         {/* Suggestion actions pinned at the bottom */}
         {isSuggestionMode && suggestionStatus === 'pending' ? (
-          <div className="sticky bottom-0 left-0 right-0 z-30 border-t bg-white p-3">
+          <div className="shrink-0 border-t bg-white p-3">
             <div className="flex w-full items-center gap-2">
               <Button
                 type="button"

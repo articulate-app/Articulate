@@ -3,7 +3,7 @@
 import React from 'react';
 import { createPortal } from 'react-dom';
 import { cn } from "@/lib/utils";
-import { X, ChevronDown, FolderKanban, ListTodo, MessageSquare, UserRound, Menu } from 'lucide-react';
+import { X, ChevronDown, FolderKanban, ListTodo, MessageSquare, UserRound, Menu, Bot } from 'lucide-react';
 import {
   DropdownMenu,
   DropdownMenuTrigger,
@@ -229,6 +229,10 @@ export function TaskHeaderBar({
               <DropdownMenuItem onSelect={() => openCreateModal("thread")}>
                 <MessageSquare className="mr-2 h-4 w-4" />
                 Thread
+              </DropdownMenuItem>
+              <DropdownMenuItem onSelect={() => onNewAiThreadClick?.()}>
+                <Bot className="mr-2 h-4 w-4" />
+                AI chat
               </DropdownMenuItem>
             </DropdownMenuContent>
           </DropdownMenu>

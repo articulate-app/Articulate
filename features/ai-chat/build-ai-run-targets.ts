@@ -20,6 +20,12 @@ import {
   type TaggedTaskComponentRef,
 } from "./build-ai-chat-tagged-refs"
 
+export function positiveIntOrNull(value: unknown): number | null {
+  const n = typeof value === "number" ? value : Number(value)
+  if (!Number.isFinite(n) || !Number.isInteger(n) || n <= 0) return null
+  return n
+}
+
 export type BuildAiRunTargetsArgs = {
   messageTags?: AiContextTag[]
   attachments?: AiAttachmentMeta[]
@@ -82,6 +88,14 @@ export function canonicalTargetIdentityKey(target: AiRunTarget): string | null {
       return target.user_id != null ? `user:${target.user_id}` : null
     case "attachment":
       return target.attachment_id ? `attachment:${target.attachment_id}` : null
+    case "artifact":
+      return target.artifact_id
+        ? `artifact:${target.artifact_id}${
+            target.artifact_version_number != null ? `:v${target.artifact_version_number}` : ""
+          }`
+        : null
+    case "source":
+      return target.source_id ? `source:${target.source_id}` : null
     default:
       return null
   }
@@ -428,6 +442,35 @@ export function buildAiRunTargets(args: BuildAiRunTargetsArgs): AiRunTarget[] {
         })
       }
     }
+    if (tag.type === "artifact") {
+      const artifactId = String(tag.artifactId ?? tag.id).trim()
+      if (artifactId) {
+        pushTarget(rawTargets, {
+          target_kind: "artifact",
+          artifact_id: artifactId,
+          artifact_version_number: positiveIntOrNull(tag.artifactVersionNumber),
+          task_id: positiveIntOrNull(tag.taskId),
+          project_id: positiveIntOrNull(tag.projectId),
+          source: tagSourceToTargetSource(tag),
+          allow_write: false,
+          label: tag.artifactTitle ?? tag.label ?? null,
+        })
+      }
+    }
+    if (tag.type === "source") {
+      const sourceId = String(tag.sourceId ?? tag.id).trim()
+      if (sourceId) {
+        pushTarget(rawTargets, {
+          target_kind: "source",
+          source_id: sourceId,
+          task_id: positiveIntOrNull(tag.taskId),
+          project_id: positiveIntOrNull(tag.projectId),
+          source: tagSourceToTargetSource(tag),
+          allow_write: false,
+          label: tag.sourceTitle ?? tag.label ?? null,
+        })
+      }
+    }
   }
 
   for (const ref of taggedTaskChannelRefs) {
@@ -628,37 +671,17 @@ export function buildAiChatV2Scope(args: {
       firstExplicitTagged.source === "explicit_click" ? "explicit_click" : "explicit_tag"
     return {
       source,
-      project_id: firstExplicitTagged.project_id ?? null,
-      task_id: firstExplicitTagged.task_id ?? null,
-      channel_id: firstExplicitTagged.channel_id ?? null,
+      project_id: positiveIntOrNull(firstExplicitTagged.project_id),
+      task_id: positiveIntOrNull(firstExplicitTagged.task_id),
+      channel_id: positiveIntOrNull(firstExplicitTagged.channel_id),
       component_id: firstExplicitTagged.component_id ?? null,
       task_component_output_id: firstExplicitTagged.output_id ?? null,
-      output_revision: null,
+      output_revision: args.outputRevision ?? null,
     }
   }
 
-  const ambientTaskId =
-    args.activeFieldContext?.taskId
-    ?? args.visibleTaskId
-    ?? args.ambientContext?.center_task_id
-    ?? null
-  const ambientChannelId =
-    args.activeFieldContext?.channelId
-    ?? args.visibleChannelId
-    ?? args.ambientContext?.active_channel_id
-    ?? null
-  if (ambientTaskId != null || ambientChannelId != null) {
-    return {
-      source: "ambient",
-      project_id: null,
-      task_id: ambientTaskId,
-      channel_id: ambientTaskId != null ? ambientChannelId : null,
-      component_id: null,
-      task_component_output_id: null,
-      output_revision: null,
-    }
-  }
-
+  // Ambient center-pane task/channel is UI context only — never ownership scope.
+  // Ownership comes from explicit tags/clicks, writable component context, or the thread itself.
   if (args.threadScope) {
     return {
       source: "thread",
@@ -747,15 +770,13 @@ export function resolveFactualLegacySendContext(args: {
   }
 
   return {
-    taskId: args.visibleTaskId ?? args.outboundContext.taskId,
-    channelId: args.visibleChannelId ?? args.outboundContext.channelId,
-    activeChannelId: args.visibleChannelId ?? args.outboundContext.activeChannelId,
+    // Visible/open center-pane task is ambient only — do not treat it as a write/ownership target.
+    taskId: args.outboundContext.taskId,
+    channelId: args.outboundContext.channelId,
+    activeChannelId: args.outboundContext.activeChannelId ?? args.visibleChannelId ?? null,
     componentId: args.outboundContext.componentId,
     taskComponentOutputId: args.outboundContext.taskComponentOutputId,
-    selectedContextType:
-      args.visibleTaskId != null && !args.outboundContext.componentId
-        ? "task"
-        : args.outboundContext.selectedContextType,
+    selectedContextType: args.outboundContext.selectedContextType,
     selectedComponentLabel: args.outboundContext.selectedComponentLabel,
     contextSource: args.outboundContext.contextSource,
   }

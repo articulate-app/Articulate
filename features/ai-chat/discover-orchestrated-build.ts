@@ -1,5 +1,6 @@
 import {
   AI_ORCHESTRATED_BUILD_ENTITY_TYPE,
+  AI_START_ARTIFACT_BUILD_TOOL,
   isBuildDispatchTool,
 } from "../../app/lib/ai/ai-orchestrated-build-types"
 import type { AiChatChangePreviewEvent } from "../../app/lib/ai/chat"
@@ -15,6 +16,8 @@ export type DiscoveredOrchestratedBuild = {
   summary?: string | null
   changeSetId?: string | null
   source: "ai_change_preview" | "tool_result" | "persisted"
+  /** Artifact builds render compact +/- cards (no orchestrated-units shell). */
+  isArtifactBuild?: boolean
   /** Present when start failed — dispatch_started alone is never success. */
   errorCode?: string | null
   errorMessage?: string | null
@@ -45,6 +48,17 @@ function extractBuildIdFromRecord(row: Record<string, unknown>): string | null {
   const nestedId = nestedBuild ? toTrimmedString(nestedBuild.id) : null
   if (nestedId && isValidBuildId(nestedId)) return nestedId
 
+  // Persisted tool_results often only keep a compact data_summary.
+  const dataSummary =
+    row.data_summary && typeof row.data_summary === "object" && !Array.isArray(row.data_summary)
+      ? (row.data_summary as Record<string, unknown>)
+      : null
+  if (dataSummary) {
+    const fromSummary =
+      toTrimmedString(dataSummary.build_id) ?? toTrimmedString(dataSummary.buildId)
+    if (fromSummary && isValidBuildId(fromSummary)) return fromSummary.trim()
+  }
+
   const result =
     row.result && typeof row.result === "object"
       ? (row.result as Record<string, unknown>)
@@ -54,6 +68,22 @@ function extractBuildIdFromRecord(row: Record<string, unknown>): string | null {
     if (fromResult) return fromResult
   }
   return null
+}
+
+function collectBuildIdsFromUnknown(value: unknown): string[] {
+  if (!Array.isArray(value)) return []
+  const out: string[] = []
+  for (const entry of value) {
+    if (typeof entry === "string" && isValidBuildId(entry)) {
+      out.push(entry.trim())
+      continue
+    }
+    if (entry && typeof entry === "object") {
+      const id = extractBuildIdFromRecord(entry as Record<string, unknown>)
+      if (id) out.push(id)
+    }
+  }
+  return out
 }
 
 /**
@@ -90,12 +120,14 @@ export function discoverOrchestratedBuildFromChangePreview(
       ? String(preview.entity_id).trim()
       : null)
   if (!buildId) return null
+  const toolName = toTrimmedString(preview.tool_name)
   return {
     buildId,
     title: preview.title ?? null,
     summary: preview.summary ?? null,
     changeSetId: toTrimmedString(preview.change_set_id),
     source: "ai_change_preview",
+    isArtifactBuild: toolName === AI_START_ARTIFACT_BUILD_TOOL,
   }
 }
 
@@ -162,6 +194,7 @@ function discoverFromToolResultRow(row: unknown): DiscoveredOrchestratedBuild | 
     changeSetId:
       toTrimmedString(record.change_set_id) ?? toTrimmedString(result.change_set_id),
     source: "tool_result",
+    isArtifactBuild: toolName === AI_START_ARTIFACT_BUILD_TOOL,
     errorCode,
     errorMessage,
     startFailed,
@@ -176,28 +209,62 @@ export function discoverOrchestratedBuildsFromMessageContentJson(
   const root = contentJson as Record<string, unknown>
   const byId = new Map<string, DiscoveredOrchestratedBuild>()
 
+  const remember = (discovered: DiscoveredOrchestratedBuild | null) => {
+    if (!discovered) return
+    const existing = byId.get(discovered.buildId)
+    if (!existing) {
+      byId.set(discovered.buildId, discovered)
+      return
+    }
+    // Prefer richer tool/preview rows over bare build_ids entries.
+    if (existing.source === "persisted" && discovered.source !== "persisted") {
+      byId.set(discovered.buildId, {
+        ...discovered,
+        isArtifactBuild: discovered.isArtifactBuild || existing.isArtifactBuild,
+      })
+      return
+    }
+    if (discovered.isArtifactBuild && !existing.isArtifactBuild) {
+      byId.set(discovered.buildId, { ...existing, isArtifactBuild: true })
+    }
+  }
+
+  const rootLooksLikeArtifactBuild =
+    toTrimmedString(root.output_kind) === "artifact_build_control"
+    || toTrimmedString(root.executor) === "artifact_build_executor"
+
+  // Artifact-build control messages expose build_ids on the message_output envelope.
+  for (const buildId of collectBuildIdsFromUnknown(root.build_ids)) {
+    remember({
+      buildId,
+      title: null,
+      summary: null,
+      changeSetId: null,
+      source: "persisted",
+      isArtifactBuild: rootLooksLikeArtifactBuild,
+    })
+  }
+
   const previews = Array.isArray(root.ai_change_previews) ? root.ai_change_previews : []
   for (const row of previews) {
     if (!row || typeof row !== "object") continue
     const record = row as Record<string, unknown>
-    const discovered = discoverOrchestratedBuildFromChangePreview({
-      entity_type: typeof record.entity_type === "string" ? record.entity_type : "",
-      entity_id: record.entity_id as string | number | null | undefined,
-      tool_name: typeof record.tool_name === "string" ? record.tool_name : null,
-      title: typeof record.title === "string" ? record.title : null,
-      summary: typeof record.summary === "string" ? record.summary : null,
-      build_id: typeof record.build_id === "string" ? record.build_id : null,
-      change_set_id: typeof record.change_set_id === "string" ? record.change_set_id : null,
-    })
-    if (discovered) {
-      byId.set(discovered.buildId, { ...discovered, source: "persisted" })
-    }
+    remember(
+      discoverOrchestratedBuildFromChangePreview({
+        entity_type: typeof record.entity_type === "string" ? record.entity_type : "",
+        entity_id: record.entity_id as string | number | null | undefined,
+        tool_name: typeof record.tool_name === "string" ? record.tool_name : null,
+        title: typeof record.title === "string" ? record.title : null,
+        summary: typeof record.summary === "string" ? record.summary : null,
+        build_id: typeof record.build_id === "string" ? record.build_id : null,
+        change_set_id: typeof record.change_set_id === "string" ? record.change_set_id : null,
+      }),
+    )
   }
 
   const toolResults = Array.isArray(root.tool_results) ? root.tool_results : []
   for (const row of toolResults) {
-    const discovered = discoverFromToolResultRow(row)
-    if (discovered) byId.set(discovered.buildId, discovered)
+    remember(discoverFromToolResultRow(row))
   }
 
   // Nested tool results under message_output / content envelopes.
@@ -205,10 +272,25 @@ export function discoverOrchestratedBuildsFromMessageContentJson(
     root.message_output && typeof root.message_output === "object"
       ? (root.message_output as Record<string, unknown>)
       : null
-  if (messageOutput && Array.isArray(messageOutput.tool_results)) {
-    for (const row of messageOutput.tool_results) {
-      const discovered = discoverFromToolResultRow(row)
-      if (discovered) byId.set(discovered.buildId, discovered)
+  if (messageOutput) {
+    const messageOutputLooksLikeArtifact =
+      toTrimmedString(messageOutput.output_kind) === "artifact_build_control"
+      || toTrimmedString(messageOutput.executor) === "artifact_build_executor"
+      || rootLooksLikeArtifactBuild
+    for (const buildId of collectBuildIdsFromUnknown(messageOutput.build_ids)) {
+      remember({
+        buildId,
+        title: null,
+        summary: null,
+        changeSetId: null,
+        source: "persisted",
+        isArtifactBuild: messageOutputLooksLikeArtifact,
+      })
+    }
+    if (Array.isArray(messageOutput.tool_results)) {
+      for (const row of messageOutput.tool_results) {
+        remember(discoverFromToolResultRow(row))
+      }
     }
   }
 
@@ -218,7 +300,7 @@ export function discoverOrchestratedBuildsFromMessageContentJson(
     const record = row as Record<string, unknown>
     const buildId = extractBuildIdFromRecord(record)
     if (!buildId) continue
-    byId.set(buildId, {
+    remember({
       buildId,
       title: toTrimmedString(record.title),
       summary: toTrimmedString(record.summary),

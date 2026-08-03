@@ -174,13 +174,97 @@ export async function getTaskById({ signal, id }: { signal: AbortSignal, id: str
 
   const { data, error } = await supabase
     .from('tasks')
-    .select('id, title, assigned_to_id, content_type_id, production_type_id, language_id, project_status_id, assigned_to_name, project_name, project_color, project_status_name, project_status_color, content_type_title, production_type_title, language_code, delivery_date, publication_date, updated_at, project_id_int, copy_post, briefing, notes, meta_title, meta_description, keyword, parent_task_id_int, channel_names')
+    .select('id, title, assigned_to_id, content_type_id, production_type_id, language_id, project_status_id, assigned_to_name, project_name, project_color, project_status_name, project_status_color, content_type_title, production_type_title, language_code, delivery_date, publication_date, updated_at, project_id_int, copy_post, briefing, notes, meta_title, meta_description, keyword, secondary_keywords, parent_task_id_int, channel_names')
     .eq('id', id)
     .abortSignal(signal)
-    .single()
+    .maybeSingle()
 
   if (error) throw new Error(`Failed to fetch task: ${error.message}`)
+  if (!data) throw new Error(`Task not found: ${id}`)
   return data as Task
+}
+
+/** Lightweight title lookup for center-pane tabs (avoids full task select). */
+export async function getTaskTitleById({
+  signal,
+  id,
+}: {
+  signal: AbortSignal
+  id: string
+}): Promise<string | null> {
+  const map = await getTaskTitlesByIds({ signal, ids: [id] })
+  return map.get(String(id)) ?? null
+}
+
+/** Batch title lookup for center-pane tabs (one request for many open tabs). */
+export async function getTaskTitlesByIds({
+  signal,
+  ids,
+}: {
+  signal: AbortSignal
+  ids: string[]
+}): Promise<Map<string, string>> {
+  const unique = Array.from(
+    new Set(
+      ids
+        .map((id) => String(id).trim())
+        .filter((id) => id.length > 0 && Number.isFinite(Number(id))),
+    ),
+  )
+  const out = new Map<string, string>()
+  if (unique.length === 0) return out
+
+  const supabase = createClientComponentClient()
+  const { data, error } = await supabase
+    .from("tasks")
+    .select("id, title")
+    .in("id", unique.map(Number))
+    .abortSignal(signal)
+  if (error) throw new Error(`Failed to fetch task titles: ${error.message}`)
+
+  for (const row of Array.isArray(data) ? data : []) {
+    const id = row?.id != null ? String(row.id) : ""
+    const title = typeof row?.title === "string" ? row.title.trim() : ""
+    if (id && title) out.set(id, title)
+  }
+  return out
+}
+
+/** Batch suggestion title lookup for center-pane tabs. */
+export async function getSuggestionTitlesByIds({
+  signal,
+  ids,
+}: {
+  signal: AbortSignal
+  ids: string[]
+}): Promise<Map<string, string>> {
+  const unique = Array.from(
+    new Set(
+      ids
+        .map((id) => String(id).trim())
+        .filter((id) => id.length > 0 && Number.isFinite(Number(id))),
+    ),
+  )
+  const out = new Map<string, string>()
+  if (unique.length === 0) return out
+
+  const supabase = createClientComponentClient()
+  const { data, error } = await supabase
+    .from("task_suggestions")
+    .select("id, proposed_title, ai_title")
+    .in("id", unique.map(Number))
+    .abortSignal(signal)
+  if (error) throw new Error(`Failed to fetch suggestion titles: ${error.message}`)
+
+  for (const row of Array.isArray(data) ? data : []) {
+    const id = row?.id != null ? String(row.id) : ""
+    const title =
+      (typeof row?.proposed_title === "string" && row.proposed_title.trim()) ||
+      (typeof row?.ai_title === "string" && row.ai_title.trim()) ||
+      ""
+    if (id && title) out.set(id, title)
+  }
+  return out
 }
 
 /**

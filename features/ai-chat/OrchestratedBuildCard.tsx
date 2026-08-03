@@ -1,6 +1,6 @@
 "use client"
 
-import React, { useMemo, useState } from "react"
+import React, { useEffect, useMemo, useRef, useState } from "react"
 import {
   AlertCircle,
   Check,
@@ -9,7 +9,6 @@ import {
   Loader2,
   MinusCircle,
   RefreshCw,
-  Square,
 } from "lucide-react"
 import {
   listUnitsForBuild,
@@ -22,12 +21,11 @@ import type {
   AiOrchestratedBuildUnitStatus,
 } from "../../app/lib/ai/ai-orchestrated-build-types"
 import {
-  isActiveAiOrchestratedBuildStatus,
   isTerminalAiOrchestratedBuildStatus,
 } from "../../app/lib/ai/ai-orchestrated-build-types"
 import { dedupeWorkUnitFailures, aggregateValidationIssues } from "./ai-orchestrated-build-errors"
 import {
-  cancelOrchestratedBuild,
+  rehydrateArtifactPreviewCards,
   retryDispatchOrchestratedBuild,
 } from "./use-orchestrated-build-poll"
 import {
@@ -40,51 +38,10 @@ import { formatConciseComponentDecisionSummary } from "./execution-trace"
 import { BuildComponentPreviewCard } from "./BuildComponentPreviewCard"
 import { useAiBuildComponentPreviewStore } from "../../app/store/ai-build-component-preview-store"
 import { useAiBuildArtifactPreviewStore } from "../../app/store/ai-build-artifact-preview-store"
-import { ArtifactCard } from "../artifacts/ArtifactCard"
-import type { TaskArtifact } from "../../app/lib/artifacts/artifact-types"
+import { ArtifactLivePreviewCards } from "../artifacts/ArtifactLivePreviewCards"
+import { openArtifactCenterTab } from "../artifacts/open-artifact-center-tab"
 import { AssistantMessageRestoreFooter } from "./AssistantMessageRestoreFooter"
 import { cn } from "../../app/lib/utils"
-
-function artifactFromLivePreview(entry: {
-  artifactId: string
-  taskId: number | null
-  aiThreadId: string | null
-  channelId: number | null
-  languageId: number | null
-  channelName?: string | null
-  languageName?: string | null
-  artifactType?: string | null
-  artifactRole?: string | null
-  title: string | null
-  contentText: string
-  contentJson: TaskArtifact["content_json"]
-  assetData: TaskArtifact["asset_data"]
-  currentVersion: number | null
-  threadId: string | null
-}): TaskArtifact {
-  return {
-    id: entry.artifactId,
-    task_id: entry.taskId,
-    ai_thread_id: entry.aiThreadId ?? entry.threadId,
-    artifact_type: entry.artifactType?.trim() || "document",
-    artifact_role: entry.artifactRole ?? null,
-    title: entry.title,
-    status: "draft",
-    channel_id: entry.channelId,
-    language_id: entry.languageId,
-    content_text: entry.contentText,
-    content_json: entry.contentJson,
-    asset_data: entry.assetData,
-    source_artifact_id: null,
-    source_version_number: null,
-    derivation_type: null,
-    current_version: entry.currentVersion ?? 0,
-    metadata: {
-      ...(entry.channelName ? { channel_name: entry.channelName } : {}),
-      ...(entry.languageName ? { language_name: entry.languageName } : {}),
-    },
-  }
-}
 
 function statusLabel(status: AiOrchestratedBuildStatus | null | undefined): string {
   switch (status) {
@@ -805,17 +762,34 @@ export function OrchestratedBuildCard({
   const isArtifactFirstBuild = useMemo(() => {
     if (artifactPreviews.length > 0) return true
     if (!entry) return false
+    if (entry.isArtifactBuild) return true
     return Object.values(entry.eventsBySequence).some((event) =>
       typeof event.event_type === "string"
       && event.event_type.toLowerCase().includes("artifact."),
     )
   }, [artifactPreviews.length, entry])
 
+  const rehydrateAttemptsRef = useRef(0)
+  const [isRehydratingPreviews, setIsRehydratingPreviews] = useState(false)
+  useEffect(() => {
+    if (!entry) return
+    if (artifactPreviews.length > 0) {
+      setIsRehydratingPreviews(false)
+      return
+    }
+    if (rehydrateAttemptsRef.current >= 5) return
+    rehydrateAttemptsRef.current += 1
+    setIsRehydratingPreviews(true)
+    void rehydrateArtifactPreviewCards(buildId).then((ok) => {
+      if (ok) rehydrateAttemptsRef.current = 5
+      setIsRehydratingPreviews(false)
+    })
+  }, [artifactPreviews.length, buildId, entry])
+
   if (!entry) return null
 
   // Only show Queued after a real build_id was registered (this card only mounts with one).
   const status = entry.build?.status ?? "queued"
-  const canCancel = isActiveAiOrchestratedBuildStatus(status)
   const canRetryDispatch =
     status === "queued"
     && (entry.build?.running_units ?? 0) === 0
@@ -830,6 +804,87 @@ export function OrchestratedBuildCard({
         : status === "cancelled"
           ? "border-border"
           : "border-border"
+
+  const artifactPreviewList = (
+    <ul className="space-y-2 w-full min-w-0 max-w-full">
+      {artifactPreviews.map((preview) => (
+        <React.Fragment key={preview.artifactId}>
+          <ArtifactLivePreviewCards
+            preview={preview}
+            allowAttachToTask
+            defaultTaskId={taskId ?? preview.taskId}
+            defaultChannelId={activeChannelId ?? preview.channelId}
+            onOpenArtifact={(artifactId) => {
+              openArtifactCenterTab({
+                artifactId,
+                title: preview.title,
+                version: preview.currentVersion,
+              })
+            }}
+          />
+        </React.Fragment>
+      ))}
+    </ul>
+  )
+
+  // Cancel lives in the composer stop control — don't duplicate it on history cards.
+  const artifactChromeFooter = (
+    <>
+      {isTerminal && changeSetId ? (
+        <AssistantMessageRestoreFooter
+          inline
+          showMetadata={false}
+          threadId={threadId}
+          messageId={assistantMessageId}
+          changeSet={{
+            id: changeSetId,
+            has_restorable_changes: true,
+            status: "active",
+          }}
+          taskId={taskId ?? null}
+          activeChannelId={activeChannelId ?? null}
+        />
+      ) : null}
+    </>
+  )
+
+  // Artifact-first builds: show compact change cards only — no "Orchestrated build" shell.
+  // Preview cards must stay visible after refresh (rehydrated from durable events), like
+  // component-edit previews — never collapse to a bare “Saved” placeholder.
+  if (isArtifactFirstBuild) {
+    const showRestoring =
+      artifactPreviews.length === 0
+      && (isRehydratingPreviews || !isTerminal || rehydrateAttemptsRef.current < 5)
+    return (
+      <div className="space-y-2 w-full min-w-0 max-w-full">
+        {artifactPreviews.length > 0 ? (
+          artifactPreviewList
+        ) : showRestoring ? (
+          <div
+            className="flex items-center justify-center rounded-xl border border-border bg-card px-3 py-2.5 shadow-sm"
+            aria-label={entry.title?.trim() || (isTerminal ? "Restoring preview" : "Building artifact")}
+          >
+            <Loader2 className="h-3.5 w-3.5 shrink-0 animate-spin text-muted-foreground" aria-hidden />
+          </div>
+        ) : status === "failed" ? (
+          <div className="rounded-xl border border-destructive/40 bg-card px-3 py-2.5 text-sm text-muted-foreground shadow-sm">
+            <span className="truncate">{entry.title?.trim() || "Artifact update"}</span>
+            <p className="mt-0.5 text-xs">Build failed.</p>
+          </div>
+        ) : (
+          <div className="rounded-xl border border-border bg-card px-3 py-2.5 text-sm text-muted-foreground shadow-sm">
+            <span className="truncate font-medium text-foreground">
+              {entry.title?.trim() || "Artifact update"}
+            </span>
+            <p className="mt-0.5 text-xs">
+              {isTerminal ? "Saved — open the artifact to review." : "Waiting for preview…"}
+            </p>
+          </div>
+        )}
+        {artifactChromeFooter}
+      </div>
+    )
+  }
 
   return (
     <div
@@ -897,20 +952,9 @@ export function OrchestratedBuildCard({
       ) : null}
 
       {artifactPreviews.length > 0 ? (
-        <ul className="space-y-1.5 border-t border-border/70 px-3 py-2">
-          {artifactPreviews.map((preview) => (
-            <li key={preview.artifactId}>
-              <ArtifactCard
-                artifact={artifactFromLivePreview(preview)}
-                livePreview={preview}
-                allowAttachToTask
-                defaultTaskId={taskId ?? preview.taskId}
-                defaultChannelId={activeChannelId ?? preview.channelId}
-                compact
-              />
-            </li>
-          ))}
-        </ul>
+        <div className="border-t border-border/70 px-3 py-2">
+          {artifactPreviewList}
+        </div>
       ) : null}
 
       {units.length > 0 && !isArtifactFirstBuild ? (
@@ -951,38 +995,21 @@ export function OrchestratedBuildCard({
         </p>
       ) : null}
 
-      {canCancel || (canRetryDispatch && units.every((unit) => unit.status !== "failed" && unit.status !== "conflict")) ? (
+      {canRetryDispatch && units.every((unit) => unit.status !== "failed" && unit.status !== "conflict") ? (
         <div className="flex flex-wrap gap-2 border-t border-border/70 px-3 py-2">
-          {canRetryDispatch && units.every((unit) => unit.status !== "failed" && unit.status !== "conflict") ? (
-            <button
-              type="button"
-              disabled={entry.isPumping}
-              onClick={() => void retryDispatchOrchestratedBuild(buildId)}
-              className="inline-flex items-center gap-1 rounded-md border border-border bg-background px-2.5 py-1 text-xs font-medium text-foreground hover:bg-muted disabled:opacity-50"
-            >
-              {entry.isPumping ? (
-                <Loader2 className="h-3 w-3 animate-spin" aria-hidden />
-              ) : (
-                <RefreshCw className="h-3 w-3" aria-hidden />
-              )}
-              Retry dispatch
-            </button>
-          ) : null}
-          {canCancel ? (
-            <button
-              type="button"
-              disabled={entry.isCancelling}
-              onClick={() => void cancelOrchestratedBuild(buildId)}
-              className="inline-flex items-center gap-1 rounded-md border border-border bg-background px-2.5 py-1 text-xs font-medium text-foreground hover:bg-muted disabled:opacity-50"
-            >
-              {entry.isCancelling ? (
-                <Loader2 className="h-3 w-3 animate-spin" aria-hidden />
-              ) : (
-                <Square className="h-3 w-3 fill-current" aria-hidden />
-              )}
-              Cancel build
-            </button>
-          ) : null}
+          <button
+            type="button"
+            disabled={entry.isPumping}
+            onClick={() => void retryDispatchOrchestratedBuild(buildId)}
+            className="inline-flex items-center gap-1 rounded-md border border-border bg-background px-2.5 py-1 text-xs font-medium text-foreground hover:bg-muted disabled:opacity-50"
+          >
+            {entry.isPumping ? (
+              <Loader2 className="h-3 w-3 animate-spin" aria-hidden />
+            ) : (
+              <RefreshCw className="h-3 w-3" aria-hidden />
+            )}
+            Retry dispatch
+          </button>
         </div>
       ) : null}
 

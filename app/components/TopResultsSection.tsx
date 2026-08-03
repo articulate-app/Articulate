@@ -12,6 +12,8 @@ interface TopResultsSectionProps {
   results?: TopResult[]
   isLoading: boolean
   error?: string
+  /** Defer the SERP fetch until after paint so keyword volumes aren't delayed. */
+  deferFetch?: boolean
   onRetry: () => void
   onFetch: () => void
 }
@@ -32,14 +34,36 @@ export function TopResultsSection({
   results,
   isLoading,
   error,
+  deferFetch = false,
   onRetry,
   onFetch,
 }: TopResultsSectionProps) {
   useEffect(() => {
-    if (!results && !isLoading && !error) {
+    if (results || isLoading || error) return
+
+    if (!deferFetch) {
       onFetch()
+      return
     }
-  }, [results, isLoading, error, onFetch])
+
+    // Let keyword volumes paint first; SERP fetch is secondary.
+    let idleId: number | null = null
+    let timeoutId: ReturnType<typeof setTimeout> | null = null
+    const start = () => onFetch()
+
+    if (typeof window !== "undefined" && "requestIdleCallback" in window) {
+      idleId = window.requestIdleCallback(start, { timeout: 600 })
+    } else {
+      timeoutId = setTimeout(start, 120)
+    }
+
+    return () => {
+      if (idleId != null && typeof window !== "undefined" && "cancelIdleCallback" in window) {
+        window.cancelIdleCallback(idleId)
+      }
+      if (timeoutId != null) clearTimeout(timeoutId)
+    }
+  }, [results, isLoading, error, deferFetch, onFetch])
 
   const hasResults = Boolean(results && results.length > 0)
   const hasError = Boolean(error && error.length > 0)
@@ -57,7 +81,7 @@ export function TopResultsSection({
   )
 
   return (
-    <div className="pl-7">
+    <div>
       {isPending ? (
         <div className="space-y-2 py-1">
           {Array.from({ length: 4 }).map((_, index) => (
@@ -98,7 +122,7 @@ export function TopResultsSection({
                 href={result.link}
                 target="_blank"
                 rel="noopener noreferrer"
-                className="group flex min-w-0 items-center gap-2.5 rounded-md py-0.5 text-left transition-colors hover:bg-gray-50"
+                className="group flex min-w-0 items-start gap-2.5 rounded-md py-0.5 text-left transition-colors hover:bg-gray-50"
               >
                 {favicon ? (
                   // eslint-disable-next-line @next/next/no-img-element
@@ -107,14 +131,21 @@ export function TopResultsSection({
                     alt=""
                     width={16}
                     height={16}
-                    className="h-4 w-4 shrink-0 rounded-sm"
+                    className="mt-0.5 h-4 w-4 shrink-0 rounded-sm"
                     loading="lazy"
                   />
                 ) : (
-                  <span className="h-4 w-4 shrink-0 rounded-sm bg-gray-200" />
+                  <span className="mt-0.5 h-4 w-4 shrink-0 rounded-sm bg-gray-200" />
                 )}
-                <span className="min-w-0 flex-1 truncate text-sm font-normal text-gray-800 group-hover:text-gray-950">
-                  {result.title}
+                <span className="min-w-0 flex-1">
+                  <span className="block truncate text-sm font-normal text-gray-800 group-hover:text-gray-950">
+                    {result.title}
+                  </span>
+                  {result.displayLink ? (
+                    <span className="mt-0.5 block truncate text-xs text-gray-500">
+                      {result.displayLink}
+                    </span>
+                  ) : null}
                 </span>
               </a>
             </li>

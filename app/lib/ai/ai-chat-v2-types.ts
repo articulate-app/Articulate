@@ -6,6 +6,8 @@ export type AiTargetKind =
   | "output"
   | "user"
   | "attachment"
+  | "artifact"
+  | "source"
 
 export type AiRunTargetSource =
   | "user_confirmation"
@@ -26,6 +28,9 @@ export type AiRunTarget = {
   output_id?: string | null
   user_id?: number | null
   attachment_id?: string | null
+  artifact_id?: string | null
+  artifact_version_number?: number | null
+  source_id?: string | null
   source: AiRunTargetSource
   /** Compatibility only — frontend never grants write authority. */
   allow_write?: false

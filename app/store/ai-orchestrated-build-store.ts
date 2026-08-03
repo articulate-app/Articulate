@@ -12,12 +12,26 @@ import {
   loadPersistedBuildAfterSequence,
   persistBuildAfterSequence,
 } from "../../features/ai-chat/orchestrated-build-sequence-persist"
+import {
+  shouldKeepOrchestratedBuildAliveAcrossThreads,
+  shouldMonitorOrchestratedBuild,
+  type OrchestratedBuildMonitorMode,
+} from "../../features/ai-chat/orchestrated-build-monitor"
 
 export type AiOrchestratedBuildCardEntry = {
   buildId: string
   threadId: string | null
   title: string | null
   summary: string | null
+  /** When true, render artifact +/- preview UI (not the multi-unit shell). */
+  isArtifactBuild: boolean
+  /**
+   * `live` — stream/dispatch: may pump + poll until terminal.
+   * `history` — opened from chat history: one status probe, pump only if still active.
+   */
+  monitor: OrchestratedBuildMonitorMode
+  /** True after the first successful orchestrator snapshot (or known start failure). */
+  didInitialReconcile: boolean
   build: AiOrchestratedBuildRecord | null
   unitsById: Record<string, AiOrchestratedBuildUnit>
   eventsBySequence: Record<number, AiOrchestratedBuildEvent>
@@ -44,6 +58,9 @@ type AiOrchestratedBuildStoreState = {
     title?: string | null
     summary?: string | null
     changeSetId?: string | null
+    isArtifactBuild?: boolean
+    /** Default `live`. Use `history` when hydrating from persisted chat messages. */
+    monitor?: OrchestratedBuildMonitorMode
     /** Tool/start failure — do not leave the card in a permanent "Started" state. */
     startFailed?: boolean
     errorCode?: string | null
@@ -54,6 +71,11 @@ type AiOrchestratedBuildStoreState = {
     snapshot: AiOrchestratedBuildSnapshot
     /** When true, treat this as a full replace from sequence 0. */
     replaceFromZero?: boolean
+    /**
+     * Status-only probe (high after_sequence). Updates build/units but must not
+     * rewind or advance the event cursor from an empty event page.
+     */
+    statusProbe?: boolean
   }) => void
   aliasAssistantMessageId: (fromId: string, toId: string) => void
   setBuildFlags: (
@@ -61,7 +83,14 @@ type AiOrchestratedBuildStoreState = {
     flags: Partial<
       Pick<
         AiOrchestratedBuildCardEntry,
-        "isPolling" | "isPumping" | "isCancelling" | "error" | "didInitialPump" | "lastPumpAt"
+        | "isPolling"
+        | "isPumping"
+        | "isCancelling"
+        | "error"
+        | "didInitialPump"
+        | "didInitialReconcile"
+        | "lastPumpAt"
+        | "monitor"
       >
     >,
   ) => void
@@ -79,6 +108,8 @@ function createEmptyEntry(args: {
   title?: string | null
   summary?: string | null
   changeSetId?: string | null
+  monitor?: OrchestratedBuildMonitorMode
+  didInitialReconcile?: boolean
   /** Optional initial status — never treat dispatch_started as completed. */
   status?: import("../lib/ai/ai-orchestrated-build-types").AiOrchestratedBuildStatus
 }): AiOrchestratedBuildCardEntry {
@@ -88,6 +119,9 @@ function createEmptyEntry(args: {
     threadId: args.threadId ?? null,
     title: args.title ?? null,
     summary: args.summary ?? null,
+    isArtifactBuild: false,
+    monitor: args.monitor ?? "live",
+    didInitialReconcile: Boolean(args.didInitialReconcile),
     // Authoritative progress comes from reconciliation; stub as queued until then.
     build: {
       id: args.buildId,
@@ -148,6 +182,8 @@ export const useAiOrchestratedBuildStore = create<AiOrchestratedBuildStoreState>
     title,
     summary,
     changeSetId,
+    isArtifactBuild,
+    monitor,
     startFailed,
     errorCode,
     errorMessage,
@@ -155,6 +191,7 @@ export const useAiOrchestratedBuildStore = create<AiOrchestratedBuildStoreState>
     const id = buildId.trim()
     if (!id) return id
     set((state) => {
+      const requestedMonitor: OrchestratedBuildMonitorMode = monitor ?? "live"
       const prev =
         state.builds[id]
         ?? createEmptyEntry({
@@ -163,20 +200,33 @@ export const useAiOrchestratedBuildStore = create<AiOrchestratedBuildStoreState>
           title,
           summary,
           changeSetId,
+          monitor: requestedMonitor,
+          didInitialReconcile: Boolean(startFailed),
           status: startFailed ? "failed" : "queued",
         })
       const resolvedError =
         (errorMessage?.trim() || null)
         ?? (errorCode?.trim() ? `Build could not start (${errorCode.trim()}).` : null)
         ?? (startFailed ? "The build could not be started." : null)
+      // Never downgrade a live monitor to history (stream register wins over hydrate).
+      const nextMonitor: OrchestratedBuildMonitorMode =
+        prev.monitor === "live" || requestedMonitor === "live" ? "live" : "history"
       const next: AiOrchestratedBuildCardEntry = {
         ...prev,
         threadId: threadId ?? prev.threadId,
         title: title?.trim() || prev.title,
         summary: summary?.trim() || prev.summary,
+        isArtifactBuild: Boolean(isArtifactBuild) || prev.isArtifactBuild,
+        monitor: nextMonitor,
+        didInitialReconcile: prev.didInitialReconcile || Boolean(startFailed),
         build: {
           ...(prev.build
-            ?? createEmptyEntry({ buildId: id, changeSetId, status: startFailed ? "failed" : "queued" }).build!),
+            ?? createEmptyEntry({
+              buildId: id,
+              changeSetId,
+              monitor: nextMonitor,
+              status: startFailed ? "failed" : "queued",
+            }).build!),
           change_set_id: changeSetId ?? prev.build?.change_set_id ?? null,
           status:
             startFailed && !isTerminalAiOrchestratedBuildStatus(prev.build?.status)
@@ -193,7 +243,7 @@ export const useAiOrchestratedBuildStore = create<AiOrchestratedBuildStoreState>
     return id
   },
 
-  applySnapshot: ({ buildId, snapshot, replaceFromZero }) => {
+  applySnapshot: ({ buildId, snapshot, replaceFromZero, statusProbe }) => {
     const id = buildId.trim()
     if (!id || !snapshot.ok) return
     set((state) => {
@@ -213,16 +263,50 @@ export const useAiOrchestratedBuildStore = create<AiOrchestratedBuildStoreState>
         || Object.keys(unitsById).length !== Object.keys(prev.unitsById).length
         || snapshot.events.length > 0
 
+      // Prefer server last_event_sequence when a status probe didn't page events.
+      const serverCursor = Math.max(
+        0,
+        snapshot.build.last_event_sequence ?? 0,
+        statusProbe ? 0 : snapshot.next_sequence,
+      )
+      // Never jump the cursor past events we have not applied. Durable preview
+      // floods can make last_event_sequence >> page size; advancing to the job
+      // cursor would skip version_saved and leave cards stuck "generating".
+      const maxEventSequence = snapshot.events.reduce(
+        (max, event) => Math.max(max, Number(event.sequence) || 0),
+        0,
+      )
+      const lastEventSequence = Number(snapshot.build.last_event_sequence) || 0
+      const pageLooksTruncated =
+        !statusProbe
+        && snapshot.events.length > 0
+        && maxEventSequence > 0
+        && maxEventSequence < lastEventSequence
+      const nextAfterSequence = statusProbe
+        ? Math.max(prev.afterSequence, serverCursor)
+        : pageLooksTruncated
+          ? Math.max(prev.afterSequence, maxEventSequence)
+          : Math.max(prev.afterSequence, snapshot.next_sequence, maxEventSequence)
+
       const next: AiOrchestratedBuildCardEntry = {
         ...prev,
+        didInitialReconcile: true,
+        // History build still running → promote so subsequent polls can pump.
+        monitor:
+          prev.monitor === "history"
+          && !isTerminalAiOrchestratedBuildStatus(snapshot.build.status)
+            ? "live"
+            : prev.monitor,
         build: {
           ...snapshot.build,
           change_set_id: snapshot.build.change_set_id ?? prev.build?.change_set_id ?? null,
         },
         unitsById,
         eventsBySequence,
-        nextSequence: snapshot.next_sequence,
-        afterSequence: Math.max(prev.afterSequence, snapshot.next_sequence),
+        nextSequence: statusProbe
+          ? Math.max(prev.nextSequence, serverCursor)
+          : snapshot.next_sequence,
+        afterSequence: nextAfterSequence,
         lastProgressAt: progressChanged ? Date.now() : prev.lastProgressAt,
         error: null,
         updatedAt: new Date().toISOString(),
@@ -298,8 +382,9 @@ export const useAiOrchestratedBuildStore = create<AiOrchestratedBuildStoreState>
       const next: Record<string, AiOrchestratedBuildCardEntry> = {}
       for (const [key, entry] of Object.entries(state.builds)) {
         const isCurrentThread = Boolean(threadId) && entry.threadId === threadId
-        const isActive = !isTerminalAiOrchestratedBuildStatus(entry.build?.status ?? null)
-        if (isCurrentThread || isActive) next[key] = entry
+        if (isCurrentThread || shouldKeepOrchestratedBuildAliveAcrossThreads(entry)) {
+          next[key] = entry
+        }
       }
       return { builds: next }
     })
@@ -311,7 +396,7 @@ export const useAiOrchestratedBuildStore = create<AiOrchestratedBuildStoreState>
     Object.values(get().builds)
       .filter((entry) => {
         if (threadId && entry.threadId && entry.threadId !== threadId) return false
-        return !isTerminalAiOrchestratedBuildStatus(entry.build?.status ?? null)
+        return shouldMonitorOrchestratedBuild(entry)
       })
       .map((entry) => entry.buildId),
 }))

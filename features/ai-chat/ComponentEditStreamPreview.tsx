@@ -103,7 +103,7 @@ export function ComponentEditStreamPreview({
 }: ComponentEditStreamPreviewProps) {
   const stream = useComponentEditStreamStore((state) => state.streams[streamKey] ?? null)
   const preview = resolveComponentEditStreamPreviewView(stream, assistantMessageId)
-  const [showDiff, setShowDiff] = useState(false)
+  const [showDiff, setShowDiff] = useState(true)
   const [editorHtml, setEditorHtml] = useState<string>("")
   const [isSaving, setIsSaving] = useState(false)
   const saveTimerRef = useRef<number | null>(null)
@@ -133,7 +133,7 @@ export function ComponentEditStreamPreview({
   }, [defaultPreview.html, preview?.displayHtml, showDiff])
 
   useEffect(() => {
-    setShowDiff(false)
+    setShowDiff(true)
   }, [streamKey, assistantMessageId])
 
   useEffect(() => {

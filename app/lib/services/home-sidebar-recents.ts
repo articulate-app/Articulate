@@ -141,4 +141,35 @@ export async function fetchHomeRecentAiChats(args: {
   }).filter(Boolean) as HomeRecentItem[]
 }
 
+export async function fetchHomeRecentArtifacts(args: {
+  offset?: number
+  limit?: number
+}): Promise<HomeRecentItem[]> {
+  const supabase = createClientComponentClient()
+  const from = args.offset ?? 0
+  const to = from + (args.limit ?? PAGE_SIZE) - 1
+  const { data, error } = await supabase
+    .from("artifacts")
+    .select("id, title, updated_at, created_at")
+    .neq("status", "archived")
+    .order("updated_at", { ascending: false, nullsFirst: false })
+    .order("created_at", { ascending: false })
+    .range(from, to)
+  if (error) throw error
+  return asRows(data).map((row) => {
+    const id = row.id != null ? String(row.id) : null
+    if (!id) return null
+    const title =
+      (typeof row.title === "string" && row.title.trim()) || "Untitled"
+    const recentAt = clampHomeRecentAt(
+      typeof row.updated_at === "string"
+        ? row.updated_at
+        : typeof row.created_at === "string"
+          ? row.created_at
+          : null,
+    )
+    return { id, title, recentAt }
+  }).filter(Boolean) as HomeRecentItem[]
+}
+
 export const HOME_SIDEBAR_PAGE_SIZE = PAGE_SIZE

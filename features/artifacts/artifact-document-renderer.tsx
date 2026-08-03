@@ -3,6 +3,7 @@
 import React, { useEffect, useMemo, useState } from "react"
 import { FileIcon, Film, ImageIcon } from "lucide-react"
 import { cn } from "../../app/lib/utils"
+import { normalizeComponentOutputToHtml } from "../../app/lib/rich-text-normalization"
 import {
   collectAttachmentIdsFromArtifact,
   extractArtifactAssets,
@@ -15,6 +16,8 @@ import {
   resolveAttachmentSignedUrls,
   type SignedAttachmentUrl,
 } from "../../app/lib/services/attachment-signed-url"
+import { ComponentOutputReadonlyBody } from "../tasks/components/ComponentOutputReadonlyBody"
+import { AI_CHAT_PREVIEW_BODY_WRAPPER_CLASS } from "../tasks/components/component-output-body-shared"
 
 function blockText(block: ArtifactBlock): string {
   if (typeof block.text === "string" && block.text) return block.text
@@ -89,17 +92,32 @@ function ListBlock({ block }: { block: ArtifactBlock }) {
 }
 
 function TableBlock({ block }: { block: ArtifactBlock }) {
+  const headers = Array.isArray(block.headers)
+    ? block.headers.map((cell) => String(cell ?? ""))
+    : []
   const rows = Array.isArray(block.rows) ? block.rows : []
-  if (rows.length === 0) return null
+  if (headers.length === 0 && rows.length === 0) return null
+  const colCount = Math.max(headers.length, ...rows.map((row) => (row ?? []).length), 0)
   return (
     <div data-block-id={block.id ?? undefined} className="overflow-x-auto">
       <table className="min-w-full border-collapse text-sm">
+        {headers.length > 0 ? (
+          <thead>
+            <tr className="border-b border-gray-200">
+              {Array.from({ length: colCount }, (_, cellIndex) => (
+                <th key={cellIndex} className="px-2 py-1.5 text-left font-medium text-gray-900">
+                  {headers[cellIndex] ?? ""}
+                </th>
+              ))}
+            </tr>
+          </thead>
+        ) : null}
         <tbody>
           {rows.map((row, rowIndex) => (
             <tr key={rowIndex} className="border-b border-gray-100">
-              {(row ?? []).map((cell, cellIndex) => (
+              {Array.from({ length: colCount }, (_, cellIndex) => (
                 <td key={cellIndex} className="px-2 py-1.5 align-top text-gray-800">
-                  {cell ?? ""}
+                  {(row ?? [])[cellIndex] ?? ""}
                 </td>
               ))}
             </tr>
@@ -138,6 +156,7 @@ function MediaBlock({
   const mediaType = (signed?.record.media_type || "").toLowerCase()
   const isImage = block.type === "image" || mediaType === "image" || mime.startsWith("image/")
   const isVideo = block.type === "video" || mediaType === "video" || mime.startsWith("video/")
+  const isAudio = block.type === "audio" || mediaType === "audio" || mime.startsWith("audio/")
   const href = signed?.signedUrl ?? null
   const label = block.caption || block.file_name || signed?.record.file_name || "Attachment"
 
@@ -208,6 +227,15 @@ function MediaBlock({
             onSelectVideoTime({ attachmentId, timeStart: current, timeEnd: current })
           }}
         />
+        {block.caption ? <figcaption className="text-xs text-gray-500">{block.caption}</figcaption> : null}
+      </figure>
+    )
+  }
+
+  if (isAudio && href) {
+    return (
+      <figure data-block-id={block.id ?? undefined} data-attachment-id={attachmentId} className="space-y-1">
+        <audio src={href} controls className="w-full" />
         {block.caption ? <figcaption className="text-xs text-gray-500">{block.caption}</figcaption> : null}
       </figure>
     )
@@ -343,6 +371,20 @@ export function ArtifactDocumentRenderer({
         </div>
       )
     }
+    const renderedHtml = normalizeComponentOutputToHtml(fallback, artifact.title)
+    if (renderedHtml.trim()) {
+      return (
+        <div className={cn("min-w-0", className)} data-artifact-id={artifact.id}>
+          <ComponentOutputReadonlyBody
+            html={renderedHtml}
+            toolbarId={`artifact-renderer-${artifact.id}`}
+            className={AI_CHAT_PREVIEW_BODY_WRAPPER_CLASS}
+            fromAiChat
+            placeholder="Empty artifact"
+          />
+        </div>
+      )
+    }
     return (
       <div className={cn("whitespace-pre-wrap text-sm text-gray-800", className)}>
         {fallback}
@@ -366,7 +408,9 @@ export function ArtifactDocumentRenderer({
             return <TableBlock key={key} block={block} />
           case "image":
           case "video":
+          case "audio":
           case "file":
+          case "attachment":
             return (
               <MediaBlock
                 key={key}
@@ -381,6 +425,35 @@ export function ArtifactDocumentRenderer({
                 onSelectVideoTime={onSelectVideoTime}
               />
             )
+          case "image_gallery":
+          case "gallery":
+          case "carousel": {
+            const slideIds = Array.isArray((block as unknown as { slides?: unknown }).slides)
+              ? ((block as unknown as { slides: unknown[] }).slides
+                  .map((slide) => {
+                    if (typeof slide === "string") return slide
+                    if (slide && typeof slide === "object" && "attachment_id" in slide) {
+                      return String((slide as { attachment_id?: unknown }).attachment_id ?? "")
+                    }
+                    return ""
+                  })
+                  .filter(Boolean) as string[])
+              : typeof block.attachment_id === "string"
+                ? [block.attachment_id]
+                : []
+            const galleryAssets =
+              slideIds.length > 0
+                ? slideIds.map((attachment_id) => ({ attachment_id }))
+                : assets
+            return (
+              <AssetGallery
+                key={key}
+                assets={galleryAssets}
+                signedById={signedById}
+                onSelectAsset={onSelectAsset}
+              />
+            )
+          }
           default:
             return <ParagraphBlock key={key} block={block} />
         }

@@ -1,6 +1,6 @@
 "use client"
 
-import { useEffect, useMemo, useState } from "react"
+import { useMemo, useState } from "react"
 import { useQuery, useQueryClient } from "@tanstack/react-query"
 import { format, subDays } from "date-fns"
 import {
@@ -39,6 +39,10 @@ import {
 } from "./chart-preview-hover-actions"
 import { AddDashedButton } from "../ui/add-dashed-button"
 import { cn } from "@/lib/utils"
+import {
+  computeAiVisibilityScore,
+  formatVisibilityScore,
+} from "../../lib/ai-visibility-score"
 
 type DateRangeValue = {
   from?: Date
@@ -136,6 +140,8 @@ export function ProjectAiVisibilityTab({
 
   const [selectedPromptId, setSelectedPromptId] = useState<number | null>(null)
   const [selectedToolId, setSelectedToolId] = useState<number | null>(null)
+  const [filterToolId, setFilterToolId] = useState<string>("all")
+  const [filterPromptQuery, setFilterPromptQuery] = useState("")
 
   const [uncontrolledDateRange, setUncontrolledDateRange] = useState<DateRangeValue>(() =>
     getDefaultDateRange(isPreview ? 6 : 29),
@@ -227,55 +233,89 @@ export function ProjectAiVisibilityTab({
     data: globalTimeseries,
     isLoading: isLoadingGlobalTimeseries,
     error: globalTimeseriesError,
-  } = useQuery<Array<{ run_at: string; brand_position: number | null }>>({
+  } = useQuery<
+    Array<{
+      run_date: string
+      best_position: number | null
+      avg_position: number | null
+      prompts_tracked: number
+      prompts_mentioned: number
+      visibility_score: number | null
+    }>
+  >({
     queryKey: [
       "project-ai-global-timeseries",
       projectId,
       from ? from.toISOString() : null,
       to ? to.toISOString() : null,
+      filterToolId,
+      selectedPromptId,
     ],
-    enabled: isPreview && !!from && !!to,
+    enabled: !!from && !!to && !isManage,
     queryFn: async () => {
       if (!from || !to) return []
 
-      const { data: promptRows, error: promptError } = await (supabase as any)
-        .from("project_ai_prompts")
-        .select("id")
-        .eq("project_id", projectId)
-      if (promptError) throw promptError
-
-      const promptIds = ((promptRows || []) as Array<{ id: number }>).map((row) => row.id)
-      if (!promptIds.length) return []
-
-      const { data: resultRows, error: resultError } = await (supabase as any)
-        .from("project_ai_prompt_results")
-        .select("run_at, brand_position")
-        .in("project_ai_prompt_id", promptIds)
-        .gte("run_at", from.toISOString())
-        .lte("run_at", to.toISOString())
-        .order("run_at", { ascending: true })
-      if (resultError) throw resultError
-
-      const byDay = new Map<string, number[]>()
-      for (const row of (resultRows || []) as Array<{ run_at: string; brand_position: number | null }>) {
-        const dayKey = format(new Date(row.run_at), "yyyy-MM-dd")
-        if (row.brand_position == null || !Number.isFinite(row.brand_position)) continue
-        const bucket = byDay.get(dayKey) ?? []
-        bucket.push(row.brand_position)
-        byDay.set(dayKey, bucket)
-      }
-
-      return Array.from(byDay.entries())
-        .sort(([a], [b]) => a.localeCompare(b))
-        .map(([day, positions]) => ({
-          run_at: `${day}T12:00:00`,
-          brand_position:
-            positions.length > 0
-              ? Math.round((positions.reduce((sum, value) => sum + value, 0) / positions.length) * 10) / 10
+      const { data, error } = await (supabase as any).rpc(
+        "fn_get_project_ai_global_timeseries",
+        {
+          p_project_id: projectId,
+          p_start_at: from.toISOString(),
+          p_end_at: to.toISOString(),
+          p_ai_tool_id:
+            filterToolId !== "all" && Number.isFinite(Number(filterToolId))
+              ? Number(filterToolId)
               : null,
-        }))
+          // Global score ignores single-prompt selection; chart can still switch below.
+          p_project_ai_prompt_id: null,
+        },
+      )
+      if (error) throw error
+      return (data || []) as Array<{
+        run_date: string
+        best_position: number | null
+        avg_position: number | null
+        prompts_tracked: number
+        prompts_mentioned: number
+        visibility_score: number | null
+      }>
     },
   })
+
+  const latestVisibility = useMemo(() => {
+    if (!prompts?.length) {
+      return computeAiVisibilityScore([])
+    }
+    const filtered = prompts.filter((row) => {
+      if (filterToolId !== "all" && String(row.ai_tool_id) !== filterToolId) return false
+      const q = filterPromptQuery.trim().toLowerCase()
+      if (q && !row.prompt_text.toLowerCase().includes(q)) return false
+      return true
+    })
+    return computeAiVisibilityScore(
+      filtered.map((row) => ({ brand_position: row.brand_position })),
+    )
+  }, [filterPromptQuery, filterToolId, prompts])
+
+  const filteredPrompts = useMemo(() => {
+    if (!prompts) return []
+    return prompts.filter((row) => {
+      if (filterToolId !== "all" && String(row.ai_tool_id) !== filterToolId) return false
+      const q = filterPromptQuery.trim().toLowerCase()
+      if (q && !row.prompt_text.toLowerCase().includes(q)) return false
+      return true
+    })
+  }, [filterPromptQuery, filterToolId, prompts])
+
+  const globalChartSeries = useMemo(() => {
+    return (globalTimeseries ?? []).map((row) => ({
+      run_at: `${row.run_date}T12:00:00`,
+      visibility_score: row.visibility_score,
+      avg_position: row.avg_position,
+      best_position: row.best_position,
+      prompts_mentioned: row.prompts_mentioned,
+      prompts_tracked: row.prompts_tracked,
+    }))
+  }, [globalTimeseries])
 
   const {
     data: snapshotData,
@@ -311,17 +351,6 @@ export function ProjectAiVisibilityTab({
   })
 
   const snapshot = snapshotData && snapshotData.length > 0 ? snapshotData[0] : null
-
-  useEffect(() => {
-    if (!selectedPromptId && prompts && prompts.length > 0) {
-      const first = prompts[0]
-      setSelectedPromptId(first.project_ai_prompt_id)
-      setSelectedToolId(first.ai_tool_id)
-      if (first.run_at) {
-        setSelectedRunAt(new Date(first.run_at))
-      }
-    }
-  }, [prompts, selectedPromptId])
 
   const handleAddPrompt = async () => {
     if (!newPrompt.trim()) {
@@ -508,15 +537,6 @@ export function ProjectAiVisibilityTab({
   }
 
   const hasPrompts = prompts && prompts.length > 0
-  const hasTimeseries = timeseries && timeseries.length > 0
-
-  useEffect(() => {
-    if (!isPreview || !hasPrompts || selectedPromptId != null) return
-    const first = prompts![0]
-    setSelectedPromptId(first.project_ai_prompt_id)
-    setSelectedToolId(first.ai_tool_id)
-    if (first.run_at) setSelectedRunAt(new Date(first.run_at))
-  }, [hasPrompts, isPreview, prompts, selectedPromptId])
 
   const selectedTool =
     tools && selectedToolId != null
@@ -558,102 +578,136 @@ export function ProjectAiVisibilityTab({
     }>
   }, [prompts])
 
+  const showPromptChart = !!selectedPromptId && !!selectedToolId
+  const chartSeries = showPromptChart ? timeseries : globalChartSeries
+  const isLoadingChart = showPromptChart
+    ? isLoadingTimeseries
+    : isLoadingGlobalTimeseries
+  const chartError = showPromptChart ? timeseriesError : globalTimeseriesError
+  const hasChartData = !!chartSeries?.length
+
+  const visibilityFilters = (
+    <div className="flex min-w-0 flex-col gap-2 sm:flex-row sm:flex-wrap sm:items-center">
+      <Input
+        value={filterPromptQuery}
+        onChange={(e) => setFilterPromptQuery(e.target.value)}
+        placeholder="Filter prompts…"
+        className="h-8 w-full text-xs sm:max-w-xs"
+      />
+      <Select value={filterToolId} onValueChange={setFilterToolId}>
+        <SelectTrigger className="h-8 w-full text-xs sm:w-44">
+          <SelectValue placeholder="All tools" />
+        </SelectTrigger>
+        <SelectContent>
+          <SelectItem value="all" className="text-xs">
+            All tools
+          </SelectItem>
+          {(tools ?? []).map((tool) => (
+            <SelectItem key={tool.id} value={String(tool.id)} className="text-xs">
+              {tool.name}
+            </SelectItem>
+          ))}
+        </SelectContent>
+      </Select>
+      {!isPreview && !isManage ? (
+        <div className="w-full min-w-0 sm:w-56">
+          <DateRangePicker value={dateRange} onChange={(range) => setDateRange(range)} />
+        </div>
+      ) : null}
+    </div>
+  )
+
   const brandPositionChart = (
     <Card className="min-w-0 p-4 md:p-6">
       <div className="mb-3 flex min-w-0 flex-col gap-3">
-        {isPreview ? null : (
+        <div className="flex min-w-0 flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
           <div className="min-w-0">
             <h4 className="text-sm font-semibold text-gray-900">
-              Brand position over time
+              {showPromptChart ? "Brand position over time" : "Visibility score over time"}
             </h4>
             <p className="text-[11px] text-gray-500">
-              Lower position is better (1 = top mention).
+              {showPromptChart
+                ? "Lower position is better (1 = top mention)."
+                : "Aggregate across tracked prompts (mention rate + position quality)."}
             </p>
-            {selectedTool ? (
+            {showPromptChart && selectedTool ? (
               <p className="mt-1 text-[11px] text-gray-500">
                 Tool:{" "}
-                <span className="font-medium text-gray-900">
-                  {selectedTool.name}
-                </span>
+                <span className="font-medium text-gray-900">{selectedTool.name}</span>
               </p>
             ) : null}
           </div>
-        )}
-        <div className="flex min-w-0 flex-col gap-2 sm:flex-row sm:flex-wrap sm:items-center">
-          {isPreview && promptSelectOptions.length > 0 ? (
-            <div className="w-full min-w-0 sm:max-w-md sm:flex-1">
-              <Select
-                value={
-                  selectedPromptId != null && selectedToolId != null
-                    ? `${selectedPromptId}:${selectedToolId}`
-                    : undefined
-                }
-                onValueChange={(value) => {
-                  const [promptIdRaw, toolIdRaw] = value.split(":")
-                  const promptId = Number(promptIdRaw)
-                  const toolId = Number(toolIdRaw)
-                  if (!Number.isFinite(promptId) || !Number.isFinite(toolId)) return
-                  setSelectedPromptId(promptId)
-                  setSelectedToolId(toolId)
-                  const match = prompts?.find(
-                    (row) =>
-                      row.project_ai_prompt_id === promptId &&
-                      row.ai_tool_id === toolId,
-                  )
-                  setSelectedRunAt(match?.run_at ? new Date(match.run_at) : null)
-                }}
-              >
-                <SelectTrigger className="h-8 w-full text-xs">
-                  <SelectValue placeholder="Select prompt & tool" />
-                </SelectTrigger>
-                <SelectContent>
-                  {promptSelectOptions.map((option) => (
-                    <SelectItem key={option.key} value={option.key} className="text-xs">
-                      <span className="line-clamp-1">{option.label}</span>
-                    </SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
+          <div className="shrink-0 text-right">
+            <div className="text-[11px] font-medium uppercase tracking-wide text-gray-400">
+              {showPromptChart ? "Prompt position" : "Global score"}
             </div>
-          ) : null}
-          {isPreview ? null : (
-            <div className="w-full min-w-0 sm:w-56">
-              <DateRangePicker
-                value={dateRange}
-                onChange={(range) => setDateRange(range)}
-              />
+            <div className="text-xl font-semibold tabular-nums text-gray-900">
+              {showPromptChart
+                ? snapshot?.brand_position != null
+                  ? `#${snapshot.brand_position}`
+                  : "—"
+                : (
+                    <>
+                      {formatVisibilityScore(latestVisibility.visibilityScore)}
+                      <span className="ml-1 text-sm font-normal text-gray-400">/ 100</span>
+                    </>
+                  )}
             </div>
-          )}
+            {!showPromptChart ? (
+              <div className="text-[11px] text-gray-500">
+                {latestVisibility.mentionedCount}/{latestVisibility.trackedCount} mentioned
+                {latestVisibility.avgPosition != null
+                  ? ` · avg #${latestVisibility.avgPosition}`
+                  : ""}
+              </div>
+            ) : null}
+          </div>
         </div>
+        {visibilityFilters}
+        {showPromptChart ? (
+          <Button
+            type="button"
+            size="sm"
+            variant="ghost"
+            className="h-7 w-fit px-2 text-xs text-gray-500"
+            onClick={() => {
+              setSelectedPromptId(null)
+              setSelectedToolId(null)
+              setSelectedRunAt(null)
+            }}
+          >
+            Show global score
+          </Button>
+        ) : null}
       </div>
 
       <div className="h-64 min-w-0">
-        {!selectedPromptId || !selectedToolId ? (
+        {!hasPrompts ? (
           <div className="flex h-full items-center justify-center text-sm text-gray-500">
-            {isPreview
-              ? "No AI prompts configured yet."
-              : "Select a prompt and tool from the table below to see history."}
+            Add prompts below to start tracking AI visibility.
           </div>
-        ) : isLoadingTimeseries ? (
+        ) : isLoadingChart ? (
           <div className="flex h-full items-center justify-center text-sm text-gray-500">
             <Loader2 className="mr-2 h-5 w-5 animate-spin" />
-            Loading brand position history…
+            Loading visibility…
           </div>
-        ) : timeseriesError ? (
+        ) : chartError ? (
           <div className="flex h-full items-center gap-2 rounded-md border border-red-200 bg-red-50 px-3 py-2 text-xs text-red-700">
             <AlertCircle className="h-4 w-4" />
-            <span>Failed to load brand position timeseries.</span>
+            <span>Failed to load visibility history.</span>
           </div>
-        ) : !hasTimeseries ? (
+        ) : !hasChartData ? (
           <div className="flex h-full items-center justify-center text-sm text-gray-500">
-            No runs yet for this prompt and tool. Use &quot;Run now&quot; to
-            fetch AI responses.
+            {showPromptChart
+              ? "No runs yet for this prompt and tool. Use “Run now” to fetch AI responses."
+              : "No AI visibility runs yet for this period."}
           </div>
         ) : (
           <ResponsiveContainer width="100%" height="100%">
             <LineChart
-              data={timeseries}
+              data={chartSeries}
               onClick={(e: any) => {
+                if (!showPromptChart) return
                 const payload =
                   e && e.activePayload && e.activePayload[0]
                     ? e.activePayload[0].payload
@@ -668,34 +722,37 @@ export function ProjectAiVisibilityTab({
                 dataKey="run_at"
                 stroke="#6b7280"
                 style={{ fontSize: "12px" }}
-                tickFormatter={formatShortDateTime}
+                tickFormatter={showPromptChart ? formatShortDateTime : formatChartAxisDate}
               />
               <YAxis
                 stroke="#6b7280"
                 style={{ fontSize: "12px" }}
-                reversed
-                domain={[1, "dataMax + 1"]}
-                allowDecimals={false}
+                reversed={showPromptChart}
+                domain={showPromptChart ? [1, "dataMax + 1"] : [0, 100]}
+                allowDecimals={!showPromptChart}
               />
               <RechartsTooltip
                 formatter={(value: any) => {
                   const v = value as number | null
-                  if (v == null) return ["Not mentioned", "Position"]
-                  return [`#${v}`, "Position"]
+                  if (showPromptChart) {
+                    if (v == null) return ["Not mentioned", "Position"]
+                    return [`#${v}`, "Position"]
+                  }
+                  if (v == null) return ["—", "Visibility"]
+                  return [v, "Visibility score"]
                 }}
                 labelFormatter={(label) =>
-                  `Run at: ${format(
-                    new Date(label),
-                    "yyyy-MM-dd HH:mm",
-                  )}`
+                  showPromptChart
+                    ? `Run at: ${format(new Date(label), "yyyy-MM-dd HH:mm")}`
+                    : `Date: ${format(new Date(label), "yyyy-MM-dd")}`
                 }
               />
               <Line
                 type="monotone"
-                dataKey="brand_position"
+                dataKey={showPromptChart ? "brand_position" : "visibility_score"}
                 stroke={CHART_LINE_STROKE}
                 strokeWidth={2}
-                dot={{ r: 3 }}
+                dot={showPromptChart ? { r: 3 } : false}
                 activeDot={{ r: 4 }}
               />
             </LineChart>
@@ -706,14 +763,20 @@ export function ProjectAiVisibilityTab({
   )
 
   if (isPreview) {
-    const chartData = hasTimeseries ? timeseries : globalTimeseries
-    const isLoadingChart = selectedPromptId
+    const previewShowPromptChart =
+      !!selectedPromptId && !!selectedToolId && !!timeseries?.length
+    const chartData = previewShowPromptChart ? timeseries : globalChartSeries
+    const isLoadingChartPreview = previewShowPromptChart
       ? isLoadingTimeseries
       : isLoadingGlobalTimeseries
-    const chartError = selectedPromptId ? timeseriesError : globalTimeseriesError
+    const chartErrorPreview = previewShowPromptChart
+      ? timeseriesError
+      : globalTimeseriesError
     const hasChart = !!chartData?.length
-    const metricLabel = selectedPromptId ? "Position" : "Avg position"
     const chartAvailable = Boolean(hasPrompts)
+    const previewEntities = Array.isArray(snapshot?.ranked_entities)
+      ? (snapshot!.ranked_entities as RankedEntity[])
+      : []
 
     const previewAddForm = (
       <div className="space-y-3 rounded-lg border border-dashed border-gray-200 p-3">
@@ -790,20 +853,92 @@ export function ProjectAiVisibilityTab({
 
     return (
       <div className="min-w-0 space-y-3">
+        <div className="flex flex-wrap items-end justify-between gap-3">
+          <div>
+            <div className="text-[11px] font-medium uppercase tracking-wide text-gray-400">
+              {selectedPromptId && selectedToolId ? "Prompt position" : "Visibility score"}
+            </div>
+            <div className="text-2xl font-semibold tabular-nums text-gray-900">
+              {selectedPromptId && selectedToolId ? (
+                snapshot?.brand_position != null ? (
+                  `#${snapshot.brand_position}`
+                ) : (
+                  "—"
+                )
+              ) : (
+                <>
+                  {formatVisibilityScore(latestVisibility.visibilityScore)}
+                  <span className="ml-1 text-sm font-normal text-gray-400">/ 100</span>
+                </>
+              )}
+            </div>
+            {!(selectedPromptId && selectedToolId) ? (
+              <div className="mt-0.5 text-[11px] text-gray-500">
+                {latestVisibility.mentionedCount}/{latestVisibility.trackedCount} mentioned
+                {latestVisibility.avgPosition != null
+                  ? ` · avg #${latestVisibility.avgPosition}`
+                  : ""}
+              </div>
+            ) : null}
+          </div>
+          <div className="w-full min-w-0 sm:max-w-md sm:flex-1">
+            <Select
+              value={
+                selectedPromptId != null && selectedToolId != null
+                  ? `${selectedPromptId}:${selectedToolId}`
+                  : "global"
+              }
+              onValueChange={(value) => {
+                if (value === "global") {
+                  setSelectedPromptId(null)
+                  setSelectedToolId(null)
+                  setSelectedRunAt(null)
+                  return
+                }
+                const [promptIdRaw, toolIdRaw] = value.split(":")
+                const promptId = Number(promptIdRaw)
+                const toolId = Number(toolIdRaw)
+                if (!Number.isFinite(promptId) || !Number.isFinite(toolId)) return
+                setSelectedPromptId(promptId)
+                setSelectedToolId(toolId)
+                const match = prompts?.find(
+                  (row) =>
+                    row.project_ai_prompt_id === promptId && row.ai_tool_id === toolId,
+                )
+                setSelectedRunAt(match?.run_at ? new Date(match.run_at) : null)
+              }}
+            >
+              <SelectTrigger className="h-8 w-full text-xs">
+                <SelectValue placeholder="Global score" />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="global" className="text-xs">
+                  Global score (all prompts)
+                </SelectItem>
+                {promptSelectOptions.map((option) => (
+                  <SelectItem key={option.key} value={option.key} className="text-xs">
+                    <span className="line-clamp-1">{option.label}</span>
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          </div>
+        </div>
+
         <ChartPreviewHoverActions
           enabled={chartAvailable}
           actions={<ChartPreviewDateRangeButton value={dateRange} onChange={setDateRange} />}
         >
           <div className="h-64 min-w-0">
-            {isLoadingChart ? (
+            {isLoadingChartPreview ? (
               <div className="flex h-full items-center justify-center text-sm text-gray-500">
                 <Loader2 className="mr-2 h-5 w-5 animate-spin" />
-                Loading brand position…
+                Loading visibility…
               </div>
-            ) : chartError ? (
+            ) : chartErrorPreview ? (
               <div className="flex h-full items-center gap-2 text-xs text-red-700">
                 <AlertCircle className="h-4 w-4" />
-                <span>Failed to load brand position history.</span>
+                <span>Failed to load visibility history.</span>
               </div>
             ) : !hasChart ? (
               <div className="flex h-full items-center justify-center text-sm text-gray-500">
@@ -827,15 +962,19 @@ export function ProjectAiVisibilityTab({
                     width={36}
                     stroke="#6b7280"
                     style={{ fontSize: "12px" }}
-                    reversed
-                    domain={[1, "dataMax + 1"]}
-                    allowDecimals={false}
+                    reversed={previewShowPromptChart}
+                    domain={previewShowPromptChart ? [1, "dataMax + 1"] : [0, 100]}
+                    allowDecimals={!previewShowPromptChart}
                   />
                   <RechartsTooltip
                     formatter={(value: any) => {
                       const v = value as number | null
-                      if (v == null) return ["Not mentioned", metricLabel]
-                      return [`#${v}`, metricLabel]
+                      if (previewShowPromptChart) {
+                        if (v == null) return ["Not mentioned", "Position"]
+                        return [`#${v}`, "Position"]
+                      }
+                      if (v == null) return ["—", "Visibility"]
+                      return [v, "Visibility score"]
                     }}
                     labelFormatter={(label) =>
                       `Date: ${format(new Date(label), "yyyy-MM-dd")}`
@@ -843,7 +982,9 @@ export function ProjectAiVisibilityTab({
                   />
                   <Line
                     type="monotone"
-                    dataKey="brand_position"
+                    dataKey={
+                      previewShowPromptChart ? "brand_position" : "visibility_score"
+                    }
                     stroke={CHART_LINE_STROKE}
                     strokeWidth={2}
                     dot={false}
@@ -854,6 +995,46 @@ export function ProjectAiVisibilityTab({
             )}
           </div>
         </ChartPreviewHoverActions>
+
+        {selectedPromptId && selectedToolId ? (
+          <div className="space-y-2">
+            <div className="text-[11px] font-medium text-gray-500">
+              Top results
+              {snapshot?.run_at
+                ? ` · ${format(new Date(snapshot.run_at), "MMM d, HH:mm")}`
+                : ""}
+            </div>
+            {isLoadingSnapshot ? (
+              <div className="flex items-center gap-2 py-3 text-xs text-gray-500">
+                <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                Loading entities…
+              </div>
+            ) : previewEntities.length === 0 ? (
+              <p className="text-xs text-gray-500">No entities for this prompt yet.</p>
+            ) : (
+              <div className="divide-y divide-gray-100 rounded-md border border-gray-100">
+                {previewEntities.slice(0, 5).map((entity, index) => (
+                  <div key={`${entity.name}-${index}`} className="px-3 py-2">
+                    <div className="text-xs font-medium text-gray-900">
+                      {(entity.position ?? index + 1) + ". "}
+                      {entity.name || "Untitled"}
+                    </div>
+                    {entity.url ? (
+                      <a
+                        href={entity.url}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className="mt-0.5 block truncate text-[11px] text-gray-500 hover:text-gray-700"
+                      >
+                        {entity.url}
+                      </a>
+                    ) : null}
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+        ) : null}
 
         <div className="space-y-2">
           <div className="text-[11px] font-medium text-gray-500">Tracked prompts</div>
@@ -881,12 +1062,22 @@ export function ProjectAiVisibilityTab({
                   <span className="line-clamp-2">
                     {row.prompt_text}
                     {row.ai_tool_name ? (
-                      <span className={cn("ml-1", isSelected ? "text-gray-300" : "text-gray-400")}>
+                      <span
+                        className={cn(
+                          "ml-1",
+                          isSelected ? "text-gray-300" : "text-gray-400",
+                        )}
+                      >
                         · {row.ai_tool_name}
                       </span>
                     ) : null}
                     {row.brand_position != null ? (
-                      <span className={cn("ml-1", isSelected ? "text-gray-300" : "text-gray-500")}>
+                      <span
+                        className={cn(
+                          "ml-1",
+                          isSelected ? "text-gray-300" : "text-gray-500",
+                        )}
+                      >
                         #{row.brand_position}
                       </span>
                     ) : null}
@@ -954,6 +1145,10 @@ export function ProjectAiVisibilityTab({
             </Button>
           </div>
         </div>
+
+        {isManage ? (
+          <div className="mb-4">{visibilityFilters}</div>
+        ) : null}
 
         <div className="mb-4 grid min-w-0 gap-3 md:grid-cols-3">
           <div className="min-w-0 space-y-1 md:col-span-2">
@@ -1032,9 +1227,13 @@ export function ProjectAiVisibilityTab({
             No AI prompts configured yet. Add your first prompt to start tracking
             AI visibility.
           </div>
+        ) : !filteredPrompts.length ? (
+          <div className="rounded-md bg-gray-50 px-3 py-4 text-sm text-gray-600">
+            No prompts match the current filters.
+          </div>
         ) : (
           <div className="divide-y divide-gray-100 rounded-md border border-gray-100">
-            {prompts!.map((row) => {
+            {filteredPrompts.map((row) => {
               const isSelected =
                 row.project_ai_prompt_id === selectedPromptId &&
                 row.ai_tool_id === selectedToolId
@@ -1077,162 +1276,168 @@ export function ProjectAiVisibilityTab({
   }
 
   return (
-    <div className="min-w-0 space-y-6">
+    <div className="min-w-0 space-y-4">
       <div className="flex items-center justify-between">
         <h2 className="text-lg font-semibold text-gray-900">AI visibility</h2>
       </div>
 
-      {/* Brand position + snapshot at top */}
-      <div className="grid min-w-0 gap-4 lg:grid-cols-2">
-        {brandPositionChart}
+      {brandPositionChart}
 
-        <Card className="min-w-0 p-4 md:p-6">
-          <div className="mb-3">
-            <h4 className="text-sm font-semibold text-gray-900">
-              Latest entities in answer
-            </h4>
-            <p className="text-[11px] text-gray-500">
-              Top brands, URLs, and entities extracted from the selected run.
-            </p>
+      <Card className="min-w-0 p-4 md:p-6">
+        <div className="mb-3">
+          <h4 className="text-sm font-semibold text-gray-900">
+            Latest entities in answer
+          </h4>
+          <p className="text-[11px] text-gray-500">
+            Top brands, URLs, and entities extracted from the selected run.
+          </p>
+        </div>
+
+        {!selectedPromptId || !selectedToolId ? (
+          <div className="flex h-32 items-center justify-center text-sm text-gray-500">
+            Select a prompt below to inspect ranked entities.
           </div>
-
-          {isLoadingSnapshot ? (
-            <div className="flex h-40 items-center justify-center text-sm text-gray-500">
-              <Loader2 className="mr-2 h-4 w-4 animate-spin" />
-              Loading entities…
-            </div>
-          ) : snapshotError ? (
-            <div className="flex h-40 items-center gap-2 rounded-md border border-red-200 bg-red-50 px-3 py-2 text-xs text-red-700">
-              <AlertCircle className="h-4 w-4" />
-              <span>
-                {snapshotError instanceof Error
-                  ? snapshotError.message
-                  : "Failed to load entities snapshot."}
-              </span>
-            </div>
-          ) : !snapshot ? (
-            <div className="flex h-40 items-center justify-center text-sm text-gray-500">
-              No snapshot available. Select a run from the chart or run AI
-              visibility.
-            </div>
-          ) : (
-            <div className="space-y-3">
-              <div className="text-[11px] text-gray-600">
+        ) : isLoadingSnapshot ? (
+          <div className="flex h-40 items-center justify-center text-sm text-gray-500">
+            <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+            Loading entities…
+          </div>
+        ) : snapshotError ? (
+          <div className="flex h-40 items-center gap-2 rounded-md border border-red-200 bg-red-50 px-3 py-2 text-xs text-red-700">
+            <AlertCircle className="h-4 w-4" />
+            <span>
+              {snapshotError instanceof Error
+                ? snapshotError.message
+                : "Failed to load entities snapshot."}
+            </span>
+          </div>
+        ) : !snapshot ? (
+          <div className="flex h-40 items-center justify-center text-sm text-gray-500">
+            No snapshot available. Select a run from the chart or run AI
+            visibility.
+          </div>
+        ) : (
+          <div className="space-y-3">
+            <div className="text-[11px] text-gray-600">
+              <div>
+                Run at:{" "}
+                <span className="font-medium text-gray-900">
+                  {format(new Date(snapshot.run_at), "yyyy-MM-dd HH:mm")}
+                </span>
+                {selectedTool ? (
+                  <>
+                    {" "}
+                    ·{" "}
+                    <span className="font-medium text-gray-900">{selectedTool.name}</span>
+                  </>
+                ) : null}
+              </div>
+              {snapshot.brand_position != null ? (
                 <div>
-                  Run at:{" "}
-                  <span className="font-medium text-gray-900">
-                    {format(new Date(snapshot.run_at), "yyyy-MM-dd HH:mm")}
-                  </span>
+                  Your brand appears at position{" "}
+                  <span className="font-semibold">#{snapshot.brand_position}</span>
+                  {snapshot.brand_url && (
+                    <>
+                      {" "}
+                      with URL{" "}
+                      <a
+                        href={snapshot.brand_url}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className="text-blue-600 hover:text-blue-800"
+                      >
+                        {snapshot.brand_url}
+                      </a>
+                      .
+                    </>
+                  )}
                 </div>
-                {snapshot.brand_position != null ? (
-                  <div>
-                    Your brand appears at position{" "}
-                    <span className="font-semibold">
-                      #{snapshot.brand_position}
-                    </span>
-                    {snapshot.brand_url && (
-                      <>
-                        {" "}
-                        with URL{" "}
-                        <a
-                          href={snapshot.brand_url}
-                          target="_blank"
-                          rel="noopener noreferrer"
-                          className="text-blue-600 hover:text-blue-800"
-                        >
-                          {snapshot.brand_url}
-                        </a>
-                        .
-                      </>
-                    )}
-                  </div>
-                ) : (
-                  <div>Your brand is not mentioned in this answer.</div>
-                )}
-              </div>
-
-              <div className="max-h-64 min-w-0 overflow-auto rounded-md border">
-                <table className="w-full min-w-[28rem] table-fixed text-left text-xs">
-                  <thead className="border-b bg-gray-50 text-[11px] font-medium uppercase text-gray-500">
-                    <tr>
-                      <th className="w-14 px-3 py-2">Pos</th>
-                      <th className="px-3 py-2">Brand / Name</th>
-                      <th className="hidden px-3 py-2 sm:table-cell">URL</th>
-                      <th className="hidden px-3 py-2 md:table-cell">Snippet</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {rankedEntities.length === 0 ? (
-                      <tr>
-                        <td
-                          colSpan={4}
-                          className="px-3 py-3 text-center text-xs text-gray-500"
-                        >
-                          No entities parsed from this answer.
-                        </td>
-                      </tr>
-                    ) : (
-                      rankedEntities.map((entity, index) => {
-                        const isBrandMatch =
-                          (snapshot.brand_url &&
-                            entity.url === snapshot.brand_url) ||
-                          (snapshot.brand_name &&
-                            entity.name === snapshot.brand_name)
-                        return (
-                          <tr
-                            key={`${entity.name || entity.url || index}`}
-                            className={`border-b last:border-0 ${
-                              isBrandMatch ? "bg-blue-50/60" : ""
-                            }`}
-                          >
-                            <td className="px-3 py-2 text-xs text-gray-700">
-                              {entity.position ?? index + 1}
-                            </td>
-                            <td className="min-w-0 px-3 py-2 text-xs text-gray-900">
-                              <div className="truncate">{entity.name || "—"}</div>
-                              {entity.url ? (
-                                <a
-                                  href={entity.url}
-                                  target="_blank"
-                                  rel="noopener noreferrer"
-                                  className="mt-0.5 block truncate text-[11px] text-blue-600 hover:text-blue-800 sm:hidden"
-                                  title={entity.url}
-                                >
-                                  {entity.url}
-                                </a>
-                              ) : null}
-                            </td>
-                            <td className="hidden min-w-0 px-3 py-2 text-xs text-gray-700 sm:table-cell">
-                              {entity.url ? (
-                                <a
-                                  href={entity.url}
-                                  target="_blank"
-                                  rel="noopener noreferrer"
-                                  className="inline-block max-w-full truncate text-blue-600 hover:text-blue-800"
-                                  title={entity.url}
-                                >
-                                  {entity.url}
-                                </a>
-                              ) : (
-                                <span className="text-gray-400">—</span>
-                              )}
-                            </td>
-                            <td className="hidden min-w-0 px-3 py-2 text-xs text-gray-700 md:table-cell">
-                              <span className="line-clamp-2">
-                                {entity.snippet || "—"}
-                              </span>
-                            </td>
-                          </tr>
-                        )
-                      })
-                    )}
-                  </tbody>
-                </table>
-              </div>
+              ) : (
+                <div>Your brand is not mentioned in this answer.</div>
+              )}
             </div>
-          )}
-        </Card>
-      </div>
+
+            <div className="max-h-64 min-w-0 overflow-auto rounded-md border">
+              <table className="w-full min-w-[28rem] table-fixed text-left text-xs">
+                <thead className="border-b bg-gray-50 text-[11px] font-medium uppercase text-gray-500">
+                  <tr>
+                    <th className="w-14 px-3 py-2">Pos</th>
+                    <th className="px-3 py-2">Brand / Name</th>
+                    <th className="hidden px-3 py-2 sm:table-cell">URL</th>
+                    <th className="hidden px-3 py-2 md:table-cell">Snippet</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {rankedEntities.length === 0 ? (
+                    <tr>
+                      <td
+                        colSpan={4}
+                        className="px-3 py-3 text-center text-xs text-gray-500"
+                      >
+                        No entities parsed from this answer.
+                      </td>
+                    </tr>
+                  ) : (
+                    rankedEntities.map((entity, index) => {
+                      const isBrandMatch =
+                        (snapshot.brand_url &&
+                          entity.url === snapshot.brand_url) ||
+                        (snapshot.brand_name &&
+                          entity.name === snapshot.brand_name)
+                      return (
+                        <tr
+                          key={`${entity.name || entity.url || index}`}
+                          className={`border-b last:border-0 ${
+                            isBrandMatch ? "bg-blue-50/60" : ""
+                          }`}
+                        >
+                          <td className="px-3 py-2 text-xs text-gray-700">
+                            {entity.position ?? index + 1}
+                          </td>
+                          <td className="min-w-0 px-3 py-2 text-xs text-gray-900">
+                            <div className="truncate">{entity.name || "—"}</div>
+                            {entity.url ? (
+                              <a
+                                href={entity.url}
+                                target="_blank"
+                                rel="noopener noreferrer"
+                                className="mt-0.5 block truncate text-[11px] text-blue-600 hover:text-blue-800 sm:hidden"
+                                title={entity.url}
+                              >
+                                {entity.url}
+                              </a>
+                            ) : null}
+                          </td>
+                          <td className="hidden min-w-0 px-3 py-2 text-xs text-gray-700 sm:table-cell">
+                            {entity.url ? (
+                              <a
+                                href={entity.url}
+                                target="_blank"
+                                rel="noopener noreferrer"
+                                className="inline-block max-w-full truncate text-blue-600 hover:text-blue-800"
+                                title={entity.url}
+                              >
+                                {entity.url}
+                              </a>
+                            ) : (
+                              <span className="text-gray-400">—</span>
+                            )}
+                          </td>
+                          <td className="hidden min-w-0 px-3 py-2 text-xs text-gray-700 md:table-cell">
+                            <span className="line-clamp-2">
+                              {entity.snippet || "—"}
+                            </span>
+                          </td>
+                        </tr>
+                      )
+                    })
+                  )}
+                </tbody>
+              </table>
+            </div>
+          </div>
+        )}
+      </Card>
 
       {promptsManagementCard}
     </div>

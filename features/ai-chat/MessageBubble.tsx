@@ -10,9 +10,11 @@ import { getSupabaseBrowser } from "../../lib/supabase-browser"
 import { usePathname, useRouter, useSearchParams } from "next/navigation"
 import { buildNextUrlForEntityLink, isTasksShellPath, parseAppEntityLink } from "./app-entity-links"
 import { shallowPushSearchParams } from "../../app/lib/tasks-shallow-nav"
+import { exportArtifactDownload } from "../../app/lib/services/artifacts"
+import { useCenterPaneTabsStore } from "../../app/store/center-pane-tabs"
 import { Composer, type MentionSuggestion } from "./Composer"
 import { buildAiChatTaggedRefs, type TaggedTaskChannelRef, type TaggedTaskComponentRef } from "./build-ai-chat-tagged-refs"
-import { enhanceBlocksWithMarkdownTables } from "./text-to-output-blocks"
+import { enhanceBlocksWithMarkdownTables, tableBlockToClipboardText } from "./text-to-output-blocks"
 import { getAssistantContentBlocks } from "./assistant-content-blocks"
 import {
   AI_CHAT_ASSISTANT_MESSAGE_CLASS,
@@ -77,6 +79,8 @@ interface MessageBubbleProps {
   clarificationCard?: React.ReactNode
   /** Visible terminal failure/interruption card for assistant runs. */
   runFailureCard?: React.ReactNode
+  /** Keep the latest user turn fully expanded (not line-clamped). */
+  forceExpandedUserMessage?: boolean
 }
 
 type RenderableMessageBlock =
@@ -209,6 +213,29 @@ function clampWidthPct(value: number | null | undefined): number | null {
   return Math.max(20, Math.min(100, value))
 }
 
+async function copyTextToClipboard(text: string): Promise<boolean> {
+  const value = text.trim()
+  if (!value) return false
+  try {
+    if (typeof navigator !== "undefined" && navigator.clipboard?.writeText) {
+      await navigator.clipboard.writeText(value)
+      return true
+    }
+    const ta = document.createElement("textarea")
+    ta.value = value
+    ta.setAttribute("readonly", "")
+    ta.style.position = "fixed"
+    ta.style.left = "-9999px"
+    document.body.appendChild(ta)
+    ta.select()
+    const ok = document.execCommand("copy")
+    document.body.removeChild(ta)
+    return ok
+  } catch {
+    return false
+  }
+}
+
 function AssistantOutputBlock({
   block,
   attachments,
@@ -221,8 +248,30 @@ function AssistantOutputBlock({
   if (block.type === "table") {
     const headers = Array.isArray(block.headers) ? block.headers : []
     const rows = Array.isArray(block.rows) ? block.rows : []
+    const handleCopyTable = async () => {
+      const markdown = tableBlockToClipboardText(headers, rows)
+      const ok = await copyTextToClipboard(markdown)
+      if (ok) {
+        toast({ title: "Copied to clipboard", description: "Table copied" })
+      } else {
+        toast({
+          title: "Copy failed",
+          description: "Failed to copy table",
+          variant: "destructive",
+        })
+      }
+    }
     return (
-      <div className="overflow-x-auto">
+      <div className="group/table relative overflow-x-auto">
+        <button
+          type="button"
+          onClick={() => void handleCopyTable()}
+          className="absolute right-1 top-1 z-10 rounded p-1 text-gray-500 opacity-100 transition-colors hover:bg-gray-100 hover:text-gray-700 sm:opacity-0 sm:group-hover/table:opacity-100"
+          title="Copy table"
+          aria-label="Copy table"
+        >
+          <Copy className="h-3.5 w-3.5" />
+        </button>
         <table className="min-w-full border-collapse text-sm">
           <thead>
             <tr>
@@ -291,6 +340,7 @@ export function MessageBubble({
   executionTimeline = null,
   clarificationCard = null,
   runFailureCard = null,
+  forceExpandedUserMessage = false,
 }: MessageBubbleProps) {
   const router = useRouter()
   const pathname = usePathname()
@@ -385,34 +435,19 @@ export function MessageBubble({
 
   const handleCopy = async () => {
     const text = copyableAssistantText ?? (msg.content ?? "")
-    if (!text.trim()) return
-    try {
-      if (typeof navigator !== "undefined" && navigator.clipboard?.writeText) {
-        await navigator.clipboard.writeText(text)
-      } else {
-        const ta = document.createElement("textarea")
-        ta.value = text
-        ta.setAttribute("readonly", "")
-        ta.style.position = "fixed"
-        ta.style.left = "-9999px"
-        document.body.appendChild(ta)
-        ta.select()
-        const ok = document.execCommand("copy")
-        document.body.removeChild(ta)
-        if (!ok) throw new Error("execCommand unavailable")
-      }
-      toast({
-        title: "Copied to clipboard",
-        description: "Message content copied",
-      })
-    } catch (error) {
-      console.error("Failed to copy:", error)
+    const ok = await copyTextToClipboard(text)
+    if (!ok) {
       toast({
         title: "Copy failed",
         description: "Failed to copy to clipboard",
         variant: "destructive",
       })
+      return
     }
+    toast({
+      title: "Copied to clipboard",
+      description: "Message content copied",
+    })
   }
 
   const handleEdit = () => {
@@ -456,6 +491,28 @@ export function MessageBubble({
     event.preventDefault()
     event.stopPropagation()
 
+    if (parsedLink.type === "artifact-download") {
+      void exportArtifactDownload({
+        artifactId: parsedLink.id,
+        versionNumber: parsedLink.version,
+        format: parsedLink.format,
+        attachmentId: parsedLink.attachmentId,
+      }).catch((error) => {
+        toast({
+          title: "Download failed",
+          description: error instanceof Error ? error.message : "Could not export artifact",
+        })
+      })
+      return
+    }
+
+    if (parsedLink.type === "artifact") {
+      useCenterPaneTabsStore.getState().upsertTab({
+        kind: "artifact",
+        id: parsedLink.id,
+      })
+    }
+
     if (parsedLink.type === "user") {
       toast({
         title: "User link not available yet",
@@ -475,7 +532,11 @@ export function MessageBubble({
     if (isTasksShellPath(pathname)) {
       const queryStart = nextUrl.indexOf("?")
       const nextParams = new URLSearchParams(queryStart >= 0 ? nextUrl.slice(queryStart + 1) : "")
-      shallowPushSearchParams(pathname, nextParams, "ai-chat-task-link")
+      shallowPushSearchParams(
+        pathname.startsWith("/artifacts") ? "/" : pathname,
+        nextParams,
+        "ai-chat-entity-link",
+      )
       return
     }
 
@@ -561,7 +622,11 @@ export function MessageBubble({
   )
 
   const renderUserMessage = (content: string) => (
-    <UserMessageBody content={content} contentJson={msg.content_json} />
+    <UserMessageBody
+      content={content}
+      contentJson={msg.content_json}
+      forceExpanded={forceExpandedUserMessage}
+    />
   )
 
   return (

@@ -61,7 +61,8 @@ describe("artifact card content events", () => {
     expect(isArtifactCardContentEventType("artifact.media_progress")).toBe(true)
     expect(isArtifactCardContentEventType("artifact.failed")).toBe(true)
     expect(isArtifactCardContentEventType("artifact.plan_ready")).toBe(false)
-    expect(isArtifactCardContentEventType("artifact.started")).toBe(false)
+    // started seeds beforeContentJson for honest diffs; card UI still filters by phase.
+    expect(isArtifactCardContentEventType("artifact.started")).toBe(true)
     expect(isArtifactCardContentEventType("artifact.context_loaded")).toBe(false)
     expect(isArtifactCardContentEventType("artifact.structure_decided")).toBe(false)
   })

@@ -1,5 +1,5 @@
 /** Duplicated from Composer.tsx to avoid circular imports — keep in sync. */
-export type MentionGroupId = "task" | "project" | "user"
+export type MentionGroupId = "task" | "project" | "user" | "artifact" | "source"
 type ProjectMention = { id: number; name: string; color?: string | null; logo?: string | null }
 type TaskMention = {
   id: number
@@ -9,14 +9,30 @@ type TaskMention = {
   projectColor?: string | null
 }
 type UserMention = { id: number; full_name: string | null; email: string | null; photo: string | null }
+type ArtifactMention = {
+  id: string
+  title: string | null
+  task_id: number | null
+  project_id: number | null
+  current_version: number | null
+}
+type SourceMention = {
+  id: string
+  title: string | null
+  task_id: number | null
+  project_id: number | null
+  status: string | null
+}
 export type MentionSuggestion =
   | { kind: "project"; id: number; label: string; project: ProjectMention }
   | { kind: "task"; id: number; label: string; task: TaskMention }
   | { kind: "user"; id: number; label: string; user: UserMention }
+  | { kind: "artifact"; id: string; label: string; artifact: ArtifactMention }
+  | { kind: "source"; id: string; label: string; source: SourceMention }
 
 export type TaskMentionLite = TaskMention
 
-import type { MentionChannel, TaskChannelComponentsBucket } from "./mention-task-channel-components"
+import type { MentionChannel } from "./mention-task-channel-components"
 
 /** Flat rows for the @ picker; keyboard skips non-selectable kinds. */
 export type MentionPickerRow =
@@ -29,14 +45,6 @@ export type MentionPickerRow =
   | { kind: "channel"; task: TaskMentionLite; channelId: number; channelName: string }
   /** Standalone `#` channel token — inserts only a channel chip (no implied task chip). */
   | { kind: "channel_mention"; taskId: number; taskTitle: string; channelId: number; channelName: string }
-  | {
-      kind: "component"
-      task: TaskMentionLite
-      channelId: number
-      channelName: string
-      componentId: string
-      componentTitle: string
-    }
 
 export function mentionRowIsSelectable(row: MentionPickerRow): boolean {
   if (row.kind === "task_header" || row.kind === "loading") return false
@@ -108,7 +116,7 @@ export function nextSelectableMentionIndex(
 }
 
 type BuildLevel1Args = {
-  mentionFilter: "all" | "task" | "project" | "user"
+  mentionFilter: "all" | "task" | "project" | "user" | "artifact" | "source"
   mentionQuery: string | null
   mentionSuggestionsFiltered: MentionSuggestion[]
   directCombined: MentionSuggestion[]
@@ -132,6 +140,8 @@ export function buildLevel1MentionRows(args: BuildLevel1Args): MentionPickerRow[
     rows.push({ kind: "group", id: "task", label: "Tasks" })
     rows.push({ kind: "group", id: "project", label: "Projects" })
     rows.push({ kind: "group", id: "user", label: "Users" })
+    rows.push({ kind: "group", id: "artifact", label: "Artifacts" })
+    rows.push({ kind: "group", id: "source", label: "Sources" })
   }
   for (const s of mentionSuggestionsFiltered) {
     rows.push({ kind: "suggestion", suggestion: s })
@@ -143,16 +153,14 @@ type BuildLevel2Args = {
   task: TaskMentionLite
   channels: MentionChannel[] | null
   channelsLoading: boolean
-  /** Strict per (task_id, channel_id); undefined = fetch not started for that key */
-  componentsByTaskChannel: Record<string, TaskChannelComponentsBucket | undefined>
   query: string
 }
 
 /**
- * Single second-level panel: back + task header + channels with inline components (no third menu).
+ * Second-level @ panel: back + task header + channels (no task-channel-component mentions).
  */
 export function buildLevel2MentionRows(args: BuildLevel2Args): MentionPickerRow[] {
-  const { task, channels, channelsLoading, componentsByTaskChannel, query } = args
+  const { task, channels, channelsLoading, query } = args
   const tokens = tokenizeMentionQuery(query)
   const rows: MentionPickerRow[] = [{ kind: "back", label: "Tasks" }, { kind: "task_header", task }]
 
@@ -162,42 +170,8 @@ export function buildLevel2MentionRows(args: BuildLevel2Args): MentionPickerRow[
   }
 
   for (const ch of channels) {
-    const key = `${task.id}:${ch.channel_id}`
-    const bucket = componentsByTaskChannel[key]
-    const list = bucket?.loaded ? bucket.items : []
-    const channelMatchesAlone = pathMatchesTokens(tokens, [task.title, ch.name])
-    const anyCompMatches = list.some((c) => pathMatchesTokens(tokens, [task.title, ch.name, c.title]))
-    const awaitingBucket = bucket === undefined
-    const fetchInFlight = bucket != null && bucket.loading && !bucket.loaded
-    const showChannel =
-      tokens.length === 0 ||
-      channelMatchesAlone ||
-      anyCompMatches ||
-      awaitingBucket ||
-      fetchInFlight
-
-    if (!showChannel) continue
-
+    if (!pathMatchesTokens(tokens, [task.title, ch.name])) continue
     rows.push({ kind: "channel", task, channelId: ch.channel_id, channelName: ch.name })
-
-    if (!bucket || !bucket.loaded) {
-      rows.push({ kind: "loading" })
-      continue
-    }
-
-    if (bucket.error || bucket.items.length === 0) continue
-
-    for (const c of bucket.items) {
-      if (!pathMatchesTokens(tokens, [task.title, ch.name, c.title])) continue
-      rows.push({
-        kind: "component",
-        task,
-        channelId: ch.channel_id,
-        channelName: ch.name,
-        componentId: c.component_id,
-        componentTitle: c.title,
-      })
-    }
   }
 
   return rows

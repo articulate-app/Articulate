@@ -49,28 +49,110 @@ type DocxInlineBundle = {
   TextRun: new (options: Record<string, unknown>) => unknown
   HeadingLevel: Record<string, unknown>
   ExternalHyperlink?: new (options: Record<string, unknown>) => unknown
+  Table?: new (options: Record<string, unknown>) => unknown
+  TableRow?: new (options: Record<string, unknown>) => unknown
+  TableCell?: new (options: Record<string, unknown>) => unknown
+  WidthType?: { DXA: unknown; PERCENTAGE?: unknown }
+  BorderStyle?: { SINGLE: unknown; NONE?: unknown }
+}
+
+/** Word's default hyperlink look. */
+const DOCX_HYPERLINK_COLOR = "0563C1"
+const DOCX_TABLE_WIDTH_DXA = 9000
+const DOCX_TABLE_BORDER = { style: "single", size: 4, color: "BFBFBF" } as const
+
+type DocxImageBundle = DocxInlineBundle & {
+  ImageRun: new (options: Record<string, unknown>) => unknown
+  fetchImageBytes?: (url: string | null | undefined) => Promise<Uint8Array | null>
+}
+
+function inferImageType(url: string, bytes: Uint8Array): "png" | "jpg" | "gif" | "bmp" {
+  if (bytes[0] === 0x89 && bytes[1] === 0x50) return "png"
+  if (bytes[0] === 0xff && bytes[1] === 0xd8) return "jpg"
+  if (bytes[0] === 0x47 && bytes[1] === 0x49) return "gif"
+  if (url.toLowerCase().includes(".jpg") || url.toLowerCase().includes(".jpeg")) return "jpg"
+  if (url.toLowerCase().includes(".gif")) return "gif"
+  return "png"
+}
+
+function imageDimensions(bytes: Uint8Array, maxWidth = 520): { width: number; height: number } {
+  // Default landscape-ish box when we cannot parse intrinsic size.
+  let width = maxWidth
+  let height = Math.round(maxWidth * 0.62)
+  try {
+    // PNG IHDR
+    if (bytes[0] === 0x89 && bytes[1] === 0x50 && bytes.length >= 24) {
+      const w = (bytes[16] << 24) | (bytes[17] << 16) | (bytes[18] << 8) | bytes[19]
+      const h = (bytes[20] << 24) | (bytes[21] << 16) | (bytes[22] << 8) | bytes[23]
+      if (w > 0 && h > 0) {
+        const scale = Math.min(1, maxWidth / w)
+        width = Math.max(1, Math.round(w * scale))
+        height = Math.max(1, Math.round(h * scale))
+      }
+    }
+  } catch {
+    /* keep defaults */
+  }
+  return { width, height }
 }
 
 export function htmlToDocxElements(html: string, docx: DocxInlineBundle): unknown[] {
-  const { Paragraph, TextRun, HeadingLevel, ExternalHyperlink } = docx
+  // Sync path keeps figure placeholders; use htmlToDocxElementsAsync to embed images.
+  return htmlToDocxElementsSyncOrAsync(html, docx, null) as unknown[]
+}
+
+/**
+ * Like htmlToDocxElements, but embeds fetchable `<img>` / `<figure>` images via ImageRun.
+ */
+export async function htmlToDocxElementsAsync(
+  html: string,
+  docx: DocxImageBundle,
+): Promise<unknown[]> {
+  return htmlToDocxElementsSyncOrAsync(html, docx, docx)
+}
+
+function htmlToDocxElementsSyncOrAsync(
+  html: string,
+  docx: DocxInlineBundle,
+  imageDocx: DocxImageBundle | null,
+): unknown[] | Promise<unknown[]> {
+  const { Paragraph, TextRun, HeadingLevel, ExternalHyperlink, Table, TableRow, TableCell, WidthType, BorderStyle } = docx
   const paragraphs: unknown[] = []
-  if (!html?.trim()) return paragraphs
-  if (typeof DOMParser === "undefined") return paragraphs
+  if (!html?.trim()) return imageDocx ? Promise.resolve(paragraphs) : paragraphs
+  if (typeof DOMParser === "undefined") {
+    return imageDocx ? Promise.resolve(paragraphs) : paragraphs
+  }
 
   const createInlineRuns = (
     node: Node,
-    active: { bold?: boolean; italics?: boolean },
+    active: {
+      bold?: boolean
+      italics?: boolean
+      underline?: boolean
+      color?: string
+      isLink?: boolean
+    },
   ): unknown[] => {
     if (node.nodeType === Node.TEXT_NODE) {
       const text = (node.textContent || "").replaceAll("\u00A0", " ")
       if (!text.trim()) return []
-      return [new TextRun({ text, bold: !!active.bold, italics: !!active.italics })]
+      const isLink = !!active.isLink
+      return [
+        new TextRun({
+          text,
+          bold: !!active.bold,
+          italics: !!active.italics,
+          underline: isLink || active.underline ? {} : undefined,
+          color: active.color || (isLink ? DOCX_HYPERLINK_COLOR : undefined),
+          style: isLink ? "Hyperlink" : undefined,
+        }),
+      ]
     }
     if (node.nodeType !== Node.ELEMENT_NODE) return []
 
     const el = node as Element
     const tag = el.tagName.toLowerCase()
-    if (tag === "ul" || tag === "ol") return []
+    if (tag === "ul" || tag === "ol" || tag === "table") return []
 
     if (tag === "br") {
       return [new TextRun({ text: "", break: 1 })]
@@ -79,13 +161,33 @@ export function htmlToDocxElements(html: string, docx: DocxInlineBundle): unknow
     const nextActive = { ...active }
     if (tag === "strong" || tag === "b") nextActive.bold = true
     if (tag === "em" || tag === "i") nextActive.italics = true
+    if (tag === "u") nextActive.underline = true
 
     if (tag === "a") {
       const href = (el.getAttribute("href") || "").trim()
       const linkRuns: unknown[] = []
+      const linkActive = {
+        ...nextActive,
+        isLink: true,
+        underline: true,
+        color: DOCX_HYPERLINK_COLOR,
+      }
       el.childNodes.forEach((child) => {
-        linkRuns.push(...createInlineRuns(child, nextActive))
+        linkRuns.push(...createInlineRuns(child, linkActive))
       })
+      if (linkRuns.length === 0) {
+        const label = extractText(el) || href
+        if (label) {
+          linkRuns.push(
+            new TextRun({
+              text: label,
+              underline: {},
+              color: DOCX_HYPERLINK_COLOR,
+              style: "Hyperlink",
+            }),
+          )
+        }
+      }
       if (href && ExternalHyperlink && linkRuns.length > 0) {
         return [new ExternalHyperlink({ children: linkRuns, link: href })]
       }
@@ -104,7 +206,7 @@ export function htmlToDocxElements(html: string, docx: DocxInlineBundle): unknow
     el.childNodes.forEach((child) => {
       if (child.nodeType === Node.ELEMENT_NODE) {
         const childTag = (child as Element).tagName.toLowerCase()
-        if (childTag === "ul" || childTag === "ol") return
+        if (childTag === "ul" || childTag === "ol" || childTag === "table") return
       }
       runs.push(...createInlineRuns(child, {}))
     })
@@ -153,29 +255,206 @@ export function htmlToDocxElements(html: string, docx: DocxInlineBundle): unknow
     }
   }
 
+  const cellChildrenFromElement = (cell: Element, asHeader: boolean): unknown[] => {
+    const out: unknown[] = []
+    const pushCellParagraph = (runs: unknown[]) => {
+      out.push(
+        new Paragraph({
+          children: runs.length > 0 ? runs : [new TextRun({ text: "" })],
+          spacing: { after: 40 },
+        }),
+      )
+    }
+
+    const blockKids = Array.from(cell.children).filter((child) => {
+      const tag = child.tagName.toLowerCase()
+      return (
+        tag === "p"
+        || tag === "div"
+        || tag.startsWith("h")
+        || tag === "ul"
+        || tag === "ol"
+      )
+    })
+
+    if (blockKids.length === 0) {
+      pushCellParagraph(createInlineRuns(cell, { bold: asHeader }))
+      return out.length > 0 ? out : [new Paragraph({ children: [new TextRun({ text: "" })] })]
+    }
+
+    for (const child of blockKids) {
+      const tag = child.tagName.toLowerCase()
+      if (tag === "ul" || tag === "ol") {
+        const items = Array.from(child.children).filter((li) => li.tagName.toLowerCase() === "li")
+        for (const li of items) {
+          const bullet = tag === "ul" ? "• " : ""
+          const runs = createInlineRuns(li, { bold: asHeader })
+          pushCellParagraph(
+            runs.length > 0
+              ? [new TextRun({ text: bullet, bold: asHeader }), ...runs]
+              : [new TextRun({ text: `${bullet}${extractText(li)}`, bold: asHeader })],
+          )
+        }
+        continue
+      }
+      const headingLevel = mapHtmlHeadingTagToDocxLevel(tag)
+      pushCellParagraph(
+        createInlineRuns(child, { bold: asHeader || headingLevel != null }),
+      )
+    }
+
+    return out.length > 0 ? out : [new Paragraph({ children: [new TextRun({ text: "" })] })]
+  }
+
+  const pushTable = (tableEl: Element) => {
+    if (!Table || !TableRow || !TableCell) {
+      // Fallback: flatten cells to paragraphs if table constructors were not provided.
+      tableEl.querySelectorAll("tr").forEach((row) => {
+        const cells = Array.from(row.children).filter((c) => {
+          const tag = c.tagName.toLowerCase()
+          return tag === "td" || tag === "th"
+        })
+        const text = cells.map((c) => extractText(c)).filter(Boolean).join(" | ")
+        if (text) pushParagraph([new TextRun({ text })])
+      })
+      return
+    }
+
+    const rows = Array.from(tableEl.querySelectorAll("tr"))
+    if (rows.length === 0) return
+
+    const colCount = Math.max(
+      1,
+      ...rows.map(
+        (row) =>
+          Array.from(row.children).filter((c) => {
+            const tag = c.tagName.toLowerCase()
+            return tag === "td" || tag === "th"
+          }).length,
+      ),
+    )
+    const colWidth = Math.floor(DOCX_TABLE_WIDTH_DXA / colCount)
+    const borderStyle = BorderStyle?.SINGLE ?? DOCX_TABLE_BORDER.style
+    const borders = {
+      top: { style: borderStyle, size: DOCX_TABLE_BORDER.size, color: DOCX_TABLE_BORDER.color },
+      bottom: { style: borderStyle, size: DOCX_TABLE_BORDER.size, color: DOCX_TABLE_BORDER.color },
+      left: { style: borderStyle, size: DOCX_TABLE_BORDER.size, color: DOCX_TABLE_BORDER.color },
+      right: { style: borderStyle, size: DOCX_TABLE_BORDER.size, color: DOCX_TABLE_BORDER.color },
+    }
+
+    const docxRows = rows.map((row) => {
+      const cells = Array.from(row.children).filter((c) => {
+        const tag = c.tagName.toLowerCase()
+        return tag === "td" || tag === "th"
+      })
+      while (cells.length < colCount) {
+        const pad = row.ownerDocument.createElement("td")
+        cells.push(pad)
+      }
+      return new TableRow({
+        children: cells.map((cell) => {
+          const isHeader = cell.tagName.toLowerCase() === "th"
+          return new TableCell({
+            borders,
+            width: { size: colWidth, type: WidthType?.DXA ?? "dxa" },
+            children: cellChildrenFromElement(cell, isHeader),
+          })
+        }),
+      })
+    })
+
+    paragraphs.push(
+      new Table({
+        width: { size: DOCX_TABLE_WIDTH_DXA, type: WidthType?.DXA ?? "dxa" },
+        columnWidths: Array.from({ length: colCount }, () => colWidth),
+        rows: docxRows,
+      }),
+    )
+    // Spacing after table
+    paragraphs.push(new Paragraph({ children: [new TextRun({ text: "" })], spacing: { after: 160 } }))
+  }
+
+  const pushFigurePlaceholder = (el: Element) => {
+    const img = el.querySelector("img")
+    const alt = img?.getAttribute("alt")?.trim() || extractText(el) || "Image"
+    pushParagraph([new TextRun({ text: `[Image: ${alt}]`, italics: true })])
+  }
+
+  const pushFigureWithImage = async (el: Element) => {
+    if (!imageDocx) {
+      pushFigurePlaceholder(el)
+      return
+    }
+    const img = el.querySelector("img")
+    const src = img?.getAttribute("src")?.trim() || ""
+    const alt = img?.getAttribute("alt")?.trim() || extractText(el) || "Image"
+    const caption = el.querySelector("figcaption")?.textContent?.trim() || ""
+    const fetchBytes = imageDocx.fetchImageBytes ?? fetchImageBytesForDocx
+    const bytes = src ? await fetchBytes(src) : null
+    if (!bytes) {
+      pushFigurePlaceholder(el)
+      return
+    }
+    try {
+      const dims = imageDimensions(bytes)
+      paragraphs.push(
+        new Paragraph({
+          children: [
+            new imageDocx.ImageRun({
+              type: inferImageType(src, bytes),
+              data: bytes,
+              transformation: dims,
+              altText: { title: alt, description: alt, name: alt },
+            }),
+          ],
+          spacing: { after: caption ? 80 : 160 },
+        }),
+      )
+      if (caption) {
+        pushParagraph([new TextRun({ text: caption, italics: true })], { after: 160 })
+      }
+    } catch {
+      pushFigurePlaceholder(el)
+    }
+  }
+
   const blocks = collectExportBlockElements(html)
-  for (const el of blocks) {
+
+  const processBlock = async (el: Element) => {
     const tag = el.tagName.toLowerCase()
     const headingLevel = mapHtmlHeadingTagToDocxLevel(tag)
     if (headingLevel != null) {
       pushHeading(headingLevel, extractText(el))
-      continue
+      return
     }
     if (tag === "ul" || tag === "ol") {
       processList(el, tag, 0)
-      continue
+      return
     }
-    if (tag === "figure") {
-      const img = el.querySelector("img")
-      const alt = img?.getAttribute("alt")?.trim() || extractText(el) || "Image"
-      pushParagraph([new TextRun({ text: `[Image: ${alt}]`, italics: true })])
-      continue
+    if (tag === "table") {
+      pushTable(el)
+      return
+    }
+    if (tag === "figure" || tag === "img") {
+      if (imageDocx) await pushFigureWithImage(tag === "img" ? el : el)
+      else pushFigurePlaceholder(tag === "img" ? el : el)
+      return
     }
     if (tag === "p" || tag === "div") {
       pushParagraph(createRunsExcludingLists(el))
     }
   }
 
+  if (imageDocx) {
+    return (async () => {
+      for (const el of blocks) await processBlock(el)
+      return paragraphs
+    })()
+  }
+
+  for (const el of blocks) {
+    void processBlock(el)
+  }
   return paragraphs
 }
 
@@ -201,15 +480,6 @@ export async function fetchImageBytesForDocx(url: string | null | undefined): Pr
     console.warn("[task-content-docx-render] Logo fetch error:", trimmed, error)
     return null
   }
-}
-
-function inferImageType(url: string, bytes: Uint8Array): "png" | "jpg" | "gif" | "bmp" {
-  if (bytes[0] === 0x89 && bytes[1] === 0x50) return "png"
-  if (bytes[0] === 0xff && bytes[1] === 0xd8) return "jpg"
-  if (bytes[0] === 0x47 && bytes[1] === 0x49) return "gif"
-  if (url.toLowerCase().includes(".jpg") || url.toLowerCase().includes(".jpeg")) return "jpg"
-  if (url.toLowerCase().includes(".gif")) return "gif"
-  return "png"
 }
 
 export async function buildDocxLogoParagraph(

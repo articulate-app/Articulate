@@ -4,18 +4,22 @@ import { useState } from "react"
 import { TaskOverviewPreviewSection } from "../tasks/task-overview-preview-section"
 import { ProjectAnalyticsTab } from "./ProjectAnalyticsTab"
 import { ProjectAiVisibilityTab } from "./ProjectAiVisibilityTab"
-import { ProjectAiUsageSection } from "./project-ai-usage-section"
 import { ProjectKeywordTrackingTab } from "./ProjectKeywordTrackingTab"
+import { ProjectSuggestionsTab } from "./ProjectSuggestionsTab"
 import { ProjectOverviewUpdatesComments } from "./project-overview-updates-comments"
+import { ProjectOverviewWatchers } from "./project-overview-watchers"
+import { ArtifactWorkspace } from "../../../features/artifacts/ArtifactWorkspace"
 
 export type ProjectOverviewTab =
   | "activity"
   | "comments"
   | "analytics"
   | "ai-visibility"
-  | "ai-usage"
   | "keywords"
   | "tasks"
+  | "suggestions"
+  | "files"
+  | "artifacts"
 
 type ProjectOverviewPreviewsProps = {
   projectId: number
@@ -31,10 +35,12 @@ export function ProjectOverviewPreviews({ projectId, onNavigateTab }: ProjectOve
   const [analyticsReady, setAnalyticsReady] = useState(false)
   const [aiVisibilityReady, setAiVisibilityReady] = useState(false)
   const [keywordsReady, setKeywordsReady] = useState(false)
-  const [aiUsageReady, setAiUsageReady] = useState(false)
+  const [suggestionsReady, setSuggestionsReady] = useState(false)
 
   return (
     <div className="min-w-0 space-y-0">
+      <ProjectOverviewWatchers projectId={projectId} />
+
       <TaskOverviewPreviewSection
         title="Analytics"
         onViewAll={() => onNavigateTab("analytics")}
@@ -68,12 +74,28 @@ export function ProjectOverviewPreviews({ projectId, onNavigateTab }: ProjectOve
       </TaskOverviewPreviewSection>
 
       <TaskOverviewPreviewSection
-        title="AI usage"
-        onViewAll={() => onNavigateTab("ai-usage")}
+        title="Suggestions"
+        onViewAll={() => onNavigateTab("suggestions")}
         active={keywordsReady}
-        onVisible={() => setAiUsageReady(true)}
+        onVisible={() => setSuggestionsReady(true)}
       >
-        {aiUsageReady ? <ProjectAiUsageSection projectId={projectId} /> : null}
+        {suggestionsReady ? (
+          <ProjectSuggestionsTab projectId={projectId} variant="preview" />
+        ) : null}
+      </TaskOverviewPreviewSection>
+
+      <TaskOverviewPreviewSection
+        title="Artifacts"
+        onViewAll={() => onNavigateTab("artifacts")}
+        active={suggestionsReady}
+      >
+        <div className="min-h-0">
+          <ArtifactWorkspace
+            projectId={projectId}
+            layout="stack"
+            hideHeading
+          />
+        </div>
       </TaskOverviewPreviewSection>
 
       <ProjectOverviewUpdatesComments

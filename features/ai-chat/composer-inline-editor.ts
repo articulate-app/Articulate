@@ -8,6 +8,8 @@ export type AiTagType =
   | "channel"
   | "task_channel"
   | "task_component"
+  | "artifact"
+  | "source"
 export type AiTagSource = "mention" | "selection"
 
 export type AiContextTag = {
@@ -27,6 +29,14 @@ export type AiContextTag = {
   componentId?: string
   componentTitle?: string | null
   taskComponentOutputId?: string | null
+  /** artifact tag — factual context only; does not grant write authority. */
+  artifactId?: string
+  artifactVersionNumber?: number | null
+  artifactTitle?: string | null
+  projectId?: number | null
+  /** source tag — factual input context only; does not grant write/attach/delete. */
+  sourceId?: string
+  sourceTitle?: string | null
   /** When set, this tag may drive ai-chat write scope (maps to context_source). */
   contextSource?: string | null
 }
@@ -293,6 +303,14 @@ export function chipDisplayText(tag: AiContextTag): string {
     const co = (tag.componentTitle ?? tag.label).trim()
     return `@${co || tag.label}`
   }
+  if (tag.type === "artifact") {
+    const title = (tag.artifactTitle ?? tag.label).trim()
+    return `@${title || "Artifact"}`
+  }
+  if (tag.type === "source") {
+    const title = (tag.sourceTitle ?? tag.label).trim()
+    return `@${title || "Source"}`
+  }
   return `@${tag.label}`
 }
 
@@ -322,6 +340,15 @@ export function chipTooltipText(tag: AiContextTag): string {
   } else if (tag.type === "user") {
     lines.push(clean(tag.label))
     if (clean(tag.email) && clean(tag.email) !== clean(tag.label)) lines.push(clean(tag.email))
+  } else if (tag.type === "artifact") {
+    lines.push(`Artifact: ${clean(tag.artifactTitle) || clean(tag.label)}`)
+    if (tag.artifactVersionNumber != null) lines.push(`Version: ${tag.artifactVersionNumber}`)
+    if (tag.taskId != null) lines.push(`Task: ${tag.taskId}`)
+    if (tag.projectId != null) lines.push(`Project: ${tag.projectId}`)
+  } else if (tag.type === "source") {
+    lines.push(`Source: ${clean(tag.sourceTitle) || clean(tag.label)}`)
+    if (tag.taskId != null) lines.push(`Task: ${tag.taskId}`)
+    if (tag.projectId != null) lines.push(`Project: ${tag.projectId}`)
   } else {
     lines.push(clean(tag.label))
   }
@@ -347,6 +374,14 @@ export function createTagChip(tag: AiContextTag): HTMLSpanElement {
   if (tag.componentId) outer.setAttribute("data-component-id", tag.componentId)
   if (tag.componentTitle) outer.setAttribute("data-component-title", tag.componentTitle)
   if (tag.taskComponentOutputId) outer.setAttribute("data-task-component-output-id", tag.taskComponentOutputId)
+  if (tag.artifactId) outer.setAttribute("data-artifact-id", tag.artifactId)
+  if (tag.artifactVersionNumber != null) {
+    outer.setAttribute("data-artifact-version-number", String(tag.artifactVersionNumber))
+  }
+  if (tag.artifactTitle) outer.setAttribute("data-artifact-title", tag.artifactTitle)
+  if (tag.sourceId) outer.setAttribute("data-source-id", tag.sourceId)
+  if (tag.sourceTitle) outer.setAttribute("data-source-title", tag.sourceTitle)
+  if (tag.projectId != null) outer.setAttribute("data-project-id", String(tag.projectId))
   if (tag.contextSource) outer.setAttribute("data-tag-context-source", tag.contextSource)
 
   outer.contentEditable = "false"
@@ -354,7 +389,7 @@ export function createTagChip(tag: AiContextTag): HTMLSpanElement {
   outer.title = chipTooltipText(tag)
 
   const labelEl = document.createElement("span")
-  labelEl.className = "min-w-0 flex-1 truncate whitespace-nowrap text-left"
+  labelEl.className = "min-w-0 truncate whitespace-nowrap text-left"
   labelEl.textContent = chipDisplayText(tag)
 
   const removeBtn = document.createElement("button")
@@ -410,6 +445,24 @@ export function readTagFromChip(el: HTMLElement): AiContextTag | null {
   if (el.dataset.componentId) base.componentId = el.dataset.componentId
   if (el.dataset.componentTitle) base.componentTitle = el.dataset.componentTitle
   if (el.dataset.taskComponentOutputId) base.taskComponentOutputId = el.dataset.taskComponentOutputId
+  if (el.dataset.artifactId) base.artifactId = el.dataset.artifactId
+  if (el.dataset.artifactVersionNumber) {
+    const version = Number(el.dataset.artifactVersionNumber)
+    if (Number.isFinite(version)) base.artifactVersionNumber = version
+  }
+  if (el.dataset.artifactTitle) base.artifactTitle = el.dataset.artifactTitle
+  if (el.dataset.sourceId) base.sourceId = el.dataset.sourceId
+  if (el.dataset.sourceTitle) base.sourceTitle = el.dataset.sourceTitle
+  if (el.dataset.projectId) {
+    const projectId = Number(el.dataset.projectId)
+    if (Number.isFinite(projectId)) base.projectId = projectId
+  }
+  if (type === "artifact") {
+    base.artifactId = base.artifactId ?? String(id)
+  }
+  if (type === "source") {
+    base.sourceId = base.sourceId ?? String(id)
+  }
   if (el.dataset.tagContextSource) base.contextSource = el.dataset.tagContextSource
   return base
 }

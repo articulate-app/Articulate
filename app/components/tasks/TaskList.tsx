@@ -865,7 +865,10 @@ export function TaskList({ onTaskSelect, expandMainTaskId, selectedTaskId, editF
   // Derivation lives after the table is built (see `normalTableMinWidth` / overflow effect below) so
   // it reads real column sizes and stays mode-independent (no flip-flop). Reacts to middle/right pane
   // open-close, left-pane expand, layout changes, and window resize via the container ResizeObserver.
-  const [isCompact, setIsCompact] = useState(false)
+  // Default TRUE: first paint must not use the expanded `max-content` table, or flex `min-width: auto`
+  // can blow the pane out to the table width, lock `containerWidth` high, and get stuck expanded
+  // (commonly triggered when search removes the vertical scrollbar and briefly exits compact).
+  const [isCompact, setIsCompact] = useState(true)
 
   // On mount: load columnSizing from localStorage if present, else keep defaultColumnWidths
   useEffect(() => {
@@ -3562,7 +3565,9 @@ export function TaskList({ onTaskSelect, expandMainTaskId, selectedTaskId, editF
   //    (with its own horizontal scroll) instead of being stuck compact forever.
   // Hysteresis (COMPACT_EXIT_MARGIN) avoids oscillation right at the boundary.
   const compactEnterWidth = Math.min(normalTableMinWidth, COMPACT_MAX_ENTER_WIDTH)
-  useEffect(() => {
+  // Layout effect: decide compact vs expanded before paint so a single expanded frame cannot
+  // stretch flex ancestors (see isCompact default / min-w-0 wrappers).
+  useLayoutEffect(() => {
     if (containerWidth <= 0 || compactEnterWidth <= 0) return
     setIsCompact((prev) =>
       prev
@@ -3634,16 +3639,33 @@ export function TaskList({ onTaskSelect, expandMainTaskId, selectedTaskId, editF
     const handlePinnedScroll = () => {
       tableDiv.scrollLeft = pinnedDiv.scrollLeft
     }
+    // Body is overflow-x-hidden (pinned bar is the only visible H scroller). Forward
+    // trackpad / shift-wheel horizontal gestures so columns still pan from the grid.
+    const handleTableWheel = (event: WheelEvent) => {
+      let deltaX = event.deltaX
+      if (event.shiftKey && deltaX === 0) deltaX = event.deltaY
+      if (deltaX === 0) return
+      if (!event.shiftKey && Math.abs(deltaX) < Math.abs(event.deltaY)) return
+      const maxScroll = Math.max(0, tableDiv.scrollWidth - tableDiv.clientWidth)
+      if (maxScroll <= 0) return
+      const next = Math.max(0, Math.min(maxScroll, tableDiv.scrollLeft + deltaX))
+      if (next === tableDiv.scrollLeft) return
+      tableDiv.scrollLeft = next
+      pinnedDiv.scrollLeft = next
+      event.preventDefault()
+    }
 
     // Sync initial position both ways (helps when switching grouped <-> ungrouped)
     pinnedDiv.scrollLeft = tableDiv.scrollLeft
 
     tableDiv.addEventListener('scroll', handleTableScroll, { passive: true } as any)
     pinnedDiv.addEventListener('scroll', handlePinnedScroll, { passive: true } as any)
+    tableDiv.addEventListener('wheel', handleTableWheel, { passive: false })
 
     return () => {
       tableDiv.removeEventListener('scroll', handleTableScroll as any)
       pinnedDiv.removeEventListener('scroll', handlePinnedScroll as any)
+      tableDiv.removeEventListener('wheel', handleTableWheel)
     }
   }, [tableScrollEl, pinnedScrollEl, isGroupedView, taskListViewQuery.data.length])
 
@@ -3777,7 +3799,7 @@ export function TaskList({ onTaskSelect, expandMainTaskId, selectedTaskId, editF
   // Mobile view
   if (isMobile) {
     return (
-      <div ref={containerRef} className="flex flex-col h-full w-full bg-white">
+      <div ref={containerRef} className="flex h-full min-h-0 min-w-0 w-full flex-col overflow-hidden bg-white">
         {/* Bulk Action Bar for Mobile */}
         <BulkActionBar
           selectedCount={selectedTasks.size}
@@ -3789,7 +3811,7 @@ export function TaskList({ onTaskSelect, expandMainTaskId, selectedTaskId, editF
         <div
           ref={scrollContainerRef}
           className={cn(
-            'relative flex-1 overflow-y-auto',
+            'relative min-h-0 min-w-0 flex-1 overflow-y-auto [scrollbar-gutter:stable]',
             isCompact ? 'overflow-x-hidden' : 'overflow-x-auto',
           )}
           data-task-scroll-container
@@ -3856,10 +3878,10 @@ export function TaskList({ onTaskSelect, expandMainTaskId, selectedTaskId, editF
 
   // Desktop view
   return (
-    <div ref={containerRef} className="flex flex-col h-screen w-full bg-transparent" style={{ padding: 0, margin: 0 }}>
+    <div ref={containerRef} className="flex h-full min-h-0 min-w-0 w-full flex-col overflow-hidden bg-transparent" style={{ padding: 0, margin: 0 }}>
       {bulkDeleteDialog}
       {/* Always use UnifiedGroupedTaskList (grouped + ungrouped both use task_group_tasks_filtered; ungrouped = p_group_key='all'). */}
-      <div className="relative h-full flex flex-col flex-1" style={{ padding: 0, margin: 0 }}>
+      <div className="relative flex h-full min-h-0 min-w-0 flex-1 flex-col" style={{ padding: 0, margin: 0 }}>
         <BulkActionBar
           selectedCount={selectedTasks.size}
           onClearSelection={handleClearSelection}
@@ -3870,10 +3892,7 @@ export function TaskList({ onTaskSelect, expandMainTaskId, selectedTaskId, editF
         <div
           ref={desktopScrollRef}
           data-task-scroll-container
-          className={cn(
-            'relative flex-1 overflow-y-auto',
-            isCompact ? 'overflow-x-hidden' : 'overflow-x-auto',
-          )}
+          className="relative min-h-0 min-w-0 flex-1 overflow-x-hidden overflow-y-auto [scrollbar-gutter:stable]"
           style={{ width: '100%', padding: 0, margin: 0 }}
           onScroll={markScrolling}
           onWheel={markScrolling}

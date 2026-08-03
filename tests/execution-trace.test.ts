@@ -7,6 +7,7 @@ import {
   normalizeExecutionTraceEvent,
   orderExecutionTraceSteps,
   shouldSuppressGenericStatusText,
+  statusPayloadToExecutionTraceEvent,
 } from "../features/ai-chat/execution-trace"
 import { useAiExecutionTraceStore } from "../app/store/ai-execution-trace-store"
 import type { AiOrchestratedBuildEvent } from "../app/lib/ai/ai-orchestrated-build-types"
@@ -72,6 +73,54 @@ describe("mergeExecutionTraceStep", () => {
   })
 })
 
+describe("statusPayloadToExecutionTraceEvent", () => {
+  it("maps tool_started / tool_finished into one mergeable step", () => {
+    const started = statusPayloadToExecutionTraceEvent({
+      sequence: 10,
+      emitted_at: "2026-07-30T15:08:52.451Z",
+      type: "tool_started",
+      phase: "started",
+      round: 0,
+      tool_name: "list_visible_projects",
+      text: "Using list_visible_projects…",
+    })
+    expect(started?.step_id).toBe("tool:0:list_visible_projects")
+    expect(started?.phase).toBe("started")
+    expect(started?.category).toBe("discovery")
+    expect(started?.text).toContain("Looking up projects")
+
+    const finished = statusPayloadToExecutionTraceEvent({
+      sequence: 11,
+      emitted_at: "2026-07-30T15:08:53.352Z",
+      type: "tool_finished",
+      phase: "completed",
+      round: 0,
+      tool_name: "list_visible_projects",
+      ok: true,
+      text: "Finished list_visible_projects.",
+    })
+    expect(finished?.step_id).toBe("tool:0:list_visible_projects")
+    expect(finished?.phase).toBe("completed")
+
+    const merged = mergeExecutionTraceStep(
+      executionTraceEventToStep(started!),
+      executionTraceEventToStep(finished!),
+    )
+    expect(merged.phase).toBe("completed")
+    expect(merged.text).toContain("Finished looking up projects")
+  })
+
+  it("ignores generic status payloads", () => {
+    expect(
+      statusPayloadToExecutionTraceEvent({
+        type: "status",
+        phase: "started",
+        text: "Reviewing the request and current context…",
+      }),
+    ).toBeNull()
+  })
+})
+
 describe("shouldSuppressGenericStatusText", () => {
   it("hides Looking something up when timeline steps exist", () => {
     expect(
@@ -109,7 +158,7 @@ describe("mapBuildEventToExecutionTraceSteps", () => {
     }
     const steps = mapBuildEventToExecutionTraceSteps(event)
     expect(steps[0]?.phase).toBe("completed")
-    expect(steps[0]?.text).toMatch(/Loaded target audience, primary keyword and 12 internal-link candidates/)
+    expect(steps[0]?.text).toMatch(/Loaded target audience and primary keyword/)
   })
 
   it("maps website_index and repair events", () => {
@@ -290,32 +339,27 @@ describe("mapBuildEventToExecutionTraceSteps", () => {
     expect(failed[0]?.stepId).toBe("unit-1:failed")
   })
 
-  it("maps artifact.plan_ready into one timeline line per planned artifact", () => {
-    const steps = mapBuildEventToExecutionTraceSteps({
-      sequence: 2,
-      event_type: "artifact.plan_ready",
-      phase: "completed",
-      unit_id: "unit-a",
-      payload: {
-        planned_artifacts: [
-          {
-            artifact_id: "art-1",
-            title: "High density cork",
-            artifact_type: "article",
-            channel_name: "Blog",
-            metadata: { reason: "one coherent channel deliverable" },
-          },
-        ],
-      },
-    })
-    expect(steps).toHaveLength(1)
-    expect(steps[0]?.text).toBe(
-      "Planned article “High density cork” for Blog — one coherent channel deliverable",
-    )
-    expect(steps[0]?.category).toBe("planning")
-  })
+  it("suppresses routine artifact lifecycle chatter from the timeline", () => {
+    expect(
+      mapBuildEventToExecutionTraceSteps({
+        sequence: 2,
+        event_type: "artifact.plan_ready",
+        phase: "completed",
+        unit_id: "unit-a",
+        payload: {
+          planned_artifacts: [
+            {
+              artifact_id: "art-1",
+              title: "High density cork",
+              artifact_type: "article",
+              channel_name: "Blog",
+              metadata: { reason: "one coherent channel deliverable" },
+            },
+          ],
+        },
+      }),
+    ).toEqual([])
 
-  it("maps artifact.started / context_loaded / structure_decided / failed", () => {
     expect(
       mapBuildEventToExecutionTraceSteps({
         sequence: 3,
@@ -323,41 +367,61 @@ describe("mapBuildEventToExecutionTraceSteps", () => {
         phase: "started",
         unit_id: "unit-a",
         payload: { artifact_id: "art-1", title: "High density cork" },
-      })[0]?.text,
-    ).toBe("Started building “High density cork”.")
+      }),
+    ).toEqual([])
 
-    const context = mapBuildEventToExecutionTraceSteps({
-      sequence: 4,
-      event_type: "artifact.context_loaded",
-      phase: "completed",
-      unit_id: "unit-a",
-      payload: {
-        artifact_id: "art-1",
-        audience: "Architects",
-        primary_keyword: "cork flooring",
-        mandatory_role_count: 2,
-        internal_link_candidate_count: 5,
-      },
-    })
-    expect(context[0]?.text).toContain("audience Architects")
-    expect(context[0]?.text).toContain("keyword “cork flooring”")
-    expect(context[0]?.text).toContain("2 mandatory roles")
-    expect(context[0]?.text).toContain("5 internal-link candidates")
+    expect(
+      mapBuildEventToExecutionTraceSteps({
+        sequence: 4,
+        event_type: "artifact.context_loaded",
+        phase: "completed",
+        unit_id: "unit-a",
+        payload: {
+          artifact_id: "art-1",
+          audience: "Architects",
+          primary_keyword: "cork flooring",
+          mandatory_role_count: 2,
+          internal_link_candidate_count: 5,
+        },
+      }),
+    ).toEqual([])
 
-    const structure = mapBuildEventToExecutionTraceSteps({
-      sequence: 5,
-      event_type: "artifact.structure_decided",
-      phase: "completed",
-      unit_id: "unit-a",
-      payload: {
-        artifact_id: "art-1",
-        section_titles: ["Intro", "Benefits"],
-        verified_internal_link_count: 3,
-      },
-    })
-    expect(structure[0]?.text).toContain("Intro")
-    expect(structure[0]?.text).toContain("3 verified internal links selected")
+    expect(
+      mapBuildEventToExecutionTraceSteps({
+        sequence: 5,
+        event_type: "artifact.structure_decided",
+        phase: "completed",
+        unit_id: "unit-a",
+        payload: {
+          artifact_id: "art-1",
+          section_titles: ["Intro", "Benefits"],
+          verified_internal_link_count: 3,
+        },
+      }),
+    ).toEqual([])
 
+    expect(
+      mapBuildEventToExecutionTraceSteps({
+        sequence: 7,
+        event_type: "artifact.preview",
+        phase: "completed",
+        unit_id: "unit-a",
+        payload: { artifact_id: "art-1", title: "High density cork" },
+      }),
+    ).toEqual([])
+
+    expect(
+      mapBuildEventToExecutionTraceSteps({
+        sequence: 8,
+        event_type: "artifact.version_saved",
+        phase: "completed",
+        unit_id: "unit-a",
+        payload: { artifact_id: "art-1", title: "High density cork" },
+      }),
+    ).toEqual([])
+  })
+
+  it("still surfaces artifact.failed in the timeline", () => {
     const failed = mapBuildEventToExecutionTraceSteps({
       sequence: 6,
       event_type: "artifact.failed",
@@ -374,7 +438,7 @@ describe("mapBuildEventToExecutionTraceSteps", () => {
     expect(failed[0]?.phase).toBe("failed")
     expect(failed[0]?.text).toContain("generation_timeout")
     expect(failed[0]?.text).toContain("will retry")
-    expect(failed[0]?.stepId).toContain("artifact:failed")
+    expect(failed[0]?.stepId).toBe("unit-a:artifact:started:art-1")
   })
 })
 
@@ -387,10 +451,15 @@ describe("useAiExecutionTraceStore", () => {
     const store = useAiExecutionTraceStore.getState()
     const event = {
       sequence: 1,
-      event_type: "artifact.started",
-      phase: "started",
+      event_type: "artifact.failed",
+      phase: "failed",
       unit_id: "u1",
-      payload: { artifact_id: "a1", title: "Doc" },
+      payload: {
+        artifact_id: "a1",
+        title: "Doc",
+        error_code: "generation_timeout",
+        error_message: "Timed out",
+      },
     }
     store.upsertBuildEvents({
       assistantMessageId: "msg-1",

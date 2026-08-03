@@ -8,6 +8,8 @@ export const PANE_QUERY_KEYS = [
   "centerThreadId",
   "centerUserId",
   "centerTeamId",
+  "centerArtifactId",
+  "version",
   "id",
   "detailId",
   "detailType",
@@ -24,7 +26,7 @@ export const PANE_QUERY_KEYS = [
 
 export const SHARED_SEARCH_PARAMS = ["q", ...PANE_QUERY_KEYS] as const
 
-export type SearchObjectRoute = "all" | "task" | "project" | "mention" | "user" | "team" | "ai_thread"
+export type SearchObjectRoute = "all" | "task" | "project" | "mention" | "user" | "team" | "ai_thread" | "artifact"
 
 export const WORKSPACE_OBJECT_QUERY_KEY = "object"
 
@@ -36,6 +38,7 @@ export const OBJECT_ROUTE_PATHS: Record<SearchObjectRoute, string> = {
   user: "/users",
   team: "/teams",
   ai_thread: "/ai-threads",
+  artifact: "/artifacts",
 }
 
 const ROUTE_OBJECT_ENTRIES = Object.entries(OBJECT_ROUTE_PATHS) as Array<[SearchObjectRoute, string]>
@@ -85,6 +88,11 @@ function normalizeWorkspaceObject(value: string | null | undefined): WorkspaceOb
 export function objectRouteFromPathname(pathname: string): SearchObjectRoute {
   for (const [objectRoute, routePath] of ROUTE_OBJECT_ENTRIES) {
     if (routePath === "/") continue
+    // Artifact deep links (`/artifacts/:id`) are standalone pages — only exact `/artifacts` is the list object.
+    if (objectRoute === "artifact") {
+      if (pathname === routePath) return objectRoute
+      continue
+    }
     if (pathname === routePath || pathname.startsWith(`${routePath}/`)) return objectRoute
   }
   return "all"
@@ -277,6 +285,7 @@ export type SearchDataSource =
   | "users"
   | "teams"
   | "ai_threads"
+  | "artifacts"
 
 export function resolveSearchDataSource({
   pathname,
@@ -300,6 +309,7 @@ export function resolveSearchDataSource({
   if (routeObject === "user") return "users"
   if (routeObject === "team") return "teams"
   if (routeObject === "ai_thread") return "ai_threads"
+  if (routeObject === "artifact") return "artifacts"
 
   return "global_search"
 }

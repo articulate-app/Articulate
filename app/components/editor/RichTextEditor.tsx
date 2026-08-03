@@ -9,6 +9,10 @@ import TextAlign from "@tiptap/extension-text-align";
 import Highlight from "@tiptap/extension-highlight";
 import TaskList from "@tiptap/extension-task-list";
 import TaskItem from "@tiptap/extension-task-item";
+import Table from "@tiptap/extension-table";
+import TableRow from "@tiptap/extension-table-row";
+import TableCell from "@tiptap/extension-table-cell";
+import TableHeader from "@tiptap/extension-table-header";
 import { CommentMark } from "./CommentMark";
 import { EditorToolbar } from "./EditorToolbar";
 import { CompactToolbar } from "./CompactToolbar";
@@ -20,10 +24,51 @@ import { useEditorLinkDialog } from "./useEditorLinkDialog";
 import { usePathname } from "next/navigation";
 import { handleComponentOutputAnchorClick } from "@/lib/component-output-link-navigation";
 
+const TableCellWithBackground = TableCell.extend({
+  addAttributes() {
+    return {
+      ...this.parent?.(),
+      backgroundColor: {
+        default: null,
+        parseHTML: (element) =>
+          element.getAttribute("data-background-color")
+          || (element as HTMLElement).style?.backgroundColor
+          || null,
+        renderHTML: (attributes) => {
+          if (!attributes.backgroundColor) return {};
+          return {
+            "data-background-color": attributes.backgroundColor,
+            style: `background-color: ${attributes.backgroundColor}`,
+          };
+        },
+      },
+    };
+  },
+});
+
+const TableHeaderWithBackground = TableHeader.extend({
+  addAttributes() {
+    return {
+      ...this.parent?.(),
+      backgroundColor: {
+        default: null,
+        parseHTML: (element) =>
+          element.getAttribute("data-background-color")
+          || (element as HTMLElement).style?.backgroundColor
+          || null,
+        renderHTML: (attributes) => {
+          if (!attributes.backgroundColor) return {};
+          return {
+            "data-background-color": attributes.backgroundColor,
+            style: `background-color: ${attributes.backgroundColor}`,
+          };
+        },
+      },
+    };
+  },
+});
+
 function isDebugOutputImageOverlaysEnabled(): boolean {
-  // Temporary hard-on switch for safe CSS-only visual debugging.
-  const FORCE_DEBUG_OUTPUT_IMAGE_OVERLAYS = true;
-  if (FORCE_DEBUG_OUTPUT_IMAGE_OVERLAYS) return true;
   if (typeof window === "undefined") return false;
   try {
     return window.localStorage.getItem("debugOutputImageOverlays") === "1";
@@ -184,8 +229,8 @@ const AttachmentBlock = Node.create({
       (typeof HTMLAttributes["data-output-id"] === "string" && HTMLAttributes["data-output-id"].length > 0
         ? HTMLAttributes["data-output-id"]
         : "");
-    const debugFromAttr = String(HTMLAttributes.debugOutputImageOverlays ?? "false") === "true";
-    const debugOutputImageOverlays = debugFromAttr || isDebugOutputImageOverlaysEnabled();
+    // Never persist debug overlay chrome into getHTML()/content_text ("pins 0 · display…").
+    const debugOutputImageOverlays = false;
     let parsedPins: Array<{ threadId: number; anchorX: number; anchorY: number }> = [];
     try {
       const encoded = typeof HTMLAttributes.commentPins === "string" ? HTMLAttributes.commentPins : "[]";
@@ -266,10 +311,9 @@ const AttachmentBlock = Node.create({
         : null;
     const editableSelected = HTMLAttributes.editableSelected === true || HTMLAttributes.editableSelected === "true";
     const inlineMediaControlsDisabled = Boolean((this.options as any)?.disableInlineMediaControls);
-    const canRenderEditControls =
-      !inlineMediaControlsDisabled &&
-      mediaType === "image" &&
-      (outputMode === "edit" || outputMode === "focus" || debugOutputImageOverlays);
+    // Show controls whenever the host editor enables them (artifacts/comments).
+    // Hover reveals them; selection keeps them visible.
+    const canRenderEditControls = !inlineMediaControlsDisabled && mediaType === "image";
     const showEditControlsAlways =
       canRenderEditControls && (editableSelected || debugOutputImageOverlays);
     const controlsDefaultStyle =
@@ -285,11 +329,13 @@ const AttachmentBlock = Node.create({
               "data-output-image-remove": "true",
               "data-attachment-id": attachmentIdAttr,
               "data-output-id": outputId,
-              "data-output-mode": outputMode,
+              "data-output-mode": outputMode === "display" ? "edit" : outputMode,
               "data-attachment-action": "remove",
+              title: "Remove image",
+              "aria-label": "Remove image",
               contenteditable: "false",
               style:
-                `position:absolute;right:8px;top:8px;z-index:9999;height:40px;min-width:40px;border-radius:999px;outline:4px solid #ffffff;border:1px solid rgba(255,255,255,0.5);background:#dc2626;color:#ffffff;font-size:22px;font-weight:700;line-height:1;display:flex;align-items:center;justify-content:center;padding:0;cursor:pointer;pointer-events:auto;box-shadow:0 8px 22px rgba(0,0,0,0.35);transition:opacity 120ms ease;${controlsDefaultStyle}`,
+                `position:absolute;right:6px;top:6px;z-index:40;height:22px;width:22px;border-radius:6px;border:0;background:rgba(15,23,42,0.55);color:#ffffff;font-size:14px;font-weight:500;line-height:1;display:flex;align-items:center;justify-content:center;padding:0;cursor:pointer;pointer-events:auto;box-shadow:none;backdrop-filter:blur(2px);transition:opacity 120ms ease,background 120ms ease;${controlsDefaultStyle}`,
             },
             "×",
           ]
@@ -304,7 +350,7 @@ const AttachmentBlock = Node.create({
               "data-attachment-resize-handle": "true",
               contenteditable: "false",
               style:
-                `position:absolute;right:6px;bottom:6px;z-index:40;height:18px;width:18px;border-radius:4px;border:1px solid rgba(255,255,255,0.65);background:rgba(0,0,0,0.75);box-shadow:0 1px 4px rgba(0,0,0,0.16);cursor:nwse-resize;transition:opacity 120ms ease;${controlsDefaultStyle}`,
+                `position:absolute;right:4px;bottom:4px;z-index:40;height:12px;width:12px;border-radius:2px;border:0;background:rgba(15,23,42,0.45);box-shadow:none;cursor:nwse-resize;transition:opacity 120ms ease;${controlsDefaultStyle}`,
             },
           ]
         : null;
@@ -374,7 +420,7 @@ const AttachmentBlock = Node.create({
         contenteditable: "false",
         draggable: "false",
         ondragstart: "return false;",
-        style: `margin:12px 0;position:relative;display:inline-block;vertical-align:top;overflow:visible;width:${widthPct}%;max-width:100%;${editableSelected ? "box-shadow:0 0 0 2px rgba(59,130,246,0.45);border-radius:10px;" : ""}${debugOutputImageOverlays && mediaType === "image" ? "outline:2px dashed rgba(239,68,68,0.9);" : ""}`,
+        style: `margin:12px 0;position:relative;display:inline-block;vertical-align:top;overflow:visible;width:${widthPct}%;max-width:100%;${editableSelected ? "box-shadow:0 0 0 2px rgba(59,130,246,0.35);border-radius:8px;" : ""}`,
       }),
       mediaNode,
       ...(debugOverlayBounds ? [debugOverlayBounds] : []),
@@ -429,6 +475,11 @@ export interface RichTextEditorProps {
   readOnly?: boolean;
   enableOutputLinkNavigation?: boolean;
   fromAiChat?: boolean;
+  /**
+   * When this key changes, apply `value` even if the editor is focused.
+   * Used for AI/version bumps so the open artifact updates without a manual refresh.
+   */
+  forceContentKey?: string | number | null;
 }
 
 export const RichTextEditor: React.FC<RichTextEditorProps> = ({
@@ -456,6 +507,7 @@ export const RichTextEditor: React.FC<RichTextEditorProps> = ({
   readOnly = false,
   enableOutputLinkNavigation = false,
   fromAiChat = false,
+  forceContentKey = null,
 }) => {
   const pathname = usePathname();
   const resolveElementTarget = React.useCallback((rawTarget: EventTarget | null): Element | null => {
@@ -466,6 +518,7 @@ export const RichTextEditor: React.FC<RichTextEditorProps> = ({
     }
     return null;
   }, []);
+  const lastForcedContentKeyRef = React.useRef<string | number | null>(null);
   const imageInputRef = React.useRef<HTMLInputElement | null>(null);
   const videoInputRef = React.useRef<HTMLInputElement | null>(null);
   const isUploadingAttachmentRef = React.useRef(false);
@@ -477,6 +530,12 @@ export const RichTextEditor: React.FC<RichTextEditorProps> = ({
   const enableOutputLinkNavigationRef = React.useRef(enableOutputLinkNavigation);
   const fromAiChatRef = React.useRef(fromAiChat);
   const pathnameRef = React.useRef(pathname);
+  const attachmentActionRef = React.useRef<
+    ((attachmentId: string, action: "remove" | "shrink" | "grow") => void) | null
+  >(null);
+  const attachmentResizeRef = React.useRef<
+    ((attachmentId: string, widthPct: number) => void) | null
+  >(null);
   enableOutputLinkNavigationRef.current = enableOutputLinkNavigation;
   fromAiChatRef.current = fromAiChat;
   pathnameRef.current = pathname;
@@ -492,53 +551,10 @@ export const RichTextEditor: React.FC<RichTextEditorProps> = ({
           removeControlEl.getAttribute("data-attachment-id")
           ?? removeControlEl.closest<HTMLElement>("[data-attachment-id]")?.getAttribute("data-attachment-id")
           ?? null;
-        const mode = removeControlEl.getAttribute("data-output-mode") ?? "unknown";
-        const outputId = removeControlEl.getAttribute("data-output-id")
-          ?? removeControlEl.closest<HTMLElement>("[data-output-id]")?.getAttribute("data-output-id")
-          ?? null;
-        if (event.type === "pointerdown") {
-          console.log("[image remove] pointer down on X", {
-            outputId,
-            attachmentId,
-            mode,
-            target: event.target,
-            currentTarget: event.currentTarget,
-          });
-        }
-        if (event.type === "click") {
-          console.log("[image remove] click on X START", {
-            outputId,
-            attachmentId,
-            mode,
-            target: event.target,
-            currentTarget: event.currentTarget,
-          });
-        }
         event.preventDefault();
         event.stopPropagation();
-        if (event.type === "click" && (!outputId || !attachmentId)) {
-          console.error("[image remove] missing required ids; refusing to remove", {
-            outputId,
-            attachmentId,
-            mode,
-          });
-          return;
-        }
-        if (event.type === "click" && mode !== "edit") {
-          console.warn("[image remove] click ignored because mode is not edit", {
-            outputId,
-            attachmentId,
-            mode,
-          });
-          return;
-        }
-        if (event.type === "click" && attachmentId && onAttachmentAction) {
-          onAttachmentAction(attachmentId, "remove");
-          console.log("[image remove] click on X END", {
-            outputId,
-            attachmentId,
-            mode,
-          });
+        if (event.type === "click" && attachmentId) {
+          attachmentActionRef.current?.(attachmentId, "remove");
         }
         return;
       }
@@ -548,8 +564,94 @@ export const RichTextEditor: React.FC<RichTextEditorProps> = ({
         event.stopPropagation();
       }
     },
-    [disableInlineMediaControls, resolveElementTarget, onAttachmentAction]
+    [disableInlineMediaControls, resolveElementTarget]
   );
+  const removeAttachmentNode = React.useCallback((attachmentId: string) => {
+    const localEditor = editorRef.current;
+    if (!localEditor || !attachmentId) return;
+    let foundPos: number | null = null;
+    let foundSize = 0;
+    localEditor.state.doc.descendants((node, pos) => {
+      if (node.type.name === "attachmentBlock" && node.attrs?.attachmentId === attachmentId) {
+        foundPos = pos;
+        foundSize = node.nodeSize;
+        return false;
+      }
+      return true;
+    });
+    if (foundPos == null || foundSize <= 0) return;
+    localEditor
+      .chain()
+      .focus()
+      .deleteRange({ from: foundPos, to: foundPos + foundSize })
+      .run();
+  }, []);
+
+  const resizeAttachmentNode = React.useCallback((attachmentId: string, widthPct: number) => {
+    const localEditor = editorRef.current;
+    if (!localEditor || !attachmentId) return;
+    const nextPct = Math.max(20, Math.min(100, widthPct));
+    let foundPos: number | null = null;
+    localEditor.state.doc.descendants((node, pos) => {
+      if (node.type.name === "attachmentBlock" && node.attrs?.attachmentId === attachmentId) {
+        foundPos = pos;
+        return false;
+      }
+      return true;
+    });
+    if (foundPos == null) return;
+    localEditor
+      .chain()
+      .focus()
+      .command(({ tr }) => {
+        tr.setNodeMarkup(foundPos!, undefined, {
+          ...localEditor.state.doc.nodeAt(foundPos!)?.attrs,
+          widthPct: nextPct,
+        });
+        return true;
+      })
+      .run();
+  }, []);
+
+  const handleAttachmentAction = React.useCallback(
+    (attachmentId: string, action: "remove" | "shrink" | "grow") => {
+      if (onAttachmentAction) {
+        onAttachmentAction(attachmentId, action);
+        return;
+      }
+      if (action === "remove") {
+        removeAttachmentNode(attachmentId);
+        return;
+      }
+      const localEditor = editorRef.current;
+      if (!localEditor) return;
+      let currentPct = 100;
+      localEditor.state.doc.descendants((node) => {
+        if (node.type.name === "attachmentBlock" && node.attrs?.attachmentId === attachmentId) {
+          currentPct = Number(node.attrs.widthPct) || 100;
+          return false;
+        }
+        return true;
+      });
+      const delta = action === "grow" ? 10 : -10;
+      resizeAttachmentNode(attachmentId, currentPct + delta);
+    },
+    [onAttachmentAction, removeAttachmentNode, resizeAttachmentNode]
+  );
+
+  const handleAttachmentResize = React.useCallback(
+    (attachmentId: string, widthPct: number) => {
+      if (onAttachmentResize) {
+        onAttachmentResize(attachmentId, widthPct);
+        return;
+      }
+      resizeAttachmentNode(attachmentId, widthPct);
+    },
+    [onAttachmentResize, resizeAttachmentNode]
+  );
+  attachmentActionRef.current = handleAttachmentAction;
+  attachmentResizeRef.current = handleAttachmentResize;
+
   const insertAttachmentAt = React.useCallback(
     (
       localEditor: Editor,
@@ -564,6 +666,7 @@ export const RichTextEditor: React.FC<RichTextEditorProps> = ({
             mediaType: attachment.mediaType,
             src: attachment.url,
             fileName: attachment.fileName,
+            outputMode: "edit",
           },
         },
         { type: "paragraph" },
@@ -605,6 +708,14 @@ export const RichTextEditor: React.FC<RichTextEditorProps> = ({
       AttachmentBlock.configure({
         disableInlineMediaControls,
       }),
+      // Preserve <table> HTML from AI/artifacts (mid-document or standalone).
+      Table.configure({
+        resizable: false,
+        HTMLAttributes: { class: "rte-table" },
+      }),
+      TableRow,
+      TableHeaderWithBackground,
+      TableCellWithBackground,
       Underline,
       Link.configure({ openOnClick: false, autolink: true }),
       Placeholder.configure({ placeholder }),
@@ -663,8 +774,8 @@ export const RichTextEditor: React.FC<RichTextEditorProps> = ({
           const attachmentId =
             removeControlEl.getAttribute("data-attachment-id")
             ?? removeControlEl.closest<HTMLElement>("[data-attachment-id]")?.getAttribute("data-attachment-id");
-          if (attachmentId && onAttachmentAction) {
-            onAttachmentAction(attachmentId, "remove");
+          if (attachmentId) {
+            attachmentActionRef.current?.(attachmentId, "remove");
           }
           // Never fall through to generic attachment click/comment open.
           return true;
@@ -679,7 +790,7 @@ export const RichTextEditor: React.FC<RichTextEditorProps> = ({
         const attachmentActionEl = disableInlineMediaControls
           ? null
           : target.closest<HTMLElement>("[data-attachment-action]");
-        if (attachmentActionEl && onAttachmentAction) {
+        if (attachmentActionEl && attachmentActionRef.current) {
           const attachmentId =
             attachmentActionEl.getAttribute("data-attachment-id")
             ?? attachmentActionEl
@@ -690,7 +801,7 @@ export const RichTextEditor: React.FC<RichTextEditorProps> = ({
             attachmentId &&
             (action === "remove" || action === "shrink" || action === "grow")
           ) {
-            onAttachmentAction(attachmentId, action);
+            attachmentActionRef.current(attachmentId, action);
             return true;
           }
         }
@@ -732,6 +843,20 @@ export const RichTextEditor: React.FC<RichTextEditorProps> = ({
         }
         return false;
       },
+      handlePaste: (view, event) => {
+        if (!onInsertAttachment) return false;
+        if (isUploadingAttachmentRef.current) return true;
+        const files = Array.from(event.clipboardData?.files ?? []);
+        const media = files.find(
+          (file) =>
+            file.type.toLowerCase().startsWith("image/")
+            || file.type.toLowerCase().startsWith("video/")
+        );
+        if (!media) return false;
+        event.preventDefault();
+        void pickAndInsertAttachment(media, editor, view.state.selection.from);
+        return true;
+      },
       handleDrop: (view, event) => {
         if (!onInsertAttachment) return false;
         if (resizingImageRef.current) {
@@ -754,19 +879,15 @@ export const RichTextEditor: React.FC<RichTextEditorProps> = ({
       handleKeyDown: (view, event) => {
         if (handleLinkShortcutRef.current?.(event)) return true;
         if (!(event.key === "Backspace" || event.key === "Delete")) return false;
-        if (!onAttachmentAction) return false;
+        if (!attachmentActionRef.current) return false;
         const selectionAny = view.state.selection as any;
         const selectedNode = selectionAny?.node;
         if (!selectedNode || selectedNode.type?.name !== "attachmentBlock") return false;
         const attachmentId = selectedNode.attrs?.attachmentId as string | undefined;
         if (!attachmentId) return false;
-        console.log("[keyboard delete image] using blocks source", {
-          selectedAttachmentId: attachmentId,
-          key: event.key,
-        });
         event.preventDefault();
         event.stopPropagation();
-        onAttachmentAction(attachmentId, "remove");
+        attachmentActionRef.current(attachmentId, "remove");
         return true;
       },
       handleDOMEvents: {
@@ -783,8 +904,8 @@ export const RichTextEditor: React.FC<RichTextEditorProps> = ({
             const attachmentId =
               removeControlEl.getAttribute("data-attachment-id")
               ?? removeControlEl.closest<HTMLElement>("[data-attachment-id]")?.getAttribute("data-attachment-id");
-            if (attachmentId && onAttachmentAction) {
-              onAttachmentAction(attachmentId, "remove");
+            if (attachmentId) {
+              attachmentActionRef.current?.(attachmentId, "remove");
             }
             return true;
           }
@@ -810,12 +931,12 @@ export const RichTextEditor: React.FC<RichTextEditorProps> = ({
             const attachmentId =
               removeControlEl.getAttribute("data-attachment-id")
               ?? removeControlEl.closest<HTMLElement>("[data-attachment-id]")?.getAttribute("data-attachment-id");
-            if (attachmentId && onAttachmentAction) {
-              onAttachmentAction(attachmentId, "remove");
+            if (attachmentId) {
+              attachmentActionRef.current?.(attachmentId, "remove");
             }
             return true;
           }
-          if (disableInlineMediaControls || !onAttachmentResize) return false;
+          if (disableInlineMediaControls || !attachmentResizeRef.current) return false;
           const handle = target?.closest<HTMLElement>("[data-attachment-resize-handle='true']");
           if (!handle) return false;
           const attachmentEl = handle.closest<HTMLElement>("[data-attachment-id]");
@@ -831,13 +952,6 @@ export const RichTextEditor: React.FC<RichTextEditorProps> = ({
             attachmentEl.closest<HTMLElement>("[data-output-content-body='true']")
             ?? editorRootRef.current;
           const containerWidth = Math.max(1, resizeContainer?.getBoundingClientRect().width ?? 1);
-          console.log("[image resize] start", {
-            outputId: attachmentEl.getAttribute("data-output-id"),
-            attachmentId,
-            startX,
-            startWidthPx: wrapperWidthPx,
-            containerWidthPx: containerWidth,
-          });
           const onMove = (moveEvent: PointerEvent) => {
             moveEvent.preventDefault();
             moveEvent.stopPropagation();
@@ -845,19 +959,13 @@ export const RichTextEditor: React.FC<RichTextEditorProps> = ({
             const nextWidthPx = wrapperWidthPx + deltaX;
             const nextPctRaw = (nextWidthPx / containerWidth) * 100;
             const nextPct = Math.max(20, Math.min(100, nextPctRaw));
-            console.log("[image resize] move", {
-              attachmentId,
-              deltaPx: deltaX,
-              nextPct,
-            });
-            onAttachmentResize(attachmentId, nextPct);
+            attachmentResizeRef.current?.(attachmentId, nextPct);
           };
           const onUp = (upEvent: PointerEvent) => {
             upEvent.preventDefault();
             upEvent.stopPropagation();
             resizingImageRef.current = false;
             handle.releasePointerCapture?.(pointerEvent.pointerId);
-            console.log("[image resize] end", { attachmentId });
             window.removeEventListener("pointermove", onMove);
             window.removeEventListener("pointerup", onUp);
           };
@@ -877,8 +985,8 @@ export const RichTextEditor: React.FC<RichTextEditorProps> = ({
           const attachmentId =
             removeControlEl.getAttribute("data-attachment-id")
             ?? removeControlEl.closest<HTMLElement>("[data-attachment-id]")?.getAttribute("data-attachment-id");
-          if (attachmentId && onAttachmentAction) {
-            onAttachmentAction(attachmentId, "remove");
+          if (attachmentId) {
+            attachmentActionRef.current?.(attachmentId, "remove");
           }
           return true;
         },
@@ -893,14 +1001,20 @@ export const RichTextEditor: React.FC<RichTextEditorProps> = ({
 
   React.useEffect(() => {
     if (!editor) return;
-    // While the user is actively editing, TipTap owns document state. Replacing content from the
-    // controlled value prop would reset selection to the end on every parent re-render.
-    if (editor.isFocused) return;
     const current = editor.getHTML();
     const next = value ?? "";
     if (current === next) return;
+    const forceKey = forceContentKey ?? null;
+    const shouldForce =
+      forceKey != null
+      && forceKey !== ""
+      && forceKey !== lastForcedContentKeyRef.current;
+    // While the user is actively editing, TipTap owns document state — unless an
+    // AI/version bump explicitly forces a sync via forceContentKey.
+    if (editor.isFocused && !shouldForce) return;
+    if (shouldForce) lastForcedContentKeyRef.current = forceKey;
     editor.commands.setContent(next, false);
-  }, [editor, value]);
+  }, [editor, value, forceContentKey]);
 
   return (
     <div

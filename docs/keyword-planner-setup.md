@@ -15,7 +15,7 @@ GOOGLE_ADS_CLIENT_ID=your_client_id_here
 GOOGLE_ADS_CLIENT_SECRET=your_client_secret_here
 GOOGLE_ADS_REFRESH_TOKEN=your_refresh_token_here
 
-# DataForSEO (related keywords) — optional in Next if the Supabase edge function is deployed
+# DataForSEO (related keywords + Google AI Overview) — optional in Next if the Supabase edge functions are deployed
 # Prefer setting these as Supabase Edge secrets: DATAFORSEO_ID, DATAFORSEO_SECRET
 DATAFORSEO_ID=your_dataforseo_login
 DATAFORSEO_SECRET=your_dataforseo_password

@@ -4,13 +4,10 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react"
 import { useQuery, useQueryClient } from "@tanstack/react-query"
 import * as DialogPrimitive from "@radix-ui/react-dialog"
 import {
-  BarChart3,
   CreditCard,
   FileText,
-  FolderOpen,
   Layers,
   Loader2,
-  Search,
   Settings2,
   Sparkles,
   Target,
@@ -46,13 +43,10 @@ import { OverviewConfigDropdowns } from "./OverviewConfigDropdowns"
 import { ProjectStatusesSection } from "./ProjectStatusesSection"
 import { ProjectOverviewPlanningSection } from "./planning/ProjectOverviewPlanningSection"
 import { BillingTab } from "./BillingTab"
-import { FilesTab } from "./FilesTab"
 import { LibraryTab } from "../project-briefings/LibraryTab"
 import { ProjectTeamSettingsPanel } from "./project-team-settings-panel"
-import { ProjectKeywordTrackingTab } from "./ProjectKeywordTrackingTab"
-import { ProjectAiVisibilityTab } from "./ProjectAiVisibilityTab"
-import { ProjectAiUsageSection } from "./project-ai-usage-section"
 import { ProjectWebsiteIndexSection } from "./project-website-index-section"
+import { ProjectBrandKitSection } from "./project-brand-kit-section"
 import {
   PROJECT_SITE_INDEX_STATUS_QUERY_KEY,
   fetchProjectSiteIndexStatus,
@@ -64,26 +58,20 @@ export type ProjectSettingsCategory =
   | "configuration"
   | "status"
   | "planning"
-  | "tracking"
   | "billing"
-  | "ai-usage"
   | "website-index"
   | "team"
   | "components"
-  | "files"
 
 const CATEGORIES: { id: ProjectSettingsCategory; label: string; icon: typeof Target }[] = [
   { id: "details", label: "Details", icon: Target },
   { id: "configuration", label: "Configuration", icon: Settings2 },
   { id: "status", label: "Status", icon: FileText },
   { id: "planning", label: "AI planning", icon: Sparkles },
-  { id: "tracking", label: "Tracking", icon: Search },
   { id: "billing", label: "Billing", icon: CreditCard },
-  { id: "ai-usage", label: "AI usage", icon: BarChart3 },
   { id: "website-index", label: "Website index", icon: Globe2 },
   { id: "team", label: "Team", icon: Users },
   { id: "components", label: "Components", icon: Layers },
-  { id: "files", label: "Files", icon: FolderOpen },
 ]
 
 const DETAIL_FIELDS = [
@@ -143,6 +131,30 @@ export function ProjectSettingsPanel({
   useEffect(() => {
     if (open) setActiveCategory(initialCategory)
   }, [open, initialCategory])
+
+  // DropdownMenu (e.g. sidebar "Definitions") can leave body pointer-events:none when
+  // this dialog opens from a menu item — same race as settings-panel / billing modals.
+  useEffect(() => {
+    if (!open) return
+
+    const clearPointerEvents = () => {
+      if (document.body.style.pointerEvents === "none") {
+        document.body.style.pointerEvents = ""
+      }
+    }
+
+    clearPointerEvents()
+    const clearTimers = [
+      window.setTimeout(clearPointerEvents, 0),
+      window.setTimeout(clearPointerEvents, 50),
+      window.setTimeout(clearPointerEvents, 150),
+    ]
+
+    return () => {
+      clearTimers.forEach((timerId) => window.clearTimeout(timerId))
+      clearPointerEvents()
+    }
+  }, [open])
 
   const { data, isLoading, error } = useQuery({
     queryKey: ["project-overview", projectId],
@@ -511,6 +523,22 @@ export function ProjectSettingsPanel({
             />
           </div>
         </div>
+
+        <ProjectBrandKitSection
+          projectId={projectId}
+          projectUrl={formData.project_url ?? data?.project_url ?? null}
+          canEdit
+          onApplied={(kit) => {
+            const primary = kit.effective.colors.primary
+            const logoPath = kit.effective.logo_path
+            setFormData((prev) => ({
+              ...prev,
+              ...(primary ? { color: primary } : {}),
+              ...(logoPath ? { logo: logoPath } : {}),
+              ...(kit.source_url ? { project_url: kit.source_url } : {}),
+            }))
+          }}
+        />
       </div>
     )
   }
@@ -525,23 +553,8 @@ export function ProjectSettingsPanel({
         return <ProjectStatusesSection projectId={projectId} />
       case "planning":
         return <ProjectOverviewPlanningSection projectId={projectId} hideTitle />
-      case "tracking":
-        return (
-          <div className="space-y-6">
-            <div className="space-y-1">
-              <h3 className="text-sm font-medium text-gray-900">Keywords & AI prompts</h3>
-              <p className="text-xs text-gray-500">
-                Manage the keywords and AI prompts this project tracks.
-              </p>
-            </div>
-            <ProjectKeywordTrackingTab projectId={projectId} variant="manage" />
-            <ProjectAiVisibilityTab projectId={projectId} variant="manage" />
-          </div>
-        )
       case "billing":
         return <BillingTab projectId={projectId} hideTitle />
-      case "ai-usage":
-        return <ProjectAiUsageSection projectId={projectId} />
       case "website-index":
         return (
           <ProjectWebsiteIndexSection
@@ -571,8 +584,6 @@ export function ProjectSettingsPanel({
             />
           </div>
         )
-      case "files":
-        return <FilesTab projectId={projectId} hideTitle />
       default:
         return null
     }

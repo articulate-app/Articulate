@@ -1,13 +1,16 @@
 import { Marked, type Tokens } from "marked"
 
-/** Match app entity links only (task / project / user + numeric id). */
-const APP_ENTITY_HREF = /^app:\/\/(task|project|user)\/\d+$/i
+/** Match app entity links (task / project / user / artifact, including artifact downloads). */
+const APP_ENTITY_HREF =
+  /^app:\/\/(?:(?:task|project|user)\/\d+|artifact\/[0-9a-f-]{36}(?:\/download(?:\?[^#]*)?)?(?:\?[^#]*)?)$/i
 
 function isAppEntityHref(href: string | undefined | null): boolean {
   return !!href && APP_ENTITY_HREF.test(href.trim())
 }
 
-function parseAppEntityKindForChip(href: string): "task" | "project" | "user" {
+function parseAppEntityKindForChip(href: string): "task" | "project" | "user" | "artifact" {
+  const artifact = href.trim().match(/^app:\/\/artifact\//i)
+  if (artifact) return "artifact"
   const m = href.trim().match(/^app:\/\/(task|project|user)\/\d+$/i)
   const t = (m?.[1] || "task").toLowerCase()
   if (t === "project" || t === "user") return t
@@ -19,6 +22,7 @@ function escapeAttr(s: string): string {
 }
 
 function entityBadgeLetter(href: string): string {
+  if (/^app:\/\/artifact\//i.test(href.trim())) return "A"
   const m = href.trim().match(/^app:\/\/(task|project|user)\//i)
   const t = (m?.[1] || "task").toLowerCase()
   if (t === "project") return "P"

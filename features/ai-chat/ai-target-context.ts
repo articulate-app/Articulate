@@ -43,6 +43,10 @@ export type AiTargetContext = {
 export type AiAmbientContext = {
   center_task_id?: number | null
   active_channel_id?: number | null
+  /** Open middle-pane artifact tab — ambient hint only, not a write target. */
+  center_artifact_id?: string | null
+  /** Optional label for the open center-pane artifact (UI title). */
+  center_artifact_title?: string | null
   taskTab?: string | null
 }
 

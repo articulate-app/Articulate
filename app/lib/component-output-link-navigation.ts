@@ -5,6 +5,8 @@ import {
   isTasksShellPath,
   parseAppEntityLink,
 } from "../../features/ai-chat/app-entity-links"
+import { exportArtifactDownload } from "./services/artifacts"
+import { useCenterPaneTabsStore } from "../store/center-pane-tabs"
 import { shallowPushSearchParams } from "./tasks-shallow-nav"
 
 export function navigateComponentOutputHref(args: {
@@ -17,6 +19,21 @@ export function navigateComponentOutputHref(args: {
 
   const parsed = parseAppEntityLink(href)
   if (parsed) {
+    if (parsed.type === "artifact-download") {
+      void exportArtifactDownload({
+        artifactId: parsed.id,
+        versionNumber: parsed.version,
+        format: parsed.format,
+        attachmentId: parsed.attachmentId,
+      })
+      return true
+    }
+    if (parsed.type === "artifact") {
+      useCenterPaneTabsStore.getState().upsertTab({
+        kind: "artifact",
+        id: parsed.id,
+      })
+    }
     const nextUrl = buildNextUrlForEntityLink({
       currentPathname: args.pathname,
       currentSearchParams: new URLSearchParams(window.location.search),
@@ -27,7 +44,11 @@ export function navigateComponentOutputHref(args: {
     if (isTasksShellPath(args.pathname)) {
       const queryStart = nextUrl.indexOf("?")
       const nextParams = new URLSearchParams(queryStart >= 0 ? nextUrl.slice(queryStart + 1) : "")
-      shallowPushSearchParams(args.pathname, nextParams, "component-output-link")
+      shallowPushSearchParams(
+        args.pathname.startsWith("/artifacts") ? "/" : args.pathname,
+        nextParams,
+        "component-output-link",
+      )
       return true
     }
     window.location.assign(nextUrl)

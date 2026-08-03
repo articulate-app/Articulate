@@ -31,7 +31,8 @@ function normalizeThreadIds(threadIds: number[]): number[] {
   )).sort((a, b) => a - b)
 }
 
-async function listThreadMentionsBatch(threadIds: number[]): Promise<ThreadMentionBatchRow[]> {
+/** Fetch all mentions for the given thread IDs via `get_thread_mentions_batch` (REST fallback). */
+export async function fetchThreadMentionsBatch(threadIds: number[]): Promise<ThreadMentionBatchRow[]> {
   const normalizedThreadIds = normalizeThreadIds(threadIds)
   if (normalizedThreadIds.length === 0) return []
   const supabase = createClientComponentClient()
@@ -77,7 +78,7 @@ export function useThreadMentionsBatch(threadIds: number[], options?: { enabled?
   return useQuery({
     queryKey: ["thread-mentions-batch", normalizedThreadIds.join("|")],
     enabled,
-    queryFn: () => listThreadMentionsBatch(normalizedThreadIds),
+    queryFn: () => fetchThreadMentionsBatch(normalizedThreadIds),
     staleTime: 60_000,
     gcTime: 10 * 60_000,
     refetchOnMount: false,

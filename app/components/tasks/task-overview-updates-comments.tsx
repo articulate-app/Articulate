@@ -1,31 +1,19 @@
 "use client"
 
 import React, { useCallback, useEffect, useRef, useState } from "react"
-import dynamic from "next/dynamic"
-import { Check } from "lucide-react"
+import { createPortal } from "react-dom"
 import { cn } from "@/lib/utils"
-import { Button } from "../ui/button"
-import { Popover, PopoverContent, PopoverTrigger } from "../ui/popover"
-import { IconTooltip } from "../ui/icon-tooltip"
 import {
   TaskCommentsFooterPart,
   TaskCommentsHeaderRow,
   TaskCommentsInputPart,
-  TaskCommentsListPart,
   type TaskCommentsPanelProps,
 } from "../comments-section/task-comments-panel"
 import { TaskOverviewPreviewSection } from "./task-overview-preview-section"
-import {
-  OVERVIEW_FEED_SORT_OPTIONS,
-  getOverviewFeedSortIcon,
-  getOverviewFeedSortLabel,
-  type OverviewFeedSort,
-} from "./overview-feed-sort"
+import { TaskOverviewMergedFeed } from "./task-overview-merged-feed"
 
-const TaskActivityTimeline = dynamic(
-  () => import("../task-activity/task-activity-timeline").then((m) => m.TaskActivityTimeline),
-  { ssr: false },
-)
+/** Mount target for the overview comment composer (AI-pane style dock). */
+export const TASK_OVERVIEW_COMMENT_DOCK_ID = "task-overview-comment-dock"
 
 type OverviewFeedFilter = "all" | "updates" | "comments"
 
@@ -54,9 +42,10 @@ export function TaskOverviewUpdatesComments({
   const loadThreadHistory = commentsPanelProps.handleViewThreadHistory
   const previewThreadFetchKeyRef = useRef<string | null>(null)
   const [feedFilter, setFeedFilter] = useState<OverviewFeedFilter>("all")
-  const [sort, setSort] = useState<OverviewFeedSort>("newest")
-  const [sortOpen, setSortOpen] = useState(false)
+  const [filterThreadId, setFilterThreadId] = useState<number | null>(null)
   const [isExpanded, setIsExpanded] = useState(false)
+  const [composerExpanded, setComposerExpanded] = useState(false)
+  const [composerDock, setComposerDock] = useState<HTMLElement | null>(null)
 
   const handleVisible = useCallback(() => {
     if (!taskIdNum) return
@@ -70,26 +59,79 @@ export function TaskOverviewUpdatesComments({
     void loadThreadHistory({ force: true })
   }, [loadThreadHistory])
 
+  const setSelectedThreadId = commentsPanelProps.setSelectedThreadId
+  const setIsAddingThread = commentsPanelProps.setIsAddingThread
+
+  const handleSelectThreadFilter = useCallback(
+    (threadId: number | null) => {
+      setFilterThreadId(threadId)
+      if (threadId != null) {
+        setFeedFilter("comments")
+      }
+      setSelectedThreadId(threadId)
+      setIsAddingThread(false)
+    },
+    [setSelectedThreadId, setIsAddingThread],
+  )
+
+  const handleSelectThread = useCallback(
+    (threadId: number) => {
+      setSelectedThreadId(threadId)
+      setIsAddingThread(false)
+      setComposerExpanded(true)
+    },
+    [setSelectedThreadId, setIsAddingThread],
+  )
+
   useEffect(() => {
     previewThreadFetchKeyRef.current = null
     setIsExpanded(false)
+    setComposerExpanded(false)
+    setFeedFilter("all")
+    setFilterThreadId(null)
   }, [taskIdNum])
+
+  useEffect(() => {
+    if (!active || !taskIdNum) return
+    previewThreadFetchKeyRef.current = String(taskIdNum)
+    void loadThreadHistory()
+  }, [active, taskIdNum, loadThreadHistory])
+
+  useEffect(() => {
+    if (!active) {
+      setComposerDock(null)
+      return
+    }
+    const syncDock = () => {
+      setComposerDock(document.getElementById(TASK_OVERVIEW_COMMENT_DOCK_ID))
+    }
+    syncDock()
+    const timer = window.setTimeout(syncDock, 0)
+    return () => window.clearTimeout(timer)
+  }, [active, taskIdNum])
 
   const embedPanelProps: TaskCommentsPanelProps = {
     ...commentsPanelProps,
-    embedCollapsed: !isExpanded,
-    embedThreadLimit: 5,
-    onEmbedExpand: () => setIsExpanded(true),
     hideStatusFilter: true,
     hideThreadToolbar: true,
-    clientSort: sort,
+    minimalComposer: true,
+    composerExpanded,
+    onComposerExpandedChange: setComposerExpanded,
+    filterThreadId,
+    onSelectThreadFilter: handleSelectThreadFilter,
   }
 
-  const showCollapse =
-    isExpanded
-    && (commentsPanelProps.isThreadView || (commentsPanelProps.threadsList?.length ?? 0) > 5)
+  const mentionCount = Array.isArray(commentsPanelProps.allMentions)
+    ? filterThreadId != null
+      ? commentsPanelProps.allMentions.filter(
+          (m: any) => Number(m?.thread_id) === Number(filterThreadId),
+        ).length
+      : commentsPanelProps.allMentions.length
+    : 0
 
-  const SortIcon = getOverviewFeedSortIcon(sort)
+  const previewLimit = isExpanded ? 40 : 12
+  const includeActivities = feedFilter === "all" || feedFilter === "updates"
+  const includeComments = feedFilter === "all" || feedFilter === "comments"
 
   const filterPills = (
     <div className="flex flex-wrap items-center gap-1.5">
@@ -97,7 +139,12 @@ export function TaskOverviewUpdatesComments({
         <button
           key={option.value}
           type="button"
-          onClick={() => setFeedFilter(option.value)}
+          onClick={() => {
+            setFeedFilter(option.value)
+            if (option.value !== "comments") {
+              setFilterThreadId(null)
+            }
+          }}
           className={cn(
             "inline-flex h-7 items-center rounded-full px-2.5 text-sm",
             feedFilter === option.value
@@ -108,124 +155,86 @@ export function TaskOverviewUpdatesComments({
           {option.label}
         </button>
       ))}
+      {filterThreadId != null && feedFilter === "comments" ? (
+        <button
+          type="button"
+          onClick={() => handleSelectThreadFilter(null)}
+          className="inline-flex h-7 items-center rounded-full bg-gray-50 px-2.5 text-xs text-gray-600 hover:bg-gray-100"
+        >
+          Clear thread filter
+        </button>
+      ) : null}
     </div>
   )
 
   const headerActions = (
-    <div className="flex items-center gap-1">
-      <Popover open={sortOpen} onOpenChange={setSortOpen}>
-        <IconTooltip label={`Sort: ${getOverviewFeedSortLabel(sort)}`}>
-          <PopoverTrigger asChild>
-            <Button
-              type="button"
-              variant="ghost"
-              size="sm"
-              className="h-7 w-7 p-0 text-gray-500"
-              aria-label={`Sort: ${getOverviewFeedSortLabel(sort)}`}
-            >
-              <SortIcon className="h-4 w-4" />
-            </Button>
-          </PopoverTrigger>
-        </IconTooltip>
-        <PopoverContent align="end" className="w-40 p-1">
-          {OVERVIEW_FEED_SORT_OPTIONS.map((option) => (
-            <button
-              key={option.value}
-              type="button"
-              className={cn(
-                "flex w-full items-center justify-between rounded-sm px-2 py-1.5 text-left text-xs hover:bg-gray-50",
-                sort === option.value && "bg-gray-50 font-medium",
-              )}
-              onClick={() => {
-                setSort(option.value)
-                setSortOpen(false)
-              }}
-            >
-              <span>{option.label}</span>
-              {sort === option.value ? <Check className="h-3.5 w-3.5 text-gray-600" /> : null}
-            </button>
-          ))}
-        </PopoverContent>
-      </Popover>
-      <TaskCommentsHeaderRow
-        taskIdNum={commentsPanelProps.taskIdNum}
-        threadsList={commentsPanelProps.threadsList}
-        selectedThreadId={commentsPanelProps.selectedThreadId}
-        setSelectedThreadId={commentsPanelProps.setSelectedThreadId}
-        setIsAddingThread={commentsPanelProps.setIsAddingThread}
-        handleAddThread={commentsPanelProps.handleAddThread}
-        openThreadView={commentsPanelProps.openThreadView}
-        isThreadListLoading={commentsPanelProps.isThreadListLoading}
-        handleViewThreadHistory={commentsPanelProps.handleViewThreadHistory}
-        onThreadNavigate={commentsPanelProps.onThreadNavigate}
-      />
-    </div>
+    <TaskCommentsHeaderRow
+      taskIdNum={commentsPanelProps.taskIdNum}
+      threadsList={commentsPanelProps.threadsList}
+      selectedThreadId={commentsPanelProps.selectedThreadId}
+      setSelectedThreadId={commentsPanelProps.setSelectedThreadId}
+      setIsAddingThread={commentsPanelProps.setIsAddingThread}
+      handleAddThread={commentsPanelProps.handleAddThread}
+      openThreadView={commentsPanelProps.openThreadView}
+      isThreadListLoading={commentsPanelProps.isThreadListLoading}
+      handleViewThreadHistory={commentsPanelProps.handleViewThreadHistory}
+      onThreadNavigate={commentsPanelProps.onThreadNavigate}
+      filterThreadId={filterThreadId}
+      onSelectThreadFilter={handleSelectThreadFilter}
+    />
   )
 
-  const previewLimit = isExpanded ? 20 : 8
+  const composer = (
+    <>
+      <TaskCommentsInputPart
+        {...embedPanelProps}
+        onCommentAdded={handleCommentAdded}
+      />
+      <TaskCommentsFooterPart {...commentsPanelProps} />
+    </>
+  )
 
   return (
-    <TaskOverviewPreviewSection
-      title="Activity"
-      onViewAll={feedFilter === "comments" ? onViewAllComments : onViewAllActivity}
-      viewAllLabel={feedFilter === "comments" ? "All comments" : "View all"}
-      active={active}
-      onVisible={handleVisible}
-      belowTitle={filterPills}
-      headerActions={headerActions}
-    >
-      <div className="flex flex-col gap-2">
-        <div
-          className={cn(
-            "overflow-y-auto",
-            isExpanded ? "max-h-[min(640px,70vh)]" : "max-h-[min(400px,48vh)]",
-          )}
-        >
-          {feedFilter === "all" ? (
-            <>
-              <TaskActivityTimeline
-                taskId={taskId}
-                compact
-                previewLimit={Math.max(4, Math.floor(previewLimit / 2))}
-                clientSort={sort}
-              />
-              <div className="my-1 border-t border-gray-200" />
-              <TaskCommentsListPart {...embedPanelProps} focusOnly />
-            </>
-          ) : feedFilter === "updates" ? (
-            <TaskActivityTimeline
-              taskId={taskId}
-              compact
-              previewLimit={previewLimit}
-              clientSort={sort}
-            />
-          ) : (
-            <TaskCommentsListPart {...embedPanelProps} focusOnly />
-          )}
-        </div>
-        {showCollapse ? (
+    <>
+      <TaskOverviewPreviewSection
+        title="Activity"
+        onViewAll={feedFilter === "comments" ? onViewAllComments : onViewAllActivity}
+        viewAllLabel={feedFilter === "comments" ? "All comments" : "View all"}
+        active={active}
+        onVisible={handleVisible}
+        belowTitle={filterPills}
+        headerActions={headerActions}
+      >
+        <TaskOverviewMergedFeed
+          taskId={taskId}
+          allMentions={commentsPanelProps.allMentions}
+          threadsList={commentsPanelProps.threadsList}
+          filterThreadId={feedFilter === "comments" ? filterThreadId : null}
+          includeActivities={includeActivities}
+          includeComments={includeComments}
+          previewLimit={previewLimit}
+          onSelectThread={handleSelectThread}
+        />
+        {!isExpanded && (mentionCount > 8 || includeActivities) ? (
           <button
             type="button"
-            className="self-start text-xs text-gray-500 hover:text-gray-700"
-            onClick={() => setIsExpanded(false)}
-          >
-            Show less
-          </button>
-        ) : (feedFilter === "updates" || feedFilter === "all") && !isExpanded ? (
-          <button
-            type="button"
-            className="self-start text-xs text-gray-500 hover:text-gray-700"
+            className="mt-1 text-xs text-gray-500 hover:text-gray-700"
             onClick={() => setIsExpanded(true)}
           >
             Show more
           </button>
         ) : null}
-        <TaskCommentsInputPart
-          {...commentsPanelProps}
-          onCommentAdded={handleCommentAdded}
-        />
-        <TaskCommentsFooterPart {...commentsPanelProps} />
-      </div>
-    </TaskOverviewPreviewSection>
+        {isExpanded ? (
+          <button
+            type="button"
+            className="mt-1 text-xs text-gray-500 hover:text-gray-700"
+            onClick={() => setIsExpanded(false)}
+          >
+            Show less
+          </button>
+        ) : null}
+      </TaskOverviewPreviewSection>
+      {composerDock ? createPortal(composer, composerDock) : null}
+    </>
   )
 }

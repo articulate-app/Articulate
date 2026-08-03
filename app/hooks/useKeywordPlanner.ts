@@ -1,5 +1,5 @@
 import { useState, useCallback, useRef, useEffect } from 'react';
-import { useQuery } from '@tanstack/react-query';
+import { useQuery, useQueryClient } from '@tanstack/react-query';
 
 import type { KeywordMonthlySearchVolume } from '../lib/keyword-ideas-metrics';
 
@@ -16,6 +16,7 @@ export interface KeywordIdeasResponse {
   elapsedMs: number;
   results: KeywordIdea[];
   nextPageToken?: string | null;
+  phase?: 'primary' | 'full';
 }
 
 export interface KeywordPlannerFilters {
@@ -46,112 +47,196 @@ function normalizeKeywordIdeasRegionId(regionId: unknown): string | undefined {
   return String(numeric);
 }
 
+function buildQueryKey(
+  keyword: string,
+  regionId: string,
+  languageId: string,
+  pageSize: number,
+) {
+  return ['keyword-ideas', keyword, regionId, languageId, pageSize] as const;
+}
+
+async function fetchKeywordIdeasPhase(args: {
+  keyword: string;
+  languageId?: string;
+  regionId?: string;
+  pageSize: number;
+  phase: 'primary' | 'full';
+  signal: AbortSignal;
+}): Promise<KeywordIdeasResponse> {
+  const response = await fetch('/api/keyword-ideas', {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({
+      keyword: args.keyword,
+      languageId: args.languageId || undefined,
+      ...(args.regionId ? { regionId: args.regionId } : {}),
+      pageSize: args.pageSize,
+      phase: args.phase,
+    }),
+    signal: args.signal,
+  });
+
+  if (!response.ok) {
+    const errorData = await response.json().catch(() => ({}));
+    throw new Error(errorData.error?.message || `HTTP error! status: ${response.status}`);
+  }
+
+  return response.json();
+}
+
 export function useKeywordPlanner(
   filters: KeywordPlannerFilters,
   options: UseKeywordPlannerOptions = {}
 ) {
   const { enabled = true, pageSize = 40 } = options;
+  const queryClient = useQueryClient();
   const abortControllerRef = useRef<AbortController | null>(null);
+  const enrichAbortRef = useRef<AbortController | null>(null);
+  const [isEnriching, setIsEnriching] = useState(false);
+  const [activeKeyword, setActiveKeyword] = useState(filters.keyword);
+  const liveKeywordRef = useRef(filters.keyword);
+  liveKeywordRef.current = filters.keyword;
+  const filtersRef = useRef(filters);
+  filtersRef.current = filters;
 
-  // Debounce the keyword input (flush immediately when a manual search enables the query)
-  const [debouncedKeyword, setDebouncedKeyword] = useState(filters.keyword);
-  const wasEnabledRef = useRef(enabled);
-  
   useEffect(() => {
-    const justEnabled = enabled && !wasEnabledRef.current;
-    wasEnabledRef.current = enabled;
-    if (justEnabled) {
-      setDebouncedKeyword(filters.keyword);
-      return;
-    }
+    if (!enabled) return;
     const timer = setTimeout(() => {
-      setDebouncedKeyword(filters.keyword);
-    }, 350); // 350ms debounce
-
+      setActiveKeyword(filters.keyword);
+    }, 350);
     return () => clearTimeout(timer);
-  }, [filters.keyword, enabled]);
+  }, [enabled, filters.keyword]);
 
-  // Create query key that includes all filter parameters
-  const queryKey = [
-    'keyword-ideas',
-    debouncedKeyword,
+  const queryKey = buildQueryKey(
+    activeKeyword,
     filters.regionId,
     filters.languageId,
     pageSize,
-  ];
+  );
 
-  // Fetch keyword ideas
+  const runSearch = useCallback(
+    async (keywordForSearch: string) => {
+      const currentFilters = filtersRef.current;
+      const key = buildQueryKey(
+        keywordForSearch,
+        currentFilters.regionId,
+        currentFilters.languageId,
+        pageSize,
+      );
+
+      if (abortControllerRef.current) {
+        abortControllerRef.current.abort();
+      }
+      if (enrichAbortRef.current) {
+        enrichAbortRef.current.abort();
+      }
+
+      abortControllerRef.current = new AbortController();
+      const normalizedRegionId = normalizeKeywordIdeasRegionId(currentFilters.regionId);
+
+      const primary = await fetchKeywordIdeasPhase({
+        keyword: keywordForSearch,
+        languageId: currentFilters.languageId || undefined,
+        regionId: normalizedRegionId,
+        pageSize,
+        phase: 'primary',
+        signal: abortControllerRef.current.signal,
+      });
+
+      queryClient.setQueryData<KeywordIdeasResponse>(key, primary);
+
+      const enrichController = new AbortController();
+      enrichAbortRef.current = enrichController;
+      setIsEnriching(true);
+      void fetchKeywordIdeasPhase({
+        keyword: keywordForSearch,
+        languageId: currentFilters.languageId || undefined,
+        regionId: normalizedRegionId,
+        pageSize,
+        phase: 'full',
+        signal: enrichController.signal,
+      })
+        .then((full) => {
+          queryClient.setQueryData<KeywordIdeasResponse>(key, full);
+        })
+        .catch((err) => {
+          if ((err as Error)?.name === 'AbortError') return;
+          console.warn('Keyword ideas enrichment failed:', err);
+        })
+        .finally(() => {
+          if (enrichAbortRef.current === enrichController) {
+            setIsEnriching(false);
+          }
+        });
+
+      return primary;
+    },
+    [pageSize, queryClient],
+  );
+
   const {
     data,
     isLoading,
     error,
-    refetch,
     isFetching,
   } = useQuery<KeywordIdeasResponse>({
     queryKey,
     queryFn: async () => {
-      // Cancel previous request if it exists
-      if (abortControllerRef.current) {
-        abortControllerRef.current.abort();
-      }
-
-      // Create new abort controller
-      abortControllerRef.current = new AbortController();
-      const normalizedRegionId = normalizeKeywordIdeasRegionId(filters.regionId);
-
-      const response = await fetch('/api/keyword-ideas', {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify({
-          keyword: debouncedKeyword,
-          languageId: filters.languageId || undefined,
-          ...(normalizedRegionId ? { regionId: normalizedRegionId } : {}),
-          pageSize,
-        }),
-        signal: abortControllerRef.current.signal,
-      });
-
-      if (!response.ok) {
-        const errorData = await response.json();
-        throw new Error(errorData.error?.message || `HTTP error! status: ${response.status}`);
-      }
-
-      return response.json();
+      const keywordForSearch = liveKeywordRef.current.trim() || activeKeyword;
+      return runSearch(keywordForSearch);
     },
-    enabled: enabled && debouncedKeyword.trim().length > 0,
-    staleTime: 2 * 60 * 1000, // 2 minutes
-    retry: (failureCount, error: any) => {
-      // Retry once on 429/5xx errors with jittered backoff
+    enabled: enabled && activeKeyword.trim().length > 0,
+    staleTime: 2 * 60 * 1000,
+    retry: (failureCount, err: any) => {
       if (failureCount >= 1) return false;
-      
-      const status = error.message?.includes('429') ? 429 : 
-                    error.message?.includes('5') ? 500 : 0;
-      
+      const status = err.message?.includes('429')
+        ? 429
+        : err.message?.includes('5')
+          ? 500
+          : 0;
       return status === 429 || status >= 500;
     },
-    retryDelay: (attemptIndex) => Math.min(1000 * 2 ** attemptIndex + Math.random() * 1000, 30000),
+    retryDelay: (attemptIndex) =>
+      Math.min(1000 * 2 ** attemptIndex + Math.random() * 1000, 30000),
   });
 
-  // Cleanup abort controller on unmount
   useEffect(() => {
     return () => {
-      if (abortControllerRef.current) {
-        abortControllerRef.current.abort();
-      }
+      if (abortControllerRef.current) abortControllerRef.current.abort();
+      if (enrichAbortRef.current) enrichAbortRef.current.abort();
     };
   }, []);
 
-  // Manual trigger function
-  const triggerSearch = useCallback(() => {
-    refetch();
-  }, [refetch]);
+  // Warm OAuth token as soon as the planner mounts (skips token RTT on first search).
+  useEffect(() => {
+    void fetch('/api/keyword-ideas/warm', { method: 'POST' }).catch(() => {});
+  }, []);
 
-  // Check if we have valid filters for search (use live input so the CTA enables immediately)
+  const triggerSearch = useCallback(
+    (keywordOverride?: string) => {
+      const nextKeyword = (keywordOverride ?? liveKeywordRef.current).trim();
+      if (!nextKeyword) return;
+      liveKeywordRef.current = nextKeyword;
+      setActiveKeyword(nextKeyword);
+      void queryClient.fetchQuery({
+        queryKey: buildQueryKey(
+          nextKeyword,
+          filtersRef.current.regionId,
+          filtersRef.current.languageId,
+          pageSize,
+        ),
+        queryFn: () => runSearch(nextKeyword),
+        staleTime: 2 * 60 * 1000,
+      });
+    },
+    [pageSize, queryClient, runSearch],
+  );
+
   const canSearch = filters.keyword.trim().length > 0;
 
-  // Get competition level as human-readable string
   const getCompetitionLevel = useCallback((competitionIndex: number): string => {
     if (competitionIndex >= 80) return 'High';
     if (competitionIndex >= 50) return 'Medium';
@@ -159,7 +244,6 @@ export function useKeywordPlanner(
     return 'Very Low';
   }, []);
 
-  // Get competition level color
   const getCompetitionColor = useCallback((competitionIndex: number): string => {
     if (competitionIndex >= 80) return 'text-red-600';
     if (competitionIndex >= 50) return 'text-orange-600';
@@ -172,6 +256,7 @@ export function useKeywordPlanner(
     isLoading,
     error,
     isFetching,
+    isEnriching,
     triggerSearch,
     canSearch,
     getCompetitionLevel,
@@ -180,4 +265,4 @@ export function useKeywordPlanner(
     resultCount: data?.results?.length || 0,
     elapsedMs: data?.elapsedMs || 0,
   };
-} 
+}

@@ -594,10 +594,11 @@ function normalizeGlobalSearchSections(value: unknown): GlobalSearchSection[] {
       task: 0,
       mention: 1,
       ai_thread: 2,
-      project: 3,
-      user: 4,
-      team: 5,
-      project_briefing: 6,
+      artifact: 3,
+      project: 4,
+      user: 5,
+      team: 6,
+      project_briefing: 7,
     }
     const groups = new Map<
       GlobalSearchItemEntityType,

@@ -8,8 +8,7 @@ import { Input } from '../ui/input'
 import { Label } from '../ui/label'
 import { Textarea } from '../ui/textarea'
 import { toast } from '../ui/use-toast'
-import { Trash2, Search, Loader2 } from 'lucide-react'
-import { AddComponentButton } from '../task/AddComponentButton'
+import { Trash2, Search, Loader2, Plus, ChevronLeft, ChevronRight } from 'lucide-react'
 import {
   AlertDialog,
   AlertDialogAction,
@@ -20,12 +19,17 @@ import {
   AlertDialogHeader,
   AlertDialogTitle,
 } from '../ui/alert-dialog'
+import { Command, CommandEmpty, CommandGroup, CommandInput, CommandItem, CommandList } from '../ui/command'
+import { Popover, PopoverContent, PopoverTrigger } from '../ui/popover'
 import {
-  type ProjectComponent,
   createProjectComponent,
   addGlobalComponentToBriefing,
+  addGlobalComponentToProject,
+  fetchSystemBriefingComponents,
   loadProjectComponentIndex,
   updateProjectComponentInProject,
+  type ComponentIndexItem,
+  type SystemBriefingComponent,
 } from '../../lib/services/project-briefings'
 import { createClientComponentClient } from '@supabase/auth-helpers-nextjs'
 import { ChannelRequirementsSection } from './channel-requirements-section'
@@ -56,6 +60,9 @@ export function LibraryTab({
   const searchParams = useSearchParams()
   const [searchQuery, setSearchQuery] = useState('')
   const [showInlineNewComponent, setShowInlineNewComponent] = useState(false)
+  const [isAddOpen, setIsAddOpen] = useState(false)
+  const [addSearch, setAddSearch] = useState('')
+  const [isAddingSystemComponent, setIsAddingSystemComponent] = useState(false)
   const [isDeleteDialogOpen, setIsDeleteDialogOpen] = useState(false)
   const [isBulkDeleteDialogOpen, setIsBulkDeleteDialogOpen] = useState(false)
   const [isBulkDeleting, setIsBulkDeleting] = useState(false)
@@ -67,6 +74,7 @@ export function LibraryTab({
   const [selectedKeys, setSelectedKeys] = useState<string[]>([])
   const selectedKey = selectedKeys.length === 1 ? selectedKeys[0] : null
   const isMultiSelect = selectedKeys.length > 1
+  const isDetailView = Boolean(selectedKey && !isMultiSelect && !showInlineNewComponent)
 
   const setSelectedKeyAndUrl = useCallback(
     (nextKey: string | null) => {
@@ -114,22 +122,50 @@ export function LibraryTab({
   const filteredItems = useMemo(() => {
     if (!indexItems) return []
 
-    const bySearch = (item: any) => {
+    const bySearch = (item: ComponentIndexItem) => {
       if (!searchQuery.trim()) return true
       const query = searchQuery.toLowerCase()
       const inTitle = item.title?.toLowerCase().includes(query)
       const inDesc = item.description?.toLowerCase().includes(query)
-      const inUsage = Array.isArray(item.usage_labels) && item.usage_labels.some((l: string) => l.toLowerCase().includes(query))
+      const inUsage =
+        Array.isArray(item.usage_labels) &&
+        item.usage_labels.some((l: string) => l.toLowerCase().includes(query))
       return inTitle || inDesc || inUsage
     }
 
-    return indexItems.filter((item: any) => bySearch(item))
+    return indexItems.filter((item) => bySearch(item))
   }, [indexItems, searchQuery])
 
   const selectedItem = useMemo(() => {
     if (!indexItems || !selectedKey) return null
-    return indexItems.find((i: any) => i.key === selectedKey) || null
+    return indexItems.find((i) => i.key === selectedKey) || null
   }, [indexItems, selectedKey])
+
+  const { data: systemComponents = [], isLoading: isSystemComponentsLoading } = useQuery({
+    queryKey: ['projBriefings:library:systemComponents'],
+    queryFn: async () => {
+      const { data, error } = await fetchSystemBriefingComponents()
+      if (error) throw error
+      return (data || []) as SystemBriefingComponent[]
+    },
+    ...TAB_CACHE_QUERY_OPTIONS,
+    enabled: isAddOpen,
+    placeholderData: (previousData) => previousData,
+  })
+
+  const unassignedSystemComponents = useMemo(() => {
+    const assignedGlobalIds = new Set(
+      (indexItems || [])
+        .filter((item) => item.kind === 'global')
+        .map((item) => item.component_id)
+    )
+    return systemComponents.filter(
+      (component) =>
+        !assignedGlobalIds.has(component.id) &&
+        component.id !== 80 &&
+        component.title.trim().toLowerCase() !== 'main content'
+    )
+  }, [indexItems, systemComponents])
 
   const selectedProjectComponentId = selectedItem?.kind === 'project' ? selectedItem.component_id : null
   const selectedGlobalComponentId = selectedItem?.kind === 'global' ? selectedItem.component_id : null
@@ -327,7 +363,68 @@ export function LibraryTab({
         variant: 'destructive',
       })
     }
-  }, [projectId, title, description, rules, resetForm, queryClient, onRefresh])
+  }, [projectId, title, description, rules, resetForm, queryClient, onRefresh, setSelectedKeyAndUrl])
+
+  const handleAddSystemComponent = useCallback(
+    async (component: SystemBriefingComponent) => {
+      setIsAddingSystemComponent(true)
+      try {
+        const { error } = await addGlobalComponentToProject(projectId, component.id)
+        if (error) throw error
+
+        const nextKey = `global:${component.id}`
+        queryClient.setQueryData(
+          ['projBriefings:library:index', projectId],
+          (current: ComponentIndexItem[] | undefined) => {
+            const list = Array.isArray(current) ? current : []
+            if (list.some((item) => item.key === nextKey)) return list
+            return [
+              ...list,
+              {
+                key: nextKey,
+                kind: 'global' as const,
+                component_id: component.id,
+                title: component.title,
+                description: component.description,
+                usage_labels: [],
+              },
+            ].sort((a, b) => {
+              if (a.kind !== b.kind) return a.kind === 'project' ? -1 : 1
+              return a.title.localeCompare(b.title, undefined, { sensitivity: 'base' })
+            })
+          }
+        )
+
+        toast({ title: 'Success', description: 'Component added to project' })
+        setIsAddOpen(false)
+        setAddSearch('')
+        queryClient.invalidateQueries({ queryKey: ['projBriefings:library:index', projectId] })
+        queryClient.invalidateQueries({ queryKey: ['projBriefings:components', projectId] })
+        queryClient.invalidateQueries({ queryKey: ['allowedGlobalComponents'] })
+        queryClient.invalidateQueries({ queryKey: ['availableComponents', projectId] })
+        onRefresh()
+        setSelectedKeyAndUrl(nextKey)
+      } catch (error: any) {
+        toast({
+          title: 'Error',
+          description: error?.message || 'Failed to add component',
+          variant: 'destructive',
+        })
+      } finally {
+        setIsAddingSystemComponent(false)
+      }
+    },
+    [projectId, queryClient, onRefresh, setSelectedKeyAndUrl]
+  )
+
+  const requestRemoveComponent = useCallback((item: ComponentIndexItem) => {
+    setComponentToDelete({
+      kind: item.kind,
+      id: item.component_id,
+      title: item.title,
+    })
+    setIsDeleteDialogOpen(true)
+  }, [])
 
   const handleDelete = useCallback(async () => {
     if (!componentToDelete) return
@@ -991,9 +1088,15 @@ export function LibraryTab({
     resetForm()
   }, [resetForm])
 
+  const handleBackToList = useCallback(() => {
+    setShowInlineNewComponent(false)
+    resetForm()
+    setSelectedKeyAndUrl(null)
+  }, [resetForm, setSelectedKeyAndUrl])
+
   if (isLoading) {
     return (
-      <div className="flex items-center justify-center h-full">
+      <div className="flex h-full items-center justify-center">
         <div className="text-gray-500">Loading components...</div>
       </div>
     )
@@ -1005,242 +1108,8 @@ export function LibraryTab({
     )
   }
 
-  return (
-    <div className="flex h-full flex-col overflow-hidden bg-white">
-      <div className="border-b border-gray-100 px-1 pb-3">
-        <div className="relative">
-          <Search className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-gray-400" />
-          <Input
-            type="search"
-            placeholder="Search components..."
-            value={searchQuery}
-            onChange={e => setSearchQuery(e.target.value)}
-            className="pl-10"
-          />
-        </div>
-      </div>
-
-      <div className="min-h-0 flex-1 overflow-auto">
-        {filteredItems.length === 0 && !showInlineNewComponent ? (
-          <div className="flex flex-col items-center justify-center px-4 py-10 text-center">
-            <p className="mb-4 text-sm text-gray-500">
-              {searchQuery ? 'No components match your search' : 'No components yet'}
-            </p>
-            <AddComponentButton
-              label="Add component"
-              onClick={() => {
-                resetForm()
-                setShowInlineNewComponent(true)
-              }}
-            />
-          </div>
-        ) : (
-          <div className="divide-y divide-gray-100 rounded-md border border-gray-100">
-            {filteredItems.map((item: any) => {
-              const isExpanded = item.key === selectedKey && !isMultiSelect
-              const isSelectedInMulti = selectedKeys.includes(item.key)
-              return (
-                <div key={item.key} className="bg-white">
-                  <div
-                    role="button"
-                    tabIndex={0}
-                    onClick={(e) => {
-                      if (e.metaKey || e.ctrlKey) {
-                        toggleMultiSelectKey(item.key)
-                        return
-                      }
-                      setSelectedKeyAndUrl(isExpanded ? null : item.key)
-                    }}
-                    onKeyDown={(e) => {
-                      if (e.key === 'Enter' || e.key === ' ') {
-                        e.preventDefault()
-                        setSelectedKeyAndUrl(isExpanded ? null : item.key)
-                      }
-                    }}
-                    className={[
-                      "flex cursor-pointer items-center gap-2 px-3 py-2.5 transition-colors hover:bg-gray-50",
-                      (isExpanded || isSelectedInMulti) ? "bg-gray-50" : "",
-                    ].join(" ")}
-                  >
-                    <div className="min-w-0 flex-1 truncate text-sm font-medium text-gray-900">
-                      {item.title}
-                      {isSelectedInMulti && !isExpanded ? (
-                        <span className="ml-2 text-xs font-normal text-gray-400">selected</span>
-                      ) : null}
-                    </div>
-                    {item.kind === "project" && !isMultiSelect ? (
-                      <button
-                        type="button"
-                        onClick={e => {
-                          e.stopPropagation()
-                          setComponentToDelete({ kind: "project", id: item.component_id, title: item.title })
-                          setIsDeleteDialogOpen(true)
-                        }}
-                        className="shrink-0 rounded p-1 text-red-500 hover:bg-red-50"
-                        title="Remove component"
-                      >
-                        <Trash2 className="h-4 w-4" />
-                      </button>
-                    ) : null}
-                  </div>
-
-                  {isExpanded && selectedItem ? (
-                    <div className="space-y-4 border-t border-gray-100 px-3 py-3">
-                      <div className="space-y-3">
-                        <div>
-                          <Label htmlFor={`edit-title-${item.key}`} className="text-xs text-gray-500">
-                            Title
-                          </Label>
-                          <Input
-                            id={`edit-title-${item.key}`}
-                            value={editTitle}
-                            onChange={e => setEditTitle(e.target.value)}
-                            onBlur={selectedItem.kind === 'project' ? handleSaveMeta : handleSaveGlobalMeta}
-                            placeholder="Component title"
-                            className="mt-1 h-9"
-                          />
-                        </div>
-                        <div>
-                          <Label htmlFor={`edit-description-${item.key}`} className="text-xs text-gray-500">
-                            Description
-                          </Label>
-                          <Textarea
-                            id={`edit-description-${item.key}`}
-                            value={editDescription}
-                            onChange={e => setEditDescription(e.target.value)}
-                            onBlur={selectedItem.kind === 'project' ? handleSaveMeta : handleSaveGlobalMeta}
-                            placeholder="Component description"
-                            rows={3}
-                            className="mt-1"
-                          />
-                        </div>
-                        {isSavingMeta ? (
-                          <div className="text-xs text-gray-500 inline-flex items-center gap-1">
-                            <Loader2 className="h-3 w-3 animate-spin" />
-                            Saving…
-                          </div>
-                        ) : (
-                          <div className="text-xs text-gray-500">Auto-saves on blur.</div>
-                        )}
-                      </div>
-
-                      {selectedItem.kind === 'project' && selectedProjectComponentId != null ? (
-                        <ChannelRequirementsSection
-                          projectId={projectId}
-                          component={{ kind: "project", projectComponentId: selectedProjectComponentId }}
-                        />
-                      ) : selectedItem.kind === 'global' && selectedGlobalComponentId != null ? (
-                        <ChannelRequirementsSection
-                          projectId={projectId}
-                          component={{ kind: "global", briefingComponentId: selectedGlobalComponentId }}
-                        />
-                      ) : null}
-
-                      <button
-                        type="button"
-                        className="text-sm text-red-600 hover:underline"
-                        onClick={() => {
-                          if (selectedItem.kind === 'project') {
-                            setComponentToDelete({
-                              kind: 'project',
-                              id: selectedProjectComponentId!,
-                              title: selectedItem.title,
-                            })
-                          } else {
-                            setComponentToDelete({
-                              kind: 'global',
-                              id: selectedItem.component_id,
-                              title: selectedItem.title,
-                            })
-                          }
-                          setIsDeleteDialogOpen(true)
-                        }}
-                      >
-                        Remove from project
-                      </button>
-                    </div>
-                  ) : null}
-                </div>
-              )
-            })}
-          </div>
-        )}
-
-        {showInlineNewComponent ? (
-          <div className="mt-3 space-y-3 rounded-md border border-dashed border-gray-200 bg-white px-3 py-3">
-            <div>
-              <Label htmlFor="new-component-title" className="text-xs text-gray-500">Title *</Label>
-              <Input
-                id="new-component-title"
-                value={title}
-                onChange={e => setTitle(e.target.value)}
-                placeholder="Component title"
-                className="mt-1 h-9"
-              />
-            </div>
-            <div>
-              <Label htmlFor="new-component-description" className="text-xs text-gray-500">Description</Label>
-              <Textarea
-                id="new-component-description"
-                value={description}
-                onChange={e => setDescription(e.target.value)}
-                placeholder="Component description"
-                rows={2}
-                className="mt-1"
-              />
-            </div>
-            <div>
-              <Label htmlFor="new-component-rules" className="text-xs text-gray-500">Rules</Label>
-              <Textarea
-                id="new-component-rules"
-                value={rules}
-                onChange={e => setRules(e.target.value)}
-                placeholder="Component rules or guidelines"
-                rows={3}
-                className="mt-1"
-              />
-            </div>
-            <div className="flex items-center justify-end gap-2">
-              <Button type="button" variant="ghost" size="sm" onClick={handleInlineCreateClose}>
-                Cancel
-              </Button>
-              <Button type="button" size="sm" onClick={handleCreate} disabled={!title.trim()}>
-                Create component
-              </Button>
-            </div>
-          </div>
-        ) : filteredItems.length > 0 ? (
-          <AddComponentButton
-            label="Add component"
-            onClick={() => {
-              resetForm()
-              setShowInlineNewComponent(true)
-            }}
-          />
-        ) : null}
-      </div>
-
-      {isMultiSelect ? (
-        <div className="flex items-center justify-between gap-2 border-t border-gray-200 bg-white p-3">
-          <div className="text-sm text-gray-600">
-            {selectedKeys.length} selected (Ctrl/⌘ click to toggle)
-          </div>
-          <div className="flex items-center gap-2">
-            <Button variant="outline" size="sm" onClick={() => setSelectedKeys([])}>
-              Clear
-            </Button>
-            <Button
-              variant="destructive"
-              size="sm"
-              onClick={() => setIsBulkDeleteDialogOpen(true)}
-              disabled={!selectedKeys.length || isBulkDeleting}
-            >
-              Delete from project
-            </Button>
-          </div>
-        </div>
-      ) : null}
-
+  const deleteDialogs = (
+    <>
       <AlertDialog open={isDeleteDialogOpen} onOpenChange={setIsDeleteDialogOpen}>
         <AlertDialogContent>
           <AlertDialogHeader>
@@ -1293,6 +1162,346 @@ export function LibraryTab({
           </AlertDialogFooter>
         </AlertDialogContent>
       </AlertDialog>
+    </>
+  )
+
+  if (showInlineNewComponent) {
+    return (
+      <div className="flex h-full flex-col overflow-hidden bg-white">
+        <div className="flex items-center gap-1 border-b border-gray-100 px-1 pb-3">
+          <Button
+            type="button"
+            variant="ghost"
+            size="sm"
+            className="h-8 w-8 shrink-0 p-0 text-gray-500 hover:text-gray-900"
+            onClick={handleInlineCreateClose}
+            aria-label="Back to components"
+          >
+            <ChevronLeft className="h-4 w-4" />
+          </Button>
+          <h3 className="min-w-0 flex-1 truncate text-sm font-medium text-gray-900">
+            New custom component
+          </h3>
+        </div>
+
+        <div className="min-h-0 flex-1 space-y-3 overflow-auto px-1 py-3">
+          <div>
+            <Label htmlFor="new-component-title" className="text-xs text-gray-500">Title *</Label>
+            <Input
+              id="new-component-title"
+              value={title}
+              onChange={(e) => setTitle(e.target.value)}
+              placeholder="Component title"
+              className="mt-1 h-9"
+            />
+          </div>
+          <div>
+            <Label htmlFor="new-component-description" className="text-xs text-gray-500">Description</Label>
+            <Textarea
+              id="new-component-description"
+              value={description}
+              onChange={(e) => setDescription(e.target.value)}
+              placeholder="Component description"
+              rows={2}
+              className="mt-1"
+            />
+          </div>
+          <div>
+            <Label htmlFor="new-component-rules" className="text-xs text-gray-500">Rules</Label>
+            <Textarea
+              id="new-component-rules"
+              value={rules}
+              onChange={(e) => setRules(e.target.value)}
+              placeholder="Component rules or guidelines"
+              rows={3}
+              className="mt-1"
+            />
+          </div>
+          <div className="flex items-center justify-end gap-2">
+            <Button type="button" variant="ghost" size="sm" onClick={handleInlineCreateClose}>
+              Cancel
+            </Button>
+            <Button type="button" size="sm" onClick={handleCreate} disabled={!title.trim()}>
+              Create component
+            </Button>
+          </div>
+        </div>
+        {deleteDialogs}
+      </div>
+    )
+  }
+
+  if (isDetailView && selectedItem) {
+    return (
+      <div className="flex h-full flex-col overflow-hidden bg-white">
+        <div className="flex items-center gap-1 border-b border-gray-100 px-1 pb-3">
+          <Button
+            type="button"
+            variant="ghost"
+            size="sm"
+            className="h-8 w-8 shrink-0 p-0 text-gray-500 hover:text-gray-900"
+            onClick={handleBackToList}
+            aria-label="Back to components"
+          >
+            <ChevronLeft className="h-4 w-4" />
+          </Button>
+          <h3 className="min-w-0 flex-1 truncate text-sm font-medium text-gray-900">
+            {selectedItem.title}
+          </h3>
+          <Button
+            type="button"
+            variant="ghost"
+            size="sm"
+            className="h-8 w-8 shrink-0 p-0 text-gray-400 hover:bg-red-50 hover:text-red-600"
+            onClick={() => requestRemoveComponent(selectedItem)}
+            aria-label="Remove from project"
+            title="Remove from project"
+          >
+            <Trash2 className="h-4 w-4" />
+          </Button>
+        </div>
+
+        <div className="min-h-0 flex-1 space-y-4 overflow-auto px-1 py-3">
+          <div className="space-y-3">
+            <div>
+              <Label htmlFor={`edit-title-${selectedItem.key}`} className="text-xs text-gray-500">
+                Title
+              </Label>
+              <Input
+                id={`edit-title-${selectedItem.key}`}
+                value={editTitle}
+                onChange={(e) => setEditTitle(e.target.value)}
+                onBlur={selectedItem.kind === 'project' ? handleSaveMeta : handleSaveGlobalMeta}
+                placeholder="Component title"
+                className="mt-1 h-9"
+              />
+            </div>
+            <div>
+              <Label htmlFor={`edit-description-${selectedItem.key}`} className="text-xs text-gray-500">
+                Description
+              </Label>
+              <Textarea
+                id={`edit-description-${selectedItem.key}`}
+                value={editDescription}
+                onChange={(e) => setEditDescription(e.target.value)}
+                onBlur={selectedItem.kind === 'project' ? handleSaveMeta : handleSaveGlobalMeta}
+                placeholder="Component description"
+                rows={3}
+                className="mt-1"
+              />
+            </div>
+            {isSavingMeta ? (
+              <div className="inline-flex items-center gap-1 text-xs text-gray-500">
+                <Loader2 className="h-3 w-3 animate-spin" />
+                Saving…
+              </div>
+            ) : (
+              <div className="text-xs text-gray-500">Auto-saves on blur.</div>
+            )}
+          </div>
+
+          {selectedItem.kind === 'project' && selectedProjectComponentId != null ? (
+            <ChannelRequirementsSection
+              projectId={projectId}
+              component={{ kind: 'project', projectComponentId: selectedProjectComponentId }}
+            />
+          ) : selectedItem.kind === 'global' && selectedGlobalComponentId != null ? (
+            <ChannelRequirementsSection
+              projectId={projectId}
+              component={{ kind: 'global', briefingComponentId: selectedGlobalComponentId }}
+            />
+          ) : null}
+        </div>
+        {deleteDialogs}
+      </div>
+    )
+  }
+
+  return (
+    <div className="flex h-full flex-col overflow-hidden bg-white">
+      <div className="flex items-start justify-between gap-3 px-1 pb-2">
+        <div className="min-w-0 flex-1">
+          <h3 className="text-sm font-medium text-gray-900">Components</h3>
+          <p className="mt-1 text-xs leading-relaxed text-gray-500">
+            Components defined for this project. They guide structure and are used when producing content with AI.
+          </p>
+        </div>
+        <Popover
+          modal={false}
+          open={isAddOpen}
+          onOpenChange={(open) => {
+            setIsAddOpen(open)
+            if (!open) setAddSearch('')
+          }}
+        >
+          <PopoverTrigger asChild>
+            <Button type="button" size="sm" variant="outline" className="shrink-0 gap-2">
+              <Plus className="h-4 w-4" />
+              Add
+            </Button>
+          </PopoverTrigger>
+          <PopoverContent
+            className="z-[60] w-[min(90vw,26rem)] overflow-hidden p-0"
+            align="end"
+            onWheel={(event) => event.stopPropagation()}
+          >
+            <Command shouldFilter className="max-h-[320px] overflow-hidden">
+              <CommandInput
+                placeholder="Add system component..."
+                value={addSearch}
+                onValueChange={setAddSearch}
+              />
+              <CommandList
+                className="max-h-[260px] overflow-y-auto overscroll-contain"
+                onWheel={(event) => event.stopPropagation()}
+              >
+                <CommandEmpty>
+                  {isSystemComponentsLoading || isAddingSystemComponent
+                    ? 'Loading…'
+                    : 'No unassigned system components.'}
+                </CommandEmpty>
+                <CommandGroup className="overflow-visible">
+                  {unassignedSystemComponents.map((component) => (
+                    <CommandItem
+                      key={component.id}
+                      value={`${component.title} ${component.description ?? ''}`}
+                      disabled={isAddingSystemComponent}
+                      onSelect={() => {
+                        void handleAddSystemComponent(component)
+                      }}
+                      className="cursor-pointer"
+                    >
+                      <div className="min-w-0">
+                        <div className="truncate text-sm font-medium text-gray-900">
+                          {component.title}
+                        </div>
+                        {component.description ? (
+                          <div className="truncate text-xs text-gray-500">
+                            {component.description}
+                          </div>
+                        ) : null}
+                      </div>
+                    </CommandItem>
+                  ))}
+                  <CommandItem
+                    value={`create-custom-component ${addSearch.trim().toLowerCase()}`}
+                    onSelect={() => {
+                      setIsAddOpen(false)
+                      setAddSearch('')
+                      resetForm()
+                      if (addSearch.trim()) setTitle(addSearch.trim())
+                      setShowInlineNewComponent(true)
+                    }}
+                    className="cursor-pointer border-t border-gray-100"
+                  >
+                    <Plus className="mr-2 h-3.5 w-3.5 text-gray-400" />
+                    Create custom component
+                    {addSearch.trim() ? ` “${addSearch.trim()}”` : ''}
+                  </CommandItem>
+                </CommandGroup>
+              </CommandList>
+            </Command>
+          </PopoverContent>
+        </Popover>
+      </div>
+
+      <div className="border-b border-gray-100 px-1 pb-3">
+        <div className="relative">
+          <Search className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-gray-400" />
+          <Input
+            type="search"
+            placeholder="Search components..."
+            value={searchQuery}
+            onChange={(e) => setSearchQuery(e.target.value)}
+            className="pl-10"
+          />
+        </div>
+      </div>
+
+      <div className="min-h-0 flex-1 overflow-auto">
+        {filteredItems.length === 0 ? (
+          <div className="flex flex-col items-center justify-center px-4 py-10 text-center">
+            <p className="text-sm text-gray-500">
+              {searchQuery ? 'No components match your search' : 'No components yet'}
+            </p>
+          </div>
+        ) : (
+          <div className="divide-y divide-gray-100 rounded-md border border-gray-100">
+            {filteredItems.map((item) => {
+              const isSelectedInMulti = selectedKeys.includes(item.key)
+              return (
+                <div
+                  key={item.key}
+                  role="button"
+                  tabIndex={0}
+                  onClick={(e) => {
+                    if (e.metaKey || e.ctrlKey) {
+                      toggleMultiSelectKey(item.key)
+                      return
+                    }
+                    setSelectedKeyAndUrl(item.key)
+                  }}
+                  onKeyDown={(e) => {
+                    if (e.key === 'Enter' || e.key === ' ') {
+                      e.preventDefault()
+                      setSelectedKeyAndUrl(item.key)
+                    }
+                  }}
+                  className={[
+                    'flex cursor-pointer items-center gap-2 px-3 py-2.5 transition-colors hover:bg-gray-50',
+                    isSelectedInMulti ? 'bg-gray-50' : '',
+                  ].join(' ')}
+                >
+                  <div className="min-w-0 flex-1 truncate text-sm font-medium text-gray-900">
+                    {item.title}
+                    {isSelectedInMulti ? (
+                      <span className="ml-2 text-xs font-normal text-gray-400">selected</span>
+                    ) : null}
+                  </div>
+                  {!isMultiSelect ? (
+                    <button
+                      type="button"
+                      onClick={(e) => {
+                        e.stopPropagation()
+                        requestRemoveComponent(item)
+                      }}
+                      className="shrink-0 rounded p-1 text-gray-400 hover:bg-red-50 hover:text-red-600"
+                      title="Remove from project"
+                      aria-label={`Remove ${item.title} from project`}
+                    >
+                      <Trash2 className="h-4 w-4" />
+                    </button>
+                  ) : null}
+                  <ChevronRight className="h-4 w-4 shrink-0 text-gray-300" aria-hidden />
+                </div>
+              )
+            })}
+          </div>
+        )}
+      </div>
+
+      {isMultiSelect ? (
+        <div className="flex items-center justify-between gap-2 border-t border-gray-200 bg-white p-3">
+          <div className="text-sm text-gray-600">
+            {selectedKeys.length} selected (Ctrl/⌘ click to toggle)
+          </div>
+          <div className="flex items-center gap-2">
+            <Button variant="outline" size="sm" onClick={() => setSelectedKeys([])}>
+              Clear
+            </Button>
+            <Button
+              variant="destructive"
+              size="sm"
+              onClick={() => setIsBulkDeleteDialogOpen(true)}
+              disabled={!selectedKeys.length || isBulkDeleting}
+            >
+              Delete from project
+            </Button>
+          </div>
+        </div>
+      ) : null}
+
+      {deleteDialogs}
     </div>
   )
 }

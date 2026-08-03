@@ -11,6 +11,11 @@ declare module 'docx' {
   export const LevelFormat: any
   export const AlignmentType: any
   export const ImageRun: any
+  export const Table: any
+  export const TableRow: any
+  export const TableCell: any
+  export const WidthType: any
+  export const BorderStyle: any
 }
 
 

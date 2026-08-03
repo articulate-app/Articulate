@@ -78,6 +78,7 @@ import {
   extractRequestPlanBuildId,
   requestPlanOperationLabel,
 } from "./request-plan"
+import { ARTIFACT_BUILD_EXECUTOR } from "../../app/lib/ai/ai-orchestrated-build-types"
 import { applyPreflightSkipsFromContentJson } from "./orchestrated-build-preflight"
 import { invalidateTaskChannelContentQueries } from "./invalidate-task-channel-content"
 import { applyContentSavedAction } from "./apply-content-saved-action"
@@ -98,6 +99,8 @@ import { buildAssistantContentJsonFromMarkdown } from "./ai-chat-message-format"
 import { getAssistantContentBlocks } from "./assistant-content-blocks"
 import type { AiActiveFieldContext } from "./active-field-context"
 import type { AiAmbientContext } from "./ai-target-context"
+import { getCenterArtifactIdFromParams } from "../../app/lib/artifact-selection-url"
+import { useCenterPaneTabsStore } from "../../app/store/center-pane-tabs"
 import { useComponentEditStreamStore } from "../../app/store/component-edit-stream"
 import { useComponentPlanTraceStore } from "../../app/store/component-plan-trace-store"
 import { useAiRequestPlanStore } from "../../app/store/ai-request-plan-store"
@@ -123,7 +126,6 @@ import {
   isOrchestratedBuildChangePreview,
 } from "./discover-orchestrated-build"
 import { useOrchestratedBuildPoll } from "./use-orchestrated-build-poll"
-import { ArtifactWorkspace } from "../artifacts/ArtifactWorkspace"
 import { ComponentPlanTraceCards } from "./ComponentPlanTraceCards"
 import { RequestPlanCard } from "./RequestPlanCard"
 import { buildNextUrlForEntityLink, isTasksShellPath } from "./app-entity-links"
@@ -572,6 +574,12 @@ export function ChatWindow({
   const scrollContainerRef = useRef<HTMLDivElement>(null)
   const latestUserMessageRef = useRef<HTMLDivElement>(null)
   const userMessageScrollAnchorUntilRef = useRef(0)
+  const ignoreUserScrollReleaseUntilRef = useRef(0)
+  // State (not only a ref) so we can keep bottom scroll-room padding while the
+  // just-sent user message is anchored at the top — padding used to exist only
+  // during assistant streaming, so sends without an immediate stream (or after
+  // stream ends) could not scroll the bubble to the top and left it clipped.
+  const [keepUserMessageScrollRoom, setKeepUserMessageScrollRoom] = useState(false)
   const {
     showJumpToBottom,
     scrollUserMessageIntoView,
@@ -768,8 +776,9 @@ export function ChatWindow({
       componentId: stream.componentId,
       componentTitle: stream.componentTitle,
     })
+    // Legacy content-tab deep links remap to Artifacts in TaskDetails.
     const params = new URLSearchParams(searchParams.toString())
-    params.set("taskTab", "content")
+    params.set("taskTab", "artifacts")
     params.set("activeChannelId", String(stream.channelId))
     const query = params.toString()
     const nextUrl = query ? `${pathname}?${query}` : pathname
@@ -1195,7 +1204,7 @@ export function ChatWindow({
             : null,
       })
       // Strict contract: only phase === "saved" AND ok === true may mutate the durable
-      // output cache. Live streaming overlays from the edit-stream store in TaskContentTab.
+      // output cache. Live streaming overlays from the edit-stream store.
       if (event.phase !== "saved" || event.ok !== true) return
       const stream = useComponentEditStreamStore.getState().getStream(ctx.key)
       if (stream) {
@@ -1311,6 +1320,7 @@ export function ChatWindow({
           title: plan?.operation ? requestPlanOperationLabel(plan.operation) : null,
           summary: null,
           changeSetId: null,
+          isArtifactBuild: plan?.executor === ARTIFACT_BUILD_EXECUTOR,
           startFailed: false,
         })
       }
@@ -1385,7 +1395,7 @@ export function ChatWindow({
               ? String(entity.id)
               : null
         if (!componentId) return
-        // Prefer an existing edit-stream match; otherwise open content tab with ambient task/channel.
+        // Prefer an existing edit-stream match; otherwise open Artifacts with ambient task/channel.
         const matchingStream = Object.values(useComponentEditStreamStore.getState().streams).find(
           (stream) => stream.componentId === componentId,
         )
@@ -1395,7 +1405,7 @@ export function ChatWindow({
         }
         const params = new URLSearchParams(searchParams.toString())
         if (taskId != null) params.set("taskId", String(taskId))
-        params.set("taskTab", "content")
+        params.set("taskTab", "artifacts")
         if (activeChannelId != null) params.set("activeChannelId", String(activeChannelId))
         shallowPushSearchParams(pathname, params, "ai-execution-trace-component")
         useComponentEditStreamStore.getState().requestFocus({
@@ -1416,7 +1426,7 @@ export function ChatWindow({
               : null
         if (channelIdValue == null) return
         const params = new URLSearchParams(searchParams.toString())
-        params.set("taskTab", "content")
+        params.set("taskTab", "artifacts")
         params.set("activeChannelId", String(channelIdValue))
         shallowPushSearchParams(pathname, params, "ai-execution-trace-channel")
       }
@@ -1601,6 +1611,7 @@ export function ChatWindow({
         title: build.title,
         summary: build.summary,
         changeSetId: build.changeSetId,
+        isArtifactBuild: build.isArtifactBuild,
         startFailed: build.startFailed,
         errorCode: build.errorCode,
         errorMessage: build.errorMessage,
@@ -1615,6 +1626,7 @@ export function ChatWindow({
           title: build.title,
           summary: build.summary,
           changeSetId: build.changeSetId,
+          isArtifactBuild: build.isArtifactBuild,
           startFailed: build.startFailed,
           errorCode: build.errorCode,
           errorMessage: build.errorMessage,
@@ -1722,14 +1734,27 @@ export function ChatWindow({
               && !Array.isArray(message.content_json)
                 ? (message.content_json as Record<string, unknown>)
                 : {}
+            const payloadRecord = payload as Record<string, unknown>
+            const payloadBuildIds = Array.isArray(payloadRecord.build_ids)
+              ? payloadRecord.build_ids
+              : null
+            const payloadOutputKind =
+              typeof payloadRecord.output_kind === "string"
+                ? payloadRecord.output_kind
+                : typeof existingJson.output_kind === "string"
+                  ? existingJson.output_kind
+                  : "artifact_build_control"
             return {
               ...message,
               content: "",
               content_json: {
                 ...existingJson,
+                ...(payloadBuildIds ? { build_ids: payloadBuildIds } : {}),
                 blocks: [],
-                output_kind: "build_ack",
+                // Keep artifact_build_control (or stream output_kind) so hydrate can rediscover builds.
+                output_kind: payloadOutputKind,
                 ui_visibility: "hidden",
+                suppress_chat_bubble: true,
                 build_ack: { suppress_chat_bubble: true },
               },
               attachments: mergedAttachments,
@@ -2023,15 +2048,26 @@ export function ChatWindow({
     [onThreadTitlePersist, onThreadTitlePreview, thread.id]
   )
 
+  const centerPaneTabs = useCenterPaneTabsStore((state) => state.tabs)
+
   // Visible UI context only — never used as an explicit write target without a pill/action.
   const ambientContext = useMemo((): AiAmbientContext => {
     const taskTab = searchParams.get("taskTab")
+    const centerArtifactId = getCenterArtifactIdFromParams(searchParams)
+    const centerArtifactTitle = centerArtifactId
+      ? centerPaneTabs
+          .find((tab) => tab.kind === "artifact" && tab.id === centerArtifactId)
+          ?.title
+          ?.trim() || null
+      : null
     return {
       center_task_id: taskId ?? null,
       active_channel_id: activeChannelId ?? null,
+      center_artifact_id: centerArtifactId,
+      ...(centerArtifactTitle ? { center_artifact_title: centerArtifactTitle } : {}),
       ...(taskTab ? { taskTab } : {}),
     }
-  }, [taskId, activeChannelId, searchParams])
+  }, [taskId, activeChannelId, searchParams, centerPaneTabs])
 
   const resolveChatSelection = useCallback(
     (container: HTMLElement, range: Range): AiSelectedTextContext | null => {
@@ -2667,6 +2703,7 @@ export function ChatWindow({
       if (!requestPlanAllowsOrchestratedBuildCard(planOperation)) continue
       const discovered = discoverOrchestratedBuildsFromMessageContentJson(message.content_json)
       for (const build of discovered) {
+        // History hydrate: poller does one status probe (no pump) + short card rehydrate.
         store.registerBuild({
           buildId: build.buildId,
           threadId: thread.id,
@@ -2674,6 +2711,8 @@ export function ChatWindow({
           title: build.title,
           summary: build.summary,
           changeSetId: build.changeSetId,
+          isArtifactBuild: build.isArtifactBuild,
+          monitor: "history",
           startFailed: build.startFailed,
           errorCode: build.errorCode,
           errorMessage: build.errorMessage,
@@ -2881,17 +2920,28 @@ export function ChatWindow({
         .join("|"),
     [editStreamEntries],
   )
+  const buildScrollSignature = useMemo(
+    () =>
+      Object.values(orchestratedBuildEntries)
+        .filter((entry) => entry.threadId === thread.id)
+        .map((entry) =>
+          `${entry.buildId}:${entry.build?.status ?? ""}:${entry.build?.last_event_sequence ?? 0}:${entry.updatedAt}`,
+        )
+        .join("|"),
+    [orchestratedBuildEntries, thread.id],
+  )
   
   // Scroll only when the user submits a new message; streaming must not force-scroll.
   const lastMessage = allMessages[allMessages.length - 1]
   const lastMessageSignature = `${lastMessage?.id ?? ""}:${lastMessage?.content ?? ""}:${lastMessage?.status ?? ""}`
-  const streamScrollSignature = `${lastMessageSignature}|${editStreamSignature}|${contentSavedCards.length}|${assistantActivity?.text ?? ""}`
+  const streamScrollSignature = `${lastMessageSignature}|${editStreamSignature}|${buildScrollSignature}|${contentSavedCards.length}|${assistantActivity?.text ?? ""}`
 
   useEffect(() => {
     threadInitialScrollDoneRef.current = null
     prevMessageCountRef.current = 0
     prevStreamSignatureRef.current = ""
     userMessageScrollAnchorUntilRef.current = 0
+    setKeepUserMessageScrollRoom(false)
   }, [thread.id])
 
   useEffect(() => {
@@ -2922,7 +2972,7 @@ export function ChatWindow({
     scrollToBottomOnce,
   ])
 
-  useEffect(() => {
+  useLayoutEffect(() => {
     const prevCount = prevMessageCountRef.current
     const nextCount = allMessages.length
     const addedMessages = nextCount > prevCount
@@ -2938,38 +2988,53 @@ export function ChatWindow({
       || pendingMsgs.some((message) => message.role === "user" && message.id === last.id)
     if (!isNewlySubmittedUserMessage) return
 
-    userMessageScrollAnchorUntilRef.current = performance.now() + 4000
+    // Keep scroll-room padding long enough that builds/previews can mount
+    // after a short assistant ack — otherwise the bubble can't reach the top.
+    userMessageScrollAnchorUntilRef.current = performance.now() + 12000
+    ignoreUserScrollReleaseUntilRef.current = performance.now() + 1200
+    setKeepUserMessageScrollRoom(true)
 
-    const scheduleComfortScroll = () => {
-      scrollLatestUserMessageIntoComfortView("smooth")
-    }
-
-    requestAnimationFrame(() => {
-      requestAnimationFrame(scheduleComfortScroll)
-    })
-    const delayedTimer = window.setTimeout(scheduleComfortScroll, 180)
+    // Same layout pass as padding: avoid rAF-only scroll that races paint.
+    scrollLatestUserMessageIntoComfortView("auto")
+    const delayedTimers = [50, 160, 400, 900].map((delayMs) =>
+      window.setTimeout(() => {
+        if (performance.now() >= userMessageScrollAnchorUntilRef.current) return
+        scrollLatestUserMessageIntoComfortView(delayMs <= 50 ? "auto" : "smooth")
+      }, delayMs),
+    )
+    const releaseTimer = window.setTimeout(() => {
+      if (performance.now() >= userMessageScrollAnchorUntilRef.current) {
+        setKeepUserMessageScrollRoom(false)
+      }
+    }, 12200)
 
     return () => {
-      window.clearTimeout(delayedTimer)
+      for (const timer of delayedTimers) window.clearTimeout(timer)
+      window.clearTimeout(releaseTimer)
     }
   }, [allMessages, pendingMsgs, scrollLatestUserMessageIntoComfortView])
+
+  // Re-anchor after padding mounts / content below the user message grows
+  // (assistant stream, preview cards, build cards). Padding alone is what makes
+  // "message at top" physically possible when the user was at the thread bottom.
+  useLayoutEffect(() => {
+    if (!keepUserMessageScrollRoom) return
+    if (performance.now() >= userMessageScrollAnchorUntilRef.current) return
+    scrollLatestUserMessageIntoComfortView("auto")
+  }, [keepUserMessageScrollRoom, scrollLatestUserMessageIntoComfortView])
 
   useEffect(() => {
     if (streamScrollSignature === prevStreamSignatureRef.current) return
     prevStreamSignatureRef.current = streamScrollSignature
 
-    if (!isAssistantStreaming) return
-
-    // While the just-submitted user message is still anchored, keep it pinned near
-    // the top as streaming content grows below it. This also covers the case where
-    // there was no room to anchor at submit time (e.g. sending from the bottom of
-    // the thread) until the streaming bottom-padding is added. A manual scroll
-    // clears the anchor window, so we never fight the user's own scrolling.
-    if (performance.now() < userMessageScrollAnchorUntilRef.current) {
+    const isAnchored = performance.now() < userMessageScrollAnchorUntilRef.current
+    if (isAnchored) {
+      // Keep pinned while previews/builds grow — even if the text stream already ended.
       scrollLatestUserMessageIntoComfortView("auto")
       return
     }
 
+    if (!isAssistantStreaming) return
     markNewContentBelow()
   }, [
     streamScrollSignature,
@@ -2984,8 +3049,14 @@ export function ChatWindow({
 
     // An explicit manual scroll gesture releases the top-anchor lock so the user
     // keeps control of the viewport while the assistant is still streaming.
-    const releaseAnchor = () => {
+    // Ignore tiny/trackpad noise and a short grace window after programmatic scroll.
+    const releaseAnchor = (event: Event) => {
+      if (performance.now() < ignoreUserScrollReleaseUntilRef.current) return
+      if (event instanceof WheelEvent && Math.abs(event.deltaY) < 6 && Math.abs(event.deltaX) < 6) {
+        return
+      }
       userMessageScrollAnchorUntilRef.current = 0
+      setKeepUserMessageScrollRoom(false)
     }
 
     container.addEventListener("wheel", releaseAnchor, { passive: true })
@@ -2998,19 +3069,24 @@ export function ChatWindow({
 
   useEffect(() => {
     const messageElement = latestUserMessageRef.current
+    const container = scrollContainerRef.current
     if (!messageElement) return
 
     let resizeTimer: number | null = null
-    const observer = new ResizeObserver(() => {
+    const reanchorIfNeeded = () => {
       if (performance.now() > userMessageScrollAnchorUntilRef.current) return
       if (resizeTimer != null) window.clearTimeout(resizeTimer)
       resizeTimer = window.setTimeout(() => {
         resizeTimer = null
         scrollLatestUserMessageIntoComfortView("auto")
       }, 80)
-    })
+    }
 
+    const observer = new ResizeObserver(reanchorIfNeeded)
     observer.observe(messageElement)
+    // Padding / preview growth changes the container's scrollHeight; re-anchor then.
+    if (container) observer.observe(container)
+
     return () => {
       observer.disconnect()
       if (resizeTimer != null) window.clearTimeout(resizeTimer)
@@ -3082,7 +3158,9 @@ export function ChatWindow({
         <div
           ref={scrollContainerRef}
           className={`flex-1 overflow-x-hidden overflow-y-auto p-4 space-y-4 min-h-0 min-w-0 max-w-full${
-            isAssistantStreaming ? " pb-[45vh] md:pb-[35vh]" : ""
+            keepUserMessageScrollRoom || isAssistantStreaming
+              ? " pb-[55vh] md:pb-[45vh]"
+              : ""
           }`}
         >
         {allMessages.map((m, messageIndex) => {
@@ -3221,7 +3299,7 @@ export function ChatWindow({
             <div
               key={m.id}
               ref={messageIndex === latestUserMessageIndex ? latestUserMessageRef : undefined}
-              className="w-full min-w-0 max-w-full"
+              className="w-full min-w-0 max-w-full scroll-mt-4"
             >
               <MessageBubble
                 msg={m as any}
@@ -3230,6 +3308,9 @@ export function ChatWindow({
                 threadContext={context ?? undefined}
                 activeChannelId={activeChannelId}
                 chatContext={chatContext}
+                forceExpandedUserMessage={
+                  m.role === "user" && messageIndex === latestUserMessageIndex
+                }
                 resendAfterUserMessageEdit={hasPersistedThreadId ? resendAfterUserMessageEdit : undefined}
                 mentionDirectSeed={mentionDirectSeed}
                 assistantIntroHtml={previewLayout.introHtml}
@@ -3417,80 +3498,61 @@ export function ChatWindow({
         ) : null}
       </div>
       <div className="p-4 flex-shrink-0">
+        {hasPersistedThreadId && isUsageSendBlocked(threadUsage) ? (
+          <AiChatUsageLimitCard usage={threadUsage} canReviewLimits={canReviewLimits} />
+        ) : null}
         {!hasPersistedThreadId ? (
-          <div className="border-t pt-2">
-            <div className="w-full border rounded p-2 text-sm bg-gray-50 text-gray-500">
-              Creating new chat...
-            </div>
-          </div>
-        ) : (
-          <>
-            {isUsageSendBlocked(threadUsage) ? (
-              <AiChatUsageLimitCard usage={threadUsage} canReviewLimits={canReviewLimits} />
-            ) : null}
-            <details className="mb-2 rounded-md border border-gray-200 bg-white open:shadow-sm">
-              <summary className="cursor-pointer select-none px-3 py-2 text-xs font-medium text-gray-700">
-                Chat artifacts
-              </summary>
-              <div className="max-h-64 overflow-y-auto border-t border-gray-100 px-3 py-2">
-                <ArtifactWorkspace
-                  aiThreadId={thread.id}
-                  defaultChannelId={activeChannelId ?? null}
-                  className="[&>div:first-child]:hidden"
-                />
-              </div>
-            </details>
-            <Composer 
-            threadId={thread.id} 
-            taskId={taskId}
-            onOptimistic={handleOptimistic} 
-            onAssistantStreamStart={handleAssistantStreamStart}
-            onAssistantStreamChunk={handleAssistantStreamChunk}
-            onAssistantStreamStatus={handleAssistantStreamStatus}
-            onAssistantStreamComplete={handleAssistantStreamComplete}
-            onAssistantStreamError={handleAssistantStreamError}
-            onAiChatAction={handleAiChatAction}
-            onThreadTitleEvent={handleThreadTitleEvent}
-            onAssetEvent={handleAssistantStreamAsset}
-            onMessageOutputEvent={handleAssistantMessageOutput}
-            onComponentOutputEvent={handleAssistantComponentOutput}
-            onComponentEditPreviewEvent={handleComponentEditPreviewEvent}
-            onAiChangePreviewEvent={handleAiChangePreviewEvent}
-            onComponentLibraryTraceEvent={handleComponentLibraryTraceEvent}
-            onComponentPlanTraceEvent={handleComponentPlanTraceEvent}
-            onRequestPlanEvent={handleRequestPlanEvent}
-            onExecutionTraceEvent={handleExecutionTraceEvent}
-            onAiChatV2RunEvent={handleAiChatV2RunEvent}
-            onRunId={handleRunId}
-            onRunTerminalState={handleRunTerminalState}
-            onUsageUpdate={(usage) => {
-              if (usage) applyUsageSnapshot(usage)
-            }}
-            threadUsage={threadUsage}
-            isThreadUsageLoading={isThreadUsageLoading}
-            isSendBlockedByUsage={isUsageSendBlocked(threadUsage)}
-            canReviewLimits={canReviewLimits}
-            threadScope={threadScope}
-            inFlightTurnRef={inFlightTurnRef}
-            activeChannelId={activeChannelId}
-            preFillMessage={chatContext?.preFillMessage}
-            mode={chatContext?.mode}
-            componentId={chatContext?.componentId}
-            autoRun={chatContext?.autoRun}
-            activeFieldContext={effectiveActiveFieldContext}
-            ambientContext={ambientContext}
-            ambientTaskTitle={ambientTaskTitle}
-            clarificationFollowUpRef={clarificationFollowUpRef}
-            onClarificationFollowUpSent={undefined}
-            onScopeModeChange={onScopeModeChange}
-            mentionDirectSeed={mentionDirectSeed}
-            droppedFiles={droppedFiles}
-            onDroppedFilesHandled={() => setDroppedFiles([])}
-            streamAbortRef={streamAbortRef}
-            isAssistantStreaming={isAssistantStreaming}
-          />
-          </>
-        )}
+          <p className="mb-2 text-[11px] text-muted-foreground">Preparing chat…</p>
+        ) : null}
+        <Composer
+          threadId={thread.id}
+          taskId={taskId}
+          onOptimistic={handleOptimistic}
+          onAssistantStreamStart={handleAssistantStreamStart}
+          onAssistantStreamChunk={handleAssistantStreamChunk}
+          onAssistantStreamStatus={handleAssistantStreamStatus}
+          onAssistantStreamComplete={handleAssistantStreamComplete}
+          onAssistantStreamError={handleAssistantStreamError}
+          onAiChatAction={handleAiChatAction}
+          onThreadTitleEvent={handleThreadTitleEvent}
+          onAssetEvent={handleAssistantStreamAsset}
+          onMessageOutputEvent={handleAssistantMessageOutput}
+          onComponentOutputEvent={handleAssistantComponentOutput}
+          onComponentEditPreviewEvent={handleComponentEditPreviewEvent}
+          onAiChangePreviewEvent={handleAiChangePreviewEvent}
+          onComponentLibraryTraceEvent={handleComponentLibraryTraceEvent}
+          onComponentPlanTraceEvent={handleComponentPlanTraceEvent}
+          onRequestPlanEvent={handleRequestPlanEvent}
+          onExecutionTraceEvent={handleExecutionTraceEvent}
+          onAiChatV2RunEvent={handleAiChatV2RunEvent}
+          onRunId={handleRunId}
+          onRunTerminalState={handleRunTerminalState}
+          onUsageUpdate={(usage) => {
+            if (usage) applyUsageSnapshot(usage)
+          }}
+          threadUsage={threadUsage}
+          isThreadUsageLoading={isThreadUsageLoading || !hasPersistedThreadId}
+          isSendBlockedByUsage={isUsageSendBlocked(threadUsage) || !hasPersistedThreadId}
+          canReviewLimits={canReviewLimits}
+          threadScope={threadScope}
+          inFlightTurnRef={inFlightTurnRef}
+          activeChannelId={activeChannelId}
+          preFillMessage={chatContext?.preFillMessage}
+          mode={chatContext?.mode}
+          componentId={chatContext?.componentId}
+          autoRun={hasPersistedThreadId ? chatContext?.autoRun : false}
+          activeFieldContext={effectiveActiveFieldContext}
+          ambientContext={ambientContext}
+          ambientTaskTitle={ambientTaskTitle}
+          clarificationFollowUpRef={clarificationFollowUpRef}
+          onClarificationFollowUpSent={undefined}
+          onScopeModeChange={onScopeModeChange}
+          mentionDirectSeed={mentionDirectSeed}
+          droppedFiles={droppedFiles}
+          onDroppedFilesHandled={() => setDroppedFiles([])}
+          streamAbortRef={streamAbortRef}
+          isAssistantStreaming={isAssistantStreaming}
+        />
       </div>
       <SelectionAskAiMenu
         containerSelector='[data-ai-selectable="chat-message"]'

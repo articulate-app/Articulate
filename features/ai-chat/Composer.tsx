@@ -4,7 +4,11 @@ import React, { useCallback, useMemo, useRef, useState, useEffect, useReducer, t
 import { createPortal } from "react-dom"
 import { getSupabaseBrowser } from "../../lib/supabase-browser"
 import type { AiAttachmentMeta } from "./types"
-import { ArrowUp, FolderKanban, ListTodo, Paperclip, Plus, Square, User, X } from "lucide-react"
+import { ArrowUp, BookOpen, FileText, FolderKanban, ListTodo, Paperclip, Plus, Square, User, X } from "lucide-react"
+import {
+  selectQueuedMessagesForThread,
+  useAiChatMessageQueueStore,
+} from "./ai-chat-message-queue-store"
 import { getImageUrl } from "../../app/lib/public-media"
 import { sendConversationAiChatStream } from "./send-conversation-ai-chat"
 import {
@@ -29,10 +33,13 @@ import type { AiRunTerminalState } from "../../app/lib/ai/ai-chat-v2-types"
 import type { AiChatUsageSnapshot } from "../../app/lib/ai/ai-chat-v2-types"
 import { buildAiChatV2RequestFields, resolveFactualLegacySendContext } from "./build-ai-run-targets"
 import { cancelAiChatRun } from "./ai-chat-run-api"
+import { isPersistedAiThreadId } from "./thread-id"
 import { resolveComponentOutputUpdatedAtFromQueryCache } from "./resolve-component-output-from-cache"
 import { useQueryClient } from "@tanstack/react-query"
 import type { InFlightAiTurnMeta } from "./types"
 import { buildAiChatTaggedRefs } from "./build-ai-chat-tagged-refs"
+import { createSourceFromFile } from "../../app/lib/services/sources"
+import { openSourceCenterTab } from "../sources/open-source-center-tab"
 import {
   type MentionPickerRow,
   buildLevel1MentionRows,
@@ -43,9 +50,6 @@ import {
 } from "./composer-mention-rows"
 import {
   type MentionChannel,
-  type TaskChannelComponentsBucket,
-  mapTcComponentsAllChannelsRpc,
-  taskChannelCompositeKey,
 } from "./mention-task-channel-components"
 import { getLoadedTaskRowsSnapshot } from "../../src/hooks/use-task-group-tasks-query"
 import {
@@ -69,7 +73,11 @@ import {
   serializeComposerEditor,
   setComposerPlainText,
 } from "./composer-inline-editor"
-import { buildUserMessageContentJson, type AiUserMessageContentJson } from "./ai-chat-user-message-content"
+import {
+  buildSelectionPillsFromContexts,
+  buildUserMessageContentJson,
+  type AiUserMessageContentJson,
+} from "./ai-chat-user-message-content"
 import { persistUserMessageMentionMetadata } from "./persist-user-message-mention-metadata"
 import { resolveNormalizedPastedTextForChatInput } from "./composer-paste"
 import { logAiChatDebug } from "./debug"
@@ -102,12 +110,28 @@ type TaskMention = {
   projectColor?: string | null
 }
 type UserMention = { id: number; full_name: string | null; email: string | null; photo: string | null }
-type MentionEntityFilter = "all" | "task" | "project" | "user"
-type MentionGroupId = "task" | "project" | "user"
+type ArtifactMention = {
+  id: string
+  title: string | null
+  task_id: number | null
+  project_id: number | null
+  current_version: number | null
+}
+type SourceMention = {
+  id: string
+  title: string | null
+  task_id: number | null
+  project_id: number | null
+  status: string | null
+}
+type MentionEntityFilter = "all" | "task" | "project" | "user" | "artifact" | "source"
+type MentionGroupId = "task" | "project" | "user" | "artifact" | "source"
 export type MentionSuggestion =
   | { kind: "project"; id: number; label: string; project: ProjectMention }
   | { kind: "task"; id: number; label: string; task: TaskMention }
   | { kind: "user"; id: number; label: string; user: UserMention }
+  | { kind: "artifact"; id: string; label: string; artifact: ArtifactMention }
+  | { kind: "source"; id: string; label: string; source: SourceMention }
 
 /** “Open task detail” — high contrast so it stays visible on light UI. */
 const PICKER_DRILL_CHEVRON_BTN =
@@ -116,7 +140,25 @@ const PICKER_DRILL_CHEVRON_BTN =
 const MENTION_RECENT_KEY = "ai-composer-mention-recent-v1"
 const SUPPORTED_IMAGE_MIME_TYPES = new Set(["image/png", "image/jpeg", "image/webp", "image/gif"])
 const SUPPORTED_IMAGE_EXTENSIONS = new Set(["png", "jpg", "jpeg", "webp", "gif"])
-const IMAGE_ATTACHMENTS_ACCEPT = ".png,.jpg,.jpeg,.webp,.gif,image/png,image/jpeg,image/webp,image/gif"
+const SOURCE_FILE_EXTENSIONS = new Set([
+  "png",
+  "jpg",
+  "jpeg",
+  "webp",
+  "gif",
+  "pdf",
+  "docx",
+  "doc",
+  "txt",
+  "md",
+  "markdown",
+  "csv",
+  "json",
+  "html",
+  "htm",
+])
+const ATTACHMENTS_ACCEPT =
+  ".png,.jpg,.jpeg,.webp,.gif,.pdf,.docx,.doc,.txt,.md,.csv,.json,.html,.htm,image/png,image/jpeg,image/webp,image/gif,application/pdf"
 
 function isSupportedImageAttachment(file: File): boolean {
   const mime = (file.type || "").toLowerCase()
@@ -126,15 +168,38 @@ function isSupportedImageAttachment(file: File): boolean {
   return SUPPORTED_IMAGE_EXTENSIONS.has(ext)
 }
 
+function isSupportedComposerAttachment(file: File): boolean {
+  if (isSupportedImageAttachment(file)) return true
+  const mime = (file.type || "").toLowerCase()
+  if (
+    mime === "application/pdf" ||
+    mime === "text/plain" ||
+    mime === "text/markdown" ||
+    mime === "text/csv" ||
+    mime === "application/json" ||
+    mime === "text/html" ||
+    mime.includes("wordprocessingml") ||
+    mime.includes("msword")
+  ) {
+    return true
+  }
+  const lowerName = file.name.toLowerCase()
+  const ext = lowerName.includes(".") ? lowerName.slice(lowerName.lastIndexOf(".") + 1) : ""
+  return SOURCE_FILE_EXTENSIONS.has(ext)
+}
+
 type RecentStoredMention = {
-  kind: "project" | "task" | "user"
-  id: number
+  kind: "project" | "task" | "user" | "artifact" | "source"
+  id: number | string
   label: string
   projectName?: string | null
   color?: string | null
   logo?: string | null
   email?: string | null
   photo?: string | null
+  taskId?: number | null
+  projectId?: number | null
+  artifactVersionNumber?: number | null
 }
 
 function loadRecentMentions(): RecentStoredMention[] {
@@ -166,6 +231,25 @@ function suggestionToStored(s: MentionSuggestion): RecentStoredMention {
       projectName: s.task.projectName ?? null,
     }
   }
+  if (s.kind === "artifact") {
+    return {
+      kind: "artifact",
+      id: s.artifact.id,
+      label: s.label,
+      taskId: s.artifact.task_id,
+      projectId: s.artifact.project_id,
+      artifactVersionNumber: s.artifact.current_version,
+    }
+  }
+  if (s.kind === "source") {
+    return {
+      kind: "source",
+      id: s.source.id,
+      label: s.label,
+      taskId: s.source.task_id,
+      projectId: s.source.project_id,
+    }
+  }
   return {
     kind: "user",
     id: s.user.id,
@@ -176,28 +260,62 @@ function suggestionToStored(s: MentionSuggestion): RecentStoredMention {
 }
 
 function storedToSuggestion(r: RecentStoredMention): MentionSuggestion | null {
-  if (!Number.isFinite(r.id) || !r.label) return null
+  if (!r.label) return null
+  if (r.kind === "artifact") {
+    const id = String(r.id).trim()
+    if (!id) return null
+    return {
+      kind: "artifact",
+      id,
+      label: r.label,
+      artifact: {
+        id,
+        title: r.label,
+        task_id: r.taskId ?? null,
+        project_id: r.projectId ?? null,
+        current_version: r.artifactVersionNumber ?? null,
+      },
+    }
+  }
+  if (r.kind === "source") {
+    const id = String(r.id).trim()
+    if (!id) return null
+    return {
+      kind: "source",
+      id,
+      label: r.label,
+      source: {
+        id,
+        title: r.label,
+        task_id: r.taskId ?? null,
+        project_id: r.projectId ?? null,
+        status: null,
+      },
+    }
+  }
+  const numericId = Number(r.id)
+  if (!Number.isFinite(numericId)) return null
   if (r.kind === "project") {
     return {
       kind: "project",
-      id: r.id,
+      id: numericId,
       label: r.label,
-      project: { id: r.id, name: r.label, color: r.color ?? null, logo: r.logo ?? null },
+      project: { id: numericId, name: r.label, color: r.color ?? null, logo: r.logo ?? null },
     }
   }
   if (r.kind === "task") {
     return {
       kind: "task",
-      id: r.id,
+      id: numericId,
       label: r.label,
-      task: { id: r.id, title: r.label, projectName: r.projectName ?? null },
+      task: { id: numericId, title: r.label, projectName: r.projectName ?? null },
     }
   }
   return {
     kind: "user",
-    id: r.id,
+    id: numericId,
     label: r.label,
-    user: { id: r.id, full_name: r.label, email: r.email ?? null, photo: r.photo ?? null },
+    user: { id: numericId, full_name: r.label, email: r.email ?? null, photo: r.photo ?? null },
   }
 }
 
@@ -341,8 +459,8 @@ export function Composer({
   inFlightTurnRef,
   activeChannelId,
   preFillMessage,
-  mode,
-  componentId,
+  mode: _legacyBuildMode,
+  componentId: _legacyBuildComponentId,
   autoRun = false,
   activeFieldContext,
   ambientContext,
@@ -383,6 +501,14 @@ export function Composer({
   const [files, setFiles] = useState<File[]>([])
   const [attachmentError, setAttachmentError] = useState<string | null>(null)
   const [isSending, setIsSending] = useState(false)
+  const queuedMessages = useAiChatMessageQueueStore(
+    useCallback((state) => selectQueuedMessagesForThread(state, threadId), [threadId]),
+  )
+  const enqueueQueuedMessage = useAiChatMessageQueueStore((state) => state.enqueue)
+  const removeQueuedMessage = useAiChatMessageQueueStore((state) => state.remove)
+  const shiftNextQueuedMessage = useAiChatMessageQueueStore((state) => state.shiftNext)
+  const drainingQueueRef = useRef(false)
+  const isComposerBusy = isSending || isAssistantStreaming
   const [mentionQuery, setMentionQuery] = useState<string | null>(null)
   const [projectOptions, setProjectOptions] = useState<ProjectMention[]>([])
   const [localTaskOptions, setLocalTaskOptions] = useState<TaskMention[]>([])
@@ -394,13 +520,9 @@ export function Composer({
   const [activeMentionIndex, setActiveMentionIndex] = useState(0)
   const [mentionAnchor, setMentionAnchor] = useState<{ left: number; top: number } | null>(null)
   const [mentionFilter, setMentionFilter] = useState<MentionEntityFilter>("all")
-  /** Level 2: task expanded — channels + inline components in one panel. */
+  /** Level 2: task expanded — channels only (no TCC component mentions). */
   const [mentionExpandedTask, setMentionExpandedTask] = useState<TaskMention | null>(null)
   const [mentionChannelsByTaskId, setMentionChannelsByTaskId] = useState<Record<number, MentionChannel[]>>({})
-  /** Per `${taskId}:${channelId}` only — never a task-wide or cross-channel pool. */
-  const [componentsByTaskChannel, setComponentsByTaskChannel] = useState<
-    Record<string, TaskChannelComponentsBucket>
-  >({})
   const [mentionChannelsLoadingTaskId, setMentionChannelsLoadingTaskId] = useState<number | null>(null)
   const mentionChannelsByTaskIdRef = useRef(mentionChannelsByTaskId)
   mentionChannelsByTaskIdRef.current = mentionChannelsByTaskId
@@ -409,13 +531,14 @@ export function Composer({
   const localTaskOptionsLenRef = useRef(0)
   localTaskOptionsLenRef.current = localTaskOptions.length
   const [userOptions, setUserOptions] = useState<UserMention[]>([])
+  const [artifactOptions, setArtifactOptions] = useState<ArtifactMention[]>([])
+  const [sourceOptions, setSourceOptions] = useState<SourceMention[]>([])
+  const [creatingSourceFromFileIndex, setCreatingSourceFromFileIndex] = useState<number | null>(null)
   const [viewportSize, setViewportSize] = useState<{ width: number; height: number }>({ width: 0, height: 0 })
   const refreshEditorEmpty = useCallback(() => {}, [])
   const [, bumpEditor] = useReducer((n: number) => n + 1, 0)
   const [recentEpoch, bumpRecentEpoch] = useReducer((n: number) => n + 1, 0)
 
-  const [shouldUseBuildModeOnNextSend, setShouldUseBuildModeOnNextSend] = useState(false)
-  const lastArmedBuildIntentRef = useRef<string | null>(null)
   const fileInputRef = useRef<HTMLInputElement | null>(null)
   const projectTriggerRef = useRef<HTMLButtonElement | null>(null)
   /** After Escape/outside dismiss, avoid reopening the menu on the same `@…` until input changes or caret leaves the segment. */
@@ -551,17 +674,6 @@ export function Composer({
   }, [pendingArtifactSelection, variant, resizeEditor])
 
   useEffect(() => {
-    const hasExplicitBuildIntent = mode === "build_component" && !!componentId && !autoRun && !!preFillMessage
-    if (!hasExplicitBuildIntent) return
-    const intentSignature = `${componentId}:${preFillMessage}`
-    if (lastArmedBuildIntentRef.current === intentSignature) return
-    lastArmedBuildIntentRef.current = intentSignature
-    if (!shouldUseBuildModeOnNextSend) {
-      setShouldUseBuildModeOnNextSend(true)
-    }
-  }, [mode, componentId, autoRun, preFillMessage, shouldUseBuildModeOnNextSend])
-
-  useEffect(() => {
     const syncViewport = () => setViewportSize({ width: window.innerWidth, height: window.innerHeight })
     syncViewport()
     window.addEventListener("resize", syncViewport)
@@ -582,13 +694,15 @@ export function Composer({
   useEffect(() => {
     if (!droppedFiles || droppedFiles.length === 0) return
     if (variant === "inlineEdit") return
-    const accepted = droppedFiles.filter((file) => isSupportedImageAttachment(file))
-    const rejected = droppedFiles.filter((file) => !isSupportedImageAttachment(file))
+    const accepted = droppedFiles.filter((file) => isSupportedComposerAttachment(file))
+    const rejected = droppedFiles.filter((file) => !isSupportedComposerAttachment(file))
     if (accepted.length > 0) {
       setFiles((prev) => [...prev, ...accepted])
     }
     if (rejected.length > 0) {
-      setAttachmentError("Unsupported attachment type. Allowed: PNG, JPG, JPEG, WEBP, GIF.")
+      setAttachmentError(
+        "Unsupported attachment type. Allowed: images, PDF, DOCX, TXT, MD, CSV, JSON, HTML.",
+      )
     } else {
       setAttachmentError(null)
     }
@@ -605,13 +719,15 @@ export function Composer({
     const list = e.target.files
     if (!list) return
     const next = Array.from(list)
-    const accepted = next.filter((file) => isSupportedImageAttachment(file))
-    const rejected = next.filter((file) => !isSupportedImageAttachment(file))
+    const accepted = next.filter((file) => isSupportedComposerAttachment(file))
+    const rejected = next.filter((file) => !isSupportedComposerAttachment(file))
     if (accepted.length > 0) {
       setFiles((prev) => [...prev, ...accepted])
     }
     if (rejected.length > 0) {
-      setAttachmentError("Unsupported attachment type. Allowed: PNG, JPG, JPEG, WEBP, GIF.")
+      setAttachmentError(
+        "Unsupported attachment type. Allowed: images, PDF, DOCX, TXT, MD, CSV, JSON, HTML.",
+      )
     } else {
       setAttachmentError(null)
     }
@@ -660,7 +776,16 @@ export function Composer({
 
   useEffect(() => {
     if (prevComposerThreadIdRef.current === threadId) return
+    const previousThreadId = prevComposerThreadIdRef.current
     prevComposerThreadIdRef.current = threadId
+    // Keep typed draft when an optimistic temp thread becomes the persisted UUID.
+    if (
+      typeof previousThreadId === "string"
+      && previousThreadId.startsWith("temp-")
+      && isPersistedAiThreadId(threadId)
+    ) {
+      return
+    }
     const el = editorRef.current
     if (!el) return
     clearComposerEditor(el)
@@ -730,6 +855,10 @@ export function Composer({
         tagged_channel_ids: taggedChannelIds,
         tagged_task_channel_refs: taggedTaskChannelRefs,
         tagged_task_component_refs: taggedTaskComponentRefs,
+        tagged_artifact_ids: taggedArtifactIds,
+        tagged_artifact_refs: taggedArtifactRefs,
+        tagged_source_ids: taggedSourceIds,
+        tagged_source_refs: taggedSourceRefs,
       } = buildAiChatTaggedRefs(messageTags)
       const optimisticUserTempId = `temp-${Date.now()}`
 
@@ -760,28 +889,9 @@ export function Composer({
         clearPendingArtifactSelection()
       }
 
-      const normalizedPreFillMessage = (preFillMessage ?? "").trim()
-      const matchesExplicitBuildPrompt = normalizedPreFillMessage.length > 0 && trimmed === normalizedPreFillMessage
-      const useBuildModeForThisSend =
-        mode === "build_component" &&
-        !!componentId &&
-        !autoRun &&
-        shouldUseBuildModeOnNextSend &&
-        matchesExplicitBuildPrompt
-
       const outboundContext = resolveAiChatOutboundContext({
         messageTags,
-        explicitBuild:
-          (useBuildModeForThisSend || (mode === "build_component" && componentId && autoRun)) && componentId
-            ? {
-                componentId,
-                taskId: activeFieldContext?.taskId ?? (mode === "build_component" ? taskId ?? null : null),
-                channelId:
-                  activeFieldContext?.channelId ?? (mode === "build_component" ? activeChannelId ?? null : null),
-                taskComponentOutputId: activeFieldContext?.taskComponentOutputId ?? null,
-                componentTitle: activeFieldContext?.componentTitle ?? null,
-              }
-            : null,
+        explicitBuild: null,
       })
 
       console.log(
@@ -792,13 +902,10 @@ export function Composer({
         { outboundContext, ambientContext },
       )
 
-      const effectiveMode = outboundContext.mode ?? (useBuildModeForThisSend ? "build_component" : null)
+      const effectiveMode = outboundContext.mode
       const effectiveComponentId = outboundContext.componentId
       const shouldStreamResponse =
         !autoRun && (!effectiveMode || effectiveMode === "build_component" || effectiveMode === "assistant_only")
-      if (shouldUseBuildModeOnNextSend) {
-        setShouldUseBuildModeOnNextSend(false)
-      }
 
       const writeMode = effectiveMode
       const factualSendContext = resolveFactualLegacySendContext({
@@ -820,9 +927,20 @@ export function Composer({
       if (streamAbortRef && abortCtl) streamAbortRef.current = abortCtl
       try {
         const attachments = await uploadAttachments(messageFiles)
+        const selectionPills = buildSelectionPillsFromContexts({
+          artifactContext: selectedArtifactForSend,
+          artifactTooltip: selectedArtifactForSend
+            ? chipLabelForArtifactSelection(selectedArtifactForSend)
+            : null,
+          textContext: selectedTextForSend,
+          textTooltip: selectedTextForSend
+            ? chipLabelForSelection(selectedTextForSend)
+            : null,
+        })
         const userContentJson = buildUserMessageContentJson({
           tags: messageTags,
           segments: messageSegments,
+          selectionPills,
         })
         onOptimistic?.({
           id: optimisticUserTempId,
@@ -886,17 +1004,7 @@ export function Composer({
           attachments,
           activeFieldContext,
           selectedTextContext: selectedTextForSend,
-          explicitBuild:
-            (useBuildModeForThisSend || (mode === "build_component" && componentId && autoRun)) && componentId
-              ? {
-                  componentId,
-                  taskId: activeFieldContext?.taskId ?? (mode === "build_component" ? taskId ?? null : null),
-                  channelId:
-                    activeFieldContext?.channelId ?? (mode === "build_component" ? activeChannelId ?? null : null),
-                  taskComponentOutputId: activeFieldContext?.taskComponentOutputId ?? null,
-                  componentTitle: activeFieldContext?.componentTitle ?? null,
-                }
-              : null,
+          explicitBuild: null,
           clarificationContext: null,
           outboundContext,
           taggedTaskChannelRefs,
@@ -928,6 +1036,10 @@ export function Composer({
           taggedChannelIds,
           taggedTaskChannelRefs,
           taggedTaskComponentRefs,
+          taggedArtifactIds,
+          taggedArtifactRefs,
+          taggedSourceIds,
+          taggedSourceRefs,
           mode: writeMode,
           componentId: writeComponentId,
           taskId: writeTaskId,
@@ -1015,11 +1127,7 @@ export function Composer({
       onRequestPlanEvent,
       onExecutionTraceEvent,
       activeChannelId,
-      mode,
-      componentId,
       autoRun,
-      preFillMessage,
-      shouldUseBuildModeOnNextSend,
       activeFieldContext,
       ambientContext,
       modelKey,
@@ -1043,13 +1151,31 @@ export function Composer({
     ]
   )
 
+  const clearComposerAfterQueue = useCallback(() => {
+    setFiles([])
+    mentionReplaceRangeRef.current = null
+    setMentionQuery(null)
+    setIsMentionPickerOpen(false)
+    setMentionAnchor(null)
+    setMentionFilter("all")
+    setMentionExpandedTask(null)
+    mentionUserDismissedRef.current = false
+    const root = editorRef.current
+    if (root) {
+      clearComposerEditor(root)
+      refreshEditorEmpty()
+      resizeEditor()
+    }
+  }, [refreshEditorEmpty, resizeEditor])
+
   const send = useCallback(async () => {
     const root = editorRef.current
     if (!root) return
     const { messageText, tags, segments } = serializeComposerEditor(root)
+    const trimmed = messageText.trim()
+    if (!trimmed && files.length === 0) return
+
     if (onSubmitOverride) {
-      const trimmed = messageText.trim()
-      if (!trimmed && files.length === 0) return
       if (isSending) return
       setIsSending(true)
       try {
@@ -1064,6 +1190,21 @@ export function Composer({
       }
       return
     }
+
+    // While a turn is in flight, queue the next message instead of dropping it.
+    if (isComposerBusy) {
+      if (isSendBlockedByUsage) return
+      enqueueQueuedMessage({
+        threadId,
+        messageText,
+        messageTags: tags,
+        messageSegments: segments,
+        messageFiles: files.length > 0 ? [...files] : undefined,
+      })
+      clearComposerAfterQueue()
+      return
+    }
+
     await runSend({
       messageText,
       messageFiles: [...files],
@@ -1071,7 +1212,49 @@ export function Composer({
       messageSegments: segments,
       clearComposerInput: true,
     })
-  }, [runSend, files, onSubmitOverride, isSending])
+  }, [
+    runSend,
+    files,
+    onSubmitOverride,
+    isSending,
+    isComposerBusy,
+    isSendBlockedByUsage,
+    enqueueQueuedMessage,
+    threadId,
+    clearComposerAfterQueue,
+  ])
+
+  // Drain persistent queue when the current turn finishes.
+  useEffect(() => {
+    if (variant === "inlineEdit") return
+    if (onSubmitOverride) return
+    if (isComposerBusy || drainingQueueRef.current) return
+    if (isSendBlockedByUsage) return
+    if (queuedMessages.length === 0) return
+
+    const next = shiftNextQueuedMessage(threadId)
+    if (!next) return
+
+    drainingQueueRef.current = true
+    void runSend({
+      messageText: next.messageText,
+      messageFiles: next.messageFiles ?? [],
+      messageTags: next.messageTags,
+      messageSegments: next.messageSegments,
+      clearComposerInput: false,
+    }).finally(() => {
+      drainingQueueRef.current = false
+    })
+  }, [
+    variant,
+    onSubmitOverride,
+    isComposerBusy,
+    isSendBlockedByUsage,
+    queuedMessages.length,
+    shiftNextQueuedMessage,
+    threadId,
+    runSend,
+  ])
 
   useEffect(() => {
     if (mentionQuery == null) return
@@ -1218,7 +1401,7 @@ export function Composer({
   const handleMentionListScroll = useCallback(
     (e: React.UIEvent<HTMLDivElement>) => {
       if (mentionExpandedTask) return
-      if (mentionFilter === "project" || mentionFilter === "user") return
+      if (mentionFilter === "project" || mentionFilter === "user" || mentionFilter === "artifact" || mentionFilter === "source") return
       const el = e.currentTarget
       if (taskMentionLoadingRef.current || !taskMentionHasMoreRef.current) return
       if (el.scrollTop + el.clientHeight < el.scrollHeight - 48) return
@@ -1242,7 +1425,12 @@ export function Composer({
    */
   useEffect(() => {
     if (mentionQuery == null) return
-    if (mentionFilter === "project" || mentionFilter === "user") {
+    if (
+      mentionFilter === "project" ||
+      mentionFilter === "user" ||
+      mentionFilter === "artifact" ||
+      mentionFilter === "source"
+    ) {
       taskRemoteFetchGen.current += 1
       taskMentionCursorRef.current = null
       taskMentionHasMoreRef.current = false
@@ -1345,6 +1533,106 @@ export function Composer({
     }
   }, [mentionQuery, mentionFilter, supabase])
 
+  useEffect(() => {
+    if (mentionQuery == null) return
+    const shouldLoad =
+      mentionFilter === "artifact" || (mentionFilter === "all" && mentionQuery.trim().length >= 2)
+    if (!shouldLoad) {
+      setArtifactOptions([])
+      return
+    }
+    let cancelled = false
+    const q = mentionQuery.trim()
+    const timeoutId = window.setTimeout(() => {
+      void (async () => {
+        let request = supabase
+          .from("artifacts")
+          .select("id,title,task_id,project_id,current_version")
+          .order("updated_at", { ascending: false })
+          .limit(20)
+        if (q.length > 0) {
+          request = request.ilike("title", `%${q}%`)
+        }
+        const { data, error } = await request
+        if (cancelled) return
+        if (error) {
+          console.error("Failed to load artifact mentions:", error)
+          setArtifactOptions([])
+          return
+        }
+        setArtifactOptions(
+          ((data || []) as Array<Record<string, unknown>>).map((row) => ({
+            id: String(row.id ?? ""),
+            title: typeof row.title === "string" ? row.title : null,
+            task_id: Number.isFinite(Number(row.task_id)) && Number(row.task_id) > 0
+              ? Number(row.task_id)
+              : null,
+            project_id: Number.isFinite(Number(row.project_id)) && Number(row.project_id) > 0
+              ? Number(row.project_id)
+              : null,
+            current_version: Number.isFinite(Number(row.current_version))
+              ? Number(row.current_version)
+              : null,
+          })).filter((row) => row.id),
+        )
+      })()
+    }, 250)
+    return () => {
+      cancelled = true
+      window.clearTimeout(timeoutId)
+    }
+  }, [mentionFilter, mentionQuery, supabase])
+
+  useEffect(() => {
+    if (mentionQuery == null) return
+    const shouldLoad =
+      mentionFilter === "source" || (mentionFilter === "all" && mentionQuery.trim().length >= 2)
+    if (!shouldLoad) {
+      setSourceOptions([])
+      return
+    }
+    let cancelled = false
+    const q = mentionQuery.trim().toLowerCase()
+    const timeoutId = window.setTimeout(() => {
+      void (async () => {
+        let request = supabase
+          .from("sources")
+          .select("id,title,task_id,project_id,status")
+          .order("updated_at", { ascending: false })
+          .limit(20)
+        if (q.length > 0) {
+          request = request.ilike("title", `%${q}%`)
+        }
+        const { data, error } = await request
+        if (cancelled) return
+        if (error) {
+          console.error("Failed to load source mentions:", error)
+          setSourceOptions([])
+          return
+        }
+        setSourceOptions(
+          ((data || []) as Array<Record<string, unknown>>)
+            .map((row) => ({
+              id: String(row.id ?? ""),
+              title: typeof row.title === "string" ? row.title : null,
+              task_id: Number.isFinite(Number(row.task_id)) && Number(row.task_id) > 0
+                ? Number(row.task_id)
+                : null,
+              project_id: Number.isFinite(Number(row.project_id)) && Number(row.project_id) > 0
+                ? Number(row.project_id)
+                : null,
+              status: typeof row.status === "string" ? row.status : null,
+            }))
+            .filter((row) => row.id),
+        )
+      })()
+    }, 250)
+    return () => {
+      cancelled = true
+      window.clearTimeout(timeoutId)
+    }
+  }, [mentionFilter, mentionQuery, supabase])
+
   const mentionSuggestionsFull = useMemo<MentionSuggestion[]>(() => {
     const results: MentionSuggestion[] = []
     const seen = new Set<string>()
@@ -1382,8 +1670,30 @@ export function Composer({
         user,
       })
     }
+    for (const artifact of artifactOptions) {
+      const key = `artifact:${artifact.id}`
+      if (seen.has(key)) continue
+      seen.add(key)
+      results.push({
+        kind: "artifact",
+        id: artifact.id,
+        label: artifact.title?.trim() || `Artifact ${artifact.id.slice(0, 8)}`,
+        artifact,
+      })
+    }
+    for (const source of sourceOptions) {
+      const key = `source:${source.id}`
+      if (seen.has(key)) continue
+      seen.add(key)
+      results.push({
+        kind: "source",
+        id: source.id,
+        label: source.title?.trim() || `Source ${source.id.slice(0, 8)}`,
+        source,
+      })
+    }
     return results
-  }, [localTaskOptions, projectOptions, remoteTaskOptions, userOptions])
+  }, [artifactOptions, localTaskOptions, projectOptions, remoteTaskOptions, sourceOptions, userOptions])
 
   const mentionSuggestionsFiltered = useMemo(() => {
     if (mentionFilter === "project") {
@@ -1394,6 +1704,12 @@ export function Composer({
     }
     if (mentionFilter === "user") {
       return mentionSuggestionsFull.filter((s) => s.kind === "user")
+    }
+    if (mentionFilter === "artifact") {
+      return mentionSuggestionsFull.filter((s) => s.kind === "artifact")
+    }
+    if (mentionFilter === "source") {
+      return mentionSuggestionsFull.filter((s) => s.kind === "source")
     }
     const q = (mentionQuery ?? "").trim()
     if (q.length === 0) return []
@@ -1428,39 +1744,37 @@ export function Composer({
       channelsInFlightRef.current = tid
       setMentionChannelsLoadingTaskId(tid)
       try {
-        const { data, error } = await supabase.rpc("tc_components_for_task_all_channels", {
-          p_task_id: tid,
-        })
+        // Channels only — no task_channel_components.
+        const { data, error } = await supabase
+          .from("task_channels")
+          .select("channel_id, channels!inner(id, name)")
+          .eq("task_id", tid)
+          .order("channel_id")
         if (error) {
-          console.error("tc_components_for_task_all_channels mention load failed", error)
+          console.error("task_channels mention load failed", error)
           setMentionChannelsByTaskId((prev) => ({ ...prev, [tid]: [] }))
           return
         }
-        const { channels, componentsByTaskChannel: groupedComponents } = mapTcComponentsAllChannelsRpc(data)
-        const nextBuckets: Record<string, TaskChannelComponentsBucket> = {}
-        for (const channel of channels) {
-          const key = taskChannelCompositeKey(tid, channel.channel_id)
-          nextBuckets[key] = {
-            loading: false,
-            loaded: true,
-            error: null,
-            items: groupedComponents[key] ?? [],
-          }
+        const channels: MentionChannel[] = []
+        for (const row of Array.isArray(data) ? data : []) {
+          const channelId = Number((row as { channel_id?: unknown }).channel_id)
+          if (!Number.isFinite(channelId)) continue
+          const nestedRaw = (row as { channels?: unknown }).channels
+          const nested = Array.isArray(nestedRaw) ? nestedRaw[0] : nestedRaw
+          const nestedObj =
+            nested && typeof nested === "object"
+              ? (nested as { name?: unknown })
+              : null
+          const name =
+            (typeof nestedObj?.name === "string" && nestedObj.name.trim())
+            || `Channel ${channelId}`
+          channels.push({ channel_id: channelId, name, slug: null })
         }
-        if (process.env.NODE_ENV === "development") {
-          const rows = (data as Array<Record<string, unknown>> | null) ?? []
-          console.debug("[mention] task-channel components", {
-            taskId: tid,
-            source: "tc_components_for_task_all_channels",
-            rawRpcRowCount: rows.length,
-            channelCount: channels.length,
-          })
-        }
+        channels.sort((a, b) => a.name.localeCompare(b.name))
         setMentionChannelsByTaskId((prev) => ({ ...prev, [tid]: channels }))
-        setComponentsByTaskChannel((prev) => ({ ...prev, ...nextBuckets }))
       } catch (e) {
         const msg = e instanceof Error ? e.message : String(e)
-        console.error("tc_components_for_task_all_channels mention load exception", msg)
+        console.error("task_channels mention load exception", msg)
         setMentionChannelsByTaskId((prev) => ({ ...prev, [tid]: [] }))
       } finally {
         channelsInFlightRef.current = null
@@ -1526,18 +1840,10 @@ export function Composer({
         ? mentionChannelsByTaskId[tid]
         : null
       const channelsLoading = mentionChannelsLoadingTaskId === tid
-      const slice: Record<string, TaskChannelComponentsBucket | undefined> = {}
-      if (channels) {
-        for (const ch of channels) {
-          const key = taskChannelCompositeKey(tid, ch.channel_id)
-          slice[key] = componentsByTaskChannel[key]
-        }
-      }
       return buildLevel2MentionRows({
         task: mentionExpandedTask,
         channels,
         channelsLoading,
-        componentsByTaskChannel: slice,
         query: mentionQuery ?? "",
       })
     }
@@ -1554,7 +1860,6 @@ export function Composer({
     mentionExpandedTask,
     mentionChannelsByTaskId,
     mentionChannelsLoadingTaskId,
-    componentsByTaskChannel,
     mentionFilter,
     mentionQuery,
     mentionSuggestionsFiltered,
@@ -1669,6 +1974,52 @@ export function Composer({
     [insertAiTagsIntoEditor]
   )
 
+  const handleUseFileAsSource = useCallback(
+    async (index: number) => {
+      const file = files[index]
+      if (!file || creatingSourceFromFileIndex != null) return
+      setCreatingSourceFromFileIndex(index)
+      setAttachmentError(null)
+      try {
+        const result = await createSourceFromFile({
+          file,
+          title: file.name,
+          taskId: taskId ?? null,
+          aiThreadId: threadId || null,
+        })
+        openSourceCenterTab({
+          sourceId: result.source.id,
+          title: result.source.title,
+        })
+        insertAiTagIntoEditor({
+          type: "source",
+          id: result.source.id,
+          label: result.source.title,
+          source: "mention",
+          sourceId: result.source.id,
+          sourceTitle: result.source.title,
+          taskId: result.source.task_id ?? undefined,
+          projectId: result.source.project_id,
+        })
+        removePendingFile(index)
+      } catch (err) {
+        setAttachmentError(
+          err instanceof Error ? err.message : "Failed to create source from file",
+        )
+      } finally {
+        setCreatingSourceFromFileIndex(null)
+      }
+    },
+    [
+      creatingSourceFromFileIndex,
+      files,
+      insertAiTagIntoEditor,
+      removePendingFile,
+      taskId,
+      threadId,
+    ],
+  )
+
   const handleSelectMention = useCallback(
     (suggestion: MentionSuggestion) => {
       let tag: AiContextTag
@@ -1690,6 +2041,31 @@ export function Composer({
           label: task.title,
           source: "mention",
           projectName: task.projectName,
+        }
+      } else if (suggestion.kind === "artifact") {
+        const artifact = suggestion.artifact
+        tag = {
+          type: "artifact",
+          id: artifact.id,
+          label: suggestion.label,
+          source: "mention",
+          artifactId: artifact.id,
+          artifactTitle: artifact.title,
+          artifactVersionNumber: artifact.current_version,
+          taskId: artifact.task_id ?? undefined,
+          projectId: artifact.project_id,
+        }
+      } else if (suggestion.kind === "source") {
+        const source = suggestion.source
+        tag = {
+          type: "source",
+          id: source.id,
+          label: suggestion.label,
+          source: "mention",
+          sourceId: source.id,
+          sourceTitle: source.title,
+          taskId: source.task_id ?? undefined,
+          projectId: source.project_id,
         }
       } else {
         const user = suggestion.user
@@ -1768,43 +2144,6 @@ export function Composer({
           taskTitle: row.task.title,
         }
         insertAiTagsIntoEditor([taskTag, channelTag])
-        return
-      }
-      if (row.kind === "component") {
-        // Separate short chips: `@Task` + `#Channel` + `@Component`.
-        const taskTag: AiContextTag = {
-          type: "task",
-          id: row.task.id,
-          label: row.task.title,
-          source: "mention",
-          taskId: row.task.id,
-          taskTitle: row.task.title,
-          projectName: row.task.projectName,
-        }
-        const channelTag: AiContextTag = {
-          type: "channel",
-          id: row.channelId,
-          label: row.channelName,
-          source: "mention",
-          channelId: row.channelId,
-          channelName: row.channelName,
-          taskId: row.task.id,
-          taskTitle: row.task.title,
-        }
-        const componentTag: AiContextTag = {
-          type: "task_component",
-          id: row.componentId,
-          label: row.componentTitle,
-          source: "mention",
-          taskId: row.task.id,
-          taskTitle: row.task.title,
-          channelId: row.channelId,
-          channelName: row.channelName,
-          componentId: row.componentId,
-          componentTitle: row.componentTitle,
-          projectName: row.task.projectName,
-        }
-        insertAiTagsIntoEditor([taskTag, channelTag, componentTag])
         return
       }
       if (row.kind === "group") {
@@ -1957,7 +2296,6 @@ export function Composer({
     }
     if (e.key === "Enter" && !e.shiftKey) {
       e.preventDefault()
-      if (isAssistantStreaming) return
       void send()
     }
   }
@@ -2037,7 +2375,16 @@ export function Composer({
               className="inline-flex items-center gap-2 rounded border bg-gray-50 px-2 py-1 text-xs text-gray-700"
             >
               <Paperclip className="h-3 w-3 text-gray-500" />
-              <span className="max-w-[220px] truncate">{file.name}</span>
+              <span className="max-w-[180px] truncate">{file.name}</span>
+              <button
+                type="button"
+                onClick={() => void handleUseFileAsSource(index)}
+                disabled={creatingSourceFromFileIndex != null}
+                className="rounded border border-teal-200 bg-teal-50 px-1.5 py-0.5 text-[10px] font-medium text-teal-800 hover:bg-teal-100 disabled:opacity-50"
+                title="Use as source (async import)"
+              >
+                {creatingSourceFromFileIndex === index ? "…" : "Use as source"}
+              </button>
               <button
                 type="button"
                 onClick={() => removePendingFile(index)}
@@ -2049,6 +2396,37 @@ export function Composer({
               </button>
             </div>
           ))}
+        </div>
+      ) : null}
+      {variant !== "inlineEdit" && queuedMessages.length > 0 ? (
+        <div className="mb-2 space-y-1.5 rounded-md border border-gray-200 bg-white p-2 shadow-sm">
+          <div className="flex items-center justify-between px-0.5">
+            <span className="text-[11px] font-medium uppercase tracking-wide text-gray-500">
+              Queued ({queuedMessages.length})
+            </span>
+          </div>
+          <ul className="max-h-36 space-y-1 overflow-y-auto">
+            {queuedMessages.map((item, index) => (
+              <li
+                key={item.id}
+                className="flex items-start gap-2 rounded border border-gray-100 bg-gray-50 px-2 py-1.5 text-xs text-gray-700"
+              >
+                <span className="mt-0.5 shrink-0 tabular-nums text-gray-400">{index + 1}</span>
+                <span className="min-w-0 flex-1 whitespace-pre-wrap break-words">
+                  {item.messageText.trim() || "(attachment)"}
+                </span>
+                <button
+                  type="button"
+                  onClick={() => removeQueuedMessage(threadId, item.id)}
+                  className="shrink-0 rounded p-0.5 text-gray-400 hover:bg-gray-200 hover:text-gray-700"
+                  aria-label="Remove queued message"
+                  title="Remove from queue"
+                >
+                  <X className="h-3 w-3" />
+                </button>
+              </li>
+            ))}
+          </ul>
         </div>
       ) : null}
       <div
@@ -2078,6 +2456,7 @@ export function Composer({
               if (isRemoveSelectionChip) {
                 e.preventDefault()
                 clearPendingSelection()
+                clearPendingArtifactSelection()
                 onEditorInput()
                 return
               }
@@ -2123,43 +2502,50 @@ export function Composer({
               <AiChatUsageIndicator usage={threadUsage} isLoading={isThreadUsageLoading} />
             ) : null}
           </div>
-          {isAssistantStreaming ? (
-            <button
-              type="button"
-              onClick={() => {
-                const runId = inFlightTurnRef?.current?.runId
-                if (runId) {
-                  void cancelAiChatRun(runId).finally(() => {
-                    streamAbortRef?.current?.abort()
-                  })
-                  return
-                }
-                streamAbortRef?.current?.abort()
-              }}
-              className="inline-flex h-6 w-6 shrink-0 items-center justify-center rounded-sm border border-gray-300 bg-white text-gray-800 shadow-sm hover:bg-gray-50"
-              aria-label="Stop generating"
-              title="Stop generating"
-            >
-              <Square className="h-3 w-3 fill-current" />
-            </button>
-          ) : (
+          <div className="flex items-center gap-1.5">
+            {isAssistantStreaming ? (
+              <button
+                type="button"
+                onClick={() => {
+                  const runId = inFlightTurnRef?.current?.runId
+                  if (runId) {
+                    void cancelAiChatRun(runId).finally(() => {
+                      streamAbortRef?.current?.abort()
+                    })
+                    return
+                  }
+                  streamAbortRef?.current?.abort()
+                }}
+                className="inline-flex h-6 w-6 shrink-0 items-center justify-center rounded-sm border border-gray-300 bg-white text-gray-800 shadow-sm hover:bg-gray-50"
+                aria-label="Stop generating"
+                title="Stop generating"
+              >
+                <Square className="h-3 w-3 fill-current" />
+              </button>
+            ) : null}
             <button
               type="button"
               onClick={() => void send()}
-              disabled={isSending || isSendBlockedByUsage}
+              disabled={isSendBlockedByUsage || (!isComposerBusy && isSending)}
               className="inline-flex h-6 w-6 items-center justify-center rounded-full bg-gray-900 text-white disabled:opacity-50"
-              aria-label="Send"
-              title={isSendBlockedByUsage ? "Daily AI token limit reached" : "Send"}
+              aria-label={isComposerBusy ? "Queue message" : "Send"}
+              title={
+                isSendBlockedByUsage
+                  ? "Daily AI token limit reached"
+                  : isComposerBusy
+                    ? "Add to queue"
+                    : "Send"
+              }
             >
               <ArrowUp className="h-3.5 w-3.5" />
             </button>
-          )}
+          </div>
         </div>
         <input
           ref={fileInputRef}
           type="file"
           multiple
-          accept={IMAGE_ATTACHMENTS_ACCEPT}
+          accept={ATTACHMENTS_ACCEPT}
           onChange={onFileChange}
           className="hidden"
         />
@@ -2217,9 +2603,7 @@ export function Composer({
                                     ? `chm-${row.taskId}-${row.channelId}-${index}`
                                     : row.kind === "channel"
                                     ? `ch-${row.task.id}-${row.channelId}-${index}`
-                                    : row.kind === "component"
-                                      ? `comp-${row.task.id}-${row.channelId}-${row.componentId}-${index}`
-                                        : `row-${index}`
+                                    : `row-${index}`
                       const rowActive = index === activeMentionIndex
                       const rowBtnBase =
                         "flex w-full min-w-0 items-center gap-1.5 px-2 py-1 text-left hover:bg-gray-50/90 cursor-pointer"
@@ -2313,20 +2697,6 @@ export function Composer({
                               <ListTodo className="h-3.5 w-3.5 shrink-0 text-gray-400" aria-hidden />
                               <span className="min-w-0 flex-1 truncate text-left">{row.channelName}</span>
                             </button>
-                          ) : row.kind === "component" ? (
-                            <button
-                              type="button"
-                              tabIndex={-1}
-                              data-mention-index={index}
-                              title={row.componentTitle}
-                              onMouseDown={stopPickerFocus}
-                              onMouseEnter={() => setActiveMentionIndex(index)}
-                              onClick={() => handlePickRow(row)}
-                              className={`${rowBtnBase} pl-8 text-gray-800 ${rowActive ? "bg-gray-50" : ""}`}
-                              aria-selected={rowActive}
-                            >
-                              <span className="min-w-0 flex-1 truncate text-left">{row.componentTitle}</span>
-                            </button>
                           ) : row.kind === "group" ? (
                             <button
                               type="button"
@@ -2343,6 +2713,8 @@ export function Composer({
                                 <ListTodo className="h-3.5 w-3.5 shrink-0 text-gray-400" aria-hidden />
                               ) : row.id === "user" ? (
                                 <User className="h-3.5 w-3.5 shrink-0 text-gray-400" aria-hidden />
+                              ) : row.id === "source" ? (
+                                <BookOpen className="h-3.5 w-3.5 shrink-0 text-gray-400" aria-hidden />
                               ) : (
                                 <FolderKanban className="h-3.5 w-3.5 shrink-0 text-gray-400" aria-hidden />
                               )}
@@ -2382,7 +2754,9 @@ export function Composer({
                                         ? suggestion.project.name
                                         : suggestion.kind === "task"
                                           ? taskTitleFull
-                                          : userTitle || userDisplay
+                                          : suggestion.kind === "artifact" || suggestion.kind === "source"
+                                            ? suggestion.label
+                                            : userTitle || userDisplay
                                     }
                                     onMouseDown={stopPickerFocus}
                                     onClick={() => handlePickRow(row)}
@@ -2428,6 +2802,21 @@ export function Composer({
                                             title={suggestion.task.projectName}
                                           >
                                             {projectAbbrev(suggestion.task.projectName)}
+                                          </span>
+                                        ) : null}
+                                      </>
+                                    ) : suggestion.kind === "artifact" ? (
+                                      <>
+                                        <FileText className="h-3.5 w-3.5 shrink-0 text-gray-400" aria-hidden />
+                                        <span className="min-w-0 flex-1 truncate text-gray-800">{suggestion.label}</span>
+                                      </>
+                                    ) : suggestion.kind === "source" ? (
+                                      <>
+                                        <BookOpen className="h-3.5 w-3.5 shrink-0 text-gray-400" aria-hidden />
+                                        <span className="min-w-0 flex-1 truncate text-gray-800">{suggestion.label}</span>
+                                        {suggestion.source.status ? (
+                                          <span className="shrink-0 text-[10px] capitalize text-gray-500">
+                                            {suggestion.source.status}
                                           </span>
                                         ) : null}
                                       </>

@@ -12,7 +12,6 @@ import { useMediaQuery } from "@/hooks/use-media-query"
 import { format } from "date-fns"
 import { useRouter, useSearchParams } from 'next/navigation'
 import { useFilterOptions } from "../../hooks/use-filter-options"
-import { useTasksUI } from "../../store/tasks-ui"
 
 export interface FilterOption {
   id: string
@@ -61,8 +60,6 @@ export function FilterPane({ sections, values, onChange, onClose, className }: F
 
   const router = useRouter()
   const params = useSearchParams()
-  const plannerVisibility = useTasksUI((s) => s.plannerVisibility)
-  const setPlannerVisibility = useTasksUI((s) => s.setPlannerVisibility)
 
   // Fetch filter options only when pane is open
   const { data: options } = useFilterOptions();
@@ -173,13 +170,6 @@ export function FilterPane({ sections, values, onChange, onClose, className }: F
     syncFiltersToUrl(emptyFilters);
   };
 
-  const syncPlannerToUrl = (next: { showTasks: boolean; showSuggestions: boolean }) => {
-    const newParams = new URLSearchParams(params.toString())
-    newParams.set('showTasks', next.showTasks ? 'true' : 'false')
-    newParams.set('showSuggestions', next.showSuggestions ? 'true' : 'false')
-    router.replace(`?${newParams.toString()}`)
-  }
-
   return (
     <div className={cn(
       "fixed inset-y-0 right-0 bg-background z-50 w-full md:w-96 shadow-lg",
@@ -281,43 +271,6 @@ export function FilterPane({ sections, values, onChange, onClose, className }: F
         {/* Filter Sections */}
         <ScrollArea className="flex-1 p-4">
           <div className="space-y-6">
-            <div className="space-y-2">
-              <label className="text-sm font-medium">Content</label>
-              <div className="mt-2 max-h-[200px] overflow-y-auto rounded-md border">
-                <label className="flex items-center gap-2 p-2 hover:bg-accent cursor-pointer">
-                  <input
-                    type="checkbox"
-                    checked={plannerVisibility.showTasks}
-                    onChange={(e) => {
-                      const next = {
-                        showTasks: e.target.checked,
-                        showSuggestions: plannerVisibility.showSuggestions,
-                      }
-                      setPlannerVisibility(next)
-                      syncPlannerToUrl(next)
-                    }}
-                    className="rounded border-gray-300 text-primary focus:ring-primary"
-                  />
-                  <span className="text-sm">Tasks</span>
-                </label>
-                <label className="flex items-center gap-2 p-2 hover:bg-accent cursor-pointer">
-                  <input
-                    type="checkbox"
-                    checked={plannerVisibility.showSuggestions}
-                    onChange={(e) => {
-                      const next = {
-                        showTasks: plannerVisibility.showTasks,
-                        showSuggestions: e.target.checked,
-                      }
-                      setPlannerVisibility(next)
-                      syncPlannerToUrl(next)
-                    }}
-                    className="rounded border-gray-300 text-primary focus:ring-primary"
-                  />
-                  <span className="text-sm">Suggestions</span>
-                </label>
-              </div>
-            </div>
             {sections.map(section => (
               <div key={section.id} className="space-y-2">
                 <label className="text-sm font-medium">{section.label}</label>

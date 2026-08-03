@@ -51,6 +51,7 @@ import {
   globalSearchDocumentToRowPayload,
   seedEntityPreviewFromSearchDocument,
 } from "../lib/entity-preview-from-search"
+import { openArtifactCenterTab } from "../../features/artifacts/open-artifact-center-tab"
 
 function optionalString(value: unknown): string | null {
   if (typeof value === "number" && Number.isFinite(value)) return String(value)
@@ -376,6 +377,7 @@ function getRouteTab(pathname: string, searchParams: SearchParamsLike): GlobalSe
   if (objectRoute === "mention") return "mention"
   if (objectRoute === "user") return "user"
   if (objectRoute === "team") return "team"
+  if (objectRoute === "artifact") return "artifact"
   return "ai_thread"
 }
 
@@ -415,6 +417,9 @@ const SHELL_ALLOWED_PARAMS = new Set([
   "centerUserId",
   "centerTeamId",
   "centerThreadId",
+  "centerMentionId",
+  "centerArtifactId",
+  "centerSourceId",
   "centerTab",
   "middleTaskId",
   "middleProjectId",
@@ -471,6 +476,8 @@ type ObjectDataSource =
   | "mention_search"
   | "ai_thread_list"
   | "ai_thread_search"
+  | "artifact_list"
+  | "artifact_search"
 
 function isAbortError(error: unknown): boolean {
   if (!error || typeof error !== "object") return false
@@ -493,12 +500,14 @@ function resolveObjectDataSource(pathname: string, objectRoute: ReturnType<typeo
   if (objectRoute === "team") return hasQuery ? "team_search" : "team_list"
   if (objectRoute === "mention") return hasQuery ? "mention_search" : "mention_list"
   if (objectRoute === "ai_thread") return hasQuery ? "ai_thread_search" : "ai_thread_list"
+  if (objectRoute === "artifact") return hasQuery ? "artifact_search" : "artifact_list"
   return hasQuery ? "global_search" : "global_discovery"
 }
 
 const DEFAULT_VISIBLE_RESULT_TYPES: GlobalSearchItemEntityType[] = [
-  ...GLOBAL_SEARCH_ENTITY_TYPES.filter((type) => type !== "team"),
+  ...GLOBAL_SEARCH_ENTITY_TYPES.filter((type) => type !== "team" && type !== "project_briefing"),
   "ai_thread",
+  "artifact",
 ]
 
 export function useGlobalSearchController({
@@ -662,7 +671,9 @@ export function useGlobalSearchController({
   const pendingTypesOrNull = pendingSelectedTypes.length > 0 ? pendingSelectedTypes : null
   const committedTypesOrNull = committedSelectedTypes.length > 0 ? committedSelectedTypes : null
   // Home / All discovery should never surface teams (moved to preferences).
-  const allTabEntityTypesOrNull = committedTypesOrNull ?? DEFAULT_VISIBLE_RESULT_TYPES.filter((type) => type !== "ai_thread")
+  const allTabEntityTypesOrNull = committedTypesOrNull ?? DEFAULT_VISIBLE_RESULT_TYPES.filter(
+    (type) => type !== "ai_thread" && type !== "artifact",
+  )
   const objectDataSource = resolveObjectDataSource(effectivePathname, routeObject, searchValue)
   if (process.env.NODE_ENV === "development") {
     console.log("[object data source]", {
@@ -826,6 +837,11 @@ export function useGlobalSearchController({
         args?.preferredTab ?? getSearchScopeFromTypes(pendingTypes)
       const scopedEntityType = routeTabToEntityType(selectedSearchScope)
       const nextCommittedTypes = scopedEntityType ? [scopedEntityType] : []
+      // Prefer live window params so shallow URL state (object=task, panes, etc.) is preserved.
+      const liveSearchParams =
+        typeof window !== "undefined"
+          ? new URLSearchParams(window.location.search)
+          : new URLSearchParams(searchParams.toString())
       setSearchDraftValue(normalized)
       setSelectedDetailTarget(null)
       setIsSearching(Boolean(normalized))
@@ -837,16 +853,16 @@ export function useGlobalSearchController({
         setCommittedSelectedTypes(nextCommittedTypes)
         if (isTasksRoute) {
           setActiveResultTab("all")
-          const nextParams = new URLSearchParams(searchParams.toString())
+          const nextParams = new URLSearchParams(liveSearchParams.toString())
           nextParams.delete("q")
           clearNonTaskDetailParams(nextParams)
           shallowReplaceSearchParams(effectivePathname, nextParams, "commitSearch-empty")
         } else if (isPrimaryRoute) {
-          const nextParams = new URLSearchParams(searchParams.toString())
+          const nextParams = new URLSearchParams(liveSearchParams.toString())
           nextParams.delete("q")
           navigateWithParams(effectivePathname, nextParams, "commitSearch-empty")
         } else {
-          const nextParams = new URLSearchParams(searchParams.toString())
+          const nextParams = new URLSearchParams(liveSearchParams.toString())
           nextParams.delete("q")
           shallowReplaceSearchParams(effectivePathname, nextParams, "commitSearch-empty")
         }
@@ -869,12 +885,12 @@ export function useGlobalSearchController({
       void queryClient.invalidateQueries({ queryKey: ["global-search", "full"] })
 
       if (isGenericGlobalSubmit) {
-        const nextRoute = buildSearchSubmitRoute(normalized, "all", new URLSearchParams(searchParams.toString()))
+        const nextRoute = buildSearchSubmitRoute(normalized, "all", liveSearchParams)
         if (process.env.NODE_ENV === "development") {
           console.log("[search submit]", {
             rawQueryFromInput,
             submittedQuery: normalized,
-            routeQ: searchParams.get("q"),
+            routeQ: liveSearchParams.get("q"),
             searchScope: selectedSearchScope,
             currentPathname: effectivePathname,
             targetPathname: nextRoute.pathname,
@@ -886,7 +902,7 @@ export function useGlobalSearchController({
         const nextRoute = buildSearchSubmitRoute(
           normalized,
           targetObjectRoute,
-          new URLSearchParams(searchParams.toString()),
+          liveSearchParams,
         )
         const nextParams = nextRoute.searchParams
         if (targetObjectRoute !== "task") {
@@ -901,7 +917,7 @@ export function useGlobalSearchController({
           console.log("[search submit]", {
             rawQueryFromInput,
             submittedQuery: normalized,
-            routeQ: searchParams.get("q"),
+            routeQ: liveSearchParams.get("q"),
             searchScope: selectedSearchScope,
             currentPathname: effectivePathname,
             targetPathname: nextRoute.pathname,
@@ -909,7 +925,7 @@ export function useGlobalSearchController({
         }
         navigateWithParams(nextRoute.pathname, nextParams, "commitSearch")
       } else {
-        const nextParams = new URLSearchParams(searchParams.toString())
+        const nextParams = new URLSearchParams(liveSearchParams.toString())
         if (normalized) nextParams.set("q", normalized)
         else nextParams.delete("q")
         shallowReplaceSearchParams(effectivePathname, nextParams, "commitSearch")
@@ -950,7 +966,10 @@ export function useGlobalSearchController({
   )
 
   const handleShowAll = useCallback((nextQuery?: string) => {
-    commitSearch({ nextQuery })
+    // "Show all" always opens mixed global results (object=all), ignoring type pills.
+    pendingSelectedTypesRef.current = []
+    setPendingSelectedTypes([])
+    commitSearch({ nextQuery, preferredTab: "all" })
   }, [commitSearch])
 
   const navigateToTasksSeeMore = useCallback(
@@ -1112,6 +1131,8 @@ export function useGlobalSearchController({
           bumpAndInvalidateHomeSidebarRecent(queryClient, "projects", { id: entityId, title })
         } else if (trackingType === "user") {
           bumpAndInvalidateHomeSidebarRecent(queryClient, "users", { id: entityId, title })
+        } else if (trackingType === "artifact") {
+          bumpAndInvalidateHomeSidebarRecent(queryClient, "artifacts", { id: entityId, title })
         } else {
           void queryClient.invalidateQueries({ queryKey: ["home-sidebar-recents"] })
         }
@@ -1184,6 +1205,22 @@ export function useGlobalSearchController({
           const next = applyAiThreadOpenParams(new URLSearchParams(searchParams.toString()), String(threadId))
           shallowReplaceSearchParams(effectivePathname, next, "global-search-open-result")
         }
+        trackOpen()
+        void maybeMarkMentionSeen()
+        return
+      }
+
+      if (item.entity_type === "artifact") {
+        const artifactId =
+          optionalString(item.entity_id) ??
+          optionalString(item.raw.artifact_id) ??
+          optionalString(item.raw.id)
+        if (!artifactId) return
+        openArtifactCenterTab({
+          artifactId,
+          title: typeof item.title === "string" ? item.title : null,
+          pathname: effectivePathname,
+        })
         trackOpen()
         void maybeMarkMentionSeen()
         return

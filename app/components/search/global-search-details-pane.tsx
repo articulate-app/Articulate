@@ -22,6 +22,8 @@ const PROJECT_ALLOWED_TABS = new Set([
   "briefings",
   "library",
   "tasks",
+  "suggestions",
+  "artifacts",
 ])
 
 const USER_ALLOWED_TABS = new Set([

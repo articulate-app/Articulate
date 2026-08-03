@@ -1,14 +1,77 @@
 "use client"
 
-import { Search } from "lucide-react"
+import type { ReactNode } from "react"
+import { AtSign, Bot, FileText, FolderKanban, ListTodo, Search, User, Users } from "lucide-react"
+import type { LucideIcon } from "lucide-react"
 import { UserAvatar } from "@/components/UserAvatar"
 import { cn, formatCompactDateDisplay } from "@/lib/utils"
 import {
-  getGlobalSearchEntityLabel,
   type GlobalSearchDocument,
   type GlobalSearchDisplayPayload,
+  type GlobalSearchItemEntityType,
 } from "../../lib/global-search-types"
 import { getPublicAssetUrl } from "../../../utils/storage"
+
+const ENTITY_TYPE_ICONS: Partial<Record<GlobalSearchItemEntityType, LucideIcon>> = {
+  task: ListTodo,
+  project: FolderKanban,
+  mention: AtSign,
+  user: User,
+  team: Users,
+  ai_thread: Bot,
+  artifact: FileText,
+}
+
+const GENERIC_AI_THREAD_TITLES = new Set([
+  "task chat",
+  "project chat",
+  "chat",
+  "ai chat",
+  "new chat",
+  "untitled",
+  "autopilot",
+])
+
+function cleanAiSnippet(value: string | null | undefined): string | null {
+  if (!value) return null
+  const cleaned = value
+    .replace(/[*_`#>\-]+/g, " ")
+    .replace(/\s+/g, " ")
+    .trim()
+  if (!cleaned) return null
+  return cleaned.length > 120 ? `${cleaned.slice(0, 117).trimEnd()}…` : cleaned
+}
+
+function isGenericAiThreadTitle(title: string | null | undefined): boolean {
+  const normalized = title?.trim().toLowerCase() ?? ""
+  return !normalized || GENERIC_AI_THREAD_TITLES.has(normalized)
+}
+
+function resolveAiThreadTitle(payload: GlobalSearchDisplayPayload): string {
+  const title = payload.title?.trim() || ""
+  if (!isGenericAiThreadTitle(title)) return title
+  return cleanAiSnippet(payload.preview) || title || "AI chat"
+}
+
+function EntityTypeIcon({
+  entityType,
+  className,
+}: {
+  entityType: GlobalSearchItemEntityType
+  className?: string
+}) {
+  const Icon = ENTITY_TYPE_ICONS[entityType] ?? Search
+  return (
+    <div
+      className={cn(
+        "flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-gray-100 text-gray-500",
+        className,
+      )}
+    >
+      <Icon className="h-4 w-4" aria-hidden="true" />
+    </div>
+  )
+}
 
 function getPayload(item: GlobalSearchDocument): GlobalSearchDisplayPayload {
   return item.display_payload ?? { title: item.title }
@@ -119,18 +182,21 @@ function getFacetAvatars(raw: Record<string, unknown>): Array<{ id: string; name
 function LeftVisual({
   payload,
   isProject = false,
+  compact = false,
 }: {
   payload: GlobalSearchDisplayPayload
   isProject?: boolean
+  compact?: boolean
 }) {
   const left = payload.left
   const label = left?.label ?? payload.title
   const photoUrl = getPublicAssetUrl(left?.photo ?? payload.photo)
   const logoUrl = getPublicAssetUrl(left?.logo ?? payload.logo)
   const color = left?.color ?? payload.color
+  const boxClass = compact ? "h-8 w-8" : "h-9 w-9"
 
   if (photoUrl) {
-    return <UserAvatar name={label} photoUrl={photoUrl} size="sm" />
+    return <UserAvatar name={label} photoUrl={photoUrl} size={compact ? "xs" : "sm"} />
   }
 
   if (logoUrl) {
@@ -138,7 +204,7 @@ function LeftVisual({
       <img
         src={logoUrl}
         alt={label}
-        className="h-9 w-9 rounded-lg border border-gray-200 object-cover"
+        className={cn(boxClass, "rounded-lg border border-gray-200 object-cover")}
       />
     )
   }
@@ -147,7 +213,7 @@ function LeftVisual({
   // footprint as the logo so text alignment and row height remain consistent across project rows.
   if (isProject) {
     return (
-      <div className="flex h-9 w-9 items-center justify-center">
+      <div className={cn("flex items-center justify-center", boxClass)}>
         <span
           className="h-2.5 w-2.5 rounded-full"
           style={{ backgroundColor: color || "#d1d5db" }}
@@ -160,7 +226,7 @@ function LeftVisual({
   if (color) {
     return (
       <div
-        className="h-9 w-9 rounded-lg"
+        className={cn(boxClass, "rounded-lg")}
         style={{ backgroundColor: color }}
         aria-hidden="true"
       />
@@ -168,7 +234,7 @@ function LeftVisual({
   }
 
   return (
-    <div className="flex h-9 w-9 items-center justify-center rounded-lg bg-gray-100 text-gray-500">
+    <div className={cn("flex items-center justify-center rounded-lg bg-gray-100 text-gray-500", boxClass)}>
       <Search className="h-4 w-4" />
     </div>
   )
@@ -309,6 +375,10 @@ function BadgesLine({ payload }: { payload: GlobalSearchDisplayPayload }) {
   )
 }
 
+function PreviewLeftSlot({ children }: { children: ReactNode }) {
+  return <div className="flex h-8 w-8 shrink-0 items-center justify-center">{children}</div>
+}
+
 export function SearchResultRow({
   item,
   onSelect,
@@ -331,7 +401,12 @@ export function SearchResultRow({
   const isPreview = variant === "preview"
   const isUnread = isMention && getMetaBooleanByLabel(payload, "is_unread")
   const mentionDateLabel = isMention ? formatCompactDateForMention(getMentionDisplayDate(payload)) : null
-  const previewTitle = isMention ? payload.preview?.trim() || "New mention" : payload.title
+  const aiTitle = isAiThread ? resolveAiThreadTitle(payload) : null
+  const previewTitle = isAiThread
+    ? aiTitle!
+    : isMention
+      ? payload.preview?.trim() || "New mention"
+      : payload.title
   const previewSubtitle = isMention ? payload.title : payload.subtitle
   const taskDateValue = isTask ? resolveTaskDateValue(payload, item.raw, sectionType) : null
   const taskDateLabel = isTask ? formatCompactDateDisplay(taskDateValue) || null : null
@@ -339,7 +414,11 @@ export function SearchResultRow({
   const aiDateLabel = isAiThread
     ? formatRelativeTime(getMetaValueByLabel(payload, "last_message_at") ?? getMetaValueByLabel(payload, "created_at"))
     : null
-  const showLeftVisual = !(isTask || isMention || isAiThread || (isPreview && (isMention || isTask)))
+  // Preview: drop the type tag; use a left icon when there is no avatar/logo visual.
+  const showLeftVisual = isPreview
+    ? isProject || isUser
+    : !(isTask || isMention || isAiThread)
+  const showTypeIcon = isAiThread || (isPreview && !showLeftVisual && !isMention && !isTask)
   const mentionSenderAvatar = isMention
     ? (payload.avatars?.[0] ?? null)
     : null
@@ -347,9 +426,74 @@ export function SearchResultRow({
   const showBadges = !isPreview
   // Tasks use the compact row layout (marker + title | avatar + date) — never subtitle/meta text.
   // Users: name + avatar only (hide email subtitle).
-  const showSubtitle = !(isPreview && isProject) && !isProject && !isMention && !isTask && !isUser
+  // AI chats: title only (or response snippet when the title is generic).
+  const showSubtitle = !(isPreview && isProject) && !isProject && !isMention && !isTask && !isUser && !isAiThread
   // Home: hide thread participant stacks; mentions show sender on the left instead.
-  const showRightAvatarStack = !(isMention || isTask || isUser || (isPreview && isAiThread))
+  const showRightAvatarStack = !(isMention || isTask || isUser || isAiThread)
+
+  if (isPreview) {
+    const previewLeft = isTask ? (
+      <PreviewLeftSlot>
+        <ProjectMarker payload={payload} />
+      </PreviewLeftSlot>
+    ) : isMention ? (
+      <PreviewLeftSlot>
+        <UserAvatar
+          name={mentionSenderAvatar?.name ?? payload.title ?? null}
+          photoUrl={getPublicAssetUrl(mentionSenderAvatar?.photo ?? null)}
+          size="xs"
+        />
+      </PreviewLeftSlot>
+    ) : showLeftVisual ? (
+      <PreviewLeftSlot>
+        <LeftVisual payload={payload} isProject={isProject} compact />
+      </PreviewLeftSlot>
+    ) : (
+      <EntityTypeIcon entityType={item.entity_type} className="h-8 w-8" />
+    )
+
+    return (
+      <button
+        type="button"
+        onClick={() => onSelect(item)}
+        className={cn(
+          "flex h-10 w-full items-center gap-3 px-3 text-left transition hover:bg-gray-50",
+          className,
+        )}
+      >
+        {previewLeft}
+        <div className="min-w-0 flex-1">
+          <div className="flex min-w-0 items-center gap-2">
+            {isUnread ? <span className="h-2 w-2 shrink-0 rounded-full bg-blue-500" aria-hidden="true" /> : null}
+            <div className="min-w-0 flex-1 truncate text-sm font-normal text-gray-900">
+              {previewTitle}
+            </div>
+            {isTask && taskDateLabel ? (
+              <span
+                className={cn(
+                  "shrink-0 whitespace-nowrap text-xs font-normal",
+                  taskDateOverdue ? "text-red-600" : "text-gray-500",
+                )}
+              >
+                {taskDateLabel}
+              </span>
+            ) : null}
+            {mentionDateLabel ? (
+              <div className="shrink-0 whitespace-nowrap text-xs font-normal text-gray-500">{mentionDateLabel}</div>
+            ) : null}
+            {isAiThread && aiDateLabel ? (
+              <span className="shrink-0 whitespace-nowrap text-xs font-normal text-gray-500">{aiDateLabel}</span>
+            ) : null}
+          </div>
+        </div>
+        {isTask ? (
+          <div className="shrink-0">
+            <TaskAssigneeAvatar payload={payload} raw={item.raw} />
+          </div>
+        ) : null}
+      </button>
+    )
+  }
 
   if (isTask) {
     return (
@@ -406,15 +550,10 @@ export function SearchResultRow({
         <div className="shrink-0">
           <LeftVisual payload={payload} isProject={isProject} />
         </div>
+      ) : showTypeIcon ? (
+        <EntityTypeIcon entityType={item.entity_type} />
       ) : null}
       <div className="min-w-0 flex-1">
-        {isPreview ? (
-          <div className="mb-1">
-            <span className="inline-flex h-6 items-center rounded-full bg-gray-100 px-2.5 text-[11px] font-medium uppercase tracking-wide text-gray-600">
-              {getGlobalSearchEntityLabel(item.entity_type)}
-            </span>
-          </div>
-        ) : null}
         <div className="flex min-w-0 items-center gap-2">
           {isUnread ? <span className="h-2 w-2 shrink-0 rounded-full bg-blue-500" aria-hidden="true" /> : null}
           <div
@@ -428,11 +567,7 @@ export function SearchResultRow({
           </div>
           {mentionDateLabel ? <div className="shrink-0 whitespace-nowrap text-xs text-gray-500">{mentionDateLabel}</div> : null}
         </div>
-        {isAiThread ? (
-          <div className="mt-0.5 truncate text-xs text-gray-500">
-            {payload.preview?.trim() || "No messages yet"}
-          </div>
-        ) : showSubtitle && previewSubtitle ? (
+        {showSubtitle && previewSubtitle ? (
           <div className="truncate text-xs text-gray-500">{previewSubtitle}</div>
         ) : null}
         {payload.preview && !isMention && !isAiThread && !isProject && (!isMention || !isPreview) ? (

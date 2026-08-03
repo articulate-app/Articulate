@@ -26,7 +26,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from "./ui/select"
-import { useKeywordPlanner, type KeywordPlannerFilters } from "../hooks/useKeywordPlanner"
+import { useKeywordPlanner, type KeywordIdea, type KeywordPlannerFilters } from "../hooks/useKeywordPlanner"
 import { regions, languages } from "../lib/geoLanguageMaps"
 import { useKeywordListsApi } from "../store/keyword-lists-api"
 import { useTopResults } from "../hooks/useTopResults"
@@ -35,13 +35,16 @@ import { SavedKeywordsModal } from "./SavedKeywordsModal"
 import { SaveKeywordListPopover } from "./save-keyword-list-popover"
 import { AddKeywordToProjectPopover } from "./add-keyword-to-project-popover"
 import { KeywordVolumeSparkline } from "./keyword-volume-sparkline"
-import { KEYWORD_RESEARCH_QUERY_PARAM } from "../lib/center-pane-selection-url"
+import {
+  KeywordDifficultyBadge,
+  KeywordExpandedMetrics,
+} from "./keyword-expanded-metrics"
+import { KEYWORD_RESEARCH_QUERY_PARAM, RESEARCH_QUERY_PARAM } from "../lib/center-pane-selection-url"
 import {
   TASK_PANE_HEADER_ROW_CLASS,
   TASK_PANE_HEADER_SHELL_CLASS,
 } from "./tasks/pane-header-tokens"
 import {
-  KeywordMetricSeparator,
   KeywordMetricStat,
 } from "../../features/tasks/components/keyword-metric-stat"
 
@@ -50,8 +53,18 @@ interface KeywordPlannerPaneProps {
   onClose: () => void
   /** Overlay = fixed drawer/sheet. Inline = fill the middle-pane tab content. */
   variant?: "overlay" | "inline"
-  /** Optional seed keyword (e.g. from top search). Falls back to URL `krQuery`. */
+  /** Optional seed keyword (e.g. from top search). Falls back to URL `krQuery` / `rQuery`. */
   initialKeyword?: string | null
+  /** When true, render results/controls only (parent ResearchPane owns chrome + shared query/country). */
+  embedded?: boolean
+  hideSharedControls?: boolean
+  /** Hide the local Lists button (ResearchPane hosts the shared Lists control). */
+  hideListsButton?: boolean
+  sharedQuery?: string
+  sharedRegionId?: string
+  sharedLanguageId?: string
+  /** Increment to force a Get ideas search from the parent shared query field. */
+  autoSearchKey?: number
 }
 
 const ANY_VALUE = "__any__"
@@ -110,18 +123,19 @@ function searchVolumeClassName(volume: number): string {
   return "text-gray-400"
 }
 
-function difficultyClassName(competitionIndex: number): string {
-  if (competitionIndex >= 80) return "text-rose-600"
-  if (competitionIndex >= 50) return "text-orange-500"
-  if (competitionIndex >= 20) return "text-amber-600"
-  return "text-emerald-600"
-}
-
-function competitionLabel(competitionIndex: number): string {
-  if (competitionIndex >= 80) return "High"
-  if (competitionIndex >= 50) return "Medium"
-  if (competitionIndex >= 20) return "Low"
-  return "Very Low"
+function formatCompactVolume(volume: number): string {
+  const value = Number.isFinite(volume) ? Math.max(0, volume) : 0
+  if (value >= 1_000_000) {
+    const millions = value / 1_000_000
+    const rounded = millions >= 10 ? Math.round(millions) : Math.round(millions * 10) / 10
+    return `${rounded}M`
+  }
+  if (value >= 1_000) {
+    const thousands = value / 1_000
+    const rounded = thousands >= 10 ? Math.round(thousands) : Math.round(thousands * 10) / 10
+    return `${rounded}k`
+  }
+  return String(Math.round(value))
 }
 
 export function KeywordPlannerPane({
@@ -129,6 +143,13 @@ export function KeywordPlannerPane({
   onClose,
   variant = "overlay",
   initialKeyword = null,
+  embedded = false,
+  hideSharedControls = false,
+  hideListsButton = false,
+  sharedQuery,
+  sharedRegionId,
+  sharedLanguageId,
+  autoSearchKey = 0,
 }: KeywordPlannerPaneProps) {
   const searchParams = useSearchParams()
   const [filters, setFilters] = useState<KeywordPlannerFilters>({
@@ -145,6 +166,7 @@ export function KeywordPlannerPane({
   const copiedKeywordTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const lastSeededQueryRef = useRef<string | null>(null)
   const resultsIdentityRef = useRef<string | null>(null)
+  const autoExpandedForRef = useRef<string | null>(null)
   const keywordInputRef = useRef<HTMLInputElement>(null)
   const keywordFieldRef = useRef<HTMLDivElement>(null)
 
@@ -182,12 +204,22 @@ export function KeywordPlannerPane({
     triggerSearch,
     canSearch,
     hasResults,
+    isEnriching,
   } = useKeywordPlanner(filters, {
     enabled: false,
   })
 
-  const seedFromUrl = (searchParams.get(KEYWORD_RESEARCH_QUERY_PARAM) || "").trim()
-  const seedKeyword = (initialKeyword?.trim() || seedFromUrl || "").trim()
+  const seedFromUrl = (
+    searchParams.get(RESEARCH_QUERY_PARAM) ||
+    searchParams.get(KEYWORD_RESEARCH_QUERY_PARAM) ||
+    ""
+  ).trim()
+  const seedKeyword = (
+    (typeof sharedQuery === "string" ? sharedQuery : null)?.trim() ||
+    initialKeyword?.trim() ||
+    seedFromUrl ||
+    ""
+  ).trim()
 
   useEffect(() => {
     if (!isOpen || !seedKeyword) return
@@ -200,10 +232,29 @@ export function KeywordPlannerPane({
   }, [isOpen, seedKeyword])
 
   useEffect(() => {
-    if (!isOpen || !keywordInputRef.current) return
+    if (typeof sharedQuery !== "string") return
+    setFilters((prev) => (prev.keyword === sharedQuery ? prev : { ...prev, keyword: sharedQuery }))
+  }, [sharedQuery])
+
+  useEffect(() => {
+    if (typeof sharedRegionId !== "string") return
+    setFilters((prev) =>
+      prev.regionId === sharedRegionId ? prev : { ...prev, regionId: sharedRegionId },
+    )
+  }, [sharedRegionId])
+
+  useEffect(() => {
+    if (typeof sharedLanguageId !== "string") return
+    setFilters((prev) =>
+      prev.languageId === sharedLanguageId ? prev : { ...prev, languageId: sharedLanguageId },
+    )
+  }, [sharedLanguageId])
+
+  useEffect(() => {
+    if (!isOpen || hideSharedControls || !keywordInputRef.current) return
     const timer = window.setTimeout(() => keywordInputRef.current?.focus(), 80)
     return () => window.clearTimeout(timer)
-  }, [isOpen, seedKeyword])
+  }, [hideSharedControls, isOpen, seedKeyword])
 
   useEffect(() => {
     if (!isOpen) return
@@ -236,19 +287,56 @@ export function KeywordPlannerPane({
     return () => document.removeEventListener("keydown", handleKeyDown)
   }, [isKeywordHistoryOpen, isOpen, onClose, variant])
 
+  const pendingSearchTermRef = useRef<string | null>(null)
+  const [pendingSearchTerm, setPendingSearchTerm] = useState<string | null>(null)
+
+  const beginSearch = useCallback(
+    (searched: string) => {
+      pendingSearchTermRef.current = searched
+      setPendingSearchTerm(searched)
+      // Show the seed row immediately (perceived speed) — metrics fill in when Ads returns.
+      setLastSearchedKeyword(searched)
+      autoExpandedForRef.current = null
+      resultsIdentityRef.current = null
+      setExpandedKeyword(null)
+      triggerSearch(searched)
+    },
+    [triggerSearch],
+  )
+
   const handleSubmit = useCallback(
     (e: React.FormEvent) => {
       e.preventDefault()
       if (!canSearch) return
-      const searched = filters.keyword.trim()
-      setLastSearchedKeyword(searched)
-      // Force the next results payload to auto-expand once (even if identical to previous).
-      resultsIdentityRef.current = null
-      logSearch(searched, filters.regionId, filters.languageId)
-      triggerSearch()
+      beginSearch(filters.keyword.trim())
     },
-    [canSearch, filters.keyword, filters.languageId, filters.regionId, logSearch, triggerSearch],
+    [beginSearch, canSearch, filters.keyword],
   )
+
+  const lastAutoSearchKeyRef = useRef(0)
+  useEffect(() => {
+    if (!autoSearchKey || autoSearchKey === lastAutoSearchKeyRef.current) return
+    lastAutoSearchKeyRef.current = autoSearchKey
+    const searched = (
+      typeof sharedQuery === "string" ? sharedQuery : filters.keyword
+    ).trim()
+    if (!searched) return
+    setFilters((prev) =>
+      prev.keyword === searched ? prev : { ...prev, keyword: searched },
+    )
+    beginSearch(searched)
+  }, [autoSearchKey, beginSearch, filters.keyword, sharedQuery])
+
+  // Log history only after primary results land (don't block the Ads request).
+  useEffect(() => {
+    const pending = pendingSearchTermRef.current
+    if (!pending) return
+    if (isLoading) return
+    if (!data && !error) return
+    pendingSearchTermRef.current = null
+    setPendingSearchTerm(null)
+    void logSearch(pending, filters.regionId, filters.languageId)
+  }, [data, error, filters.languageId, filters.regionId, isLoading, logSearch])
 
   const handleInputChange = useCallback((field: keyof KeywordPlannerFilters, value: string) => {
     setFilters((prev) => ({ ...prev, [field]: value }))
@@ -281,41 +369,36 @@ export function KeywordPlannerPane({
     }
   }, [])
 
-  // Auto-expand only when a new results set arrives — never re-open after the user collapses.
+  // Auto-expand top results only for the "You searched" row — never for related.
+  // Scoped once per search so enrichment (full phase) doesn't re-open a user collapse.
   useEffect(() => {
-    const results = data?.results
-    if (!results || results.length === 0) {
-      resultsIdentityRef.current = null
-      return
-    }
-    const identity = results.map((row) => row.keyword).join("\0")
-    if (resultsIdentityRef.current === identity) return
-    resultsIdentityRef.current = identity
-
-    const seedMatch = lastSearchedKeyword
-      ? results.find(
-          (row) => normalizeKeywordKey(row.keyword) === normalizeKeywordKey(lastSearchedKeyword),
-        )
-      : null
-    setExpandedKeyword(seedMatch?.keyword ?? results[0]?.keyword ?? null)
+    const seed = (lastSearchedKeyword || "").trim()
+    if (!seed || !data?.results?.length) return
+    const seedKey = normalizeKeywordKey(seed)
+    if (autoExpandedForRef.current === seedKey) return
+    autoExpandedForRef.current = seedKey
+    setExpandedKeyword(`searched:${seedKey}`)
   }, [data?.results, lastSearchedKeyword])
 
   const sortedResults = useMemo(() => {
     if (!data?.results) return []
+    return [...data.results].sort((a, b) => b.avgMonthlySearches - a.avgMonthlySearches)
+  }, [data?.results])
 
-    const seedKey = (lastSearchedKeyword || filters.keyword).trim().toLowerCase()
-    const rows = [...data.results]
-    if (!seedKey) {
-      return rows.sort((a, b) => b.avgMonthlySearches - a.avgMonthlySearches)
-    }
-
-    const seedIndex = rows.findIndex(
-      (row) => row.keyword.trim().toLowerCase() === seedKey,
+  const searchedKeyword = useMemo(() => {
+    const seed = (lastSearchedKeyword || pendingSearchTerm || "").trim()
+    if (!seed) return null
+    const match = sortedResults.find(
+      (row) => normalizeKeywordKey(row.keyword) === normalizeKeywordKey(seed),
     )
-    const seed = seedIndex >= 0 ? rows.splice(seedIndex, 1)[0] : null
-    rows.sort((a, b) => b.avgMonthlySearches - a.avgMonthlySearches)
-    return seed ? [seed, ...rows] : rows
-  }, [data?.results, filters.keyword, lastSearchedKeyword])
+    return (
+      match ?? {
+        keyword: seed,
+        avgMonthlySearches: 0,
+        competitionIndex: 0,
+      }
+    )
+  }, [lastSearchedKeyword, pendingSearchTerm, sortedResults])
 
   const historySuggestions = useMemo(() => {
     const query = filters.keyword.trim().toLowerCase()
@@ -334,10 +417,10 @@ export function KeywordPlannerPane({
     return items
   }, [filters.keyword, searchHistory])
 
-  const formatNumber = useCallback((num: number) => num.toLocaleString(), [])
+  const formatNumber = useCallback((num: number) => formatCompactVolume(num), [])
 
-  const toggleExpanded = useCallback((keyword: string) => {
-    setExpandedKeyword((current) => (current === keyword ? null : keyword))
+  const toggleExpanded = useCallback((expandKey: string) => {
+    setExpandedKeyword((current) => (current === expandKey ? null : expandKey))
   }, [])
 
   const applyHistoryItem = useCallback(
@@ -378,11 +461,14 @@ export function KeywordPlannerPane({
   return (
     <div
       className={
-        variant === "inline"
-          ? "flex h-full min-h-0 w-full flex-col bg-white"
-          : "fixed inset-x-0 bottom-0 z-50 flex h-[88dvh] w-full flex-col rounded-t-2xl border-t border-gray-200 bg-white shadow-lg md:inset-x-auto md:top-0 md:right-0 md:bottom-auto md:h-screen md:w-[1100px] md:max-w-[95vw] md:rounded-t-none md:border-t-0 md:border-l"
+        embedded
+          ? "w-full bg-white"
+          : variant === "inline"
+            ? "flex h-full min-h-0 w-full flex-col bg-white"
+            : "fixed inset-x-0 bottom-0 z-50 flex h-[88dvh] w-full flex-col rounded-t-2xl border-t border-gray-200 bg-white shadow-lg md:inset-x-auto md:top-0 md:right-0 md:bottom-auto md:h-screen md:w-[1100px] md:max-w-[95vw] md:rounded-t-none md:border-t-0 md:border-l"
       }
     >
+      {!embedded ? (
       <div className={cn(TASK_PANE_HEADER_SHELL_CLASS, "border-b-0")}>
         <div className={TASK_PANE_HEADER_ROW_CLASS}>
           <div className="mr-4 min-w-0 flex-1">
@@ -416,13 +502,29 @@ export function KeywordPlannerPane({
           </div>
         </div>
       </div>
+      ) : hideListsButton ? null : (
+        <div className="flex shrink-0 items-center justify-end gap-1 border-b border-gray-100 px-4 py-2">
+          <Button
+            type="button"
+            variant="ghost"
+            size="sm"
+            className="h-8 px-2 text-xs text-gray-600"
+            onClick={() => setIsSavedKeywordsOpen(true)}
+          >
+            <Bookmark className="mr-1 h-3.5 w-3.5" />
+            Lists
+          </Button>
+        </div>
+      )}
 
-      <div className="min-h-0 flex-1 overflow-auto">
-        <section className="p-4">
+      <div className={embedded ? "w-full" : "min-h-0 flex-1 overflow-auto"}>
+        <section className={cn("px-4 pb-4", hideSharedControls ? "pt-0" : "pt-4")}>
           <form
             onSubmit={handleSubmit}
             className="grid grid-cols-[max-content_minmax(0,1fr)] items-start gap-x-6 gap-y-2"
           >
+            {!hideSharedControls ? (
+              <>
             <label
               className="self-center justify-self-start text-left text-sm font-normal text-gray-400"
               htmlFor="keyword-research-keyword"
@@ -514,42 +616,48 @@ export function KeywordPlannerPane({
                 })}
               </SelectContent>
             </Select>
+              </>
+            ) : null}
 
-            <label
-              className="self-center justify-self-start text-left text-sm font-normal text-gray-400"
-              htmlFor="keyword-research-language"
-            >
-              Language
-            </label>
-            <Select
-              value={toSelectValue(filters.languageId)}
-              onValueChange={(value) => handleInputChange("languageId", fromSelectValue(value))}
-            >
-              <SelectTrigger id="keyword-research-language" className={selectTriggerClassName}>
-                <SelectValue>
-                  <span className="flex min-w-0 items-center gap-2">
-                    <FlagMark flag={selectedLanguageFlag} />
-                    <span className="truncate">{selectedLanguageLabel}</span>
-                  </span>
-                </SelectValue>
-              </SelectTrigger>
-              <SelectContent className="w-[min(90vw,24rem)] max-w-full">
-                {languages.map((language) => {
-                  const value = toSelectValue(language.id)
-                  const label = language.name === "Any" ? "Any language" : language.name
-                  return (
-                    <SelectItem key={value} value={value}>
-                      <span className="flex items-center gap-2">
-                        <FlagMark flag={LANGUAGE_FLAGS[language.id] ?? "🌐"} />
-                        <span>{label}</span>
+            {!hideSharedControls ? (
+              <>
+                <label
+                  className="self-center justify-self-start text-left text-sm font-normal text-gray-400"
+                  htmlFor="keyword-research-language"
+                >
+                  Language
+                </label>
+                <Select
+                  value={toSelectValue(filters.languageId)}
+                  onValueChange={(value) => handleInputChange("languageId", fromSelectValue(value))}
+                >
+                  <SelectTrigger id="keyword-research-language" className={selectTriggerClassName}>
+                    <SelectValue>
+                      <span className="flex min-w-0 items-center gap-2">
+                        <FlagMark flag={selectedLanguageFlag} />
+                        <span className="truncate">{selectedLanguageLabel}</span>
                       </span>
-                    </SelectItem>
-                  )
-                })}
-              </SelectContent>
-            </Select>
+                    </SelectValue>
+                  </SelectTrigger>
+                  <SelectContent className="w-[min(90vw,24rem)] max-w-full">
+                    {languages.map((language) => {
+                      const value = toSelectValue(language.id)
+                      const label = language.name === "Any" ? "Any language" : language.name
+                      return (
+                        <SelectItem key={value} value={value}>
+                          <span className="flex items-center gap-2">
+                            <FlagMark flag={LANGUAGE_FLAGS[language.id] ?? "🌐"} />
+                            <span>{label}</span>
+                          </span>
+                        </SelectItem>
+                      )
+                    })}
+                  </SelectContent>
+                </Select>
+              </>
+            ) : null}
 
-            <div className="col-span-2 pt-1">
+            <div className={cn("col-span-2", hideSharedControls ? "pt-2" : "pt-1")}>
               <Button
                 type="submit"
                 variant="outline"
@@ -600,7 +708,7 @@ export function KeywordPlannerPane({
                       variant="outline"
                       size="sm"
                       className="h-8 text-xs"
-                      onClick={triggerSearch}
+                      onClick={() => triggerSearch()}
                     >
                       <RefreshCw className="mr-1 h-3.5 w-3.5" />
                       Retry
@@ -611,11 +719,43 @@ export function KeywordPlannerPane({
             </div>
           ) : null}
 
-          {isLoading ? (
-            <div className="mt-4 space-y-1">
-              {[...Array(6)].map((_, i) => (
-                <div key={i} className="h-11 animate-pulse rounded-md bg-gray-100" />
-              ))}
+          {isLoading || hasResults || searchedKeyword ? (
+            <div className="mt-4 space-y-4">
+              {isEnriching ? (
+                <div className="flex items-center gap-1.5 text-[11px] text-gray-400">
+                  <Loader2 className="h-3 w-3 animate-spin" />
+                  Expanding related ideas…
+                </div>
+              ) : null}
+              {searchedKeyword ? (
+                <div>
+                  <div className="mb-2 text-xs font-medium uppercase tracking-wide text-gray-400">
+                    You searched
+                  </div>
+                  <ul className="rounded-md border border-gray-200 bg-gray-50/70">
+                    {renderKeywordRow(searchedKeyword, { emphasize: true })}
+                  </ul>
+                </div>
+              ) : null}
+
+              {isLoading && !hasResults ? (
+                <div className="space-y-1">
+                  {[...Array(6)].map((_, i) => (
+                    <div key={i} className="h-11 animate-pulse rounded-md bg-gray-100" />
+                  ))}
+                </div>
+              ) : null}
+
+              {hasResults ? (
+              <div>
+                <div className="mb-2 text-xs font-medium uppercase tracking-wide text-gray-400">
+                  Related keywords
+                </div>
+                <ul className="border-t border-gray-100">
+                  {sortedResults.map((result) => renderKeywordRow(result))}
+                </ul>
+              </div>
+              ) : null}
             </div>
           ) : null}
 
@@ -630,154 +770,6 @@ export function KeywordPlannerPane({
               </p>
             </div>
           ) : null}
-
-          {hasResults ? (
-            <div className="mt-4">
-              <div className="mb-2 text-xs font-medium uppercase tracking-wide text-gray-400">
-                Results
-              </div>
-              <ul className="border-t border-gray-100">
-              {sortedResults.map((result) => {
-                const isExpanded = result.keyword === expandedKeyword
-                const topResultsData = isExpanded
-                  ? getTopResults(result.keyword, topResultsLanguage, topResultsRegion)
-                  : undefined
-                const topResultsError = isExpanded
-                  ? getTopResultsError(result.keyword, topResultsLanguage, topResultsRegion)
-                  : undefined
-                const isTopLoading = isExpanded
-                  ? isTopResultsLoading(result.keyword, topResultsLanguage, topResultsRegion)
-                  : false
-
-                return (
-                  <li key={result.keyword} className="border-b border-gray-100">
-                    <div
-                      className={cn(
-                        "group flex items-start gap-1 rounded-md py-1.5 transition-colors hover:bg-gray-50",
-                        isExpanded && "bg-gray-50",
-                      )}
-                    >
-                      <button
-                        type="button"
-                        className="mt-0.5 inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-md text-gray-500 hover:bg-gray-100 hover:text-gray-900"
-                        aria-label={isExpanded ? "Hide top results" : "Show top results"}
-                        aria-expanded={isExpanded}
-                        onClick={() => toggleExpanded(result.keyword)}
-                      >
-                        {isExpanded ? (
-                          <ChevronUp className="h-4 w-4" />
-                        ) : (
-                          <ChevronDown className="h-4 w-4" />
-                        )}
-                      </button>
-
-                      <button
-                        type="button"
-                        className="flex min-w-0 flex-1 items-start gap-3 py-1 text-left"
-                        onClick={() => toggleExpanded(result.keyword)}
-                      >
-                        <span
-                          className="min-w-0 flex-1 whitespace-normal break-words text-sm leading-5 text-gray-900"
-                          title={result.keyword}
-                        >
-                          {result.keyword}
-                        </span>
-                        <span className="inline-flex shrink-0 items-center gap-1.5 pt-0.5">
-                          <KeywordVolumeSparkline volumes={result.monthlySearchVolumes} />
-                          <KeywordMetricStat
-                            metric="volume"
-                            valueClassName={searchVolumeClassName(result.avgMonthlySearches)}
-                          >
-                            {formatNumber(result.avgMonthlySearches)}
-                          </KeywordMetricStat>
-                          <KeywordMetricSeparator />
-                          <KeywordMetricStat
-                            metric="difficulty"
-                            valueClassName={difficultyClassName(result.competitionIndex)}
-                          >
-                            {competitionLabel(result.competitionIndex)}
-                          </KeywordMetricStat>
-                        </span>
-                      </button>
-
-                      <div className="mt-0.5 flex shrink-0 items-center gap-0.5 pr-1">
-                        <Button
-                          type="button"
-                          variant="ghost"
-                          size="icon"
-                          className="h-8 w-8 text-gray-500 hover:bg-gray-100 hover:text-gray-900"
-                          aria-label={
-                            copiedKeyword === result.keyword
-                              ? "Keyword copied"
-                              : `Copy keyword ${result.keyword}`
-                          }
-                          title={copiedKeyword === result.keyword ? "Copied" : "Copy keyword"}
-                          onClick={(event) => {
-                            event.stopPropagation()
-                            void handleCopyKeyword(result.keyword)
-                          }}
-                        >
-                          {copiedKeyword === result.keyword ? (
-                            <Check className="h-3.5 w-3.5 text-emerald-600" />
-                          ) : (
-                            <Copy className="h-3.5 w-3.5" />
-                          )}
-                        </Button>
-                        <AddKeywordToProjectPopover
-                          keyword={result}
-                          languageId={filters.languageId}
-                          regionId={filters.regionId}
-                          preferredProjectId={centerProjectId}
-                        />
-                        <SaveKeywordListPopover keyword={result} />
-                      </div>
-                    </div>
-
-                    {isExpanded ? (
-                      <div className="pb-3">
-                        <TopResultsSection
-                          keyword={result.keyword}
-                          languageId={topResultsLanguage}
-                          regionId={topResultsRegion}
-                          results={topResultsData?.results}
-                          isLoading={isTopLoading}
-                          error={topResultsError}
-                          onRetry={() =>
-                            retryTopResults(
-                              result.keyword,
-                              topResultsLanguage,
-                              topResultsRegion,
-                            )
-                          }
-                          onFetch={() => {
-                            if (
-                              !getTopResults(
-                                result.keyword,
-                                topResultsLanguage,
-                                topResultsRegion,
-                              ) &&
-                              !isTopResultsLoading(
-                                result.keyword,
-                                topResultsLanguage,
-                                topResultsRegion,
-                              )
-                            ) {
-                              void fetchTopResults(
-                                result.keyword,
-                                topResultsLanguage,
-                                topResultsRegion,
-                              )
-                            }
-                          }}
-                        />
-                      </div>
-                    ) : null}
-                  </li>
-                )
-              })}
-            </ul>
-            </div>
-          ) : null}
         </section>
       </div>
 
@@ -787,4 +779,148 @@ export function KeywordPlannerPane({
       />
     </div>
   )
+
+  function renderKeywordRow(
+    result: KeywordIdea,
+    options: { emphasize?: boolean } = {},
+  ) {
+    const expandKey = `${options.emphasize ? "searched" : "related"}:${normalizeKeywordKey(result.keyword)}`
+    const isExpanded = expandedKeyword === expandKey
+    const topResultsData = isExpanded
+      ? getTopResults(result.keyword, topResultsLanguage, topResultsRegion)
+      : undefined
+    const topResultsError = isExpanded
+      ? getTopResultsError(result.keyword, topResultsLanguage, topResultsRegion)
+      : undefined
+    const isTopLoading = isExpanded
+      ? isTopResultsLoading(result.keyword, topResultsLanguage, topResultsRegion)
+      : false
+    const isSeed =
+      !!lastSearchedKeyword &&
+      normalizeKeywordKey(result.keyword) === normalizeKeywordKey(lastSearchedKeyword)
+
+    return (
+      <li
+        key={expandKey}
+        className={cn(!options.emphasize && "border-b border-gray-100")}
+      >
+        <div
+          className={cn(
+            "group flex items-center gap-1 rounded-md py-1.5 transition-colors hover:bg-gray-50",
+            isExpanded && "bg-gray-50",
+            options.emphasize && "px-1",
+            isSeed && !options.emphasize && "bg-gray-50/80",
+          )}
+        >
+          <button
+            type="button"
+            className="inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-md text-gray-500 hover:bg-gray-100 hover:text-gray-900"
+            aria-label={isExpanded ? "Hide top results" : "Show top results"}
+            aria-expanded={isExpanded}
+            onClick={() => toggleExpanded(expandKey)}
+          >
+            {isExpanded ? (
+              <ChevronUp className="h-4 w-4" />
+            ) : (
+              <ChevronDown className="h-4 w-4" />
+            )}
+          </button>
+
+          <button
+            type="button"
+            className="flex min-w-0 flex-1 items-center gap-3 py-1 text-left"
+            onClick={() => toggleExpanded(expandKey)}
+          >
+            <span
+              className={cn(
+                "min-w-0 flex-1 whitespace-normal break-words text-sm leading-5 text-gray-900",
+                options.emphasize && "font-medium",
+              )}
+              title={result.keyword}
+            >
+              {result.keyword}
+            </span>
+            <span className="inline-flex shrink-0 items-center gap-2">
+              <KeywordVolumeSparkline volumes={result.monthlySearchVolumes} />
+              <span className="inline-flex w-[3.25rem] justify-end">
+                <KeywordMetricStat
+                  metric="volume"
+                  valueClassName={searchVolumeClassName(result.avgMonthlySearches)}
+                >
+                  {formatNumber(result.avgMonthlySearches)}
+                </KeywordMetricStat>
+              </span>
+              <KeywordDifficultyBadge competitionIndex={result.competitionIndex} />
+            </span>
+          </button>
+
+          <div className="flex shrink-0 items-center gap-0.5 pr-1">
+            <Button
+              type="button"
+              variant="ghost"
+              size="icon"
+              className="h-8 w-8 text-gray-500 hover:bg-gray-100 hover:text-gray-900"
+              aria-label={
+                copiedKeyword === result.keyword
+                  ? "Keyword copied"
+                  : `Copy keyword ${result.keyword}`
+              }
+              title={copiedKeyword === result.keyword ? "Copied" : "Copy keyword"}
+              onClick={(event) => {
+                event.stopPropagation()
+                void handleCopyKeyword(result.keyword)
+              }}
+            >
+              {copiedKeyword === result.keyword ? (
+                <Check className="h-3.5 w-3.5 text-emerald-600" />
+              ) : (
+                <Copy className="h-3.5 w-3.5" />
+              )}
+            </Button>
+            <AddKeywordToProjectPopover
+              keyword={result}
+              languageId={filters.languageId}
+              regionId={filters.regionId}
+              preferredProjectId={centerProjectId}
+            />
+            <SaveKeywordListPopover keyword={result} />
+          </div>
+        </div>
+
+        {isExpanded ? (
+          <div className="space-y-3 pb-3 pl-7 pr-1">
+            <KeywordExpandedMetrics
+              avgMonthlySearches={result.avgMonthlySearches}
+              competitionIndex={result.competitionIndex}
+              volumes={result.monthlySearchVolumes}
+            />
+            <TopResultsSection
+              keyword={result.keyword}
+              languageId={topResultsLanguage}
+              regionId={topResultsRegion}
+              results={topResultsData?.results}
+              isLoading={isTopLoading}
+              error={topResultsError}
+              deferFetch
+              onRetry={() =>
+                retryTopResults(result.keyword, topResultsLanguage, topResultsRegion)
+              }
+              onFetch={() => {
+                if (
+                  !getTopResults(result.keyword, topResultsLanguage, topResultsRegion) &&
+                  !isTopResultsLoading(result.keyword, topResultsLanguage, topResultsRegion)
+                ) {
+                  void fetchTopResults(
+                    result.keyword,
+                    topResultsLanguage,
+                    topResultsRegion,
+                  )
+                }
+              }}
+            />
+          </div>
+        ) : null}
+      </li>
+    )
+  }
 }

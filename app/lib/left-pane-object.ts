@@ -6,6 +6,7 @@ export const LEFT_PANE_OBJECTS = [
   "mentions",
   "users",
   "ai_chats",
+  "artifacts",
 ] as const
 
 export type LeftPaneObject = (typeof LEFT_PANE_OBJECTS)[number] | "all"
@@ -20,6 +21,7 @@ export function normalizeLeftPaneObject(value: string | null | undefined): LeftP
   // Homepage ("all") was removed from the switcher; map legacy URLs to tasks.
   if (value === "all") return "tasks"
   if (value === "ai-threads") return "ai_chats"
+  if (value === "artifact") return "artifacts"
   return isLeftPaneObject(value) && value !== "all" ? value : "tasks"
 }
 
@@ -31,6 +33,8 @@ export function leftPaneObjectFromPath(pathname: string): LeftPaneObject {
   // Teams moved to user/project preferences — legacy /teams URLs fall back to tasks.
   if (pathname === "/teams" || pathname.startsWith("/teams/")) return "tasks"
   if (pathname === "/ai-threads" || pathname.startsWith("/ai-threads/")) return "ai_chats"
+  // Artifact deep links (`/artifacts/:id`) are standalone — only exact `/artifacts` is the list.
+  if (pathname === "/artifacts") return "artifacts"
   return "tasks"
 }
 
@@ -41,12 +45,13 @@ function objectRouteToLeftPaneObject(value: SearchObjectRoute): LeftPaneObject {
   if (value === "mention") return "mentions"
   if (value === "user") return "users"
   if (value === "ai_thread") return "ai_chats"
+  if (value === "artifact") return "artifacts"
   // Teams are no longer left-pane objects.
   if (value === "team") return "tasks"
   return "tasks"
 }
 
-export type PrimarySectionKey = "tasks" | "projects" | "mentions" | "users" | "ai-threads"
+export type PrimarySectionKey = "tasks" | "projects" | "mentions" | "users" | "ai-threads" | "artifacts"
 
 export function getPrimarySectionFromPath(pathname: string): PrimarySectionKey | null {
   if (pathname.startsWith("/tasks")) return "tasks"
@@ -54,6 +59,7 @@ export function getPrimarySectionFromPath(pathname: string): PrimarySectionKey |
   if (pathname.startsWith("/users")) return "users"
   if (pathname.startsWith("/mentions")) return "mentions"
   if (pathname.startsWith("/ai-threads")) return "ai-threads"
+  if (pathname === "/artifacts") return "artifacts"
   return null
 }
 
@@ -63,6 +69,7 @@ export function leftPaneObjectToPath(value: LeftPaneObject): string {
   if (value === "mentions") return "/mentions"
   if (value === "users") return "/users"
   if (value === "ai_chats") return "/ai-threads"
+  if (value === "artifacts") return "/artifacts"
   return "/tasks"
 }
 
@@ -72,6 +79,7 @@ export function leftPaneObjectLabel(value: LeftPaneObject): string {
   if (value === "projects") return "Projects"
   if (value === "mentions") return "Mentions"
   if (value === "users") return "Users"
+  if (value === "artifacts") return "Artifacts"
   return "AI chats"
 }
 
@@ -92,6 +100,7 @@ export const OBJECT_PILL_VISIBLE_PRIORITY: LeftPaneObject[] = [
   "users",
   "mentions",
   "ai_chats",
+  "artifacts",
 ]
 
 /** Width thresholds (px of the *available* left-pane toolbar space, not the viewport). */

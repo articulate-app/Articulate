@@ -37,9 +37,9 @@ interface Watcher {
 
 interface User {
   id: number
-  full_name: string
-  email: string
-  auth_user_id: string
+  full_name: string | null
+  email: string | null
+  auth_user_id?: string | null
   photo?: string | null
 }
 

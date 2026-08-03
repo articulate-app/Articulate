@@ -1,11 +1,13 @@
 "use client"
 
 import React from "react"
-import { TaskContentTab } from "../../../features/tasks/components/TaskContentTab"
 import { TaskOverviewAttachmentsPreview } from "./task-overview-attachments-preview"
 import { TaskOverviewReviewsPreview } from "./task-overview-reviews-preview"
 import { TaskOverviewUpdatesComments } from "./task-overview-updates-comments"
 import { TaskOverviewRelatedIdeas, type TaskRelatedIdeaPreviewRow } from "./task-overview-related-ideas"
+import { TaskOverviewPreviewSection } from "./task-overview-preview-section"
+import { TaskSeoAndAiSeoTab } from "../../../features/tasks/components/task-seo-and-ai-seo-tab"
+import { ArtifactWorkspace } from "../../../features/artifacts/ArtifactWorkspace"
 import type { ReviewData } from "@/lib/types/tasks"
 import type { TaskCommentsPanelProps } from "../comments-section/task-comments-panel"
 import type { AiActiveFieldContext } from "../../../features/ai-chat/active-field-context"
@@ -13,27 +15,16 @@ import type { AiActiveFieldContext } from "../../../features/ai-chat/active-fiel
 type TaskOverviewPreviewsProps = {
   taskId: number
   projectId?: number
-  contentTypeId?: number
   languageId?: number
-  taskTitle?: string
-  contentTypeTitle?: string
-  taskMetaTitle?: string
-  taskMetaDescription?: string
-  taskKeyword?: string
-  taskSlug?: string
-  projectLogoUrl?: string | null
-  taskSourceUrls?: string[] | string | null
-  taskBuildInstructions?: string
   canLoad?: boolean
-  bootstrapTaskChannels?: unknown
+  readOnly?: boolean
   bootstrapAttachments: unknown[]
   reviewData?: ReviewData | null
   preferredChannelId: number | null
-  onChannelChange: (channelId: number | null) => void
-  onActiveFieldChange?: (context: AiActiveFieldContext) => void
-  onNavigateTab: (tab: "content" | "attachments" | "reviews" | "activity" | "comments") => void
+  onNavigateTab: (
+    tab: "attachments" | "reviews" | "activity" | "comments" | "artifacts" | "seo",
+  ) => void
   commentsPanelProps: TaskCommentsPanelProps
-  accessToken?: string | null
   relatedIdeas?: TaskRelatedIdeaPreviewRow[]
   isRelatedIdeasLoading?: boolean
   isRelatedIdeasRefreshing?: boolean
@@ -42,32 +33,32 @@ type TaskOverviewPreviewsProps = {
   onDismissRelatedIdea?: (ideaId: string) => void
   onAcceptRelatedIdea?: (idea: TaskRelatedIdeaPreviewRow) => void
   onRefreshRelatedIdeas?: () => void
+  /** Kept optional for call-site compatibility; unused after overview artifact cards. */
+  onActiveFieldChange?: (context: AiActiveFieldContext) => void
+  onArtifactTextSelectForComment?: (selection: {
+    artifactId: string
+    quote: string
+  } | null) => void
+  seedSeo?: {
+    primaryKeyword?: string | null
+    secondaryKeywords?: string | string[] | null
+    updatedAt?: string | null
+    languageCode?: string | null
+    languageName?: string | null
+  } | null
 }
 
 export function TaskOverviewPreviews({
   taskId,
   projectId,
-  contentTypeId,
   languageId,
-  taskTitle,
-  contentTypeTitle,
-  taskMetaTitle,
-  taskMetaDescription,
-  taskKeyword,
-  taskSlug,
-  projectLogoUrl,
-  taskSourceUrls,
-  taskBuildInstructions,
   canLoad = true,
-  bootstrapTaskChannels,
+  readOnly = false,
   bootstrapAttachments,
   reviewData,
   preferredChannelId,
-  onChannelChange,
-  onActiveFieldChange,
   onNavigateTab,
   commentsPanelProps,
-  accessToken,
   relatedIdeas = [],
   isRelatedIdeasLoading = false,
   isRelatedIdeasRefreshing = false,
@@ -76,35 +67,11 @@ export function TaskOverviewPreviews({
   onDismissRelatedIdea,
   onAcceptRelatedIdea,
   onRefreshRelatedIdeas,
+  onArtifactTextSelectForComment,
+  seedSeo = null,
 }: TaskOverviewPreviewsProps) {
   return (
     <section className="px-4 pb-0">
-      {canLoad ? (
-        <div className="mb-4 min-h-0">
-          <TaskContentTab
-            taskId={taskId}
-            projectId={projectId}
-            contentTypeId={contentTypeId}
-            languageId={languageId}
-            taskTitle={taskTitle}
-            contentTypeTitle={contentTypeTitle}
-            taskMetaTitle={taskMetaTitle}
-            taskMetaDescription={taskMetaDescription}
-            taskKeyword={taskKeyword}
-            taskSlug={taskSlug}
-            projectLogoUrl={projectLogoUrl}
-            taskSourceUrls={taskSourceUrls}
-            canLoad={canLoad}
-            onChannelChange={onChannelChange}
-            onActiveFieldChange={onActiveFieldChange}
-            taskBuildInstructions={taskBuildInstructions}
-            skipInitialTaskChannelsFetch
-            bootstrapTaskChannels={bootstrapTaskChannels}
-            accessToken={accessToken}
-            preferredChannelId={preferredChannelId}
-          />
-        </div>
-      ) : null}
       {onDismissRelatedIdea && onAcceptRelatedIdea ? (
         <TaskOverviewRelatedIdeas
           ideas={relatedIdeas}
@@ -117,6 +84,39 @@ export function TaskOverviewPreviews({
           onRefresh={onRefreshRelatedIdeas}
           active
         />
+      ) : null}
+      {canLoad ? (
+        <TaskOverviewPreviewSection
+          title="SEO and AI SEO"
+          onViewAll={() => onNavigateTab("seo")}
+          active
+        >
+          <TaskSeoAndAiSeoTab
+            taskId={taskId}
+            embedded
+            readOnly={readOnly}
+            seedSeo={seedSeo}
+          />
+        </TaskOverviewPreviewSection>
+      ) : null}
+      {canLoad ? (
+        <TaskOverviewPreviewSection
+          title="Artifacts"
+          onViewAll={() => onNavigateTab("artifacts")}
+          active
+        >
+          <div className="min-h-0">
+            <ArtifactWorkspace
+              taskId={taskId}
+              projectId={projectId ?? null}
+              defaultChannelId={preferredChannelId}
+              defaultLanguageId={languageId ?? null}
+              layout="stack"
+              hideHeading
+              onArtifactTextSelectForComment={onArtifactTextSelectForComment}
+            />
+          </div>
+        </TaskOverviewPreviewSection>
       ) : null}
       <TaskOverviewAttachmentsPreview
         taskId={taskId}

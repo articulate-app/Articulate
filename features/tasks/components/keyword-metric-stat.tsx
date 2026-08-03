@@ -19,24 +19,33 @@ export const KEYWORD_METRIC_DEFINITIONS = {
   },
   difficulty: {
     label: "KD",
-    tooltip: "Keyword competition: Very Low, Low, Medium, or High.",
+    tooltip: "Keyword competition: Easy, Medium, or Hard.",
   },
 } as const
 
 type KeywordMetricStatProps = {
   metric: keyof typeof KEYWORD_METRIC_DEFINITIONS
   valueClassName?: string
+  /** When true, only the value is shown (no SV/KD prefix). */
+  hideLabel?: boolean
   children: React.ReactNode
 }
 
-export function KeywordMetricStat({ metric, valueClassName, children }: KeywordMetricStatProps) {
+export function KeywordMetricStat({
+  metric,
+  valueClassName,
+  hideLabel = false,
+  children,
+}: KeywordMetricStatProps) {
   const definition = KEYWORD_METRIC_DEFINITIONS[metric]
   return (
     <IconTooltip label={definition.tooltip} side="top">
       <span className="inline-flex cursor-default items-baseline gap-0.5">
-        <span className="text-[10px] font-medium uppercase tracking-wide text-gray-300">
-          {definition.label}
-        </span>
+        {hideLabel ? null : (
+          <span className="text-[10px] font-medium uppercase tracking-wide text-gray-300">
+            {definition.label}
+          </span>
+        )}
         <span className={cn("text-[11px] tabular-nums text-gray-500", valueClassName)}>{children}</span>
       </span>
     </IconTooltip>

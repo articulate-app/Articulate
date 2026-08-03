@@ -16,7 +16,7 @@ interface MobileGlobalHeaderActionsProps {
 }
 
 /**
- * Global mobile header actions — AI pane and Keyword research sit beside the object "..." menu.
+ * Global mobile header actions — AI pane and Research sit beside the object "..." menu.
  * These are intentionally separate from object-specific options (view mode, filters, group by, etc.).
  */
 export function MobileGlobalHeaderActions({
@@ -38,7 +38,7 @@ export function MobileGlobalHeaderActions({
           <Bot className="w-5 h-5" />
         </button>
       </IconTooltip>
-      <IconTooltip label="Keyword research">
+      <IconTooltip label="Research">
         <button
           type="button"
           onClick={onOpenKeywordResearch}
@@ -48,7 +48,7 @@ export function MobileGlobalHeaderActions({
               ? "bg-gray-900 text-white hover:bg-gray-800"
               : "text-gray-600 hover:bg-gray-100"
           )}
-          aria-label="Keyword research"
+          aria-label="Research"
         >
           <Lightbulb className="w-5 h-5" />
         </button>

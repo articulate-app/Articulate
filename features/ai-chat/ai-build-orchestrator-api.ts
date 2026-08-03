@@ -213,6 +213,59 @@ export async function fetchAiOrchestratedBuildSnapshot(args: {
   return parsed
 }
 
+export type AiOrchestratedBuildBulkRequest = {
+  buildId: string
+  /** Cursor paging (live poll). Ignored when `tailEvents` is set. */
+  afterSequence?: number
+  eventLimit?: number
+  /** History hydrate: return only the last N events (avoids full replay). */
+  tailEvents?: number
+}
+
+/**
+ * One PostgREST RPC for many builds — used on chat open instead of N edge GETs.
+ */
+export async function fetchAiOrchestratedBuildSnapshotsBulk(args: {
+  requests: AiOrchestratedBuildBulkRequest[]
+  defaultEventLimit?: number
+}): Promise<Map<string, AiOrchestratedBuildSnapshot>> {
+  const requests = args.requests
+    .map((row) => {
+      const buildId = row.buildId.trim()
+      if (!buildId) return null
+      const payload: Record<string, unknown> = { build_id: buildId }
+      if (typeof row.tailEvents === "number" && Number.isFinite(row.tailEvents)) {
+        payload.tail_events = Math.max(1, Math.min(500, Math.trunc(row.tailEvents)))
+      } else if (typeof row.afterSequence === "number" && Number.isFinite(row.afterSequence)) {
+        payload.after_sequence = Math.max(0, Math.trunc(row.afterSequence))
+      }
+      if (typeof row.eventLimit === "number" && Number.isFinite(row.eventLimit)) {
+        payload.event_limit = Math.max(1, Math.min(500, Math.trunc(row.eventLimit)))
+      }
+      return payload
+    })
+    .filter((row): row is Record<string, unknown> => row != null)
+
+  const out = new Map<string, AiOrchestratedBuildSnapshot>()
+  if (requests.length === 0) return out
+
+  const supabase = getSupabaseBrowser()
+  const { data, error } = await supabase.rpc("ai_get_orchestrated_builds_v1", {
+    p_requests: requests,
+    p_default_event_limit: Math.max(1, Math.min(500, args.defaultEventLimit ?? 80)),
+  })
+  if (error) throw new Error(error.message || "Failed to load builds in bulk")
+
+  const root = data && typeof data === "object" ? (data as Record<string, unknown>) : null
+  const rows = Array.isArray(root?.builds) ? root.builds : []
+  for (const row of rows) {
+    const parsed = parseAiOrchestratedBuildSnapshot(row)
+    if (!parsed) continue
+    out.set(parsed.build.id, parsed)
+  }
+  return out
+}
+
 export async function pumpAiOrchestratedBuild(args: {
   buildId: string
   signal?: AbortSignal

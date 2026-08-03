@@ -26,7 +26,7 @@ function isAbortError(error: unknown): boolean {
   )
 }
 
-type ResultObjectScopeKey = "all" | "tasks" | "projects" | "mentions" | "users" | "teams" | "ai_threads"
+type ResultObjectScopeKey = "all" | "tasks" | "projects" | "mentions" | "users" | "teams" | "ai_threads" | "artifacts"
 type ResultsByObject = Record<ResultObjectScopeKey, GlobalSearchDocument[]>
 
 const EMPTY_RESULTS_BY_OBJECT: ResultsByObject = {
@@ -37,6 +37,7 @@ const EMPTY_RESULTS_BY_OBJECT: ResultsByObject = {
   users: [],
   teams: [],
   ai_threads: [],
+  artifacts: [],
 }
 
 function toObjectScopeKey(type: GlobalSearchItemEntityType): ResultObjectScopeKey {
@@ -45,6 +46,7 @@ function toObjectScopeKey(type: GlobalSearchItemEntityType): ResultObjectScopeKe
   if (type === "mention") return "mentions"
   if (type === "user") return "users"
   if (type === "team") return "teams"
+  if (type === "artifact") return "artifacts"
   return "ai_threads"
 }
 

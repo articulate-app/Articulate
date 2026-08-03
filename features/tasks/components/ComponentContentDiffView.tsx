@@ -1,9 +1,10 @@
 "use client"
 
-import React from "react"
+import React, { useMemo } from "react"
 import { usePathname } from "next/navigation"
 import { cn } from "../../../app/lib/utils"
 import type { DiffLine } from "../utils/component-content-diff"
+import { expandDiffLinesWithWordSpans } from "../utils/component-content-diff"
 import { ComponentOutputLinkText } from "./component-output-link-text"
 
 type ComponentContentDiffViewProps = {
@@ -18,6 +19,7 @@ export function ComponentContentDiffView({
   fromAiChat = false,
 }: ComponentContentDiffViewProps) {
   const pathname = usePathname()
+  const rows = useMemo(() => expandDiffLinesWithWordSpans(lines), [lines])
 
   if (lines.length === 0) {
     return <div className={cn("px-3 py-2 text-xs text-muted-foreground break-words", className)}>No changes</div>
@@ -31,7 +33,48 @@ export function ComponentContentDiffView({
       )}
       onClick={(event) => event.stopPropagation()}
     >
-      {lines.map((line, index) => {
+      {rows.map((row, index) => {
+        if (row.kind === "words") {
+          return (
+            <div
+              key={`words-${index}`}
+              className="whitespace-pre-wrap break-words [overflow-wrap:anywhere]"
+            >
+              {row.tokens.map((token, tokenIndex) => {
+                if (token.type === "unchanged") {
+                  return (
+                    <span key={`${tokenIndex}-u`}>
+                      <ComponentOutputLinkText
+                        text={token.text || "\u00a0"}
+                        pathname={pathname}
+                        fromAiChat={fromAiChat}
+                      />
+                    </span>
+                  )
+                }
+                return (
+                  <span
+                    key={`${tokenIndex}-${token.type}`}
+                    className={cn(
+                      "rounded px-0.5",
+                      token.type === "added"
+                        ? "bg-emerald-50 text-emerald-900"
+                        : "bg-red-50 text-red-900",
+                    )}
+                  >
+                    <ComponentOutputLinkText
+                      text={token.text || "\u00a0"}
+                      pathname={pathname}
+                      fromAiChat={fromAiChat}
+                    />
+                  </span>
+                )
+              })}
+            </div>
+          )
+        }
+
+        const line = row.line
         if (line.type === "unchanged") {
           return (
             <div

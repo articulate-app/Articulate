@@ -1,4 +1,4 @@
-/** Shared layout tokens for TaskContentTab component output bodies. */
+/** Shared layout tokens for component/artifact output bodies. */
 export const COMPONENT_OUTPUT_FONT_SIZE_PX = 16
 export const COMPONENT_FIELD_EDIT_WRAPPER_CLASS =
   "component-card-focus-ring relative focus-within:z-[2] focus-within:border-transparent focus-within:outline-none focus-within:ring-2 focus-within:ring-inset focus-within:ring-black focus-within:ring-offset-0"

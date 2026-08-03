@@ -1,5 +1,4 @@
 import { describe, it, expect } from "vitest"
-import type { TaskChannelComponentsBucket } from "../features/ai-chat/mention-task-channel-components"
 import {
   buildLevel1MentionRows,
   buildLevel2MentionRows,
@@ -7,10 +6,6 @@ import {
   nextSelectableMentionIndex,
   mentionRowIsSelectable,
 } from "../features/ai-chat/composer-mention-rows"
-
-function bucketLoaded(items: TaskChannelComponentsBucket["items"]): TaskChannelComponentsBucket {
-  return { loading: false, loaded: true, error: null, items }
-}
 
 describe("buildChannelMentionRows", () => {
   it("filters channels by query token", () => {
@@ -40,21 +35,7 @@ describe("buildChannelMentionRows", () => {
 describe("buildLevel2MentionRows", () => {
   const task = { id: 12629, title: "Investir em platina" }
 
-  it("shows channel only when loaded bucket has zero selected components", () => {
-    const rows = buildLevel2MentionRows({
-      task,
-      channels: [{ channel_id: 11, name: "instagram" }],
-      channelsLoading: false,
-      componentsByTaskChannel: {
-        "12629:11": bucketLoaded([]),
-      },
-      query: "",
-    })
-    expect(rows.some((r) => r.kind === "component")).toBe(false)
-    expect(rows.some((r) => r.kind === "channel" && r.channelName === "instagram")).toBe(true)
-  })
-
-  it("lists inline components per channel from separate buckets (no cross-channel bleed)", () => {
+  it("lists channels without component rows", () => {
     const rows = buildLevel2MentionRows({
       task,
       channels: [
@@ -62,19 +43,14 @@ describe("buildLevel2MentionRows", () => {
         { channel_id: 12, name: "instagram" },
       ],
       channelsLoading: false,
-      componentsByTaskChannel: {
-        "12629:11": bucketLoaded([{ component_id: "a", title: "Como fazer" }]),
-        "12629:12": bucketLoaded([]),
-      },
       query: "",
     })
     expect(rows.some((r) => r.kind === "channel" && r.channelName === "blog")).toBe(true)
-    expect(rows.some((r) => r.kind === "component" && r.componentTitle === "Como fazer")).toBe(true)
     expect(rows.some((r) => r.kind === "channel" && r.channelName === "instagram")).toBe(true)
-    expect(rows.some((r) => r.kind === "component" && r.channelName === "instagram")).toBe(false)
+    expect(rows.filter((r) => r.kind === "channel")).toHaveLength(2)
   })
 
-  it("filters by query tokens across channel and component titles", () => {
+  it("filters channels by query tokens", () => {
     const rows = buildLevel2MentionRows({
       task,
       channels: [
@@ -82,37 +58,20 @@ describe("buildLevel2MentionRows", () => {
         { channel_id: 12, name: "instagram" },
       ],
       channelsLoading: false,
-      componentsByTaskChannel: {
-        "12629:11": bucketLoaded([
-          { component_id: "x", title: "Erros comuns" },
-          { component_id: "y", title: "Intro" },
-        ]),
-        "12629:12": bucketLoaded([]),
-      },
-      query: "platina blog erros",
+      query: "platina blog",
     })
-    expect(rows.some((r) => r.kind === "component" && r.componentTitle === "Erros comuns")).toBe(true)
-    expect(rows.some((r) => r.kind === "component" && r.componentTitle === "Intro")).toBe(false)
+    expect(rows.some((r) => r.kind === "channel" && r.channelName === "blog")).toBe(true)
+    expect(rows.some((r) => r.kind === "channel" && r.channelName === "instagram")).toBe(false)
   })
 
-  it("does not show another channel's components under instagram", () => {
+  it("shows loading while channels fetch", () => {
     const rows = buildLevel2MentionRows({
       task,
-      channels: [
-        { channel_id: 11, name: "blog" },
-        { channel_id: 12, name: "instagram" },
-      ],
-      channelsLoading: false,
-      componentsByTaskChannel: {
-        "12629:11": bucketLoaded([{ component_id: "only-blog", title: "Blog only" }]),
-        "12629:12": bucketLoaded([]),
-      },
+      channels: null,
+      channelsLoading: true,
       query: "",
     })
-    const underInstagram = rows.filter(
-      (r) => r.kind === "component" && r.channelName === "instagram"
-    )
-    expect(underInstagram).toHaveLength(0)
+    expect(rows.some((r) => r.kind === "loading")).toBe(true)
   })
 })
 

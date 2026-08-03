@@ -76,6 +76,7 @@ export function applyAiChangePreviewEvent(
       title: discovered.title,
       summary: discovered.summary,
       changeSetId: discovered.changeSetId,
+      isArtifactBuild: discovered.isArtifactBuild,
       startFailed: discovered.startFailed,
       errorCode: discovered.errorCode,
       errorMessage: discovered.errorMessage,

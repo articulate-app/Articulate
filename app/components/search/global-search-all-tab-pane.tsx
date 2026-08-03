@@ -40,6 +40,8 @@ const SECTION_ORDER: Record<string, number> = {
   team: 90,
   mention: 100,
   ai_threads: 110,
+  artifacts: 120,
+  artifact: 120,
 }
 
 const TASK_SECTION_TYPES = new Set([
@@ -131,9 +133,13 @@ export function GlobalSearchAllTabPane({
           // Teams live in preferences — keep them out of Home / All results.
           if (section.entity_type === "team" || section.type === "team" || section.type === "teams") return false
           if (section.type === "ai_threads") return !hasCommittedTypeFilter || visibleEntityTypes.includes("ai_thread")
+          if (section.type === "artifacts" || section.type === "artifact") {
+            return !hasCommittedTypeFilter || visibleEntityTypes.includes("artifact")
+          }
           if (section.type === "task_group") return !hasCommittedTypeFilter || visibleEntityTypes.includes("task")
           if (!section.entity_type) return true
           if (section.entity_type === "ai_thread") return !hasCommittedTypeFilter || visibleEntityTypes.includes("ai_thread")
+          if (section.entity_type === "artifact") return !hasCommittedTypeFilter || visibleEntityTypes.includes("artifact")
           if (visibleEntityTypes.length >= GLOBAL_SEARCH_ENTITY_TYPES.length) return true
           return visibleEntityTypes.includes(section.entity_type)
         })

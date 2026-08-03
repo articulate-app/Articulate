@@ -597,7 +597,7 @@ function ProjectTasksTabContentInner({ projectId }: { projectId: number }) {
     <div className="flex flex-col h-full w-full overflow-hidden bg-white">
       {/* Row 1: Full-width toolbar; divider is border-b below */}
       <div className={cn("w-full flex-shrink-0 h-14 min-h-14 border-b border-gray-200 bg-white flex items-center overflow-x-auto overflow-y-hidden flex-nowrap")}>
-        <div className={cn("flex-1 min-w-0 flex items-center overflow-x-auto overflow-y-hidden py-2", TOOLBAR_CONTENT_PX)} style={{ WebkitOverflowScrolling: "touch" }}>
+        <div className={cn("flex-1 min-w-0 flex items-center py-2", TOOLBAR_CONTENT_PX)} style={{ WebkitOverflowScrolling: "touch" }}>
           <div className="flex items-center flex-nowrap w-max">
             {viewPill}
             {/* List pills when list view */}
@@ -720,7 +720,7 @@ function ProjectTasksTabContentInner({ projectId }: { projectId: number }) {
                     className="mt-1 mb-2 ml-2"
                   />
                 </div>
-                <div className="flex-1 min-h-0">
+                <div className="min-h-0 min-w-0 flex-1 overflow-hidden">
                   <TaskList
                     onTaskSelect={handleTaskSelect}
                     selectedTaskId={selectedTaskId}

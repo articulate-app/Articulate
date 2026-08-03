@@ -9,9 +9,21 @@ export type CenterPaneTabKind =
   | "user"
   | "team"
   | "thread"
+  | "artifact"
+  | "source"
+  | "research"
+  | "create"
+  /** @deprecated Prefer "research". */
   | "keyword-research"
+  /** @deprecated Prefer "research". */
+  | "prompt-research"
 
-export const KEYWORD_RESEARCH_TAB_ID = "default"
+export const RESEARCH_TAB_ID = "default"
+export const CREATE_TAB_ID = "default"
+/** @deprecated Prefer RESEARCH_TAB_ID. */
+export const KEYWORD_RESEARCH_TAB_ID = RESEARCH_TAB_ID
+/** @deprecated Prefer RESEARCH_TAB_ID. */
+export const PROMPT_RESEARCH_TAB_ID = RESEARCH_TAB_ID
 
 export type CenterPaneTab = {
   key: string
@@ -30,6 +42,12 @@ type CenterPaneTabsState = {
   updateTitle: (key: string, title: string) => void
   /** Removes the tab. Returns the next tab to activate when the closed tab was present. */
   closeTab: (key: string) => CenterPaneTab | null
+  /**
+   * Removes many tabs at once (Chrome-style multi-close).
+   * Returns the next tab to activate when any closed tab was present — prefers the
+   * first remaining tab after the rightmost closed index, else the one before.
+   */
+  closeTabs: (keys: string[]) => CenterPaneTab | null
   closeAll: () => void
 }
 
@@ -43,7 +61,12 @@ function normalizeTitle(title: string | null | undefined, kind: CenterPaneTabKin
   if (kind === "project") return `Project ${id}`
   if (kind === "user") return `User ${id}`
   if (kind === "team") return `Team ${id}`
-  if (kind === "keyword-research") return "Keyword research"
+  if (kind === "artifact") return `Artifact ${id.slice(0, 8)}`
+  if (kind === "source") return `Source ${id.slice(0, 8)}`
+  if (kind === "research") return "Research"
+  if (kind === "create") return "Create"
+  if (kind === "keyword-research") return "Research"
+  if (kind === "prompt-research") return "Research"
   return `Thread ${id}`
 }
 
@@ -69,7 +92,10 @@ export function getCenterPaneTabPlaceholderTitle(kind: CenterPaneTabKind, id: st
 export function listCenterPaneTabsNeedingTitleResolution(tabs: CenterPaneTab[]): CenterPaneTab[] {
   return tabs.filter(
     (tab) =>
+      tab.kind !== "research" &&
+      tab.kind !== "create" &&
       tab.kind !== "keyword-research" &&
+      tab.kind !== "prompt-research" &&
       tab.kind !== "thread" &&
       isPlaceholderTitle(tab.title, tab.kind, tab.id),
   )
@@ -129,6 +155,27 @@ export const useCenterPaneTabsStore = create<CenterPaneTabsState>()(
         set({ tabs: nextTabs })
         if (nextTabs.length === 0) return null
         return nextTabs[Math.min(index, nextTabs.length - 1)] ?? nextTabs[nextTabs.length - 1] ?? null
+      },
+      closeTabs: (keys) => {
+        const keySet = new Set(keys.filter(Boolean))
+        if (keySet.size === 0) return null
+        if (keySet.size === 1) return get().closeTab(Array.from(keySet)[0]!)
+        const { tabs } = get()
+        const closingIndexes = tabs
+          .map((tab, index) => (keySet.has(tab.key) ? index : -1))
+          .filter((index) => index >= 0)
+        if (closingIndexes.length === 0) return null
+        const rightmostClosed = Math.max(...closingIndexes)
+        const nextTabs = tabs.filter((tab) => !keySet.has(tab.key))
+        set({ tabs: nextTabs })
+        if (nextTabs.length === 0) return null
+        // Prefer the first surviving tab at/after the rightmost closed position.
+        const after = tabs.slice(rightmostClosed + 1).find((tab) => !keySet.has(tab.key))
+        if (after) return nextTabs.find((tab) => tab.key === after.key) ?? null
+        const before = [...tabs.slice(0, rightmostClosed)]
+          .reverse()
+          .find((tab) => !keySet.has(tab.key))
+        return before ? nextTabs.find((tab) => tab.key === before.key) ?? null : nextTabs[0] ?? null
       },
       closeAll: () => set({ tabs: [] }),
     }),

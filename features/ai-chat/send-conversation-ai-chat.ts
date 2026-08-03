@@ -36,6 +36,8 @@ import type { AiChatV2RunEvent } from "../../app/lib/ai/chat"
 import {
   isRealTaskComponentOutputId,
   isWritableComponentId,
+  type TaggedArtifactRef,
+  type TaggedSourceRef,
   type TaggedTaskChannelRef,
   type TaggedTaskComponentRef,
 } from "./build-ai-chat-tagged-refs"
@@ -54,6 +56,7 @@ import {
   createAiChatRunDiagnosticsTracker,
   logAiChatRunDiagnostics,
 } from "./ai-chat-run-diagnostics"
+import { statusPayloadToExecutionTraceEvent } from "./execution-trace"
 import { useAiRunProgressStore } from "../../app/store/ai-run-progress-store"
 
 export type SendConversationAiChatStreamCallbacks = {
@@ -117,6 +120,10 @@ export type SendConversationAiChatStreamArgs = {
   /** Optional — backend prefers tagged_task_component_refs[0] then tagged_task_channel_refs[0]. */
   taggedTaskChannelRefs?: TaggedTaskChannelRef[]
   taggedTaskComponentRefs?: TaggedTaskComponentRef[]
+  taggedArtifactIds?: string[]
+  taggedArtifactRefs?: TaggedArtifactRef[]
+  taggedSourceIds?: string[]
+  taggedSourceRefs?: TaggedSourceRef[]
   mode: "build_component" | "build_briefing" | "assistant_only" | null
   componentId: string | null
   taskId?: number | null
@@ -172,6 +179,10 @@ export async function sendConversationAiChatStream(args: SendConversationAiChatS
     taggedChannelIds,
     taggedTaskChannelRefs,
     taggedTaskComponentRefs,
+    taggedArtifactIds,
+    taggedArtifactRefs,
+    taggedSourceIds,
+    taggedSourceRefs,
     mode,
     componentId,
     taskId,
@@ -321,6 +332,18 @@ export async function sendConversationAiChatStream(args: SendConversationAiChatS
             : {}),
           ...(writableTaggedTaskComponentRefs.length > 0
             ? { tagged_task_component_refs: writableTaggedTaskComponentRefs }
+            : {}),
+          ...(taggedArtifactIds && taggedArtifactIds.length > 0
+            ? { tagged_artifact_ids: taggedArtifactIds }
+            : {}),
+          ...(taggedArtifactRefs && taggedArtifactRefs.length > 0
+            ? { tagged_artifact_refs: taggedArtifactRefs }
+            : {}),
+          ...(taggedSourceIds && taggedSourceIds.length > 0
+            ? { tagged_source_ids: taggedSourceIds }
+            : {}),
+          ...(taggedSourceRefs && taggedSourceRefs.length > 0
+            ? { tagged_source_refs: taggedSourceRefs }
             : {}),
           mode,
           ...(writableComponentId ? { component_id: writableComponentId } : {}),
@@ -528,8 +551,12 @@ export async function sendConversationAiChatStream(args: SendConversationAiChatS
           onStatusText: (statusText) => {
             onAssistantStreamStatus?.(assistantId, statusText)
           },
-          onAiStatusPayload: () => {
+          onAiStatusPayload: (parsed) => {
             diagnostics.markFirstStatusEvent()
+            const traceEvent = statusPayloadToExecutionTraceEvent(parsed)
+            if (traceEvent) {
+              onExecutionTraceEvent?.(assistantId, traceEvent as AiChatExecutionTraceEvent)
+            }
           },
           onDoneStatusMarker: (ev: AiStreamTerminalEvent) => {
             if (capturedRunId && !shouldUseLegacyStreamCompletion({ runId: capturedRunId, terminal: v2Terminal })) {

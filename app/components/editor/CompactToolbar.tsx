@@ -25,6 +25,7 @@ import {
 } from "@/components/ui/dropdown-menu";
 import { cn } from "@/lib/utils";
 import { useEditorLinkDialog } from "./useEditorLinkDialog";
+import { TableToolbarControls } from "./table-toolbar-controls";
 
 export interface CompactToolbarProps {
   editor: Editor | null;
@@ -99,7 +100,7 @@ export const CompactToolbar: React.FC<CompactToolbarProps> = ({
     <>
     <div
       className={cn(
-        "relative z-30 flex w-full flex-nowrap items-center gap-0.5 overflow-x-auto overflow-y-hidden border-b border-border bg-background/90 px-1.5 py-1 backdrop-blur",
+        "relative z-30 flex w-full flex-nowrap items-center gap-0.5 overflow-x-auto overflow-y-hidden border-b border-border bg-background px-1.5 py-1",
         sticky && "sticky top-0",
         className
       )}
@@ -177,6 +178,10 @@ export const CompactToolbar: React.FC<CompactToolbarProps> = ({
       >
         <ListOrdered className="h-4 w-4" />
       </ToolbarButton>
+
+      <ToolbarSeparator />
+
+      <TableToolbarControls editor={editor} />
 
       <ToolbarSeparator />
 

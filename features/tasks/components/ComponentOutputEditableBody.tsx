@@ -15,9 +15,23 @@ type ComponentOutputEditableBodyProps = {
   placeholder?: string
   className?: string
   fromAiChat?: boolean
+  /** Force TipTap sync when AI/version content changes. */
+  forceContentKey?: string | number | null
+  /** When set, enables image/video toolbar + drag/drop/paste into TipTap. */
+  onInsertAttachment?: (
+    file: File,
+    context?: { position?: number; currentHtml?: string },
+  ) => Promise<{
+    attachmentId: string
+    url: string
+    mediaType: "image" | "video"
+    fileName: string
+  } | null>
+  /** Defaults to true for component outputs; artifacts usually pass false. */
+  disableInlineMediaControls?: boolean
 }
 
-/** Editable component output body — same renderer path as TaskContentTab cards. */
+/** Editable component/artifact output body. */
 export function ComponentOutputEditableBody({
   html,
   onChange,
@@ -25,6 +39,9 @@ export function ComponentOutputEditableBody({
   placeholder = "Add output...",
   className,
   fromAiChat = false,
+  forceContentKey = null,
+  onInsertAttachment,
+  disableInlineMediaControls = true,
 }: ComponentOutputEditableBodyProps) {
   const value = useMemo(() => html || "<p></p>", [html])
 
@@ -49,9 +66,11 @@ export function ComponentOutputEditableBody({
         placeholder={placeholder}
         editorWrapperClassName={COMPONENT_OUTPUT_EDITOR_CLASS}
         flatSurface
-        disableInlineMediaControls
+        disableInlineMediaControls={disableInlineMediaControls}
         enableOutputLinkNavigation
         fromAiChat={fromAiChat}
+        forceContentKey={forceContentKey}
+        onInsertAttachment={onInsertAttachment}
       />
     </div>
   )

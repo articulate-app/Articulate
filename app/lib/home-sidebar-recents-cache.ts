@@ -9,6 +9,7 @@ export type HomeSidebarRecentsFeedKey =
   | "mentions"
   | "users"
   | "ai_chats"
+  | "artifacts"
 
 export type HomeSidebarPinnedItem = {
   feedKey: HomeSidebarRecentsFeedKey

@@ -1,7 +1,5 @@
-import React, { useEffect, useState, useCallback } from "react"
+import React, { useCallback } from "react"
 import { AddCommentInput } from "./add-comment-input"
-import { ThreadParticipantsInline } from "./thread-participants-inline"
-import { ThreadSwitcherPopover } from "./thread-switcher-popover"
 import type { Thread } from '../../types/task'
 
 interface Mention {
@@ -18,9 +16,6 @@ interface StickyAddCommentInputProps {
   setPendingParticipants?: (p: any[]) => void
   removedParticipants?: any[]
   setRemovedParticipants?: (p: any[]) => void
-  /**
-   * New props: threads, latestMentions, activeThreadId (from Edge Function)
-   */
   threads?: Thread[]
   latestMentions?: Record<number, Mention | null>
   activeThreadId?: number | null
@@ -39,53 +34,31 @@ interface StickyAddCommentInputProps {
   focusComposerToken?: number
   /** Flush layout for task comments panel (no side padding). */
   embedded?: boolean
+  onThreadCreated?: (thread: { id: number | string; isOptimistic?: boolean }) => void
+  /** Collapse minimal composer after blur when empty */
+  onCollapseRequest?: () => void
 }
 
-export function StickyAddCommentInput({ taskId, onCommentAdded, pendingParticipants = [], setPendingParticipants, removedParticipants = [], setRemovedParticipants, threads = [], latestMentions = {}, activeThreadId: propActiveThreadId = null, handleDeleteThread, replyTo, onClearReply, pendingOutputAnchor = null, onConsumePendingOutputAnchor, focusComposerToken = 0, embedded = false }: StickyAddCommentInputProps) {
-  // Remove all local fetching state
-  // const [threads, setThreads] = useState<Thread[]>([])
-  // const [latestMentions, setLatestMentions] = useState<Record<number, Mention | null>>({})
-  // const [activeThreadId, setActiveThreadId] = useState<number | null>(null)
-  // const [isLoading, setIsLoading] = useState(true)
+export function StickyAddCommentInput({
+  taskId,
+  onCommentAdded,
+  pendingParticipants = [],
+  setPendingParticipants,
+  activeThreadId: propActiveThreadId = null,
+  replyTo,
+  onClearReply,
+  pendingOutputAnchor = null,
+  onConsumePendingOutputAnchor,
+  focusComposerToken = 0,
+  embedded = false,
+  onThreadCreated,
+  onCollapseRequest,
+}: StickyAddCommentInputProps) {
+  const activeThreadId = propActiveThreadId
 
-  // Use propActiveThreadId as the active thread
-  const activeThreadId = propActiveThreadId;
-
-  // When a new comment is added, call parent handler
   const handleCommentAdded = useCallback(() => {
     onCommentAdded?.()
   }, [onCommentAdded])
-
-  // When switching threads (if needed)
-  // const handleSelectThread = (threadId: number) => {
-  //   setActiveThreadId(threadId)
-  // }
-
-  // Remove isLoading logic
-  if (!activeThreadId) {
-    // Pending mode: show chat input, then pendingParticipants avatars and add/search UI below
-    return (
-      <div className="bg-white">
-        <AddCommentInput
-          key={String(activeThreadId)}
-          taskId={taskId}
-          threadId={activeThreadId}
-          onCommentAdded={handleCommentAdded}
-          onThreadCreated={(thread) => {
-            // Parent should update activeThreadId prop
-          }}
-          pendingParticipants={pendingParticipants}
-          setPendingParticipants={setPendingParticipants}
-          replyTo={replyTo}
-          onClearReply={onClearReply}
-          pendingOutputAnchor={pendingOutputAnchor}
-          onConsumePendingOutputAnchor={onConsumePendingOutputAnchor}
-          focusComposerToken={focusComposerToken}
-          embedded={embedded}
-        />
-      </div>
-    )
-  }
 
   return (
     <div className="bg-white">
@@ -94,17 +67,17 @@ export function StickyAddCommentInput({ taskId, onCommentAdded, pendingParticipa
         taskId={taskId}
         threadId={activeThreadId}
         onCommentAdded={handleCommentAdded}
-        onThreadCreated={(thread) => {
-          // Parent should update activeThreadId prop
-        }}
+        onThreadCreated={onThreadCreated}
+        pendingParticipants={pendingParticipants}
+        setPendingParticipants={setPendingParticipants}
         replyTo={replyTo}
         onClearReply={onClearReply}
         pendingOutputAnchor={pendingOutputAnchor}
         onConsumePendingOutputAnchor={onConsumePendingOutputAnchor}
         focusComposerToken={focusComposerToken}
         embedded={embedded}
+        onCollapseRequest={onCollapseRequest}
       />
-      
     </div>
   )
-} 
+}

@@ -6,6 +6,7 @@ function hasUserDisplayMetadata(contentJson: unknown): boolean {
   return (
     (parsed.mention_tags?.length ?? 0) > 0
     || (parsed.segments?.length ?? 0) > 0
+    || (parsed.selection_pills?.length ?? 0) > 0
     || hasUserMessageDisplayParts(contentJson)
   )
 }

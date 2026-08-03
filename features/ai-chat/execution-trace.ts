@@ -252,6 +252,158 @@ export function shouldSuppressGenericStatusText(args: {
   return isGenericAssistantStatusText(args.statusText)
 }
 
+const TOOL_TRACE_COPY: Record<
+  string,
+  { category: AiExecutionTraceCategory; started: string; completed: string; failed: string }
+> = {
+  list_visible_projects: {
+    category: "discovery",
+    started: "Looking up projects…",
+    completed: "Finished looking up projects.",
+    failed: "Project lookup failed.",
+  },
+  read_project: {
+    category: "discovery",
+    started: "Reading project details…",
+    completed: "Finished reading project.",
+    failed: "Could not read project.",
+  },
+  search_tasks: {
+    category: "discovery",
+    started: "Searching tasks…",
+    completed: "Finished searching tasks.",
+    failed: "Task search failed.",
+  },
+  ai_list_project_artifacts: {
+    category: "discovery",
+    started: "Listing project artifacts…",
+    completed: "Finished listing project artifacts.",
+    failed: "Artifact listing failed.",
+  },
+  ai_list_task_artifacts: {
+    category: "discovery",
+    started: "Listing task artifacts…",
+    completed: "Finished listing task artifacts.",
+    failed: "Artifact listing failed.",
+  },
+  ai_read_artifact: {
+    category: "discovery",
+    started: "Reading artifact…",
+    completed: "Finished reading artifact.",
+    failed: "Could not read artifact.",
+  },
+  read_public_webpage: {
+    category: "discovery",
+    started: "Reading a public webpage…",
+    completed: "Finished reading webpage.",
+    failed: "Webpage read failed.",
+  },
+  ai_start_artifact_build: {
+    category: "generation",
+    started: "Starting artifact build…",
+    completed: "Artifact build started.",
+    failed: "Artifact build failed to start.",
+  },
+  ai_update_task_fields: {
+    category: "mutation",
+    started: "Updating task fields…",
+    completed: "Finished updating task fields.",
+    failed: "Task field update failed.",
+  },
+  ai_request_clarification: {
+    category: "resolution",
+    started: "Preparing a clarification…",
+    completed: "Clarification ready.",
+    failed: "Clarification failed.",
+  },
+}
+
+function categorizeToolName(toolName: string): AiExecutionTraceCategory {
+  const known = TOOL_TRACE_COPY[toolName]?.category
+  if (known) return known
+  if (/^(list_|search_|read_|get_|ai_list_|ai_read_|ai_get_)/.test(toolName)) return "discovery"
+  if (/^(ai_start_|ai_build_|generate)/.test(toolName)) return "generation"
+  if (/^(ai_update_|ai_create_|ai_save_|ai_attach_|ai_cancel_)/.test(toolName)) return "mutation"
+  if (/plan|clarify|resolve/.test(toolName)) return "planning"
+  return "discovery"
+}
+
+function humanizeToolName(toolName: string): string {
+  return toolName.replace(/^ai_/, "").replace(/_/g, " ")
+}
+
+function toolStatusTraceText(
+  toolName: string,
+  phase: AiExecutionTracePhase,
+  fallbackText: string | null,
+): string {
+  const known = TOOL_TRACE_COPY[toolName]
+  if (known) {
+    if (phase === "failed") return known.failed
+    if (phase === "completed") return known.completed
+    return known.started
+  }
+  if (fallbackText) return fallbackText
+  const pretty = humanizeToolName(toolName)
+  if (phase === "failed") return `${pretty} failed.`
+  if (phase === "completed") return `Finished ${pretty}.`
+  return `Using ${pretty}…`
+}
+
+/**
+ * Map live `__AI_STATUS__` tool progress into the progressive execution timeline.
+ * Backend historically emits tools only as status events (not `__AI_EXECUTION_TRACE__`).
+ */
+export function statusPayloadToExecutionTraceEvent(
+  raw: unknown,
+): AiExecutionTraceEvent | null {
+  const record = asRecord(raw)
+  if (!record) return null
+
+  const type = toTrimmedString(record.type)?.toLowerCase()
+  if (type !== "tool_started" && type !== "tool_finished") return null
+
+  const toolName =
+    toTrimmedString(record.tool_name)
+    ?? toTrimmedString(record.tool)
+    ?? toTrimmedString(record.name)
+  if (!toolName) return null
+
+  const round = toFiniteNumber(record.round) ?? 0
+  const sequence =
+    toFiniteNumber(record.sequence)
+    ?? toFiniteNumber(record.seq)
+    ?? Date.now()
+  const emittedAt =
+    toTrimmedString(record.emitted_at)
+    ?? toTrimmedString(record.emittedAt)
+    ?? new Date().toISOString()
+
+  let phase: AiExecutionTracePhase = "started"
+  if (type === "tool_finished") {
+    const ok = record.ok
+    phase = ok === false || record.phase === "failed" ? "failed" : "completed"
+  } else {
+    phase = normalizePhase(record.phase) ?? "started"
+  }
+
+  const fallbackText = toTrimmedString(record.text)
+  return {
+    type: "execution_trace",
+    sequence,
+    emitted_at: emittedAt,
+    step_id: `tool:${round}:${toolName}`,
+    phase,
+    category: categorizeToolName(toolName),
+    text: toolStatusTraceText(toolName, phase, fallbackText),
+    details: {
+      tool_name: toolName,
+      round,
+      source: "ai_status",
+    },
+  }
+}
+
 function normalizeBuildEventType(eventType: string): string {
   return eventType.trim().toLowerCase()
 }
@@ -284,24 +436,6 @@ function summarizeGenerationContext(payload: Record<string, unknown>): string | 
     ?? toTrimmedString(context.primaryKeyword)
     ?? toTrimmedString(context.keyword)
   if (primaryKeyword) parts.push("primary keyword")
-
-  const linkCount =
-    toFiniteNumber(context.internal_link_candidates)
-    ?? toFiniteNumber(context.internalLinkCandidates)
-    ?? toFiniteNumber(context.website_link_candidates)
-    ?? toFiniteNumber(context.websiteLinkCandidates)
-    ?? (Array.isArray(context.internal_links)
-      ? context.internal_links.length
-      : Array.isArray(context.website_links)
-        ? context.website_links.length
-        : null)
-  if (linkCount != null && linkCount > 0) {
-    parts.push(
-      `${linkCount} ${linkCount === 1 ? "internal-link candidate" : "internal-link candidates"}`,
-    )
-  } else if (linkCount === 0) {
-    /* omit */
-  }
 
   const summary = toTrimmedString(context.summary)
   if (parts.length === 0) return summary
@@ -743,59 +877,6 @@ function quoteTitle(title: string | null): string {
   return title ? `“${title}”` : "artifact"
 }
 
-function formatArtifactPlanReadyLine(record: Record<string, unknown>): string | null {
-  const title =
-    toTrimmedString(record.title)
-    ?? toTrimmedString(record.artifact_title)
-    ?? toTrimmedString(record.name)
-  const artifactType =
-    toTrimmedString(record.artifact_type)
-    ?? toTrimmedString(record.artifactType)
-    ?? toTrimmedString(record.type)
-    ?? "artifact"
-  const channel =
-    toTrimmedString(record.channel_name)
-    ?? toTrimmedString(record.channelName)
-    ?? toTrimmedString(record.channel)
-  const taskTitle =
-    toTrimmedString(record.task_title)
-    ?? toTrimmedString(record.taskTitle)
-  const metadata = asRecord(record.metadata) ?? {}
-  const reason =
-    toTrimmedString(record.reason)
-    ?? toTrimmedString(metadata.reason)
-    ?? toTrimmedString(record.rationale)
-  const depsRaw =
-    Array.isArray(record.dependencies)
-      ? record.dependencies
-      : Array.isArray(record.depends_on)
-        ? record.depends_on
-        : []
-  const depTitles = depsRaw
-    .map((row) => {
-      if (typeof row === "string") return row.trim()
-      const dep = asRecord(row)
-      return (
-        toTrimmedString(dep?.title)
-        ?? toTrimmedString(dep?.artifact_title)
-        ?? toTrimmedString(dep?.id)
-      )
-    })
-    .filter((value): value is string => Boolean(value))
-
-  const typeLabel = artifactType.replace(/_/g, " ")
-  let line = title
-    ? `Planned ${typeLabel} ${quoteTitle(title)}`
-    : `Planned ${typeLabel}`
-  if (channel) line += ` for ${channel}`
-  else if (taskTitle) line += ` for ${taskTitle}`
-  if (reason) line += ` — ${reason}`
-  else if (depTitles.length > 0) {
-    line += ` — depends on ${depTitles.join(", ")}`
-  }
-  return line
-}
-
 function mapArtifactBuildEventToExecutionTraceSteps(
   eventType: string,
   unitId: string,
@@ -812,221 +893,22 @@ function mapArtifactBuildEventToExecutionTraceSteps(
 ): AiExecutionTraceStep[] {
   const normalized = normalizeArtifactEventType(eventType)
 
-  if (normalized === "artifact.plan_ready") {
-    const planned =
-      (Array.isArray(payload.artifacts) && payload.artifacts)
-      || (Array.isArray(payload.planned_artifacts) && payload.planned_artifacts)
-      || (Array.isArray(payload.plan) && payload.plan)
-      || (Array.isArray(payload.items) && payload.items)
-      || []
-    const steps: AiExecutionTraceStep[] = []
-    if (planned.length > 0) {
-      planned.forEach((row, index) => {
-        const record = asRecord(row)
-        if (!record) return
-        const line = formatArtifactPlanReadyLine(record)
-        if (!line) return
-        const artifactId =
-          toTrimmedString(record.artifact_id)
-          ?? toTrimmedString(record.id)
-          ?? String(index)
-        steps.push(
-          base({
-            stepId: `${unitId}:artifact:plan:${artifactId}`,
-            phase: "completed",
-            category: "planning",
-            text: line,
-            details: {
-              artifact_id: artifactId,
-              title: toTrimmedString(record.title),
-              artifact_type:
-                toTrimmedString(record.artifact_type)
-                ?? toTrimmedString(record.type),
-              channel_name:
-                toTrimmedString(record.channel_name)
-                ?? toTrimmedString(record.channelName),
-              language_name:
-                toTrimmedString(record.language_name)
-                ?? toTrimmedString(record.languageName),
-              reason:
-                toTrimmedString(record.reason)
-                ?? toTrimmedString(asRecord(record.metadata)?.reason),
-            },
-          }),
-        )
-      })
-      return steps
-    }
-    // Single-artifact plan payload (no array).
-    const line = formatArtifactPlanReadyLine(payload)
-    if (!line) return []
-    const artifactId =
-      toTrimmedString(payload.artifact_id)
-      ?? toTrimmedString(payload.artifactId)
-      ?? "plan"
-    return [
-      base({
-        stepId: `${unitId}:artifact:plan:${artifactId}`,
-        phase: "completed",
-        category: "planning",
-        text: line,
-        details: payload,
-      }),
-    ]
-  }
-
-  if (normalized === "artifact.started") {
-    const title =
-      toTrimmedString(payload.title)
-      ?? toTrimmedString(payload.artifact_title)
-    const artifactId =
-      toTrimmedString(payload.artifact_id)
-      ?? toTrimmedString(payload.artifactId)
-      ?? "artifact"
-    return [
-      base({
-        stepId: `${unitId}:artifact:started:${artifactId}`,
-        phase: "started",
-        category: "generation",
-        text: `Started building ${quoteTitle(title)}.`,
-        details: {
-          artifact_id: artifactId,
-          title,
-        },
-      }),
-    ]
+  if (
+    normalized === "artifact.plan_ready"
+    || normalized === "artifact.started"
+    || normalized === "artifact.structure_decided"
+    || normalized.includes("artifact.preview")
+    || normalized.includes("artifact.version_saved")
+    || (normalized.endsWith(".saved") && normalized.includes("artifact"))
+  ) {
+    // Artifact preview cards already communicate progress/result — skip boilerplate timeline lines.
+    return []
   }
 
   if (normalized === "artifact.context_loaded") {
-    const context =
-      asRecord(payload.generation_context)
-      ?? asRecord(payload.generationContext)
-      ?? asRecord(payload.context)
-      ?? payload
-    const parts: string[] = []
-    const audience =
-      toTrimmedString(context.target_audience)
-      ?? toTrimmedString(context.targetAudience)
-      ?? toTrimmedString(context.audience)
-    if (audience) parts.push(`audience ${audience}`)
-    const keyword =
-      toTrimmedString(context.primary_keyword)
-      ?? toTrimmedString(context.primaryKeyword)
-      ?? toTrimmedString(context.keyword)
-    if (keyword) parts.push(`keyword “${keyword}”`)
-    const mandatoryRoles =
-      toFiniteNumber(payload.mandatory_role_count)
-      ?? toFiniteNumber(payload.mandatoryRoleCount)
-      ?? toFiniteNumber(context.mandatory_role_count)
-      ?? (Array.isArray(payload.mandatory_roles) ? payload.mandatory_roles.length : null)
-      ?? (Array.isArray(context.mandatory_roles) ? context.mandatory_roles.length : null)
-    if (mandatoryRoles != null) {
-      parts.push(
-        `${mandatoryRoles} mandatory role${mandatoryRoles === 1 ? "" : "s"}`,
-      )
-    }
-    const linkCandidates =
-      toFiniteNumber(payload.internal_link_candidate_count)
-      ?? toFiniteNumber(payload.internalLinkCandidateCount)
-      ?? toFiniteNumber(context.internal_link_candidates)
-      ?? toFiniteNumber(context.internalLinkCandidates)
-      ?? (Array.isArray(payload.internal_link_candidates)
-        ? payload.internal_link_candidates.length
-        : Array.isArray(context.internal_links)
-          ? context.internal_links.length
-          : null)
-    if (linkCandidates != null) {
-      parts.push(
-        `${linkCandidates} internal-link candidate${linkCandidates === 1 ? "" : "s"}`,
-      )
-    }
-    const artifactId =
-      toTrimmedString(payload.artifact_id)
-      ?? toTrimmedString(payload.artifactId)
-      ?? "artifact"
-    const text =
-      parts.length > 0
-        ? `Loaded context — ${parts.join(", ")}.`
-        : (toTrimmedString(payload.summary) ?? "Loaded artifact generation context.")
-    return [
-      base({
-        stepId: `${unitId}:artifact:context:${artifactId}`,
-        phase: "completed",
-        category: "discovery",
-        text,
-        details: {
-          artifact_id: artifactId,
-          audience,
-          keyword,
-          mandatory_role_count: mandatoryRoles,
-          internal_link_candidate_count: linkCandidates,
-        },
-      }),
-    ]
-  }
-
-  if (normalized === "artifact.structure_decided") {
-    const sectionsRaw =
-      (Array.isArray(payload.sections) && payload.sections)
-      || (Array.isArray(payload.blocks) && payload.blocks)
-      || (Array.isArray(payload.section_titles) && payload.section_titles)
-      || (Array.isArray(payload.block_titles) && payload.block_titles)
-      || []
-    const sectionTitles = sectionsRaw
-      .map((row) => {
-        if (typeof row === "string") return row.trim()
-        const record = asRecord(row)
-        return (
-          toTrimmedString(record?.title)
-          ?? toTrimmedString(record?.text)
-          ?? toTrimmedString(record?.heading)
-          ?? toTrimmedString(record?.name)
-        )
-      })
-      .filter((value): value is string => Boolean(value))
-    const verifiedLinks =
-      toFiniteNumber(payload.verified_internal_link_count)
-      ?? toFiniteNumber(payload.verifiedInternalLinkCount)
-      ?? toFiniteNumber(payload.selected_internal_link_count)
-      ?? (Array.isArray(payload.verified_internal_links)
-        ? payload.verified_internal_links.length
-        : Array.isArray(payload.selected_internal_links)
-          ? payload.selected_internal_links.length
-          : null)
-    const artifactId =
-      toTrimmedString(payload.artifact_id)
-      ?? toTrimmedString(payload.artifactId)
-      ?? "artifact"
-    const parts: string[] = []
-    if (sectionTitles.length > 0) {
-      parts.push(
-        sectionTitles.length === 1
-          ? `structure “${sectionTitles[0]}”`
-          : `structure: ${sectionTitles.join(", ")}`,
-      )
-    }
-    if (verifiedLinks != null) {
-      parts.push(
-        `${verifiedLinks} verified internal link${verifiedLinks === 1 ? "" : "s"} selected`,
-      )
-    }
-    const text =
-      parts.length > 0
-        ? `Chose ${parts.join(" · ")}.`
-        : (toTrimmedString(payload.summary) ?? "Chose artifact structure.")
-    return [
-      base({
-        stepId: `${unitId}:artifact:structure:${artifactId}`,
-        phase: "completed",
-        category: "planning",
-        text,
-        details: {
-          artifact_id: artifactId,
-          section_titles: sectionTitles,
-          verified_internal_link_count: verifiedLinks,
-        },
-      }),
-    ]
+    // Agent-internal bootstrap (templates, sources, link catalogue). Not a user-facing step —
+    // linkbuilding instructions live in prompts; don't surface candidate counts in the timeline.
+    return []
   }
 
   if (normalized === "artifact.failed") {
@@ -1057,8 +939,9 @@ function mapArtifactBuildEventToExecutionTraceSteps(
     if (errorCode) bits.unshift(errorCode)
     if (retryState) bits.push(`(${retryState.replace(/_/g, " ")})`)
     return [
+      // Same stepId as artifact.started so the timeline spinner clears.
       base({
-        stepId: `${unitId}:artifact:failed:${artifactId}`,
+        stepId: `${unitId}:artifact:started:${artifactId}`,
         phase: "failed",
         category: "verification",
         text: title

@@ -11,8 +11,13 @@ export type ArtifactBlockType =
   | "list"
   | "table"
   | "image"
+  | "image_gallery"
+  | "gallery"
+  | "carousel"
   | "video"
+  | "audio"
   | "file"
+  | "attachment"
 
 export type ArtifactListStyle = "bullet" | "ordered" | "checklist"
 
@@ -61,11 +66,14 @@ export type ArtifactAssetData = {
 export type TaskArtifact = {
   id: string
   task_id: number | null
+  project_id: number | null
   ai_thread_id: string | null
   artifact_type: string
   artifact_role: string | null
   title: string | null
   status: ArtifactStatus
+  /** Manual display order within the list (lower first). */
+  sort_order?: number | null
   channel_id: number | null
   language_id: number | null
   content_text: string | null
@@ -81,6 +89,41 @@ export type TaskArtifact = {
   created_at?: string | null
   updated_at?: string | null
 }
+
+export type ArtifactVersionSummary = {
+  version_number: number
+  change_source: string | null
+  changed_by: number | null
+  ai_message_id: string | null
+  ai_thread_id: string | null
+  ai_run_id: string | null
+  change_summary: string | null
+  created_at: string | null
+  title: string | null
+  status: string | null
+  content_preview: string | null
+  asset_count: number
+  is_current: boolean
+}
+
+export type ArtifactVersionsListResult = {
+  ok: true
+  artifact_id: string
+  current_version: number
+  total: number
+  limit: number
+  offset: number
+  versions: ArtifactVersionSummary[]
+}
+
+export type ProjectArtifactsListResult = {
+  ok: true
+  project_id: number
+  project_name: string | null
+  artifacts: TaskArtifact[]
+}
+
+export type ArtifactExportFormat = "docx" | "html" | "md" | "txt" | "json" | "original"
 
 export type ArtifactChannelOption = {
   channel_id: number
@@ -142,6 +185,7 @@ export type ArtifactBuildEventType =
   | "artifact.started"
   | "artifact.context_loaded"
   | "artifact.structure_decided"
+  | "artifact.asset_generated"
   | "artifact.media_started"
   | "artifact.media_item_started"
   | "artifact.media_item_saved"
@@ -149,12 +193,14 @@ export type ArtifactBuildEventType =
   | "artifact.media_progress"
   | "artifact.preview"
   | "artifact.version_saved"
+  | "artifact.completed"
   | "artifact.failed"
 
 /** Events that update the live artifact card (not plan/decision timeline rows). */
 export const ARTIFACT_CARD_EVENT_TYPES = new Set<string>([
   "artifact.preview",
   "artifact.version_saved",
+  "artifact.asset_generated",
   "artifact.media_started",
   "artifact.media_item_started",
   "artifact.media_item_saved",
@@ -168,6 +214,7 @@ export const ARTIFACT_TIMELINE_DECISION_EVENT_TYPES = new Set<string>([
   "artifact.started",
   "artifact.context_loaded",
   "artifact.structure_decided",
+  "artifact.completed",
   "artifact.failed",
 ])
 
@@ -193,7 +240,7 @@ export type ArtifactAnchorType =
 
 /** Top-level `selected_artifact_context` sent with ai-chat. Selection is context, not an automatic edit. */
 export type SelectedArtifactContext = {
-  source_type: "task_artifact"
+  source_type: "task_artifact" | "artifact"
   artifact_id: string
   artifact_version_number: number
   anchor_type: ArtifactAnchorType
@@ -212,6 +259,14 @@ export type SelectedArtifactContext = {
   anchor_time_start?: number | null
   anchor_time_end?: number | null
   title?: string | null
+}
+
+export type TaggedArtifactRef = {
+  artifact_id: string
+  artifact_version_number?: number | null
+  title?: string | null
+  task_id?: number | null
+  project_id?: number | null
 }
 
 export type ArtifactCommentAnchor = {

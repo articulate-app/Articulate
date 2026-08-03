@@ -27,10 +27,10 @@ describe("center pane tab title placeholders", () => {
         title: "Raquel Cruz",
       },
       {
-        key: buildCenterPaneTabKey("keyword-research", "default"),
-        kind: "keyword-research",
+        key: buildCenterPaneTabKey("research", "default"),
+        kind: "research",
         id: "default",
-        title: "Keyword research",
+        title: "Research",
       },
     ])
     expect(needing.map((tab) => tab.key)).toEqual(["user:40"])

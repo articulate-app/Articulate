@@ -35,6 +35,7 @@ describe("artifact preview store", () => {
       artifact_id: "11111111-1111-4111-8111-111111111111",
       title: "Campaign brief",
       content_text: "Hello",
+      before_content_text: "Old hello",
       content_json: {
         blocks: [
           { id: "h1", type: "heading", text: "Hello", level: 1 },
@@ -49,9 +50,45 @@ describe("artifact preview store", () => {
     expect(parsed.artifactId).toBe("11111111-1111-4111-8111-111111111111")
     expect(parsed.title).toBe("Campaign brief")
     expect(parsed.contentText).toBe("Hello")
+    expect(parsed.beforeContentText).toBe("Old hello")
     expect(extractArtifactBlocks(parsed.contentJson)).toHaveLength(2)
     expect(parsed.assetData?.assets?.[0]?.attachment_id).toBe("22222222-2222-4222-8222-222222222222")
     expect(parsed.currentVersion).toBe(2)
+  })
+
+  it("keeps beforeContentText across streaming preview updates", () => {
+    const store = useAiBuildArtifactPreviewStore.getState()
+    store.upsertFromEvent({
+      buildId: "b1",
+      unitId: "u1",
+      artifactId: "a1",
+      sequence: 1,
+      eventType: "artifact.started",
+      contentText: "Before body",
+      beforeContentText: "Before body",
+      contentJson: {
+        blocks: [{ id: "body", type: "rich_text", html: "<p>Before body</p>" }],
+      },
+      title: "Article",
+    })
+    store.upsertFromEvent({
+      buildId: "b1",
+      unitId: "u1",
+      artifactId: "a1",
+      sequence: 2,
+      eventType: "artifact.preview",
+      contentText: "After body streaming",
+      diffContentText: "After body streaming",
+      contentJson: {
+        blocks: [{ id: "body", type: "rich_text", html: "<p>After body streaming</p>" }],
+      },
+    })
+    const entry = Object.values(useAiBuildArtifactPreviewStore.getState().previews)[0]
+    expect(entry.beforeContentText).toBe("Before body")
+    expect(entry.beforeContentJson?.blocks?.[0]).toMatchObject({ html: "<p>Before body</p>" })
+    expect(entry.contentText).toBe("After body streaming")
+    expect(entry.diffContentText).toBe("After body streaming")
+    expect(entry.phase).toBe("preview")
   })
 
   it("updates the card in place and ignores older sequences", () => {

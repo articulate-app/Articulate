@@ -46,8 +46,6 @@ export interface MobileObjectOptionsDrawerProps {
   router: unknown
   pathname: string
   params: URLSearchParams
-  showSuggestions: boolean
-  onToggleSuggestions: () => void
   dateField: "delivery" | "publication"
   onDateFieldChange: (field: "delivery" | "publication") => void
   showSubtasks?: boolean
@@ -363,7 +361,6 @@ export function MobileObjectOptionsDrawer(props: MobileObjectOptionsDrawerProps)
               <CategoryRow label="Date" value={dateLabel} onClick={() => setCategory("date")} />
               <CategoryRow label="Color" value={colorLabel} onClick={() => setCategory("color")} />
               <CategoryRow label="Legend" onClick={() => setCategory("legend")} />
-              <ToggleRow label="AI suggestions" on={props.showSuggestions} onToggle={props.onToggleSuggestions} />
               <ToggleRow label="Multiselect" on={props.isMultiselectMode} onToggle={props.onToggleMultiselect} />
             </>
           ) : null}

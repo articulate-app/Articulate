@@ -1,7 +1,11 @@
 "use client"
 
 import { usePathname, useRouter, useSearchParams } from "next/navigation"
-import { User, Settings, LogOut } from "lucide-react"
+import {
+  LogOut,
+  Settings,
+  User,
+} from "lucide-react"
 import { cn } from "@/lib/utils"
 import { invokeEdgeFunctionFetch } from "@/lib/edge-functions"
 import { createClientComponentClient } from '@supabase/auth-helpers-nextjs'
@@ -15,6 +19,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from ".
 import { TooltipProvider } from "./tooltip"
 import { toast } from "./use-toast"
 import { createProject, createProjectWithTeam } from "../../lib/services/projects"
+import { extractProjectBrand } from "../../lib/services/project-brand-kit"
 import { getRoles } from "../../lib/services/teams"
 import { Checkbox } from "./checkbox"
 import type { AdminCreateUserPayload, AdminCreateUserResponse } from "../../types/users"
@@ -28,9 +33,11 @@ import { applyAiThreadOpenParams, buildNewAiThreadParams } from "../../lib/ai-th
 import { getImageUrl } from "../../lib/public-media"
 import { UserAvatar } from "../UserAvatar"
 import { useCurrentUserStore } from "../../store/current-user"
-import { fetchMentionsInbox, trackGlobalObjectOpen } from "../../lib/services/global-search"
+import { fetchMentionsInboxCounts, trackGlobalObjectOpen } from "../../lib/services/global-search"
 import { bumpAndInvalidateHomeSidebarRecent } from "../../lib/home-sidebar-recents-cache"
-import { SidebarHomeFeed } from "./sidebar-home-feed"
+import {
+  SidebarHomeFeed,
+} from "./sidebar-home-feed"
 import { ProjectSettingsPanel } from "../projects/ProjectSettingsPanel"
 import { AccountProfileDialog } from "./account-profile-dialog"
 import {
@@ -51,7 +58,11 @@ type OpenNewUserModalDetail = {
   fullName?: string
 }
 
-export function Sidebar({ isCollapsed, isMobileMenuOpen = false, onClose }: SidebarProps) {
+export function Sidebar({
+  isCollapsed,
+  isMobileMenuOpen = false,
+  onClose,
+}: SidebarProps) {
   const CREATE_NEW_TEAM_OPTION = "__create_new_team__";
   const pathname = usePathname();
   const router = useRouter();
@@ -88,6 +99,7 @@ export function Sidebar({ isCollapsed, isMobileMenuOpen = false, onClose }: Side
   const [showNewProjectModal, setShowNewProjectModal] = useState(false);
   const [showNewUserModal, setShowNewUserModal] = useState(false);
   const [newProjectName, setNewProjectName] = useState("");
+  const [newProjectUrl, setNewProjectUrl] = useState("");
   const [selectedTeamValue, setSelectedTeamValue] = useState<string>("");
   const [newTeamName, setNewTeamName] = useState("");
   const [isCreatingProject, setIsCreatingProject] = useState(false);
@@ -170,38 +182,11 @@ export function Sidebar({ isCollapsed, isMobileMenuOpen = false, onClose }: Side
 
   const mentionCountsQuery = useQuery({
     queryKey: ["sidebar-mentions-counts"],
-    queryFn: ({ signal }) =>
-      fetchMentionsInbox({
-        mode: "received",
-        seenFilter: "unseen",
-        limit: 1,
-        offset: 0,
-        signal,
-      }),
+    queryFn: ({ signal }) => fetchMentionsInboxCounts(signal),
     staleTime: 30_000,
   })
-  const hasUnseenMentions = (mentionCountsQuery.data?.length ?? 0) > 0
+  const hasUnseenMentions = (mentionCountsQuery.data?.unseen ?? 0) > 0
   const activeObject = parseWorkspaceUrlState(new URLSearchParams(searchParams.toString())).object
-  const isAiPaneActive =
-    searchParams.get("taskAiOpen") === "true" || searchParams.get("rightView") === "ai"
-  const [isKeywordResearchActive, setIsKeywordResearchActive] = useState(
-    () => searchParams.get("centerView") === "keyword-research",
-  )
-
-  useEffect(() => {
-    if (searchParams.get("centerView") === "keyword-research") {
-      setIsKeywordResearchActive(true)
-    }
-  }, [searchParams])
-
-  useEffect(() => {
-    const onKeywordState = (event: Event) => {
-      const open = Boolean((event as CustomEvent<{ open?: boolean }>).detail?.open)
-      setIsKeywordResearchActive(open)
-    }
-    window.addEventListener("app:keyword-research-state", onKeywordState)
-    return () => window.removeEventListener("app:keyword-research-state", onKeywordState)
-  }, [])
 
   const isObjectActive = useCallback(
     (object: SearchObjectRoute | undefined) => {
@@ -220,6 +205,7 @@ export function Sidebar({ isCollapsed, isMobileMenuOpen = false, onClose }: Side
       user: "user",
       team: "team",
       ai_thread: "ai_thread",
+      artifact: "artifact",
     }
     const objectByHref: Record<string, SearchObjectRoute | undefined> = {
       "/": "all",
@@ -229,6 +215,7 @@ export function Sidebar({ isCollapsed, isMobileMenuOpen = false, onClose }: Side
       "/users": "user",
       "/teams": "team",
       "/ai-threads": "ai_thread",
+      "/artifacts": "artifact",
     }
     const targetObject = object ?? objectByHref[href]
 
@@ -439,9 +426,12 @@ export function Sidebar({ isCollapsed, isMobileMenuOpen = false, onClose }: Side
 
     setIsCreatingProject(true);
     try {
+      const trimmedProjectUrl = newProjectUrl.trim();
       const { data, error } = isCreatingNewTeam
         ? await createProjectWithTeam(trimmedProjectName, trimmedTeamName)
-        : await createProject(trimmedProjectName, selectedExistingTeamId as number);
+        : await createProject(trimmedProjectName, selectedExistingTeamId as number, {
+            projectUrl: trimmedProjectUrl || null,
+          });
 
       if (error) throw error;
 
@@ -456,10 +446,41 @@ export function Sidebar({ isCollapsed, isMobileMenuOpen = false, onClose }: Side
         throw new Error("Failed to create project");
       }
 
-      toast({
-        title: "Success",
-        description: "Project created successfully",
-      });
+      if (trimmedProjectUrl) {
+        if (isCreatingNewTeam) {
+          const { error: urlError } = await supabase
+            .from("projects")
+            .update({ project_url: trimmedProjectUrl })
+            .eq("id", createdProjectId);
+          if (urlError) {
+            console.warn("Failed to set project URL after create", urlError);
+          }
+        }
+
+        const brandResult = await extractProjectBrand({
+          projectId: Number(createdProjectId),
+          url: trimmedProjectUrl,
+          replaceAll: true,
+        });
+        if (!brandResult.ok) {
+          toast({
+            title: "Project created",
+            description:
+              brandResult.error ||
+              "Project was created, but brand extraction failed. You can retry in Settings.",
+          });
+        } else {
+          toast({
+            title: "Success",
+            description: "Project created and brand extracted",
+          });
+        }
+      } else {
+        toast({
+          title: "Success",
+          description: "Project created successfully",
+        });
+      }
 
       // Refresh project and team lists to keep modal/options up to date.
       queryClient.invalidateQueries({ queryKey: ['projects-minimal'] });
@@ -471,6 +492,7 @@ export function Sidebar({ isCollapsed, isMobileMenuOpen = false, onClose }: Side
       // Close modal and reset
       setShowNewProjectModal(false);
       setNewProjectName("");
+      setNewProjectUrl("");
       setSelectedTeamValue("");
       setNewTeamName("");
       if (onClose) onClose();
@@ -632,8 +654,6 @@ export function Sidebar({ isCollapsed, isMobileMenuOpen = false, onClose }: Side
       }}
       onOpenAiChat={handleAiChatClick}
       onCreateAiChat={handleCreateAiChat}
-      isAiPaneActive={isAiPaneActive}
-      isKeywordResearchActive={isKeywordResearchActive}
     />
   )
 
@@ -682,7 +702,7 @@ export function Sidebar({ isCollapsed, isMobileMenuOpen = false, onClose }: Side
           <DialogHeader>
             <DialogTitle>Create New Project</DialogTitle>
             <DialogDescription>
-              Enter a name for your new project. You can configure all other details later.
+              Enter a name and optional website URL. We can extract brand colors, fonts, and logo from the URL.
             </DialogDescription>
           </DialogHeader>
 
@@ -703,6 +723,21 @@ export function Sidebar({ isCollapsed, isMobileMenuOpen = false, onClose }: Side
                 }}
                 autoFocus
               />
+            </div>
+
+            <div className="space-y-2">
+              <Label htmlFor="project-url">Website URL</Label>
+              <Input
+                id="project-url"
+                type="url"
+                value={newProjectUrl}
+                onChange={(e) => setNewProjectUrl(e.target.value)}
+                placeholder="https://example.com"
+                disabled={isCreatingProject}
+              />
+              <p className="text-xs text-muted-foreground">
+                Optional. If provided, we extract brand colors, fonts, and logo after create.
+              </p>
             </div>
 
             <div className="space-y-2">

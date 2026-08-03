@@ -238,12 +238,14 @@ export function TasksPaneToolbar(props: TasksPaneToolbarProps) {
     setSearchValue,
     shallowReplaceUrl,
     onOptionalPlacementChange,
-    plannerVisibility,
-    setPlannerVisibility,
+    plannerVisibility: _plannerVisibility,
+    setPlannerVisibility: _setPlannerVisibility,
   } = props
 
   void calendarSlot
   void kanbanSlot
+  void _plannerVisibility
+  void _setPlannerVisibility
 
   const calendarOverflowMenu = view === "calendar" ? paneOverflowMenuContent : null
   const kanbanOverflowMenu = view === "kanban" ? paneOverflowMenuContent : null
@@ -392,21 +394,6 @@ export function TasksPaneToolbar(props: TasksPaneToolbarProps) {
 
   /** Task list always shows overflow (“…”) with full actions (duplicating pills is OK). */
   const listOverflowNodes = useMemo(() => {
-    const toggleSuggestions = () => {
-      const nextShowSuggestions = !plannerVisibility.showSuggestions
-      setPlannerVisibility({ showSuggestions: nextShowSuggestions })
-      const next = new URLSearchParams(params.toString())
-      if (nextShowSuggestions) next.delete("showSuggestions")
-      else next.set("showSuggestions", "false")
-      if (plannerVisibility.showTasks) next.delete("showTasks")
-      else next.set("showTasks", "false")
-      const nextSearch = next.toString()
-      const currentSearch = params.toString()
-      if (nextSearch !== currentSearch) {
-        shallowReplaceUrl(`${pathname}?${nextSearch}`)
-        dispatchTasksShallowNavigation()
-      }
-    }
     return [
       <DropdownMenuSub key="gb">
         <DropdownMenuSubTrigger className="gap-2">
@@ -437,19 +424,6 @@ export function TasksPaneToolbar(props: TasksPaneToolbarProps) {
           </DropdownMenuItem>
         </DropdownMenuSubContent>
       </DropdownMenuSub>,
-      <DropdownMenuItem
-        key="suggestions"
-        className="justify-between gap-2"
-        onSelect={(e) => {
-          e.preventDefault()
-          toggleSuggestions()
-        }}
-      >
-        <span className="min-w-0 truncate">AI suggestions</span>
-        <span className="shrink-0 pl-2 text-xs text-muted-foreground">
-          {plannerVisibility.showSuggestions ? "On" : "Off"}
-        </span>
-      </DropdownMenuItem>,
       <DropdownMenuItem
         key="ms"
         className="justify-between gap-2"
@@ -523,9 +497,6 @@ export function TasksPaneToolbar(props: TasksPaneToolbarProps) {
     ]
   }, [
     listGroupBySummary,
-    plannerVisibility.showSuggestions,
-    plannerVisibility.showTasks,
-    setPlannerVisibility,
     isMultiselectMode,
     setIsMultiselectMode,
     listColorPillMode,
@@ -581,13 +552,41 @@ export function TasksPaneToolbar(props: TasksPaneToolbarProps) {
     view === "list" || (view === "kanban" && showKanbanMore) || (view === "calendar" && showCalendarMore)
 
   const hasRenderableOverflow = overflowMenuBody != null
-  const canShowTaskControls = !minimalMode && isTaskRoute
   const isHomeObject = leftObject === "all"
   const isMobileSplitCompact = compactMode === "mobile-split-bottom"
+  const canShowTaskControls = !minimalMode && isTaskRoute
+  const canShowSearch = !minimalMode && !isMobileSplitCompact
   const showMoreMenu =
     isMobileSplitCompact
       ? hasRenderableOverflow
       : showMoreTrigger && hasRenderableOverflow
+
+  const searchPlaceholder =
+    leftObject === "projects"
+      ? "Search projects..."
+      : leftObject === "mentions"
+        ? "Search mentions..."
+        : leftObject === "users"
+          ? "Search users..."
+          : leftObject === "ai_chats"
+            ? "Search AI chats..."
+            : leftObject === "artifacts"
+              ? "Search artifacts..."
+              : "Search tasks..."
+
+  const filterControl = (
+    <FilterCascadingDropdown
+      editFields={editFields}
+      filterOptions={filterOptions}
+      filters={filters}
+      setFilters={setFilters}
+      router={router}
+      pathname={pathname}
+      params={new URLSearchParams(params.toString())}
+      variant="icon"
+      className="shrink-0"
+    />
+  )
 
   const handleSecondaryViewChange = useCallback(
     (nextView: MainViewMode) => {
@@ -596,102 +595,130 @@ export function TasksPaneToolbar(props: TasksPaneToolbarProps) {
     [applyViewState],
   )
 
+  const openInlineSearchHandlers = {
+    onChange: (value: string) => {
+      setInlineSearchValue(value)
+      setSearchValue(value)
+      const next = new URLSearchParams(params.toString())
+      if (value) next.set("q", value)
+      else next.delete("q")
+      shallowReplaceUrl(`${pathname}?${next.toString()}`)
+    },
+    onClose: () => {
+      setIsInlineSearchOpen(false)
+      setInlineSearchValue("")
+      setSearchValue("")
+      const next = new URLSearchParams(params.toString())
+      next.delete("q")
+      shallowReplaceUrl(`${pathname}?${next.toString()}`)
+    },
+  }
+
   return (
     <TooltipProvider delayDuration={120}>
-    <div
-      className={cn(
-        "flex w-full flex-shrink-0 flex-col bg-white",
-        // Home: no divider under pills so switching objects doesn't jump / double-stack borders.
-        !isHomeObject && "border-b border-gray-200",
-      )}
-    >
+    <div className="flex w-full flex-shrink-0 flex-col bg-white">
       <div
         ref={containerRef}
         className={cn(
           "flex w-full min-w-0 items-center gap-2 bg-white",
           // pl-4 matches Create button gutter; keep a slightly tighter right inset for controls.
+          // Use inset shadow (not border-b) so the rule sits on the same y as center-pane tabs
+          // without shrinking the h-14 content box (border-box + border-b was causing overflow scrollbars).
           isMobileSplitCompact ? "h-10 min-h-10 px-4" : "h-14 min-h-14 py-2 pl-4 pr-2",
+          !isHomeObject && "shadow-[inset_0_-1px_0_0_#e5e7eb]",
         )}
       >
-        <div className="flex min-h-8 shrink-0 flex-nowrap items-center gap-2">
-          {isTopLikePane && !isMobileSplitCompact ? (
-            <LeftObjectSwitcher
-              value={leftObject}
-              onChange={onLeftObjectSelect}
-              containerWidth={objectSwitcherWidth}
-              isTaskView={canShowTaskControls}
-            />
-          ) : null}
-          {canShowTaskControls && isTopLikePane ? (
-            <DropdownMenu>
-              <IconTooltip label="Change view">
-                <DropdownMenuTrigger asChild>
-                  <button type="button" className={cn(pillButton, "shrink-0 gap-1.5")} aria-label="View mode">
-                    <PaneToolbarViewIcon className="h-4 w-4" />
-                    <span>{paneLabel}</span>
-                    <ChevronDown className="h-4 w-4 opacity-70" />
-                  </button>
-                </DropdownMenuTrigger>
-              </IconTooltip>
-              <DropdownMenuContent align="start" className="min-w-[220px]">
-                <DropdownMenuItem onClick={() => handlePrimaryViewChange("list")}>
-                  <List className="mr-2 h-4 w-4" />
-                  List
-                </DropdownMenuItem>
-                <DropdownMenuItem onClick={() => handlePrimaryViewChange("calendar")}>
-                  <Calendar className="mr-2 h-4 w-4" />
-                  Calendar
-                </DropdownMenuItem>
-                <DropdownMenuItem onClick={() => handlePrimaryViewChange("kanban")}>
-                  <LayoutGrid className="mr-2 h-4 w-4" />
-                  Kanban
-                </DropdownMenuItem>
-                <DropdownMenuSeparator />
-                <DropdownMenuSub>
-                  <DropdownMenuSubTrigger className="gap-2">
-                    Split screen
-                    <ChevronRight className="ml-auto h-4 w-4 shrink-0 opacity-60" />
-                  </DropdownMenuSubTrigger>
-                  <DropdownMenuSubContent className="min-w-[160px]">
-                    <DropdownMenuItem
-                      onClick={() => applyViewState({ isSplit: true, secondaryView: "list" })}
-                      disabled={primaryView === "list"}
-                    >
-                      List
-                    </DropdownMenuItem>
-                    <DropdownMenuItem
-                      onClick={() => applyViewState({ isSplit: true, secondaryView: "kanban" })}
-                      disabled={primaryView === "kanban"}
-                    >
-                      Kanban
-                    </DropdownMenuItem>
-                    <DropdownMenuItem
-                      onClick={() => applyViewState({ isSplit: true, secondaryView: "calendar" })}
-                      disabled={primaryView === "calendar"}
-                    >
-                      Calendar
-                    </DropdownMenuItem>
-                  </DropdownMenuSubContent>
-                </DropdownMenuSub>
-              </DropdownMenuContent>
-            </DropdownMenu>
-          ) : canShowTaskControls && isSecondaryPane ? (
-            <SplitPaneViewDropdown
-              value={view}
-              primaryView={primaryView}
-              onValueChange={handleSecondaryViewChange}
-              pillButton={pillButton}
-            />
-          ) : null}
-          {canShowTaskControls && view === "calendar" && !isMobileSplitCompact ? (
-            <div
-              ref={calendarToolbarRef as RefObject<HTMLDivElement>}
-              className="flex shrink-0 flex-nowrap items-center gap-2"
-            />
-          ) : null}
-        </div>
+        {canShowSearch && isInlineSearchOpen ? (
+          <InlineSearchInput
+            isOpen
+            value={inlineSearchValue}
+            placeholder={searchPlaceholder}
+            onChange={openInlineSearchHandlers.onChange}
+            onClose={openInlineSearchHandlers.onClose}
+            trailing={filterControl}
+            className="min-w-0"
+          />
+        ) : (
+          <div className="flex min-h-8 shrink-0 flex-nowrap items-center gap-2">
+            {isTopLikePane && !isMobileSplitCompact ? (
+              <LeftObjectSwitcher
+                value={leftObject}
+                onChange={onLeftObjectSelect}
+                containerWidth={objectSwitcherWidth}
+                isTaskView={canShowTaskControls}
+              />
+            ) : null}
+            {canShowTaskControls && isTopLikePane ? (
+              <DropdownMenu>
+                <IconTooltip label="Change view">
+                  <DropdownMenuTrigger asChild>
+                    <button type="button" className={cn(pillButton, "shrink-0 gap-1.5")} aria-label="View mode">
+                      <PaneToolbarViewIcon className="h-4 w-4" />
+                      <span>{paneLabel}</span>
+                      <ChevronDown className="h-4 w-4 opacity-70" />
+                    </button>
+                  </DropdownMenuTrigger>
+                </IconTooltip>
+                <DropdownMenuContent align="start" className="min-w-[220px]">
+                  <DropdownMenuItem onClick={() => handlePrimaryViewChange("list")}>
+                    <List className="mr-2 h-4 w-4" />
+                    List
+                  </DropdownMenuItem>
+                  <DropdownMenuItem onClick={() => handlePrimaryViewChange("calendar")}>
+                    <Calendar className="mr-2 h-4 w-4" />
+                    Calendar
+                  </DropdownMenuItem>
+                  <DropdownMenuItem onClick={() => handlePrimaryViewChange("kanban")}>
+                    <LayoutGrid className="mr-2 h-4 w-4" />
+                    Kanban
+                  </DropdownMenuItem>
+                  <DropdownMenuSeparator />
+                  <DropdownMenuSub>
+                    <DropdownMenuSubTrigger className="gap-2">
+                      Split screen
+                      <ChevronRight className="ml-auto h-4 w-4 shrink-0 opacity-60" />
+                    </DropdownMenuSubTrigger>
+                    <DropdownMenuSubContent className="min-w-[160px]">
+                      <DropdownMenuItem
+                        onClick={() => applyViewState({ isSplit: true, secondaryView: "list" })}
+                        disabled={primaryView === "list"}
+                      >
+                        List
+                      </DropdownMenuItem>
+                      <DropdownMenuItem
+                        onClick={() => applyViewState({ isSplit: true, secondaryView: "kanban" })}
+                        disabled={primaryView === "kanban"}
+                      >
+                        Kanban
+                      </DropdownMenuItem>
+                      <DropdownMenuItem
+                        onClick={() => applyViewState({ isSplit: true, secondaryView: "calendar" })}
+                        disabled={primaryView === "calendar"}
+                      >
+                        Calendar
+                      </DropdownMenuItem>
+                    </DropdownMenuSubContent>
+                  </DropdownMenuSub>
+                </DropdownMenuContent>
+              </DropdownMenu>
+            ) : canShowTaskControls && isSecondaryPane ? (
+              <SplitPaneViewDropdown
+                value={view}
+                primaryView={primaryView}
+                onValueChange={handleSecondaryViewChange}
+                pillButton={pillButton}
+              />
+            ) : null}
+            {canShowTaskControls && view === "calendar" && !isMobileSplitCompact ? (
+              <div
+                ref={calendarToolbarRef as RefObject<HTMLDivElement>}
+                className="flex shrink-0 flex-nowrap items-center gap-2"
+              />
+            ) : null}
+          </div>
+        )}
 
-        {canShowTaskControls && !isMobileSplitCompact ? (
+        {canShowTaskControls && !isInlineSearchOpen && !isMobileSplitCompact ? (
           <div
             ref={optionalClusterRef}
             className="flex min-h-8 min-w-0 flex-1 flex-nowrap items-center gap-2 overflow-hidden"
@@ -751,59 +778,52 @@ export function TasksPaneToolbar(props: TasksPaneToolbarProps) {
               />
             )}
           </div>
-        ) : (
+        ) : !isInlineSearchOpen ? (
           <div className="min-w-0 flex-1" />
-        )}
+        ) : null}
 
-        {canShowTaskControls ? (
+        {(canShowTaskControls || canShowSearch) ? (
           <div
             ref={rightClusterRef}
             className={cn("flex shrink-0 items-center gap-0", isMobileSplitCompact && "ml-auto")}
           >
             {!isMobileSplitCompact ? (
               <>
-                <FilterCascadingDropdown
-                  editFields={editFields}
-                  filterOptions={filterOptions}
-                  filters={filters}
-                  setFilters={setFilters}
-                  router={router}
-                  pathname={pathname}
-                  params={new URLSearchParams(params.toString())}
-                  variant="icon"
-                  className="shrink-0"
-                />
-                <IconTooltip label={isInlineSearchOpen ? "Close search" : "Search"}>
-                  <button
-                    type="button"
-                    className={cn(
-                      "inline-flex h-8 w-8 shrink-0 items-center justify-center rounded text-gray-500 hover:bg-gray-100 hover:text-gray-700 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-black focus-visible:ring-offset-1",
-                      isInlineSearchOpen && "bg-gray-100 text-gray-800",
-                    )}
-                    aria-label={isInlineSearchOpen ? "Close search" : "Search tasks"}
-                    onClick={() => setIsInlineSearchOpen((v) => !v)}
-                  >
-                    <Search className="h-4 w-4" />
-                  </button>
-                </IconTooltip>
-                <IconTooltip label={isFocused ? "Restore layout" : "Expand"}>
-                  <button
-                    type="button"
-                    className="inline-flex h-8 w-8 shrink-0 items-center justify-center rounded text-gray-500 hover:bg-gray-100 hover:text-gray-700 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-black focus-visible:ring-offset-1"
-                    aria-label={isFocused ? "Restore layout" : "Expand pane"}
-                    onClick={() => setFocusInUrl(isFocused ? null : isSecondaryPane ? "bottom" : "top")}
-                  >
-                    {isFocused ? <Minimize2 className="h-4 w-4" /> : <Maximize2 className="h-4 w-4" />}
-                  </button>
-                </IconTooltip>
+                {canShowTaskControls && !isInlineSearchOpen ? filterControl : null}
+                {canShowSearch && !isInlineSearchOpen ? (
+                  <IconTooltip label="Search">
+                    <button
+                      type="button"
+                      className="inline-flex h-8 w-8 shrink-0 items-center justify-center rounded text-gray-500 hover:bg-gray-100 hover:text-gray-700 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-black focus-visible:ring-offset-1"
+                      aria-label="Search"
+                      onClick={() => setIsInlineSearchOpen(true)}
+                    >
+                      <Search className="h-4 w-4" />
+                    </button>
+                  </IconTooltip>
+                ) : null}
+                {canShowTaskControls ? (
+                  <IconTooltip label={isFocused ? "Restore layout" : "Expand"}>
+                    <button
+                      type="button"
+                      className="inline-flex h-8 w-8 shrink-0 items-center justify-center rounded text-gray-500 hover:bg-gray-100 hover:text-gray-700 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-black focus-visible:ring-offset-1"
+                      aria-label={isFocused ? "Restore layout" : "Expand pane"}
+                      onClick={() => setFocusInUrl(isFocused ? null : isSecondaryPane ? "bottom" : "top")}
+                    >
+                      {isFocused ? <Minimize2 className="h-4 w-4" /> : <Maximize2 className="h-4 w-4" />}
+                    </button>
+                  </IconTooltip>
+                ) : null}
               </>
             ) : null}
-            <TasksPaneMoreMenu
-              visible={showMoreMenu}
-              ariaLabel={isMobileSplitCompact ? "More split options" : "More actions"}
-            >
-              {overflowMenuBody}
-            </TasksPaneMoreMenu>
+            {canShowTaskControls ? (
+              <TasksPaneMoreMenu
+                visible={showMoreMenu}
+                ariaLabel={isMobileSplitCompact ? "More split options" : "More actions"}
+              >
+                {overflowMenuBody}
+              </TasksPaneMoreMenu>
+            ) : null}
             {isSplitEnabled && isSecondaryPane && onExitSplit ? (
               <IconTooltip label="Exit split screen">
                 <button
@@ -819,31 +839,6 @@ export function TasksPaneToolbar(props: TasksPaneToolbarProps) {
           </div>
         ) : null}
       </div>
-      {canShowTaskControls && isInlineSearchOpen && !isMobileSplitCompact ? (
-        <div className="border-t border-gray-100 px-2 py-2">
-          <InlineSearchInput
-            isOpen={true}
-            value={inlineSearchValue}
-            onChange={(value) => {
-              setInlineSearchValue(value)
-              setSearchValue(value)
-              const next = new URLSearchParams(params.toString())
-              if (value) next.set("q", value)
-              else next.delete("q")
-              shallowReplaceUrl(`${pathname}?${next.toString()}`)
-            }}
-            onClose={() => {
-              setIsInlineSearchOpen(false)
-              setInlineSearchValue("")
-              setSearchValue("")
-              const next = new URLSearchParams(params.toString())
-              next.delete("q")
-              shallowReplaceUrl(`${pathname}?${next.toString()}`)
-            }}
-            className="ml-0"
-          />
-        </div>
-      ) : null}
     </div>
     </TooltipProvider>
   )

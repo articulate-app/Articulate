@@ -3,7 +3,8 @@ import { marked } from "marked"
 const BLOCK_TAGS = new Set([
   "ADDRESS", "ARTICLE", "ASIDE", "BLOCKQUOTE", "DIV", "DL", "FIELDSET", "FIGCAPTION",
   "FIGURE", "FOOTER", "FORM", "H1", "H2", "H3", "H4", "H5", "H6", "HEADER", "HR",
-  "LI", "MAIN", "NAV", "OL", "P", "PRE", "SECTION", "TABLE", "TD", "TH", "TR", "UL",
+  "LI", "MAIN", "NAV", "OL", "P", "PRE", "SECTION",
+  "TABLE", "THEAD", "TBODY", "TFOOT", "TR", "TD", "TH", "UL",
 ])
 
 function hasHtml(value: string): boolean {
@@ -128,11 +129,33 @@ function decodeHtmlEntities(value: string): string {
 const COMPONENT_OUTPUT_ALLOWED_TAGS = new Set([
   "H1", "H2", "H3", "H4", "H5", "H6", "P", "UL", "OL", "LI",
   "STRONG", "B", "EM", "I", "BR", "A", "BLOCKQUOTE",
+  // Tables (AI artifacts / GFM) — keep structure mid-document or standalone.
+  "TABLE", "THEAD", "TBODY", "TFOOT", "TR", "TH", "TD", "COLGROUP", "COL", "CAPTION",
+  // Inline media from TipTap attachment blocks in artifact/chat previews.
+  "FIGURE", "IMG", "VIDEO", "SOURCE",
 ])
 
 const COMPONENT_OUTPUT_DROP_TAGS = new Set([
   "SCRIPT", "STYLE", "IFRAME", "OBJECT", "EMBED", "LINK", "META", "NOSCRIPT",
 ])
+
+const SAFE_BG_COLOR_RE =
+  /^(transparent|currentcolor|#[0-9a-f]{3,8}|rgba?\(\s*[\d.\s%,./]+\s*\)|hsla?\(\s*[\d.\s%,./]+\s*\))$/i
+
+function sanitizeInlineBackgroundColor(styleValue: string): string | null {
+  const match = styleValue.match(/(?:^|;)\s*background-color\s*:\s*([^;]+)/i)
+  if (!match) return null
+  const color = match[1]?.trim() ?? ""
+  if (!color || !SAFE_BG_COLOR_RE.test(color)) return null
+  return `background-color: ${color}`
+}
+
+function isSafeMediaUrl(value: string): boolean {
+  const trimmed = value.trim()
+  if (!trimmed) return false
+  if (/^\s*(javascript|vbscript|data:text\/html)/i.test(trimmed)) return false
+  return /^(https?:|blob:|data:image\/|data:video\/|\/)/i.test(trimmed)
+}
 
 export function sanitizeComponentOutputHtml(html: string): string {
   if (typeof DOMParser === "undefined") return html
@@ -165,6 +188,30 @@ export function sanitizeComponentOutputHtml(html: string): string {
         }
         return
       }
+      if ((tag === "TABLE" || tag === "FIGURE") && name === "class") return
+      if (
+        (tag === "TD" || tag === "TH")
+        && (name === "colspan" || name === "rowspan" || name === "data-background-color")
+      ) {
+        return
+      }
+      if ((tag === "TD" || tag === "TH") && name === "style") {
+        const safeStyle = sanitizeInlineBackgroundColor(attr.value)
+        if (safeStyle) {
+          element.setAttribute("style", safeStyle)
+        } else {
+          element.removeAttribute(attr.name)
+        }
+        return
+      }
+      if (tag === "FIGURE" && name.startsWith("data-")) return
+      if ((tag === "IMG" || tag === "VIDEO" || tag === "SOURCE") && (name === "src" || name === "alt")) {
+        if (name === "src" && !isSafeMediaUrl(attr.value)) {
+          element.removeAttribute(attr.name)
+        }
+        return
+      }
+      if (tag === "VIDEO" && (name === "controls" || name === "playsinline")) return
       element.removeAttribute(attr.name)
     })
   }
@@ -207,6 +254,11 @@ export function normalizeComponentOutputToHtml(
   // Force prose that immediately follows a block heading onto its own block so the CommonMark
   // HTML-block rule does not swallow the paragraph text into the heading element.
   source = source.replace(/(<\/h[1-6]>)[ \t]*\r?\n(?!\r?\n)/gi, "$1\n\n")
+  // Markdown heading/list markers packed into a single paragraph need block boundaries
+  // (same path as TipTap overview rendering) so chat previews keep H1/H2 spacing.
+  if (!hasHtml(source)) {
+    source = normalizeMarkdownBoundaries(source)
+  }
 
   const parsed = String(marked.parse(source, { gfm: true, breaks: true }))
   const sanitized = sanitizeComponentOutputHtml(parsed)

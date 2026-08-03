@@ -3,8 +3,8 @@ import { ArrowDownAZ, ArrowUpDown, ArrowUpAZ, Clock } from "lucide-react"
 export type OverviewFeedSort = "newest" | "oldest" | "user_asc" | "user_desc"
 
 export const OVERVIEW_FEED_SORT_OPTIONS: { value: OverviewFeedSort; label: string }[] = [
-  { value: "newest", label: "Newest first" },
   { value: "oldest", label: "Oldest first" },
+  { value: "newest", label: "Newest first" },
   { value: "user_asc", label: "User (A–Z)" },
   { value: "user_desc", label: "User (Z–A)" },
 ]
@@ -24,7 +24,7 @@ export function getOverviewFeedSortIcon(sort: OverviewFeedSort) {
 }
 
 export function getOverviewFeedSortLabel(sort: OverviewFeedSort): string {
-  return OVERVIEW_FEED_SORT_OPTIONS.find((o) => o.value === sort)?.label ?? "Newest first"
+  return OVERVIEW_FEED_SORT_OPTIONS.find((o) => o.value === sort)?.label ?? "Oldest first"
 }
 
 export function sortByTimestamp<T>(

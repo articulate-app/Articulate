@@ -1019,6 +1019,51 @@ export async function reorderBriefingComponents(
   return { data, error }
 }
 
+export type SystemBriefingComponent = {
+  id: number
+  title: string
+  description: string | null
+}
+
+/**
+ * Fetch all system (global) briefing components for project-library assignment pickers.
+ */
+export async function fetchSystemBriefingComponents(): Promise<{
+  data: SystemBriefingComponent[] | null
+  error: any
+}> {
+  const supabase = createClientComponentClient()
+  const { data, error } = await supabase
+    .from('briefing_components')
+    .select('id, title, description')
+    .order('title', { ascending: true })
+
+  if (error) return { data: null, error }
+  return {
+    data: ((data || []) as any[]).map((row) => ({
+      id: row.id as number,
+      title: String(row.title ?? ''),
+      description: row.description ?? null,
+    })),
+    error: null,
+  }
+}
+
+/**
+ * RPC: Assign a system component to the project library.
+ */
+export async function addGlobalComponentToProject(
+  projectId: number,
+  briefingComponentId: number
+): Promise<{ error: any }> {
+  const supabase = createClientComponentClient()
+  const { error } = await supabase.rpc('pbc_add_global_component_to_project', {
+    p_project_id: projectId,
+    p_briefing_component_id: briefingComponentId,
+  })
+  return { error }
+}
+
 /**
  * RPC: Create project component
  */

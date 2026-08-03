@@ -39,13 +39,14 @@ function isExportBlockElement(el: Element): boolean {
     || tag === "ul"
     || tag === "ol"
     || tag === "figure"
+    || tag === "table"
   )
 }
 
 function isBlockishDivParagraph(el: Element): boolean {
   const tag = el.tagName.toLowerCase()
   if (tag !== "div") return false
-  if (el.querySelector("p,h1,h2,h3,h4,h5,h6,ul,ol,figure")) return false
+  if (el.querySelector("p,h1,h2,h3,h4,h5,h6,ul,ol,figure,table")) return false
   return !!extractText(el)
 }
 
@@ -154,6 +155,12 @@ export type ExportStructuredNode =
   | ExportStructuredParagraphNode
   | ExportStructuredListNode
   | ExportStructuredFigureNode
+  | ExportStructuredTableNode
+
+type ExportStructuredTableNode = {
+  type: "table"
+  html: string
+}
 
 /** Shared block model for DOCX and clipboard — same detection rules as collectExportBlockElements. */
 export function htmlToExportStructuredNodes(html: string): ExportStructuredNode[] {
@@ -192,6 +199,10 @@ export function htmlToExportStructuredNodes(html: string): ExportStructuredNode[
         type: "figure",
         html: `<p><em>[Image: ${escapeHtmlText(alt)}]</em></p>`,
       })
+      continue
+    }
+    if (tag === "table") {
+      nodes.push({ type: "table", html: el.outerHTML })
       continue
     }
     if (tag === "p" || tag === "div") {
@@ -238,6 +249,7 @@ export function renderStructuredNodesToClipboardHtml(
     if (node.type === "heading") return renderHeadingNodeToHtml(node, target)
     if (node.type === "list") return node.html
     if (node.type === "figure") return node.html
+    if (node.type === "table") return node.html
     const inlineHtml = node.inlineHtml.trim()
     if (target === "word") {
       return inlineHtml ? `<p style="margin:0 0 10pt;">${inlineHtml}</p>` : ""

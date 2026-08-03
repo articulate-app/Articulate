@@ -4,21 +4,36 @@ import React, { useMemo, useState } from "react"
 import {
   AlertCircle,
   Check,
+  GripVertical,
   Link2,
   Loader2,
   MessageSquarePlus,
-  Sparkles,
 } from "lucide-react"
 import { useQueryClient } from "@tanstack/react-query"
 import { cn } from "../../app/lib/utils"
 import type { TaskArtifact } from "../../app/lib/artifacts/artifact-types"
+import {
+  extractArtifactAssets,
+  extractArtifactBlocks,
+} from "../../app/lib/artifacts/artifact-types"
+import { artifactContentToPreviewHtml } from "./artifact-preview-html"
 import { attachArtifactToTask } from "../../app/lib/services/artifacts"
 import type { AiBuildArtifactPreviewEntry } from "../../app/store/ai-build-artifact-preview-store"
-import { ArtifactDocumentRenderer } from "./artifact-document-renderer"
+import { ComponentOutputReadonlyBody } from "../tasks/components/ComponentOutputReadonlyBody"
+import { AI_CHAT_PREVIEW_BODY_WRAPPER_CLASS } from "../tasks/components/component-output-body-shared"
 import {
-  computeArtifactContentHash,
-  useArtifactSelectionStore,
-} from "./artifact-selection"
+  artifactDiffPlainFromContent,
+  canonicalArtifactDiffText,
+} from "../../app/lib/artifact-selection-patch"
+import {
+  buildComponentPreviewDiff,
+  computeDiffCharStats,
+  hasRenderableDiff,
+} from "../tasks/utils/component-content-diff"
+import { setArtifactAttachDragData } from "./artifact-attach-dnd"
+import { ArtifactDocumentRenderer } from "./artifact-document-renderer"
+import { ArtifactRichDiffBody } from "./artifact-rich-diff-body"
+import { useArtifactSelectionStore } from "./artifact-selection"
 
 function phaseLabel(phase: AiBuildArtifactPreviewEntry["phase"] | "ready"): string {
   switch (phase) {
@@ -39,6 +54,38 @@ function phaseLabel(phase: AiBuildArtifactPreviewEntry["phase"] | "ready"): stri
   }
 }
 
+function PreviewDiffCharStats({
+  added,
+  removed,
+  onClick,
+  canToggle,
+}: {
+  added: number
+  removed: number
+  onClick?: () => void
+  canToggle?: boolean
+}) {
+  if (added === 0 && removed === 0) return null
+  const className = canToggle
+    ? "inline-flex items-center gap-1.5 rounded px-1 py-0.5 transition-colors hover:bg-muted"
+    : "inline-flex items-center gap-1.5"
+  return (
+    <button
+      type="button"
+      onClick={(event) => {
+        event.stopPropagation()
+        onClick?.()
+      }}
+      disabled={!canToggle}
+      className={className}
+      aria-label={canToggle ? "Toggle diff view" : undefined}
+    >
+      {added > 0 ? <span className="font-medium text-emerald-600">+{added}</span> : null}
+      {removed > 0 ? <span className="font-medium text-red-600">−{removed}</span> : null}
+    </button>
+  )
+}
+
 export type ArtifactCardProps = {
   artifact: TaskArtifact
   livePreview?: AiBuildArtifactPreviewEntry | null
@@ -49,9 +96,10 @@ export type ArtifactCardProps = {
   defaultChannelId?: number | null
   defaultLanguageId?: number | null
   onAttached?: (artifact: TaskArtifact) => void
-  onAskAi?: (artifact: TaskArtifact) => void
   onComment?: (artifact: TaskArtifact) => void
   compact?: boolean
+  /** AI chat live preview: cap body height and scroll (component-edit style). */
+  chatPreview?: boolean
 }
 
 /**
@@ -67,9 +115,9 @@ export function ArtifactCard({
   defaultChannelId = null,
   defaultLanguageId = null,
   onAttached,
-  onAskAi,
   onComment,
   compact = false,
+  chatPreview = false,
 }: ArtifactCardProps) {
   const queryClient = useQueryClient()
   const setPendingSelection = useArtifactSelectionStore((s) => s.setPendingSelection)
@@ -79,14 +127,32 @@ export function ArtifactCard({
     defaultTaskId != null ? String(defaultTaskId) : "",
   )
   const [showAttachForm, setShowAttachForm] = useState(false)
+  const [showDiff, setShowDiff] = useState(true)
+
+  const phase = livePreview?.phase ?? "ready"
+  const isLive = !!livePreview && phase !== "saved" && phase !== "failed"
 
   const displayArtifact = useMemo<TaskArtifact>(() => {
     if (!livePreview) return artifact
+    // Saved previews must not pin an older body once the list/get row has caught up.
+    if (
+      livePreview.phase === "saved"
+      && (livePreview.currentVersion ?? 0) <= (artifact.current_version ?? 0)
+    ) {
+      return artifact
+    }
+    const preferBaseline =
+      isLive
+      && (Boolean(livePreview.beforeContentJson) || Boolean(livePreview.beforeContentText?.trim()))
     return {
       ...artifact,
       title: livePreview.title ?? artifact.title,
-      content_text: livePreview.contentText || artifact.content_text,
-      content_json: livePreview.contentJson ?? artifact.content_json,
+      content_text: preferBaseline
+        ? (livePreview.beforeContentText ?? livePreview.contentText ?? artifact.content_text)
+        : (livePreview.contentText || artifact.content_text),
+      content_json: preferBaseline
+        ? (livePreview.beforeContentJson ?? livePreview.contentJson ?? artifact.content_json)
+        : (livePreview.contentJson ?? artifact.content_json),
       asset_data: livePreview.assetData ?? artifact.asset_data,
       current_version: livePreview.currentVersion ?? artifact.current_version,
       task_id: livePreview.taskId ?? artifact.task_id,
@@ -101,12 +167,82 @@ export function ArtifactCard({
         ...(livePreview.languageName ? { language_name: livePreview.languageName } : {}),
       },
     }
-  }, [artifact, livePreview])
+  }, [artifact, isLive, livePreview])
 
   const isChatOnly =
     displayArtifact.task_id == null && !!displayArtifact.ai_thread_id
-  const phase = livePreview?.phase ?? "ready"
-  const isLive = !!livePreview && phase !== "saved" && phase !== "failed"
+  /** Chat/project-unbound (or project-only) cards can be dragged onto an open task/project. */
+  const canDragAttach =
+    allowAttachToTask && displayArtifact.task_id == null && Boolean(displayArtifact.id)
+
+  const beforeText = useMemo(() => {
+    return artifactDiffPlainFromContent(
+      livePreview?.beforeContentText,
+      livePreview?.beforeContentJson ?? null,
+    )
+  }, [livePreview?.beforeContentJson, livePreview?.beforeContentText])
+
+  const afterText = useMemo(() => {
+    // Hide full-doc rewrite noise while streaming; only trust post-save diffs.
+    if (isLive) return beforeText
+    if (typeof livePreview?.diffContentText === "string" && livePreview.diffContentText.trim()) {
+      return canonicalArtifactDiffText(livePreview.diffContentText)
+    }
+    return artifactDiffPlainFromContent(
+      displayArtifact.content_text,
+      displayArtifact.content_json,
+    )
+  }, [
+    beforeText,
+    displayArtifact.content_json,
+    displayArtifact.content_text,
+    isLive,
+    livePreview?.diffContentText,
+  ])
+
+  const diffLines = useMemo(() => {
+    if (isLive || !beforeText || !afterText || beforeText === afterText) return []
+    return buildComponentPreviewDiff({
+      operation: "replace",
+      beforeText,
+      afterText,
+    })
+  }, [afterText, beforeText, isLive])
+
+  const diffStats = useMemo(() => {
+    if (isLive || !beforeText || !afterText || beforeText === afterText) return { added: 0, removed: 0 }
+    return computeDiffCharStats(beforeText, afterText)
+  }, [afterText, beforeText, isLive])
+
+  const canShowDiff = hasRenderableDiff(diffLines)
+
+  const richHtml = useMemo(
+    () => artifactContentToPreviewHtml(displayArtifact),
+    [displayArtifact],
+  )
+
+  const prefersTipTapBody = useMemo(() => {
+    const blocks = extractArtifactBlocks(displayArtifact.content_json)
+    const assets = extractArtifactAssets(displayArtifact.asset_data)
+    if (assets.length > 0) return false
+    // Dedicated media blocks still use ArtifactDocumentRenderer; tables + rich_text
+    // HTML (including embedded <table>) render through TipTap for chat previews.
+    if (blocks.some((block) => {
+      const type = String(block.type ?? "")
+      return type === "image"
+        || type === "video"
+        || type === "audio"
+        || type === "file"
+        || type === "attachment"
+        || type === "image_gallery"
+        || type === "gallery"
+        || type === "carousel"
+    })) {
+      return false
+    }
+    if (blocks.length > 0) return true
+    return Boolean(displayArtifact.content_text?.trim())
+  }, [displayArtifact.content_json, displayArtifact.asset_data, displayArtifact.content_text])
 
   const handleAttach = async () => {
     const taskId = Number(taskIdInput)
@@ -134,35 +270,37 @@ export function ArtifactCard({
     }
   }
 
-  const selectDocument = () => {
-    setPendingSelection({
-      source_type: "task_artifact",
-      artifact_id: displayArtifact.id,
-      artifact_version_number: displayArtifact.current_version,
-      anchor_type: "document",
-      title: displayArtifact.title,
-      full_content_hash: computeArtifactContentHash(displayArtifact.content_text ?? ""),
-    })
-    onAskAi?.(displayArtifact)
-  }
-
   return (
     <div
       className={cn(
         "w-full min-w-0 overflow-hidden rounded-lg border border-gray-200 bg-white text-left shadow-sm",
+        canDragAttach ? "cursor-grab active:cursor-grabbing" : null,
         className,
       )}
       data-artifact-id={displayArtifact.id}
+      draggable={canDragAttach}
+      onDragStart={(event) => {
+        if (!canDragAttach) return
+        setArtifactAttachDragData(event.dataTransfer, displayArtifact.id)
+        event.dataTransfer.setDragImage(event.currentTarget, 16, 16)
+      }}
+      title={canDragAttach ? "Drag onto an open task or project to attach" : undefined}
     >
       <div className="flex items-start gap-2 px-3 py-2">
+        {canDragAttach ? (
+          <span
+            className="mt-0.5 shrink-0 text-gray-400"
+            aria-hidden
+          >
+            <GripVertical className="h-4 w-4" />
+          </span>
+        ) : null}
         <div className="min-w-0 flex-1">
           <div className="truncate text-sm font-medium text-gray-900">
             {displayArtifact.title?.trim() || "Artifact"}
           </div>
           <p className="text-[11px] text-gray-500">
-            v{displayArtifact.current_version}
-            {displayArtifact.artifact_type ? ` · ${displayArtifact.artifact_type}` : ""}
-            {displayArtifact.artifact_role ? ` · ${displayArtifact.artifact_role}` : ""}
+            {displayArtifact.artifact_type ? `${displayArtifact.artifact_type}` : "Artifact"}
             {typeof displayArtifact.metadata?.channel_name === "string"
               && displayArtifact.metadata.channel_name.trim()
               ? ` · ${displayArtifact.metadata.channel_name}`
@@ -171,24 +309,46 @@ export function ArtifactCard({
               && displayArtifact.metadata.language_name.trim()
               ? ` · ${displayArtifact.metadata.language_name}`
               : ""}
-            {isChatOnly ? " · Chat workspace" : displayArtifact.task_id != null ? ` · Task ${displayArtifact.task_id}` : ""}
+            {!isChatOnly && displayArtifact.task_id != null ? ` · Task ${displayArtifact.task_id}` : ""}
+            {canDragAttach ? " · Drag to attach" : ""}
           </p>
         </div>
-        <span
-          className={cn(
-            "inline-flex shrink-0 items-center gap-1 rounded px-1.5 py-0.5 text-[10px] font-medium",
-            phase === "failed"
-              ? "bg-destructive/10 text-destructive"
-              : phase === "saved" || phase === "ready"
-                ? "bg-emerald-50 text-emerald-800"
-                : "bg-gray-50 text-gray-600",
-          )}
-        >
-          {isLive ? <Loader2 className="h-3 w-3 animate-spin" aria-hidden /> : null}
-          {phase === "saved" ? <Check className="h-3 w-3" aria-hidden /> : null}
-          {phase === "failed" ? <AlertCircle className="h-3 w-3" aria-hidden /> : null}
-          {phaseLabel(phase)}
-        </span>
+        <div className="flex shrink-0 flex-col items-end gap-1">
+          {diffStats.added > 0 || diffStats.removed > 0 ? (
+            <PreviewDiffCharStats
+              added={diffStats.added}
+              removed={diffStats.removed}
+              canToggle={canShowDiff}
+              onClick={() => {
+                if (!canShowDiff) return
+                setShowDiff((value) => !value)
+              }}
+            />
+          ) : null}
+          {phase === "failed" || isLive || phase === "saved" ? (
+            <span
+              className={cn(
+                "inline-flex items-center gap-1 rounded px-1.5 py-0.5 text-[10px] font-medium",
+                phase === "failed"
+                  ? "bg-destructive/10 text-destructive"
+                  : phase === "saved"
+                    ? "bg-emerald-50 text-emerald-800"
+                    : "bg-gray-50 text-gray-600",
+              )}
+              title={phaseLabel(phase)}
+              aria-label={phaseLabel(phase)}
+            >
+              {isLive ? <Loader2 className="h-3 w-3 animate-spin" aria-hidden /> : null}
+              {phase === "saved" ? <Check className="h-3 w-3" aria-hidden /> : null}
+              {phase === "failed" ? (
+                <>
+                  <AlertCircle className="h-3 w-3" aria-hidden />
+                  {phaseLabel(phase)}
+                </>
+              ) : null}
+            </span>
+          ) : null}
+        </div>
       </div>
 
       {livePreview?.errorMessage ? (
@@ -199,57 +359,152 @@ export function ArtifactCard({
 
       {!compact ? (
         <div className="border-t border-gray-100 px-3 py-3">
-          <ArtifactDocumentRenderer
-            artifact={displayArtifact}
-            onSelectImagePoint={({ attachmentId, x, y }) => {
-              setPendingSelection({
-                source_type: "task_artifact",
-                artifact_id: displayArtifact.id,
-                artifact_version_number: displayArtifact.current_version,
-                anchor_type: "image_point",
-                attachment_id: attachmentId,
-                anchor_x: x,
-                anchor_y: y,
-                title: displayArtifact.title,
-              })
-            }}
-            onSelectImageRect={({ attachmentId, x, y, width, height }) => {
-              setPendingSelection({
-                source_type: "task_artifact",
-                artifact_id: displayArtifact.id,
-                artifact_version_number: displayArtifact.current_version,
-                anchor_type: "image_rect",
-                attachment_id: attachmentId,
-                anchor_x: x,
-                anchor_y: y,
-                anchor_width: width,
-                anchor_height: height,
-                title: displayArtifact.title,
-              })
-            }}
-            onSelectVideoTime={({ attachmentId, timeStart, timeEnd }) => {
-              setPendingSelection({
-                source_type: "task_artifact",
-                artifact_id: displayArtifact.id,
-                artifact_version_number: displayArtifact.current_version,
-                anchor_type: "video_time",
-                attachment_id: attachmentId,
-                anchor_time_start: timeStart,
-                anchor_time_end: timeEnd ?? timeStart,
-                title: displayArtifact.title,
-              })
-            }}
-            onSelectAsset={(attachmentId) => {
-              setPendingSelection({
-                source_type: "task_artifact",
-                artifact_id: displayArtifact.id,
-                artifact_version_number: displayArtifact.current_version,
-                anchor_type: "asset",
-                attachment_id: attachmentId,
-                title: displayArtifact.title,
-              })
-            }}
-          />
+          {chatPreview ? (
+            showDiff && canShowDiff ? (
+              <ArtifactRichDiffBody
+                beforeText={beforeText}
+                beforeContentJson={livePreview?.beforeContentJson}
+                afterText={afterText}
+                afterContentJson={displayArtifact.content_json}
+                changedOnly
+                compact
+              />
+            ) : prefersTipTapBody ? (
+              <ComponentOutputReadonlyBody
+                html={richHtml}
+                toolbarId={`artifact-card-${displayArtifact.id}`}
+                className={cn(
+                  AI_CHAT_PREVIEW_BODY_WRAPPER_CLASS,
+                  "border-0 bg-transparent shadow-none",
+                )}
+                fromAiChat
+                placeholder={isLive ? "Generating artifact…" : "Empty artifact"}
+              />
+            ) : (
+              <ArtifactDocumentRenderer
+                artifact={displayArtifact}
+                onSelectImagePoint={({ attachmentId, x, y }) => {
+                  setPendingSelection({
+                    source_type: "task_artifact",
+                    artifact_id: displayArtifact.id,
+                    artifact_version_number: displayArtifact.current_version,
+                    anchor_type: "image_point",
+                    attachment_id: attachmentId,
+                    anchor_x: x,
+                    anchor_y: y,
+                    title: displayArtifact.title,
+                  })
+                }}
+                onSelectImageRect={({ attachmentId, x, y, width, height }) => {
+                  setPendingSelection({
+                    source_type: "task_artifact",
+                    artifact_id: displayArtifact.id,
+                    artifact_version_number: displayArtifact.current_version,
+                    anchor_type: "image_rect",
+                    attachment_id: attachmentId,
+                    anchor_x: x,
+                    anchor_y: y,
+                    anchor_width: width,
+                    anchor_height: height,
+                    title: displayArtifact.title,
+                  })
+                }}
+                onSelectVideoTime={({ attachmentId, timeStart, timeEnd }) => {
+                  setPendingSelection({
+                    source_type: "task_artifact",
+                    artifact_id: displayArtifact.id,
+                    artifact_version_number: displayArtifact.current_version,
+                    anchor_type: "video_time",
+                    attachment_id: attachmentId,
+                    anchor_time_start: timeStart,
+                    anchor_time_end: timeEnd ?? timeStart,
+                    title: displayArtifact.title,
+                  })
+                }}
+                onSelectAsset={(attachmentId) => {
+                  setPendingSelection({
+                    source_type: "task_artifact",
+                    artifact_id: displayArtifact.id,
+                    artifact_version_number: displayArtifact.current_version,
+                    anchor_type: "asset",
+                    attachment_id: attachmentId,
+                    title: displayArtifact.title,
+                  })
+                }}
+              />
+            )
+          ) : (
+            <div>
+              {showDiff && canShowDiff ? (
+                <ArtifactRichDiffBody
+                  beforeText={beforeText}
+                  beforeContentJson={livePreview?.beforeContentJson}
+                  afterText={afterText}
+                  afterContentJson={displayArtifact.content_json}
+                />
+              ) : prefersTipTapBody ? (
+                <ComponentOutputReadonlyBody
+                  html={richHtml}
+                  toolbarId={`artifact-card-${displayArtifact.id}`}
+                  className={AI_CHAT_PREVIEW_BODY_WRAPPER_CLASS}
+                  fromAiChat
+                  placeholder={isLive ? "Generating artifact…" : "Empty artifact"}
+                />
+              ) : (
+                <ArtifactDocumentRenderer
+                  artifact={displayArtifact}
+                  onSelectImagePoint={({ attachmentId, x, y }) => {
+                    setPendingSelection({
+                      source_type: "task_artifact",
+                      artifact_id: displayArtifact.id,
+                      artifact_version_number: displayArtifact.current_version,
+                      anchor_type: "image_point",
+                      attachment_id: attachmentId,
+                      anchor_x: x,
+                      anchor_y: y,
+                      title: displayArtifact.title,
+                    })
+                  }}
+                  onSelectImageRect={({ attachmentId, x, y, width, height }) => {
+                    setPendingSelection({
+                      source_type: "task_artifact",
+                      artifact_id: displayArtifact.id,
+                      artifact_version_number: displayArtifact.current_version,
+                      anchor_type: "image_rect",
+                      attachment_id: attachmentId,
+                      anchor_x: x,
+                      anchor_y: y,
+                      anchor_width: width,
+                      anchor_height: height,
+                      title: displayArtifact.title,
+                    })
+                  }}
+                  onSelectVideoTime={({ attachmentId, timeStart, timeEnd }) => {
+                    setPendingSelection({
+                      source_type: "task_artifact",
+                      artifact_id: displayArtifact.id,
+                      artifact_version_number: displayArtifact.current_version,
+                      anchor_type: "video_time",
+                      attachment_id: attachmentId,
+                      anchor_time_start: timeStart,
+                      anchor_time_end: timeEnd ?? timeStart,
+                      title: displayArtifact.title,
+                    })
+                  }}
+                  onSelectAsset={(attachmentId) => {
+                    setPendingSelection({
+                      source_type: "task_artifact",
+                      artifact_id: displayArtifact.id,
+                      artifact_version_number: displayArtifact.current_version,
+                      anchor_type: "asset",
+                      attachment_id: attachmentId,
+                      title: displayArtifact.title,
+                    })
+                  }}
+                />
+              )}
+            </div>
+          )}
         </div>
       ) : displayArtifact.content_text?.trim() ? (
         <p className="border-t border-gray-100 px-3 py-2 text-[11px] leading-snug text-gray-600 line-clamp-4">
@@ -257,36 +512,30 @@ export function ArtifactCard({
         </p>
       ) : null}
 
-      <div className="flex flex-wrap items-center gap-1.5 border-t border-gray-100 px-3 py-2">
-        <button
-          type="button"
-          onClick={selectDocument}
-          className="inline-flex items-center gap-1 rounded px-2 py-1 text-[11px] font-medium text-gray-700 hover:bg-gray-50"
-        >
-          <Sparkles className="h-3 w-3" aria-hidden />
-          Ask AI
-        </button>
-        {onComment ? (
-          <button
-            type="button"
-            onClick={() => onComment(displayArtifact)}
-            className="inline-flex items-center gap-1 rounded px-2 py-1 text-[11px] font-medium text-gray-700 hover:bg-gray-50"
-          >
-            <MessageSquarePlus className="h-3 w-3" aria-hidden />
-            Comment
-          </button>
-        ) : null}
-        {allowAttachToTask && isChatOnly ? (
-          <button
-            type="button"
-            onClick={() => setShowAttachForm((prev) => !prev)}
-            className="inline-flex items-center gap-1 rounded px-2 py-1 text-[11px] font-medium text-gray-700 hover:bg-gray-50"
-          >
-            <Link2 className="h-3 w-3" aria-hidden />
-            Attach to task
-          </button>
-        ) : null}
-      </div>
+      {(onComment || (allowAttachToTask && isChatOnly)) ? (
+        <div className="flex flex-wrap items-center gap-1.5 border-t border-gray-100 px-3 py-2">
+          {onComment ? (
+            <button
+              type="button"
+              onClick={() => onComment(displayArtifact)}
+              className="inline-flex items-center gap-1 rounded px-2 py-1 text-[11px] font-medium text-gray-700 hover:bg-gray-50"
+            >
+              <MessageSquarePlus className="h-3 w-3" aria-hidden />
+              Comment
+            </button>
+          ) : null}
+          {allowAttachToTask && isChatOnly ? (
+            <button
+              type="button"
+              onClick={() => setShowAttachForm((prev) => !prev)}
+              className="inline-flex items-center gap-1 rounded px-2 py-1 text-[11px] font-medium text-gray-700 hover:bg-gray-50"
+            >
+              <Link2 className="h-3 w-3" aria-hidden />
+              Attach to task
+            </button>
+          ) : null}
+        </div>
+      ) : null}
 
       {showAttachForm ? (
         <div className="space-y-2 border-t border-gray-100 bg-gray-50 px-3 py-2">

@@ -1,8 +1,14 @@
 import type { GlobalSearchDetailTarget } from "../lib/global-search-types"
-import { KEYWORD_RESEARCH_CENTER_VIEW } from "../lib/center-pane-selection-url"
+import {
+  CREATE_CENTER_VIEW,
+  KEYWORD_RESEARCH_CENTER_VIEW,
+  PROMPT_RESEARCH_CENTER_VIEW,
+  RESEARCH_CENTER_VIEW,
+} from "../lib/center-pane-selection-url"
 import {
   buildCenterPaneTabKey,
-  KEYWORD_RESEARCH_TAB_ID,
+  CREATE_TAB_ID,
+  RESEARCH_TAB_ID,
   type CenterPaneTab,
   type CenterPaneTabKind,
 } from "../store/center-pane-tabs"
@@ -15,6 +21,8 @@ export function detailEntityTypeToCenterTabKind(
   if (entityType === "user") return "user"
   if (entityType === "team") return "team"
   if (entityType === "mention") return "thread"
+  if (entityType === "artifact") return "artifact"
+  if (entityType === "source") return "source"
   // AI chats belong in the right pane only.
   return null
 }
@@ -26,6 +34,12 @@ export function resolveActiveCenterPaneTab(args: {
   selectedDetailTarget: GlobalSearchDetailTarget | null | undefined
   stackTeamId?: string | number | null
   centerView?: string | null
+  /** Tab identity is artifact id only — version is viewer state. */
+  centerArtifactId?: string | null
+  centerArtifactTitle?: string | null
+  /** Tab identity is source id. */
+  centerSourceId?: string | null
+  centerSourceTitle?: string | null
 }): { key: string; kind: CenterPaneTabKind; id: string; title: string } | null {
   const {
     selectedTaskId: selectedTaskIdRaw,
@@ -34,11 +48,42 @@ export function resolveActiveCenterPaneTab(args: {
     selectedDetailTarget,
     stackTeamId: stackTeamIdRaw,
     centerView,
+    centerArtifactId: centerArtifactIdRaw,
+    centerArtifactTitle,
+    centerSourceId: centerSourceIdRaw,
+    centerSourceTitle,
   } = args
   const selectedTaskId =
     selectedTaskIdRaw == null || selectedTaskIdRaw === "" ? null : String(selectedTaskIdRaw)
   const stackTeamId =
     stackTeamIdRaw == null || stackTeamIdRaw === "" ? null : String(stackTeamIdRaw)
+  const centerArtifactId =
+    centerArtifactIdRaw == null || centerArtifactIdRaw === ""
+      ? null
+      : String(centerArtifactIdRaw).trim()
+  const centerSourceId =
+    centerSourceIdRaw == null || centerSourceIdRaw === ""
+      ? null
+      : String(centerSourceIdRaw).trim()
+
+  // Artifact tabs are first-class middle-pane entities (identity = artifact id, not title).
+  if (centerArtifactId) {
+    return {
+      key: buildCenterPaneTabKey("artifact", centerArtifactId),
+      kind: "artifact",
+      id: centerArtifactId,
+      title: centerArtifactTitle?.trim() || `Artifact ${centerArtifactId.slice(0, 8)}`,
+    }
+  }
+
+  if (centerSourceId) {
+    return {
+      key: buildCenterPaneTabKey("source", centerSourceId),
+      kind: "source",
+      id: centerSourceId,
+      title: centerSourceTitle?.trim() || `Source ${centerSourceId.slice(0, 8)}`,
+    }
+  }
 
   // Stacked team over user: the rendered middle content is the team.
   if (
@@ -67,12 +112,24 @@ export function resolveActiveCenterPaneTab(args: {
   }
 
   if (!selectedDetailTarget?.entityId && selectedDetailTarget?.entityType !== "mention") {
-    if (centerView === KEYWORD_RESEARCH_CENTER_VIEW) {
+    if (centerView === CREATE_CENTER_VIEW) {
       return {
-        key: buildCenterPaneTabKey("keyword-research", KEYWORD_RESEARCH_TAB_ID),
-        kind: "keyword-research",
-        id: KEYWORD_RESEARCH_TAB_ID,
-        title: "Keyword research",
+        key: buildCenterPaneTabKey("create", CREATE_TAB_ID),
+        kind: "create",
+        id: CREATE_TAB_ID,
+        title: "Create",
+      }
+    }
+    if (
+      centerView === RESEARCH_CENTER_VIEW ||
+      centerView === KEYWORD_RESEARCH_CENTER_VIEW ||
+      centerView === PROMPT_RESEARCH_CENTER_VIEW
+    ) {
+      return {
+        key: buildCenterPaneTabKey("research", RESEARCH_TAB_ID),
+        kind: "research",
+        id: RESEARCH_TAB_ID,
+        title: "Research",
       }
     }
     return null
@@ -107,7 +164,9 @@ export function resolveActiveCenterPaneTab(args: {
           ? `Project ${id}`
           : kind === "team"
             ? `Team ${id}`
-            : `Thread ${id}`),
+            : kind === "artifact"
+              ? `Artifact ${id.slice(0, 8)}`
+              : `Thread ${id}`),
   }
 }
 

@@ -82,7 +82,7 @@ export function shouldSuppressBuildAckChatBubble(
 
   const check = (row: Record<string, unknown>): boolean => {
     const outputKind = toTrimmedString(row.output_kind)?.toLowerCase()
-    if (outputKind === "build_ack") return true
+    if (outputKind === "build_ack" || outputKind === "artifact_build_control") return true
 
     const uiVisibility = toTrimmedString(row.ui_visibility)?.toLowerCase()
     if (uiVisibility === "hidden") return true

@@ -73,6 +73,8 @@ interface LegacyRichTextEditorProps {
   enableOutputLinkNavigation?: boolean;
   /** Preserve AI pane when navigating app:// links from AI chat previews. */
   fromAiChat?: boolean;
+  /** Force TipTap to accept external value updates (AI/version bumps). */
+  forceContentKey?: string | number | null;
 }
 
 function stripHtmlToText(html: string): string {
@@ -113,6 +115,7 @@ export function RichTextEditor({
   disableInlineMediaControls = false,
   enableOutputLinkNavigation = false,
   fromAiChat = false,
+  forceContentKey = null,
 }: LegacyRichTextEditorProps) {
   const wrapperRef = React.useRef<HTMLDivElement | null>(null);
   const lastKnownValueRef = React.useRef<string>(value ?? "");
@@ -188,6 +191,7 @@ export function RichTextEditor({
         value={value}
         onChange={handleChange}
         placeholder={placeholder}
+        forceContentKey={forceContentKey}
         className={`flex flex-col ${autoGrow ? "h-auto" : "h-full min-h-0"} ${editorWrapperClassName ?? ""}`}
         editorClassName={editorClassName}
         onAIAction={onAiActionClick ? handleAIAction : undefined}

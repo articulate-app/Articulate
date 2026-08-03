@@ -15,6 +15,7 @@ const WORKSPACE_SECTION_PATHS = new Set([
   "/users",
   "/teams",
   "/ai-threads",
+  "/artifacts",
 ])
 
 export function WorkspaceRouteSwitch({ children }: { children: ReactNode }) {

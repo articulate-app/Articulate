@@ -3,40 +3,48 @@
 import React, { useCallback, useEffect, useRef, useState } from "react"
 import { createPortal } from "react-dom"
 import { Sparkles } from "lucide-react"
-import { type AiSelectedTextContext } from "./ai-chat-text-selection"
 
 type SelectionAnchor = { left: number; top: number }
 
-type ActiveSelection = {
-  context: AiSelectedTextContext
+type ActiveSelection<T> = {
+  context: T
   anchor: SelectionAnchor
 }
 
-type SelectionAskAiMenuProps = {
+type SelectionAskAiMenuProps<T> = {
   /** CSS selector marking containers whose text is selectable (e.g. '[data-ai-selectable="chat-message"]'). */
   containerSelector: string
   /** Build the selection context from the matched container + current range. Return null to ignore. */
-  resolve: (container: HTMLElement, range: Range) => AiSelectedTextContext | null
-  /** Invoked when the user clicks "Ask AI" — attaches the selection as free-form context. */
-  onAsk: (context: AiSelectedTextContext) => void
+  resolve: (container: HTMLElement, range: Range) => T | null
+  /** Invoked when the user clicks "Add to chat" — attaches the selection as free-form context. */
+  onAsk: (context: T) => void
+  /** Extract selected text from the resolved context for min-length checks. */
+  getSelectedText?: (context: T) => string
   /** Minimum selected characters before the affordance appears. */
   minChars?: number
 }
 
 const MENU_MIN_CHARS_DEFAULT = 2
 
+function defaultSelectedText(context: unknown): string {
+  if (!context || typeof context !== "object") return ""
+  const text = (context as { selected_text?: unknown }).selected_text
+  return typeof text === "string" ? text.trim() : ""
+}
+
 /**
- * Floating "Ask AI" affordance shown when the user highlights text inside a matching container.
+ * Floating "Add to chat" affordance shown when the user highlights text inside a matching container.
  * Intentionally NOT a list of preset actions — clicking simply attaches the passage to the composer
  * as free-form context so the user can type any instruction.
  */
-export function SelectionAskAiMenu({
+export function SelectionAskAiMenu<T>({
   containerSelector,
   resolve,
   onAsk,
+  getSelectedText = defaultSelectedText as (context: T) => string,
   minChars = MENU_MIN_CHARS_DEFAULT,
-}: SelectionAskAiMenuProps) {
-  const [active, setActive] = useState<ActiveSelection | null>(null)
+}: SelectionAskAiMenuProps<T>) {
+  const [active, setActive] = useState<ActiveSelection<T> | null>(null)
   const menuRef = useRef<HTMLDivElement | null>(null)
   const isPointerInsideMenuRef = useRef(false)
 
@@ -63,7 +71,7 @@ export function SelectionAskAiMenu({
       return
     }
     const context = resolve(container, range)
-    if (!context || !context.selected_text.trim()) {
+    if (!context || !getSelectedText(context).trim()) {
       setActive(null)
       return
     }
@@ -76,12 +84,11 @@ export function SelectionAskAiMenu({
       context,
       anchor: { left: rect.left + rect.width / 2, top: rect.top },
     })
-  }, [containerSelector, resolve, minChars])
+  }, [containerSelector, resolve, minChars, getSelectedText])
 
   useEffect(() => {
     const handleMouseUp = (event: MouseEvent) => {
       if (menuRef.current?.contains(event.target as Node)) return
-      // Defer so the browser finalizes the selection first.
       window.setTimeout(evaluateSelection, 0)
     }
     const handleKeyUp = (event: KeyboardEvent) => {
@@ -134,7 +141,6 @@ export function SelectionAskAiMenu({
       onMouseLeave={() => {
         isPointerInsideMenuRef.current = false
       }}
-      // Keep the current text selection alive while interacting with the affordance.
       onMouseDown={(event) => event.preventDefault()}
     >
       <button

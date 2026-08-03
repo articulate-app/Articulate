@@ -19,7 +19,6 @@ import { useRouter } from 'next/navigation'
 import { useTasksUI, ViewMode } from '../../store/tasks-ui'
 import { useSearchParams, usePathname } from 'next/navigation'
 import { TaskList } from './TaskList'
-import { getTaskById } from '../../../lib/services/tasks';
 import { useQueryClient } from '@tanstack/react-query';
 import { trackGlobalObjectOpen } from '../../lib/services/global-search';
 import { bumpAndInvalidateHomeSidebarRecent } from '../../lib/home-sidebar-recents-cache';
@@ -81,8 +80,15 @@ import { MobileVerticalSplitLayout } from './mobile-vertical-split-layout';
 import { MobileTasksPaneContent } from './mobile-tasks-pane-content';
 import { MobileGlobalHeaderActions } from '../ui/mobile-global-header-actions';
 import { TaskFilters } from './TaskFilters';
-import { KeywordPlannerPane } from '../KeywordPlannerPane';
+import { ResearchPane } from '../ResearchPane';
+import { ArtifactPane } from '../../../features/artifacts/ArtifactPane';
+import { SourcePane } from '../../../features/sources/SourcePane';
 import { AiPane } from '../../../features/ai-chat/AiPane';
+import {
+  getArtifactVersionFromParams,
+  getCenterArtifactIdFromParams,
+} from '../../lib/artifact-selection-url';
+import { getCenterSourceIdFromParams } from '../../lib/source-selection-url';
 import type { AiActiveFieldContext } from '../../../features/ai-chat/active-field-context';
 import { ProjectSEOSettings } from '../../../features/tasks/components/ProjectSEOSettings';
 import { GlobalSearchFullResultsPane } from '../search/global-search-full-results-pane';
@@ -97,19 +103,50 @@ import { useGlobalSearchContext } from '../../contexts/global-search-context';
 import { useCurrentUserStore } from '../../store/current-user';
 import { leftPaneObjectLabel, resolveLeftPaneObject, type LeftPaneObject } from "../../lib/left-pane-object";
 import { buildSectionSwitchUrl, leftObjectToSectionKey } from "../../lib/section-switch-url";
-import { buildCenterPaneSelectionSearchParams, buildCenterPaneTabSelectionSearchParams, clearActiveCenterSelectionParams, getActiveCenterSelection, KEYWORD_RESEARCH_CENTER_VIEW, KEYWORD_RESEARCH_QUERY_PARAM } from "../../lib/center-pane-selection-url";
-import { OPEN_KEYWORD_RESEARCH_EVENT, TOGGLE_AI_PANE_EVENT, TOGGLE_KEYWORD_RESEARCH_EVENT } from "../ui/sidebar-home-feed";
+import {
+  buildCenterPaneSelectionSearchParams,
+  buildCenterPaneTabSelectionSearchParams,
+  clearActiveCenterSelectionParams,
+  CREATE_CENTER_VIEW,
+  CREATE_TYPE_PARAM,
+  getActiveCenterSelection,
+  getCreateCenterTypeFromParams,
+  getResearchTabFromParams,
+  KEYWORD_RESEARCH_CENTER_VIEW,
+  KEYWORD_RESEARCH_QUERY_PARAM,
+  PROMPT_RESEARCH_CENTER_VIEW,
+  PROMPT_RESEARCH_QUERY_PARAM,
+  RESEARCH_CENTER_VIEW,
+  RESEARCH_QUERY_PARAM,
+  RESEARCH_TAB_PARAM,
+  type CreateCenterType,
+  type ResearchTab,
+} from "../../lib/center-pane-selection-url";
+import {
+  OPEN_HEADER_CREATE_EVENT,
+  OPEN_KEYWORD_RESEARCH_EVENT,
+  OPEN_PROMPT_RESEARCH_EVENT,
+  OPEN_RESEARCH_EVENT,
+  TOGGLE_AI_PANE_EVENT,
+  TOGGLE_KEYWORD_RESEARCH_EVENT,
+  TOGGLE_PROMPT_RESEARCH_EVENT,
+  TOGGLE_RESEARCH_EVENT,
+  type OpenHeaderCreateDetail,
+} from "../ui/sidebar-home-feed";
 import {
   resolveActiveCenterPaneTab,
   toPaneTabStripItems,
 } from "../../lib/center-pane-tabs";
 import {
   buildCenterPaneTabKey,
-  KEYWORD_RESEARCH_TAB_ID,
+  CREATE_TAB_ID,
+  RESEARCH_TAB_ID,
   useCenterPaneTabsStore,
   type CenterPaneTab,
 } from "../../store/center-pane-tabs";
 import { CenterPaneTabBar } from "./center-pane-tab-bar";
+import { CreateCenterPane } from "./create-center-pane";
+import { CREATE_MODAL_TITLES } from "../ui/use-header-create-flow";
 import { LeftObjectSwitcher } from "./LeftObjectSwitcher";
 import { useResolveCenterPaneTabTitles } from "../../hooks/use-resolve-center-pane-tab-titles";
 import { useElementWidth } from "../../hooks/use-element-width";
@@ -221,7 +258,8 @@ type LeftPaneRenderMode =
   | "mentions"
   | "users"
   | "teams"
-  | "ai_chats";
+  | "ai_chats"
+  | "artifacts";
 
 function getRenderMode(object: SearchObjectRoute, q?: string): LeftPaneRenderMode {
   if (object === "all") return q?.trim() ? "global_results" : "discovery";
@@ -231,6 +269,7 @@ function getRenderMode(object: SearchObjectRoute, q?: string): LeftPaneRenderMod
   if (object === "user") return "users";
   if (object === "team") return "teams";
   if (object === "ai_thread") return "ai_chats";
+  if (object === "artifact") return "artifacts";
   return "discovery";
 }
 
@@ -685,6 +724,7 @@ export function TasksLayout({
     if (leftObject === "projects") return "project" as const;
     if (leftObject === "mentions") return "mention" as const;
     if (leftObject === "users") return "user" as const;
+    if (leftObject === "artifacts") return "artifact" as const;
     return "ai_thread" as const;
   }, [leftObject]);
   const navigateToLeftObject = useCallback((targetObject: LeftPaneObject) => {
@@ -880,8 +920,8 @@ export function TasksLayout({
   const [duplicateInitialValues, setDuplicateInitialValues] = useState<any>(null);
   const [duplicateOnSuccess, setDuplicateOnSuccess] = useState<((task: any) => void | Promise<void>) | null>(null);
 
-  // Keyword Planner state
-  const [isKeywordPlannerOpen, setIsKeywordPlannerOpen] = useState(false);
+  // Research tool state (mobile overlay)
+  const [isResearchOpen, setIsResearchOpen] = useState(false);
 
   // Multiselect state (list uses TaskList-internal selection; calendar/kanban use planner bulk set)
   const [isMultiselectMode, setIsMultiselectMode] = useState(false);
@@ -1006,14 +1046,11 @@ export function TasksLayout({
 
   React.useEffect(() => {
     const nextShowTasks = params.get("showTasks") !== "false"
-    const nextShowSuggestions = params.get("showSuggestions") !== "false"
-    if (
-      plannerVisibility.showTasks !== nextShowTasks ||
-      plannerVisibility.showSuggestions !== nextShowSuggestions
-    ) {
-      setPlannerVisibility({ showTasks: nextShowTasks, showSuggestions: nextShowSuggestions })
+    // Suggestions live on the project sheet; never mix them into planner views.
+    if (plannerVisibility.showTasks !== nextShowTasks || plannerVisibility.showSuggestions) {
+      setPlannerVisibility({ showTasks: nextShowTasks, showSuggestions: false })
     }
-  }, [params.get("showTasks"), params.get("showSuggestions"), plannerVisibility.showTasks, plannerVisibility.showSuggestions, setPlannerVisibility])
+  }, [params.get("showTasks"), plannerVisibility.showTasks, plannerVisibility.showSuggestions, setPlannerVisibility])
 
   React.useEffect(() => {
     if (!hasHydratedFromURL.current) {
@@ -1024,10 +1061,8 @@ export function TasksLayout({
       setSearchValue(q);
       syncFromUrl(new URLSearchParams(params.toString()));
 
-      // Default visibility: both ON unless explicitly set to false.
-      const showSuggestions = params.get("showSuggestions") !== "false"
       const showTasks = params.get("showTasks") !== "false"
-      setPlannerVisibility({ showSuggestions, showTasks })
+      setPlannerVisibility({ showSuggestions: false, showTasks })
       
       // Sync layout config from URL
       const urlLayout = params.get('layout')?.split(',').filter(Boolean) || ['left', 'middle'];
@@ -2315,7 +2350,7 @@ export function TasksLayout({
       typeof window !== "undefined"
         ? new URLSearchParams(window.location.search)
         : new URLSearchParams(params.toString())
-    const centerKeys = ["centerTaskId", "centerSuggestionId", "centerProjectId", "centerUserId", "centerTeamId", "centerThreadId"] as const
+    const centerKeys = ["centerTaskId", "centerSuggestionId", "centerProjectId", "centerUserId", "centerTeamId", "centerThreadId", "centerArtifactId", "centerSourceId"] as const
     const present = centerKeys.filter((key) => {
       const value = currentParams.get(key)
       return typeof value === "string" && value.trim().length > 0
@@ -2378,6 +2413,7 @@ export function TasksLayout({
   const upsertCenterPaneTab = useCenterPaneTabsStore((state) => state.upsertTab)
   const updateCenterPaneTabTitle = useCenterPaneTabsStore((state) => state.updateTitle)
   const closeCenterPaneTab = useCenterPaneTabsStore((state) => state.closeTab)
+  const closeCenterPaneTabs = useCenterPaneTabsStore((state) => state.closeTabs)
   const closeAllCenterPaneTabs = useCenterPaneTabsStore((state) => state.closeAll)
 
   const clearCenterPaneUrlSelection = useCallback(() => {
@@ -2406,7 +2442,14 @@ export function TasksLayout({
     newParams.delete("centerMentionId")
     newParams.delete("centerTab")
     newParams.delete("centerView")
+    newParams.delete("centerArtifactId")
+    newParams.delete("centerSourceId")
+    newParams.delete("version")
     newParams.delete(KEYWORD_RESEARCH_QUERY_PARAM)
+    newParams.delete(PROMPT_RESEARCH_QUERY_PARAM)
+    newParams.delete(RESEARCH_QUERY_PARAM)
+    newParams.delete(RESEARCH_TAB_PARAM)
+    newParams.delete(CREATE_TYPE_PARAM)
     newParams.delete("itemKind")
     newParams.delete("detailType")
     newParams.delete("detailId")
@@ -2430,6 +2473,8 @@ export function TasksLayout({
         currentSearchParams: baseParams,
         kind: tab.kind,
         id: tab.id,
+        createType:
+          tab.kind === "create" ? getCreateCenterTypeFromParams(baseParams) : null,
       })
       if (tab.kind === "task" || tab.kind === "suggestion") {
         setSelectedTaskId(tab.id)
@@ -2467,6 +2512,14 @@ export function TasksLayout({
         typeof window !== "undefined"
           ? new URLSearchParams(window.location.search).get("centerView")
           : params.get("centerView"),
+      centerArtifactId:
+        typeof window !== "undefined"
+          ? getCenterArtifactIdFromParams(new URLSearchParams(window.location.search))
+          : getCenterArtifactIdFromParams(params),
+      centerSourceId:
+        typeof window !== "undefined"
+          ? getCenterSourceIdFromParams(new URLSearchParams(window.location.search))
+          : getCenterSourceIdFromParams(params),
     })
 
     if (!activeTab) {
@@ -2492,7 +2545,9 @@ export function TasksLayout({
   )
 
   const handleCenterPaneTabClose = useCallback(
-    (key: string) => {
+    (keyOrKeys: string | string[]) => {
+      const keys = Array.isArray(keyOrKeys) ? keyOrKeys.filter(Boolean) : [keyOrKeys]
+      if (keys.length === 0) return
       const stackTeamIdRaw =
         typeof window !== "undefined"
           ? new URLSearchParams(window.location.search).get("stackTeamId")
@@ -2506,9 +2561,19 @@ export function TasksLayout({
           typeof window !== "undefined"
             ? new URLSearchParams(window.location.search).get("centerView")
             : params.get("centerView"),
+        centerArtifactId:
+          typeof window !== "undefined"
+            ? getCenterArtifactIdFromParams(new URLSearchParams(window.location.search))
+            : getCenterArtifactIdFromParams(params),
+        centerSourceId:
+          typeof window !== "undefined"
+            ? getCenterSourceIdFromParams(new URLSearchParams(window.location.search))
+            : getCenterSourceIdFromParams(params),
       })
-      const nextTab = closeCenterPaneTab(key)
-      if (activeTab?.key === key) {
+      const closedActive = Boolean(activeTab && keys.includes(activeTab.key))
+      const nextTab =
+        keys.length === 1 ? closeCenterPaneTab(keys[0]!) : closeCenterPaneTabs(keys)
+      if (closedActive) {
         if (nextTab) activateCenterPaneTab(nextTab)
         else clearCenterPaneUrlSelection()
       }
@@ -2517,6 +2582,7 @@ export function TasksLayout({
       activateCenterPaneTab,
       clearCenterPaneUrlSelection,
       closeCenterPaneTab,
+      closeCenterPaneTabs,
       globalSearch?.selectedDetailTarget,
       isSuggestionSelected,
       params,
@@ -2550,6 +2616,14 @@ export function TasksLayout({
           typeof window !== "undefined"
             ? new URLSearchParams(window.location.search).get("centerView")
             : params.get("centerView"),
+        centerArtifactId:
+          typeof window !== "undefined"
+            ? getCenterArtifactIdFromParams(new URLSearchParams(window.location.search))
+            : getCenterArtifactIdFromParams(params),
+        centerSourceId:
+          typeof window !== "undefined"
+            ? getCenterSourceIdFromParams(new URLSearchParams(window.location.search))
+            : getCenterSourceIdFromParams(params),
       })
       if (!activeTab) return
       updateCenterPaneTabTitle(activeTab.key, trimmed)
@@ -2585,6 +2659,14 @@ export function TasksLayout({
         typeof window !== "undefined"
           ? new URLSearchParams(window.location.search).get("centerView")
           : params.get("centerView"),
+      centerArtifactId:
+        typeof window !== "undefined"
+          ? getCenterArtifactIdFromParams(new URLSearchParams(window.location.search))
+          : getCenterArtifactIdFromParams(params),
+      centerSourceId:
+        typeof window !== "undefined"
+          ? getCenterSourceIdFromParams(new URLSearchParams(window.location.search))
+          : getCenterSourceIdFromParams(params),
     })
     if (!activeTab) return
     upsertCenterPaneTab({
@@ -2684,8 +2766,10 @@ export function TasksLayout({
     }
     if (isOpen) {
       const selectedId = selectedTaskId ? Number(selectedTaskId) : null
+      // Open-pane task is ambient context only. New chats stay global unless the user
+      // explicitly switches the AI pane to task/project scope.
       if (selectedId && Number.isFinite(selectedId)) {
-        setAiPaneContextSafe({ scope: "task", taskId: selectedId })
+        setAiPaneContextSafe({ scope: "global", taskId: selectedId })
       } else if (resolvedStandaloneAiProjectId) {
         setAiPaneContextSafe({ scope: "project", projectId: resolvedStandaloneAiProjectId })
       } else {
@@ -2702,38 +2786,61 @@ export function TasksLayout({
       : params.get("centerView")
   // Shallow URL updates bump this epoch so centerView is re-read without a full navigation.
   void tasksShallowUrlEpoch
-  const isKeywordResearchCenterOpen = liveCenterView === KEYWORD_RESEARCH_CENTER_VIEW
+  const liveCenterParams =
+    typeof window !== "undefined"
+      ? new URLSearchParams(window.location.search)
+      : params
+  const isResearchCenterOpen =
+    liveCenterView === RESEARCH_CENTER_VIEW ||
+    liveCenterView === KEYWORD_RESEARCH_CENTER_VIEW ||
+    liveCenterView === PROMPT_RESEARCH_CENTER_VIEW
+  const isCreateCenterOpen = liveCenterView === CREATE_CENTER_VIEW
+  const liveCreateType = getCreateCenterTypeFromParams(liveCenterParams)
+  const liveResearchTab: ResearchTab = getResearchTabFromParams(liveCenterParams)
+  const liveCenterArtifactId = getCenterArtifactIdFromParams(liveCenterParams)
+  const liveCenterArtifactVersion = getArtifactVersionFromParams(liveCenterParams)
+  const isArtifactCenterOpen = Boolean(liveCenterArtifactId)
+  const liveCenterSourceId = getCenterSourceIdFromParams(liveCenterParams)
+  const isSourceCenterOpen = Boolean(liveCenterSourceId)
 
-  const openKeywordResearchCenterTab = useCallback(
-    (options?: { query?: string | null; forceOpen?: boolean }) => {
+  const openResearchCenterTab = useCallback(
+    (options?: {
+      query?: string | null
+      tab?: ResearchTab | null
+      forceOpen?: boolean
+    }) => {
       const query = typeof options?.query === "string" ? options.query.trim() : ""
-      const forceOpen = options?.forceOpen === true || query.length > 0
+      const tab = options?.tab === "prompts" ? "prompts" : options?.tab === "keywords" ? "keywords" : null
+      const forceOpen = options?.forceOpen === true || query.length > 0 || tab != null
       const baseParams =
         typeof window !== "undefined"
           ? new URLSearchParams(window.location.search)
           : new URLSearchParams(params.toString())
-      if (
-        !forceOpen &&
-        baseParams.get("centerView") === KEYWORD_RESEARCH_CENTER_VIEW
-      ) {
-        handleCenterPaneTabClose(buildCenterPaneTabKey("keyword-research", KEYWORD_RESEARCH_TAB_ID))
+      const currentView = baseParams.get("centerView")
+      const isCurrentlyOpen =
+        currentView === RESEARCH_CENTER_VIEW ||
+        currentView === KEYWORD_RESEARCH_CENTER_VIEW ||
+        currentView === PROMPT_RESEARCH_CENTER_VIEW
+      if (!forceOpen && isCurrentlyOpen) {
+        handleCenterPaneTabClose(buildCenterPaneTabKey("research", RESEARCH_TAB_ID))
         return
       }
       const next = buildCenterPaneTabSelectionSearchParams({
         currentSearchParams: baseParams,
-        kind: "keyword-research",
-        id: KEYWORD_RESEARCH_TAB_ID,
-        keywordQuery: query || null,
+        kind: "research",
+        id: RESEARCH_TAB_ID,
+        researchQuery: query || null,
+        researchTab: tab ?? getResearchTabFromParams(baseParams),
       })
       setSelectedTaskId(null)
       setSelectedTaskSeed(null)
       globalSearch?.closeDetailTarget()
       upsertCenterPaneTab({
-        kind: "keyword-research",
-        id: KEYWORD_RESEARCH_TAB_ID,
-        title: "Keyword research",
+        kind: "research",
+        id: RESEARCH_TAB_ID,
+        title: "Research",
       })
-      shallowReplaceSearchParams(effectivePathname, next, "keyword-research-center-open")
+      shallowReplaceSearchParams(effectivePathname, next, "research-center-open")
     },
     [
       effectivePathname,
@@ -2751,54 +2858,121 @@ export function TasksLayout({
     const onToggleAi = () => {
       handleTaskAiPaneOpenChange(!isTaskAiPaneOpen)
     }
-    const onToggleKeyword = () => {
+    const openResearchMobile = (query: string, tab: ResearchTab) => {
+      setIsResearchOpen(true)
+      const baseParams =
+        typeof window !== "undefined"
+          ? new URLSearchParams(window.location.search)
+          : new URLSearchParams(params.toString())
+      baseParams.set(RESEARCH_TAB_PARAM, tab)
+      if (query) baseParams.set(RESEARCH_QUERY_PARAM, query)
+      shallowReplaceSearchParams(effectivePathname, baseParams, "research-seed")
+    }
+    const onToggleResearch = () => {
       if (isMobile) {
-        setIsKeywordPlannerOpen((open) => !open)
+        setIsResearchOpen((open) => !open)
         return
       }
-      openKeywordResearchCenterTab()
+      openResearchCenterTab()
+    }
+    const onOpenResearch = (event: Event) => {
+      const detail = (event as CustomEvent<{ query?: string | null; tab?: ResearchTab | null }>).detail
+      const query = typeof detail?.query === "string" ? detail.query.trim() : ""
+      const tab = detail?.tab === "prompts" ? "prompts" : "keywords"
+      if (isMobile) {
+        openResearchMobile(query, tab)
+        return
+      }
+      openResearchCenterTab({ query, tab, forceOpen: true })
+    }
+    const onToggleKeyword = () => {
+      if (isMobile) {
+        setIsResearchOpen((open) => !open)
+        return
+      }
+      openResearchCenterTab({ tab: "keywords" })
     }
     const onOpenKeyword = (event: Event) => {
       const detail = (event as CustomEvent<{ query?: string | null }>).detail
       const query = typeof detail?.query === "string" ? detail.query.trim() : ""
       if (isMobile) {
-        setIsKeywordPlannerOpen(true)
-        if (query) {
-          const baseParams =
-            typeof window !== "undefined"
-              ? new URLSearchParams(window.location.search)
-              : new URLSearchParams(params.toString())
-          baseParams.set(KEYWORD_RESEARCH_QUERY_PARAM, query)
-          shallowReplaceSearchParams(effectivePathname, baseParams, "keyword-research-seed")
-        }
+        openResearchMobile(query, "keywords")
         return
       }
-      openKeywordResearchCenterTab({ query, forceOpen: true })
+      openResearchCenterTab({ query, tab: "keywords", forceOpen: true })
+    }
+    const onTogglePrompt = () => {
+      if (isMobile) {
+        setIsResearchOpen((open) => !open)
+        return
+      }
+      openResearchCenterTab({ tab: "prompts" })
+    }
+    const onOpenPrompt = (event: Event) => {
+      const detail = (event as CustomEvent<{ query?: string | null }>).detail
+      const query = typeof detail?.query === "string" ? detail.query.trim() : ""
+      if (isMobile) {
+        openResearchMobile(query, "prompts")
+        return
+      }
+      openResearchCenterTab({ query, tab: "prompts", forceOpen: true })
+    }
+    // Desktop create is owned by TaskHeaderBar; mobile still needs this listener for sidebar "+".
+    const onOpenCreate = (event: Event) => {
+      if (!isMobile) return
+      const detail = (event as CustomEvent<OpenHeaderCreateDetail>).detail
+      const type = detail?.type
+      if (!type || type === "ai") {
+        handleTaskAiPaneOpenChange(true)
+        return
+      }
+      setMobileCreateOpen(true)
     }
     window.addEventListener(TOGGLE_AI_PANE_EVENT, onToggleAi)
+    window.addEventListener(OPEN_HEADER_CREATE_EVENT, onOpenCreate)
+    window.addEventListener(TOGGLE_RESEARCH_EVENT, onToggleResearch)
+    window.addEventListener(OPEN_RESEARCH_EVENT, onOpenResearch)
     window.addEventListener(TOGGLE_KEYWORD_RESEARCH_EVENT, onToggleKeyword)
     window.addEventListener(OPEN_KEYWORD_RESEARCH_EVENT, onOpenKeyword)
+    window.addEventListener(TOGGLE_PROMPT_RESEARCH_EVENT, onTogglePrompt)
+    window.addEventListener(OPEN_PROMPT_RESEARCH_EVENT, onOpenPrompt)
     return () => {
       window.removeEventListener(TOGGLE_AI_PANE_EVENT, onToggleAi)
+      window.removeEventListener(OPEN_HEADER_CREATE_EVENT, onOpenCreate)
+      window.removeEventListener(TOGGLE_RESEARCH_EVENT, onToggleResearch)
+      window.removeEventListener(OPEN_RESEARCH_EVENT, onOpenResearch)
       window.removeEventListener(TOGGLE_KEYWORD_RESEARCH_EVENT, onToggleKeyword)
       window.removeEventListener(OPEN_KEYWORD_RESEARCH_EVENT, onOpenKeyword)
+      window.removeEventListener(TOGGLE_PROMPT_RESEARCH_EVENT, onTogglePrompt)
+      window.removeEventListener(OPEN_PROMPT_RESEARCH_EVENT, onOpenPrompt)
     }
   }, [
     effectivePathname,
     handleTaskAiPaneOpenChange,
     isMobile,
     isTaskAiPaneOpen,
-    openKeywordResearchCenterTab,
+    openResearchCenterTab,
     params,
   ])
 
   useEffect(() => {
+    const open = isMobile ? isResearchOpen : isResearchCenterOpen
     window.dispatchEvent(
-      new CustomEvent("app:keyword-research-state", {
-        detail: { open: isMobile ? isKeywordPlannerOpen : isKeywordResearchCenterOpen },
+      new CustomEvent("app:research-state", {
+        detail: { open },
       }),
     )
-  }, [isKeywordPlannerOpen, isKeywordResearchCenterOpen, isMobile, tasksShallowUrlEpoch])
+    window.dispatchEvent(
+      new CustomEvent("app:keyword-research-state", {
+        detail: { open },
+      }),
+    )
+    window.dispatchEvent(
+      new CustomEvent("app:prompt-research-state", {
+        detail: { open },
+      }),
+    )
+  }, [isResearchCenterOpen, isResearchOpen, isMobile, tasksShallowUrlEpoch])
 
   // AI pane open by default unless the user explicitly closed it (`taskAiOpen=false`).
   useEffect(() => {
@@ -3765,15 +3939,16 @@ export function TasksLayout({
 
                           <MobileGlobalHeaderActions
                             onOpenAiPane={() => handleTaskAiPaneOpenChange(true)}
-                            onOpenKeywordResearch={() => setIsKeywordPlannerOpen(true)}
+                            onOpenKeywordResearch={() => setIsResearchOpen(true)}
                             onOpenMoreOptions={() => setMobileOptionsOpen(true)}
-                            isKeywordResearchOpen={isKeywordPlannerOpen}
+                            isKeywordResearchOpen={isResearchOpen}
                           />
                          </div>
 
                            {/* Mobile global search — reuses the exact desktop GlobalSearchBox (same q/committed
-                               state, preview results, and result selection) for every object type. Filter/group/
-                               view controls live in the top-right "..." options drawer. */}
+                               state, preview results, and result selection) for every object type. On tasks,
+                               the inline filter icon opens the same Filter Tasks sheet as "..." > Filters;
+                               other view/group controls stay in the options drawer. */}
                            {globalSearch ? (
                            <div className="px-4 py-3 bg-white">
                              <GlobalSearchBox
@@ -3787,6 +3962,14 @@ export function TasksLayout({
                                onToggleTypeFilter={globalSearch.togglePendingTypeFilter}
                                onPreviewResultSelect={globalSearch.openSearchResult}
                                onShowAll={globalSearch.handleShowAll}
+                               onFilterClick={
+                                 isLeftObjectTasks
+                                   ? () => {
+                                       globalSearch.setIsOpen(false)
+                                       handleMobileFilterClick()
+                                     }
+                                   : undefined
+                               }
                                enableShortcut={false}
                                placeholder="Search all"
                              />
@@ -3889,7 +4072,7 @@ export function TasksLayout({
                 isOpen={true}
                 onClose={() => handleTaskAiPaneOpenChange(false)}
                 initialScope={aiPaneContext.scope}
-                taskId={aiPaneContext.scope === "task" ? aiPaneContext.taskId : undefined}
+                taskId={aiPaneContext.taskId}
                 projectId={aiPaneContext.scope === "project" ? aiPaneContext.projectId : undefined}
                 inline={true}
                 activeFieldContext={activeFieldContext}
@@ -3908,12 +4091,11 @@ export function TasksLayout({
           onNewAiThreadClick={handleMobileNewAiThreadClick}
         />
 
-        {/* Keyword research — reuses the desktop KeywordPlannerPane, which renders as a bottom
-            sheet on mobile (responsive) and a right panel on desktop. */}
-        {isKeywordPlannerOpen && (
-          <KeywordPlannerPane
-            isOpen={isKeywordPlannerOpen}
-            onClose={() => setIsKeywordPlannerOpen(false)}
+        {/* Research — unified Keywords + Prompts tool. */}
+        {isResearchOpen && (
+          <ResearchPane
+            isOpen={isResearchOpen}
+            onClose={() => setIsResearchOpen(false)}
           />
         )}
 
@@ -3972,21 +4154,6 @@ export function TasksLayout({
           router={router}
           pathname={pathname}
           params={new URLSearchParams(params.toString())}
-          showSuggestions={plannerVisibility.showSuggestions}
-          onToggleSuggestions={() => {
-            const nextShowSuggestions = !plannerVisibility.showSuggestions
-            setPlannerVisibility({ showSuggestions: nextShowSuggestions })
-            const next = new URLSearchParams(params.toString())
-            if (nextShowSuggestions) next.delete("showSuggestions")
-            else next.set("showSuggestions", "false")
-            if (plannerVisibility.showTasks) next.delete("showTasks")
-            else next.set("showTasks", "false")
-            const nextSearch = next.toString()
-            if (nextSearch !== params.toString()) {
-              shallowReplaceUrl(`${effectivePathname}?${nextSearch}`)
-              dispatchTasksShallowNavigation()
-            }
-          }}
           dateField={params.get("calendar_date_field") === "publication" ? "publication" : "delivery"}
           onDateFieldChange={(field) => {
             const next = new URLSearchParams(params.toString())
@@ -4031,9 +4198,25 @@ export function TasksLayout({
       params.get("centerUserId") ||
       params.get("centerTeamId") ||
       params.get("centerThreadId") ||
+      params.get("centerArtifactId") ||
+      params.get("centerSourceId") ||
+      params.get("centerView") === RESEARCH_CENTER_VIEW ||
       params.get("centerView") === KEYWORD_RESEARCH_CENTER_VIEW ||
+      params.get("centerView") === PROMPT_RESEARCH_CENTER_VIEW ||
+      params.get("centerView") === CREATE_CENTER_VIEW ||
+      isArtifactCenterOpen ||
+      isSourceCenterOpen ||
+      isCreateCenterOpen ||
       (typeof window !== "undefined" &&
-        new URLSearchParams(window.location.search).get("centerView") === KEYWORD_RESEARCH_CENTER_VIEW),
+        (() => {
+          const view = new URLSearchParams(window.location.search).get("centerView")
+          return (
+            view === RESEARCH_CENTER_VIEW ||
+            view === KEYWORD_RESEARCH_CENTER_VIEW ||
+            view === PROMPT_RESEARCH_CENTER_VIEW ||
+            view === CREATE_CENTER_VIEW
+          )
+        })()),
   )
   const rightViewParamResolved = params.get("rightView")
   const taskAiOpenParamResolved = params.get("taskAiOpen")
@@ -4062,7 +4245,10 @@ export function TasksLayout({
       !!globalSearch?.selectedDetailTarget ||
       hasCenterPaneSelectionFromParams ||
       hasTaskSelectionInUrlParams ||
-      isKeywordResearchCenterOpen) &&
+      isResearchCenterOpen ||
+      isCreateCenterOpen ||
+      isArtifactCenterOpen ||
+      isSourceCenterOpen) &&
     !focusedPane;
   // Thread details live in the middle pane; do not block the AI right pane when a thread is open.
   const showAiPanel =
@@ -4110,6 +4296,7 @@ export function TasksLayout({
           case "mentions":
           case "users":
           case "ai_chats":
+          case "artifacts":
             return globalSearch ? (
               <GlobalSearchFullResultsPane
                 query={globalSearch.committedQuery}
@@ -4137,10 +4324,10 @@ export function TasksLayout({
         }
       };
       return (
-        <div className="flex h-full min-h-0 flex-col">
+        <div className="flex h-full min-h-0 min-w-0 flex-col overflow-hidden">
           {isLeftObjectTasks ? filterRow : null}
           {searchChipRow}
-          <div className="min-h-0 flex-1">
+          <div className="min-h-0 min-w-0 flex-1 overflow-hidden">
             {renderLeftPaneObjectList()}
           </div>
         </div>
@@ -4149,9 +4336,9 @@ export function TasksLayout({
 
     if (view === 'kanban') {
       return (
-        <div className="flex h-full min-h-0 flex-col">
+        <div className="flex h-full min-h-0 min-w-0 flex-col overflow-hidden">
           {filterRow}
-          <div className="min-h-0 flex-1">
+          <div className="min-h-0 min-w-0 flex-1 overflow-hidden">
             <KanbanView
               searchValue={searchValue}
               filters={filters}
@@ -4176,9 +4363,9 @@ export function TasksLayout({
     }
 
     return (
-      <div className="flex h-full min-h-0 flex-col">
+      <div className="flex h-full min-h-0 min-w-0 flex-col overflow-hidden">
         {filterRow}
-        <div className="min-h-0 flex-1">
+        <div className="min-h-0 min-w-0 flex-1 overflow-hidden">
           <CalendarView
             onTaskClick={handleTaskSelect}
             selectedTaskId={selectedTaskId != null ? String(selectedTaskId) : undefined}
@@ -4354,6 +4541,8 @@ export function TasksLayout({
                 typeof window !== "undefined"
                   ? new URLSearchParams(window.location.search).get("centerView")
                   : params.get("centerView"),
+              centerArtifactId: liveCenterArtifactId,
+              centerSourceId: liveCenterSourceId,
             })?.key ?? null
           }
           onSelect={handleCenterPaneTabSelect}
@@ -4398,16 +4587,86 @@ export function TasksLayout({
             shallowReplaceSearchParams(effectivePathname, next, "task-thread-created")
           }}
         />
-      ) : isKeywordResearchCenterOpen ? (
+      ) : isArtifactCenterOpen && liveCenterArtifactId ? (
         <div className="h-full min-h-0 overflow-hidden">
-          <KeywordPlannerPane
-            isOpen
-            variant="inline"
+          <ArtifactPane
+            artifactId={liveCenterArtifactId}
+            version={liveCenterArtifactVersion}
             onClose={() =>
               handleCenterPaneTabClose(
-                buildCenterPaneTabKey("keyword-research", KEYWORD_RESEARCH_TAB_ID),
+                buildCenterPaneTabKey("artifact", liveCenterArtifactId),
               )
             }
+          />
+        </div>
+      ) : isSourceCenterOpen && liveCenterSourceId ? (
+        <div className="h-full min-h-0 overflow-hidden">
+          <SourcePane
+            sourceId={liveCenterSourceId}
+            onClose={() =>
+              handleCenterPaneTabClose(
+                buildCenterPaneTabKey("source", liveCenterSourceId),
+              )
+            }
+          />
+        </div>
+      ) : isResearchCenterOpen ? (
+        <div className="h-full min-h-0 overflow-hidden">
+          <ResearchPane
+            isOpen
+            variant="inline"
+            initialTab={liveResearchTab}
+            onTabChange={(tab) => {
+              const baseParams =
+                typeof window !== "undefined"
+                  ? new URLSearchParams(window.location.search)
+                  : new URLSearchParams(params.toString())
+              baseParams.set(RESEARCH_TAB_PARAM, tab)
+              baseParams.set("centerView", RESEARCH_CENTER_VIEW)
+              shallowReplaceSearchParams(effectivePathname, baseParams, "research-tab")
+            }}
+            onClose={() =>
+              handleCenterPaneTabClose(
+                buildCenterPaneTabKey("research", RESEARCH_TAB_ID),
+              )
+            }
+          />
+        </div>
+      ) : isCreateCenterOpen ? (
+        <div className="h-full min-h-0 overflow-hidden">
+          <CreateCenterPane
+            createType={liveCreateType}
+            onCreateTypeChange={(nextType) => {
+              const baseParams =
+                typeof window !== "undefined"
+                  ? new URLSearchParams(window.location.search)
+                  : new URLSearchParams(params.toString())
+              baseParams.set("centerView", CREATE_CENTER_VIEW)
+              baseParams.set(CREATE_TYPE_PARAM, nextType)
+              upsertCenterPaneTab({
+                kind: "create",
+                id: CREATE_TAB_ID,
+                title: CREATE_MODAL_TITLES[nextType],
+              })
+              shallowReplaceSearchParams(effectivePathname, baseParams, "create-type")
+            }}
+            onClose={() =>
+              handleCenterPaneTabClose(buildCenterPaneTabKey("create", CREATE_TAB_ID))
+            }
+            onSuccess={() =>
+              handleCenterPaneTabClose(buildCenterPaneTabKey("create", CREATE_TAB_ID))
+            }
+            onAiPillSelect={() => {
+              handleCenterPaneTabClose(buildCenterPaneTabKey("create", CREATE_TAB_ID))
+              const newParams = buildNewAiThreadParams(
+                typeof window !== "undefined"
+                  ? new URLSearchParams(window.location.search)
+                  : new URLSearchParams(params.toString()),
+              )
+              newParams.delete("focus")
+              shallowReplaceSearchParams(effectivePathname, newParams, "create-ai-from-pills")
+              handleTaskAiPaneOpenChange(true)
+            }}
           />
         </div>
       ) : selectedDetailTarget && selectedTaskId ? (
@@ -4541,7 +4800,7 @@ export function TasksLayout({
       onExpand={handleExpandAiPane}
       isExpanded={isAiFocusModeEnabled}
       initialScope={aiPaneContext.scope}
-      taskId={aiPaneContext.scope === "task" ? aiPaneContext.taskId : undefined}
+      taskId={aiPaneContext.taskId}
       projectId={aiPaneContext.scope === "project" ? aiPaneContext.projectId : undefined}
       inline={true}
       activeFieldContext={activeFieldContext}
@@ -4854,7 +5113,7 @@ export function TasksLayout({
             })() : null}
             
             {/* Left list content */}
-            <div className="flex-1">
+            <div className="min-h-0 min-w-0 flex-1 overflow-hidden">
               {isLeftObjectTasks ? (
                 <MemoizedTaskList 
                   onTaskSelect={handleTaskSelect}

@@ -66,7 +66,60 @@
     background-color: hsl(48 96% 76% / 0.6);
     @apply rounded px-0.5;
   }
+
+  /* Word-style track changes inside the same rich-text surface as the editor. */
+  .artifact-rich-diff-body .rte-prose {
+    font-size: 16px;
+    line-height: 1.6;
+    color: inherit;
+  }
+  .artifact-rich-diff-body .artifact-diff-ins {
+    background-color: rgb(236 253 245);
+    color: rgb(6 95 70);
+    border-radius: 0.15rem;
+    box-decoration-break: clone;
+    -webkit-box-decoration-break: clone;
+  }
+  .artifact-rich-diff-body .artifact-diff-del {
+    background-color: rgb(254 242 242);
+    color: rgb(153 27 27);
+    text-decoration: line-through;
+    text-decoration-thickness: 1px;
+    border-radius: 0.15rem;
+    box-decoration-break: clone;
+    -webkit-box-decoration-break: clone;
+  }
+  .artifact-rich-diff-body .artifact-diff-block-ins {
+    background-color: rgb(236 253 245 / 0.55);
+    box-shadow: inset 3px 0 0 rgb(16 185 129);
+    padding-left: 0.5rem;
+    border-radius: 0.15rem;
+  }
+  .artifact-rich-diff-body .artifact-diff-block-del {
+    background-color: rgb(254 242 242 / 0.55);
+    box-shadow: inset 3px 0 0 rgb(239 68 68);
+    padding-left: 0.5rem;
+    border-radius: 0.15rem;
+    opacity: 0.92;
+  }
+  .artifact-rich-diff-body .artifact-diff-block-del,
+  .artifact-rich-diff-body .artifact-diff-block-del * {
+    text-decoration: line-through;
+    text-decoration-thickness: 1px;
+  }
   .rte-prose hr { @apply my-4 border-border; }
+
+  .rte-prose table,
+  .rte-prose .rte-table {
+    @apply my-4 w-full border-collapse text-sm;
+  }
+  .rte-prose th,
+  .rte-prose td {
+    @apply border border-border px-2 py-1.5 align-top;
+  }
+  .rte-prose th {
+    @apply bg-muted/50 text-left font-medium;
+  }
 
   .ai-chat-user-message {
     white-space: pre-wrap;
@@ -164,10 +217,56 @@
     text-decoration: none;
   }
 
+  .ai-chat-assistant-message table {
+    @apply my-3 w-full border-collapse text-sm;
+  }
+  .ai-chat-assistant-message th,
+  .ai-chat-assistant-message td {
+    @apply border border-border px-2 py-1.5 align-top;
+  }
+  .ai-chat-assistant-message th {
+    @apply bg-muted/50 text-left font-medium;
+  }
+
   .ai-chat-component-edit-preview-body {
     max-height: 200px;
     overflow-y: auto;
     overflow-x: hidden;
+  }
+
+  .ai-chat-component-edit-preview-body--expanded {
+    max-height: min(60vh, 36rem);
+  }
+
+  /* Shell: scrollable body + pinned expand control at the bottom. */
+  .ai-chat-component-edit-preview-shell {
+    display: flex;
+    max-height: 200px;
+    flex-direction: column;
+    overflow: hidden;
+  }
+
+  .ai-chat-component-edit-preview-shell--expanded {
+    max-height: min(60vh, 36rem);
+  }
+
+  .ai-chat-component-edit-preview-shell-scroll {
+    min-height: 0;
+    flex: 1 1 auto;
+    overflow-x: hidden;
+    overflow-y: auto;
+  }
+
+  .ai-chat-component-edit-preview-shell-footer {
+    flex: 0 0 auto;
+  }
+
+  .ai-chat-user-message--truncated {
+    display: -webkit-box;
+    -webkit-box-orient: vertical;
+    -webkit-line-clamp: 4;
+    overflow: hidden;
+    max-height: 6.5rem;
   }
 
   .ai-chat-composer-input:empty::before {
@@ -188,6 +287,18 @@
   @media (min-width: 640px) {
     .ai-chat-component-edit-preview-body {
       max-height: 220px;
+    }
+
+    .ai-chat-component-edit-preview-body--expanded {
+      max-height: min(70vh, 40rem);
+    }
+
+    .ai-chat-component-edit-preview-shell {
+      max-height: 220px;
+    }
+
+    .ai-chat-component-edit-preview-shell--expanded {
+      max-height: min(70vh, 40rem);
     }
   }
 

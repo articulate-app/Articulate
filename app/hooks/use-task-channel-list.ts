@@ -19,7 +19,9 @@ type UseTaskChannelListArgs = {
 }
 
 /**
- * Shared task-channel list + selection (same init rules as TaskContentTab).
+ * Shared task-channel list + selection.
+ * Init runs once per taskId so optimistic add/remove is not overwritten by
+ * preferredChannelId / onChannelChange / bootstrap identity churn.
  */
 export function useTaskChannelList({
   taskId,
@@ -36,6 +38,14 @@ export function useTaskChannelList({
   const [error, setError] = useState<string | null>(null)
   const taskIdRef = useRef(taskId)
   taskIdRef.current = taskId
+  const bootstrapRef = useRef(bootstrapTaskChannels)
+  bootstrapRef.current = bootstrapTaskChannels
+  const skipFetchRef = useRef(skipInitialTaskChannelsFetch)
+  skipFetchRef.current = skipInitialTaskChannelsFetch
+  const preferredRef = useRef(preferredChannelId)
+  preferredRef.current = preferredChannelId
+  const onChannelChangeRef = useRef(onChannelChange)
+  onChannelChangeRef.current = onChannelChange
 
   const fetchTaskChannels = useCallback(
     async (signal?: AbortSignal) => {
@@ -92,8 +102,8 @@ export function useTaskChannelList({
       setError(null)
       try {
         const initMode = resolveTaskChannelInitMode({
-          skipInitialTaskChannelsFetch,
-          bootstrapTaskChannels,
+          skipInitialTaskChannelsFetch: skipFetchRef.current,
+          bootstrapTaskChannels: bootstrapRef.current,
         })
 
         if (initMode.mode === "bootstrap") {
@@ -101,9 +111,9 @@ export function useTaskChannelList({
           const list = initMode.channels
           setChannels(list)
           setSelectedChannelId((prev) => {
-            const next = applySelection(list, prev, preferredChannelId)
+            const next = applySelection(list, prev, preferredRef.current)
             if (next !== prev) {
-              Promise.resolve().then(() => onChannelChange?.(next))
+              Promise.resolve().then(() => onChannelChangeRef.current?.(next))
             }
             return next
           })
@@ -113,9 +123,9 @@ export function useTaskChannelList({
         const list = await fetchTaskChannels(controller.signal)
         if (cancelled || taskIdRef.current !== taskId) return
         setSelectedChannelId((prev) => {
-          const next = applySelection(list, prev, preferredChannelId)
+          const next = applySelection(list, prev, preferredRef.current)
           if (next !== prev) {
-            Promise.resolve().then(() => onChannelChange?.(next))
+            Promise.resolve().then(() => onChannelChangeRef.current?.(next))
           }
           return next
         })
@@ -137,28 +147,30 @@ export function useTaskChannelList({
       cancelled = true
       controller.abort()
     }
-  }, [
-    enabled,
-    taskId,
-    bootstrapTaskChannels,
-    skipInitialTaskChannelsFetch,
-    preferredChannelId,
-    fetchTaskChannels,
-    applySelection,
-    onChannelChange,
-  ])
+  }, [enabled, taskId, fetchTaskChannels, applySelection])
+
+  useEffect(() => {
+    if (preferredChannelId == null) return
+    setSelectedChannelId((prev) => {
+      if (prev === preferredChannelId) return prev
+      if (!channels.some((c) => c.channel_id === preferredChannelId)) return prev
+      return preferredChannelId
+    })
+  }, [preferredChannelId, channels])
 
   const selectChannel = useCallback(
     (channelId: number) => {
       setSelectedChannelId(channelId)
-      onChannelChange?.(channelId)
+      onChannelChangeRef.current?.(channelId)
     },
-    [onChannelChange],
+    [],
   )
 
   return {
     channels,
+    setChannels,
     selectedChannelId,
+    setSelectedChannelId,
     selectChannel,
     isLoading,
     error,

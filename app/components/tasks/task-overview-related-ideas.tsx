@@ -47,8 +47,8 @@ export function TaskOverviewRelatedIdeas({
       isEmpty={isEmpty}
       emptyMessage="No related ideas yet."
     >
-      <ul className="flex flex-col py-1">
-        {ideas.map((idea, idx) => {
+      <ul className="flex flex-col">
+        {ideas.map((idea) => {
           const isActing = ideaActionById[idea.id] != null
           const contentTypeLabel =
             idea.content_type_id != null
@@ -58,37 +58,46 @@ export function TaskOverviewRelatedIdeas({
           const description = idea.description?.trim() || null
 
           return (
-            <li key={idea.id}>
-              {idx > 0 ? <div className="border-t border-gray-200" /> : null}
-              <div className="group flex items-center gap-2 py-1.5 min-h-0">
-                <div className="min-w-0 flex-1 overflow-hidden">
-                  <div className="truncate text-sm text-gray-900">{title}</div>
-                  <div className="truncate text-xs text-gray-500">
-                    {contentTypeLabel || description || "Suggested follow-up"}
-                  </div>
+            <li key={idea.id} className="group flex min-h-0 items-center gap-2.5 py-2">
+              <div className="min-w-0 flex-1 overflow-hidden">
+                <div className="flex min-w-0 items-center gap-1.5 text-sm leading-5">
+                  <span className="truncate text-gray-900">{title}</span>
+                  {contentTypeLabel ? (
+                    <>
+                      <span className="shrink-0 text-gray-300" aria-hidden>
+                        ·
+                      </span>
+                      <span className="shrink-0 truncate text-muted-foreground">
+                        {contentTypeLabel}
+                      </span>
+                    </>
+                  ) : null}
                 </div>
-                <div className="flex shrink-0 items-center gap-0.5 opacity-100 md:opacity-0 md:group-hover:opacity-100 md:transition-opacity">
-                  <button
-                    type="button"
-                    className="inline-flex h-6 w-6 items-center justify-center rounded text-gray-400 hover:bg-gray-100 hover:text-gray-700 disabled:opacity-50"
-                    title="Dismiss"
-                    aria-label="Dismiss idea"
-                    disabled={isActing || isRefreshing}
-                    onClick={() => onDismiss(idea.id)}
-                  >
-                    <X className="h-3.5 w-3.5" />
-                  </button>
-                  <button
-                    type="button"
-                    className="inline-flex h-6 w-6 items-center justify-center rounded text-blue-600 hover:bg-blue-50 disabled:opacity-50"
-                    title="Accept"
-                    aria-label="Accept idea"
-                    disabled={isActing || isRefreshing}
-                    onClick={() => onAccept(idea)}
-                  >
-                    <Check className="h-3.5 w-3.5" />
-                  </button>
-                </div>
+                {description ? (
+                  <div className="mt-0.5 truncate text-xs text-gray-500">{description}</div>
+                ) : null}
+              </div>
+              <div className="flex shrink-0 items-center gap-0.5 opacity-100 md:opacity-0 md:transition-opacity md:group-hover:opacity-100">
+                <button
+                  type="button"
+                  className="inline-flex h-6 w-6 items-center justify-center rounded text-gray-400 hover:bg-gray-100 hover:text-gray-700 disabled:opacity-50"
+                  title="Dismiss"
+                  aria-label="Dismiss idea"
+                  disabled={isActing || isRefreshing}
+                  onClick={() => onDismiss(idea.id)}
+                >
+                  <X className="h-3.5 w-3.5" />
+                </button>
+                <button
+                  type="button"
+                  className="inline-flex h-6 w-6 items-center justify-center rounded text-blue-600 hover:bg-blue-50 disabled:opacity-50"
+                  title="Accept"
+                  aria-label="Accept idea"
+                  disabled={isActing || isRefreshing}
+                  onClick={() => onAccept(idea)}
+                >
+                  <Check className="h-3.5 w-3.5" />
+                </button>
               </div>
             </li>
           )

@@ -1,8 +1,49 @@
-export type CenterPaneEntity = "task" | "project" | "user" | "team" | "thread"
+import {
+  applyArtifactCenterSelectionParams,
+  ARTIFACT_VERSION_PARAM,
+  CENTER_ARTIFACT_ID_PARAM,
+  clearArtifactCenterSelectionParams,
+  getArtifactVersionFromParams,
+  getCenterArtifactIdFromParams,
+} from "./artifact-selection-url"
+import {
+  applySourceCenterSelectionParams,
+  CENTER_SOURCE_ID_PARAM,
+  clearSourceCenterSelectionParams,
+  getCenterSourceIdFromParams,
+} from "./source-selection-url"
 
+export type CenterPaneEntity =
+  | "task"
+  | "project"
+  | "user"
+  | "team"
+  | "thread"
+  | "artifact"
+  | "source"
+
+/** Unified Research middle-pane tool (Keywords + Prompts). */
+export const RESEARCH_CENTER_VIEW = "research"
+export const RESEARCH_TAB_PARAM = "researchTab"
+export const RESEARCH_QUERY_PARAM = "rQuery"
+export const RESEARCH_REGION_PARAM = "rRegion"
+
+/** Create flow as a middle-pane tab (task / project / user / thread). */
+export const CREATE_CENTER_VIEW = "create"
+export const CREATE_TYPE_PARAM = "createType"
+export type CreateCenterType = "task" | "project" | "user" | "thread"
+
+/** @deprecated Prefer RESEARCH_CENTER_VIEW — kept for URL / event aliases. */
 export const KEYWORD_RESEARCH_CENTER_VIEW = "keyword-research"
-/** Seed query for the keyword research middle-pane tab (from top search, etc.). */
+/** @deprecated Prefer RESEARCH_QUERY_PARAM. */
 export const KEYWORD_RESEARCH_QUERY_PARAM = "krQuery"
+
+/** @deprecated Prefer RESEARCH_CENTER_VIEW. */
+export const PROMPT_RESEARCH_CENTER_VIEW = "prompt-research"
+/** @deprecated Prefer RESEARCH_QUERY_PARAM. */
+export const PROMPT_RESEARCH_QUERY_PARAM = "prQuery"
+
+export type ResearchTab = "keywords" | "prompts"
 
 export type ActiveCenterSelection =
   | { type: "task-suggestion"; id: string }
@@ -11,12 +52,48 @@ export type ActiveCenterSelection =
   | { type: "project"; id: string }
   | { type: "team"; id: string }
   | { type: "thread"; id: string }
+  | { type: "artifact"; id: string; version: number | null }
+  | { type: "source"; id: string }
+  | { type: "research"; tab: ResearchTab }
+  | { type: "create"; createType: CreateCenterType }
+  /** @deprecated Normalized to research by callers when possible. */
   | { type: "keyword-research" }
+  /** @deprecated Normalized to research by callers when possible. */
+  | { type: "prompt-research" }
 
 type ReadableParams = { get: (key: string) => string | null }
 
 function nonEmpty(value: string | null): string | null {
   return typeof value === "string" && value.trim().length > 0 ? value : null
+}
+
+export function parseResearchTab(value: string | null | undefined): ResearchTab {
+  return value === "prompts" ? "prompts" : "keywords"
+}
+
+export function getResearchQueryFromParams(params: ReadableParams): string {
+  return (
+    nonEmpty(params.get(RESEARCH_QUERY_PARAM)) ||
+    nonEmpty(params.get(KEYWORD_RESEARCH_QUERY_PARAM)) ||
+    nonEmpty(params.get(PROMPT_RESEARCH_QUERY_PARAM)) ||
+    ""
+  )
+}
+
+export function getResearchTabFromParams(params: ReadableParams): ResearchTab {
+  const centerView = params.get("centerView")
+  if (centerView === PROMPT_RESEARCH_CENTER_VIEW) return "prompts"
+  if (centerView === KEYWORD_RESEARCH_CENTER_VIEW) return "keywords"
+  return parseResearchTab(params.get(RESEARCH_TAB_PARAM))
+}
+
+export function parseCreateCenterType(value: string | null | undefined): CreateCenterType {
+  if (value === "project" || value === "user" || value === "thread") return value
+  return "task"
+}
+
+export function getCreateCenterTypeFromParams(params: ReadableParams): CreateCenterType {
+  return parseCreateCenterType(params.get(CREATE_TYPE_PARAM))
 }
 
 /**
@@ -43,8 +120,28 @@ export function getActiveCenterSelection(params: ReadableParams): ActiveCenterSe
   if (centerTeamId) return { type: "team", id: centerTeamId }
   const centerThreadId = nonEmpty(params.get("centerThreadId"))
   if (centerThreadId) return { type: "thread", id: centerThreadId }
-  if (params.get("centerView") === KEYWORD_RESEARCH_CENTER_VIEW) {
-    return { type: "keyword-research" }
+  const centerArtifactId = getCenterArtifactIdFromParams(params)
+  if (centerArtifactId) {
+    return {
+      type: "artifact",
+      id: centerArtifactId,
+      version: getArtifactVersionFromParams(params),
+    }
+  }
+  const centerSourceId = getCenterSourceIdFromParams(params)
+  if (centerSourceId) {
+    return { type: "source", id: centerSourceId }
+  }
+  const centerView = params.get("centerView")
+  if (centerView === CREATE_CENTER_VIEW) {
+    return { type: "create", createType: getCreateCenterTypeFromParams(params) }
+  }
+  if (
+    centerView === RESEARCH_CENTER_VIEW ||
+    centerView === KEYWORD_RESEARCH_CENTER_VIEW ||
+    centerView === PROMPT_RESEARCH_CENTER_VIEW
+  ) {
+    return { type: "research", tab: getResearchTabFromParams(params) }
   }
   return null
 }
@@ -61,7 +158,14 @@ export function clearActiveCenterSelectionParams(next: URLSearchParams) {
   next.delete("centerMentionId")
   next.delete("centerTab")
   next.delete("centerView")
+  clearArtifactCenterSelectionParams(next)
+  clearSourceCenterSelectionParams(next)
   next.delete(KEYWORD_RESEARCH_QUERY_PARAM)
+  next.delete(PROMPT_RESEARCH_QUERY_PARAM)
+  next.delete(RESEARCH_QUERY_PARAM)
+  next.delete(RESEARCH_TAB_PARAM)
+  next.delete(RESEARCH_REGION_PARAM)
+  next.delete(CREATE_TYPE_PARAM)
   next.delete("rightTaskId")
   next.delete("id")
 }
@@ -75,7 +179,14 @@ function clearCenterPaneSelection(next: URLSearchParams) {
   next.delete("centerMentionId")
   next.delete("centerTab")
   next.delete("centerView")
+  clearArtifactCenterSelectionParams(next)
+  clearSourceCenterSelectionParams(next)
   next.delete(KEYWORD_RESEARCH_QUERY_PARAM)
+  next.delete(PROMPT_RESEARCH_QUERY_PARAM)
+  next.delete(RESEARCH_QUERY_PARAM)
+  next.delete(RESEARCH_TAB_PARAM)
+  next.delete(RESEARCH_REGION_PARAM)
+  next.delete(CREATE_TYPE_PARAM)
 }
 
 function clearGenericSelection(next: URLSearchParams) {
@@ -113,8 +224,20 @@ export function buildCenterPaneSelectionSearchParams(args: {
   tab?: string | null
   /** Focused mention within a thread (center-pane thread selection). */
   mentionId?: string | number | null
+  /** Optional artifact version when entity is "artifact". Not part of tab identity. */
+  version?: number | null
+  /** Open artifact version history panel when entity is "artifact". */
+  openHistory?: boolean
 }): URLSearchParams {
-  const { currentSearchParams, entity, id, tab, mentionId = null } = args
+  const {
+    currentSearchParams,
+    entity,
+    id,
+    tab,
+    mentionId = null,
+    version = null,
+    openHistory = false,
+  } = args
   const next = new URLSearchParams(currentSearchParams.toString())
   clearGenericSelection(next)
   clearCenterPaneSelection(next)
@@ -147,6 +270,18 @@ export function buildCenterPaneSelectionSearchParams(args: {
     else next.delete("centerTab")
     return next
   }
+  if (entity === "artifact") {
+    applyArtifactCenterSelectionParams(next, {
+      artifactId: String(id),
+      version,
+      openHistory,
+    })
+    return next
+  }
+  if (entity === "source") {
+    applySourceCenterSelectionParams(next, { sourceId: String(id) })
+    return next
+  }
 
   next.set("centerThreadId", String(id))
   if (mentionId != null && String(mentionId).trim()) {
@@ -157,16 +292,79 @@ export function buildCenterPaneSelectionSearchParams(args: {
   return next
 }
 
+function applyResearchCenterParams(
+  next: URLSearchParams,
+  args: {
+    tab?: ResearchTab | null
+    query?: string | null
+    regionId?: string | null
+  },
+) {
+  next.set("centerView", RESEARCH_CENTER_VIEW)
+  const tab = args.tab === "prompts" ? "prompts" : "keywords"
+  next.set(RESEARCH_TAB_PARAM, tab)
+  next.delete(KEYWORD_RESEARCH_QUERY_PARAM)
+  next.delete(PROMPT_RESEARCH_QUERY_PARAM)
+  const trimmedQuery = typeof args.query === "string" ? args.query.trim() : ""
+  if (trimmedQuery) next.set(RESEARCH_QUERY_PARAM, trimmedQuery)
+  else next.delete(RESEARCH_QUERY_PARAM)
+  const regionId = typeof args.regionId === "string" ? args.regionId.trim() : ""
+  if (regionId) next.set(RESEARCH_REGION_PARAM, regionId)
+  else next.delete(RESEARCH_REGION_PARAM)
+}
+
+function applyCreateCenterParams(
+  next: URLSearchParams,
+  createType: CreateCenterType | null | undefined,
+) {
+  next.set("centerView", CREATE_CENTER_VIEW)
+  next.set(CREATE_TYPE_PARAM, parseCreateCenterType(createType))
+}
+
 /** Apply a middle-pane tab selection (including suggestions) onto URL search params. */
 export function buildCenterPaneTabSelectionSearchParams(args: {
   currentSearchParams: URLSearchParams
-  kind: "task" | "suggestion" | "project" | "user" | "team" | "thread" | "keyword-research"
+  kind:
+    | "task"
+    | "suggestion"
+    | "project"
+    | "user"
+    | "team"
+    | "thread"
+    | "artifact"
+    | "source"
+    | "research"
+    | "create"
+    | "keyword-research"
+    | "prompt-research"
   id: string | number
-  /** Optional seed keyword when opening keyword research. */
+  /** Optional artifact version (viewer state only; not part of tab key). */
+  artifactVersion?: number | null
+  /** Optional seed query for Research (shared Keywords / Prompts). */
+  researchQuery?: string | null
+  researchTab?: ResearchTab | null
+  researchRegionId?: string | null
+  /** Create flow type when kind is "create". */
+  createType?: CreateCenterType | null
+  /** @deprecated Use researchQuery. */
   keywordQuery?: string | null
+  /** @deprecated Use researchQuery. */
+  promptQuery?: string | null
 }): URLSearchParams {
-  const { currentSearchParams, kind, id, keywordQuery = null } = args
-  if (kind === "keyword-research") {
+  const {
+    currentSearchParams,
+    kind,
+    id,
+    artifactVersion = null,
+    researchQuery = null,
+    researchTab = null,
+    researchRegionId = null,
+    createType = null,
+    keywordQuery = null,
+    promptQuery = null,
+  } = args
+
+  if (kind === "create") {
     const next = new URLSearchParams(currentSearchParams.toString())
     clearGenericSelection(next)
     clearCenterPaneSelection(next)
@@ -176,10 +374,33 @@ export function buildCenterPaneTabSelectionSearchParams(args: {
     next.delete("centerSuggestionId")
     next.delete("stackTeamId")
     next.set("layout", "right")
-    next.set("centerView", KEYWORD_RESEARCH_CENTER_VIEW)
-    const trimmedQuery = typeof keywordQuery === "string" ? keywordQuery.trim() : ""
-    if (trimmedQuery) next.set(KEYWORD_RESEARCH_QUERY_PARAM, trimmedQuery)
-    else next.delete(KEYWORD_RESEARCH_QUERY_PARAM)
+    applyCreateCenterParams(next, createType)
+    return next
+  }
+
+  if (kind === "research" || kind === "keyword-research" || kind === "prompt-research") {
+    const next = new URLSearchParams(currentSearchParams.toString())
+    clearGenericSelection(next)
+    clearCenterPaneSelection(next)
+    clearRightPaneSelection(next)
+    clearCenterSplitLayout(next)
+    next.delete("itemKind")
+    next.delete("centerSuggestionId")
+    next.delete("stackTeamId")
+    next.set("layout", "right")
+    const tab: ResearchTab =
+      researchTab ??
+      (kind === "prompt-research" ? "prompts" : "keywords")
+    const query =
+      (typeof researchQuery === "string" && researchQuery.trim()) ||
+      (typeof keywordQuery === "string" && keywordQuery.trim()) ||
+      (typeof promptQuery === "string" && promptQuery.trim()) ||
+      ""
+    applyResearchCenterParams(next, {
+      tab,
+      query,
+      regionId: researchRegionId,
+    })
     return next
   }
   if (kind === "suggestion") {
@@ -199,5 +420,8 @@ export function buildCenterPaneTabSelectionSearchParams(args: {
     currentSearchParams,
     entity: kind,
     id,
+    version: kind === "artifact" ? artifactVersion : null,
   })
 }
+
+export { ARTIFACT_VERSION_PARAM, CENTER_ARTIFACT_ID_PARAM, CENTER_SOURCE_ID_PARAM }

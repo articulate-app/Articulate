@@ -199,11 +199,15 @@ async function listArtifactCommentThreads(artifactIds: string[]): Promise<Artifa
         created_by,
         created_at,
         resolved_at,
-        resolved_by
+        resolved_by,
+        thread_watchers (
+          watcher_id,
+          users:watcher_id(id, full_name, email, photo)
+        )
       )
     `,
     )
-    .eq("entity_type", "task_artifact")
+    .eq("entity_type", "artifact")
     .in("artifact_id", ids)
 
   if (error) throw error
@@ -234,10 +238,16 @@ async function listArtifactCommentThreads(artifactIds: string[]): Promise<Artifa
     .map((row) => {
       const thread = row.threads ?? {}
       const threadId = toNumberOrNull(row.thread_id ?? thread.id)
+      const watchers = Array.isArray(thread?.thread_watchers)
+        ? thread.thread_watchers
+            .map((tw: any) => normalizeWatcher(tw?.users ? { ...tw.users, id: tw.watcher_id ?? tw.users.id } : tw))
+            .filter(Boolean)
+        : []
       return normalizeThreadFromRow({
         ...row,
         ...thread,
         thread_id: threadId,
+        watchers,
         mentions: threadId != null ? mentionsByThread.get(threadId) ?? [] : [],
       })
     })
@@ -272,7 +282,7 @@ async function createArtifactCommentThread(input: ArtifactCommentCreateInput): P
 
   const { error: targetError } = await supabase.from("thread_targets").insert({
     thread_id: threadId,
-    entity_type: "task_artifact",
+    entity_type: "artifact",
     artifact_id: artifactId,
     artifact_version_number: input.artifactVersionNumber,
     anchor_type: input.anchorType,
@@ -373,4 +383,183 @@ export function useReplyToArtifactCommentThread() {
       await queryClient.invalidateQueries({ queryKey: [ARTIFACT_THREAD_QUERY_KEY] })
     },
   })
+}
+
+async function deleteArtifactCommentThread(threadId: number) {
+  const supabase = createClientComponentClient()
+  const { error } = await supabase.from("threads").delete().eq("id", threadId)
+  if (error) throw error
+}
+
+async function setArtifactCommentThreadResolved(input: {
+  threadId: number
+  resolvedAt: string | null
+  resolvedBy: number | null
+}) {
+  const supabase = createClientComponentClient()
+  const { error } = await supabase
+    .from("threads")
+    .update({
+      resolved_at: input.resolvedAt,
+      resolved_by: input.resolvedBy,
+    })
+    .eq("id", input.threadId)
+  if (error) throw error
+}
+
+export function useDeleteArtifactCommentThread() {
+  const queryClient = useQueryClient()
+  return useMutation({
+    mutationFn: deleteArtifactCommentThread,
+    onSuccess: async () => {
+      await queryClient.invalidateQueries({ queryKey: [ARTIFACT_THREAD_QUERY_KEY] })
+    },
+  })
+}
+
+export function useResolveArtifactCommentThread() {
+  const queryClient = useQueryClient()
+  return useMutation({
+    mutationFn: setArtifactCommentThreadResolved,
+    onSuccess: async () => {
+      await queryClient.invalidateQueries({ queryKey: [ARTIFACT_THREAD_QUERY_KEY] })
+    },
+  })
+}
+
+export type ArtifactNotifyUser = {
+  id: number
+  full_name: string | null
+  email: string | null
+  photo: string | null
+}
+
+/**
+ * Default "We'll notify" pool for a new artifact comment thread:
+ * task watchers → project watchers → shared AI thread audience.
+ */
+export async function loadArtifactNotifyPool(artifact: {
+  task_id?: number | null
+  project_id?: number | null
+  ai_thread_id?: string | null
+}): Promise<ArtifactNotifyUser[]> {
+  const supabase = createClientComponentClient()
+
+  if (artifact.task_id != null && artifact.task_id > 0) {
+    const { data, error } = await supabase
+      .from("task_watchers")
+      .select("user_id, users:user_id(id, full_name, email, photo)")
+      .eq("task_id", artifact.task_id)
+      .eq("is_deleted", false)
+    if (error) throw error
+    return ((data ?? []) as any[])
+      .map((row) => {
+        const user = row?.users
+        const id = toNumberOrNull(user?.id ?? row?.user_id)
+        if (id == null) return null
+        return {
+          id,
+          full_name: user?.full_name ?? null,
+          email: user?.email ?? null,
+          photo: user?.photo ?? null,
+        } satisfies ArtifactNotifyUser
+      })
+      .filter(Boolean) as ArtifactNotifyUser[]
+  }
+
+  if (artifact.project_id != null && artifact.project_id > 0) {
+    const { data, error } = await supabase
+      .from("project_watchers")
+      .select("user_id, users:user_id(id, full_name, email, photo)")
+      .eq("project_id", artifact.project_id)
+    if (error) throw error
+    return ((data ?? []) as any[])
+      .map((row) => {
+        const user = row?.users
+        const id = toNumberOrNull(user?.id ?? row?.user_id)
+        if (id == null) return null
+        return {
+          id,
+          full_name: user?.full_name ?? null,
+          email: user?.email ?? null,
+          photo: user?.photo ?? null,
+        } satisfies ArtifactNotifyUser
+      })
+      .filter(Boolean) as ArtifactNotifyUser[]
+  }
+
+  const aiThreadId = toTrimmedString(artifact.ai_thread_id)
+  if (!aiThreadId) return []
+
+  const { data: thread, error: threadError } = await supabase
+    .from("ai_threads")
+    .select("id, created_by, visibility, is_collaborative, project_id, team_id")
+    .eq("id", aiThreadId)
+    .maybeSingle()
+  if (threadError) throw threadError
+  if (!thread) return []
+
+  const visibility = String(thread.visibility ?? "private")
+  const isShared = visibility === "project" || visibility === "team" || thread.is_collaborative === true
+  if (!isShared || visibility === "private") {
+    const creatorId = toNumberOrNull(thread.created_by)
+    if (creatorId == null) return []
+    const { data: user } = await supabase
+      .from("users")
+      .select("id, full_name, email, photo")
+      .eq("id", creatorId)
+      .maybeSingle()
+    if (!user) return []
+    return [{
+      id: creatorId,
+      full_name: user.full_name ?? null,
+      email: user.email ?? null,
+      photo: user.photo ?? null,
+    }]
+  }
+
+  if (visibility === "project" && thread.project_id) {
+    const { data, error } = await supabase
+      .from("project_watchers")
+      .select("user_id, users:user_id(id, full_name, email, photo)")
+      .eq("project_id", thread.project_id)
+    if (error) throw error
+    return ((data ?? []) as any[])
+      .map((row) => {
+        const user = row?.users
+        const id = toNumberOrNull(user?.id ?? row?.user_id)
+        if (id == null) return null
+        return {
+          id,
+          full_name: user?.full_name ?? null,
+          email: user?.email ?? null,
+          photo: user?.photo ?? null,
+        } satisfies ArtifactNotifyUser
+      })
+      .filter(Boolean) as ArtifactNotifyUser[]
+  }
+
+  // Team-visible threads: fall back to project watchers when project_id is set.
+  if (thread.project_id) {
+    const { data, error } = await supabase
+      .from("project_watchers")
+      .select("user_id, users:user_id(id, full_name, email, photo)")
+      .eq("project_id", thread.project_id)
+    if (error) throw error
+    return ((data ?? []) as any[])
+      .map((row) => {
+        const user = row?.users
+        const id = toNumberOrNull(user?.id ?? row?.user_id)
+        if (id == null) return null
+        return {
+          id,
+          full_name: user?.full_name ?? null,
+          email: user?.email ?? null,
+          photo: user?.photo ?? null,
+        } satisfies ArtifactNotifyUser
+      })
+      .filter(Boolean) as ArtifactNotifyUser[]
+  }
+
+  return []
 }

@@ -24,7 +24,7 @@ export interface GlobalSearchBoxProps {
   onToggleTypeFilter?: (type: GlobalSearchItemEntityType) => void
   onPreviewResultSelect?: (item: GlobalSearchDocument) => void
   onShowAll?: (value?: string) => void
-  /** When provided, renders the inline filter button (desktop). Omit on mobile (filters live elsewhere). */
+  /** When provided, renders the inline filter button (desktop header + mobile tasks search). */
   onFilterClick?: () => void
   placeholder?: string
   /** Cmd/Ctrl+K focuses the input. Default true. */
@@ -119,7 +119,14 @@ export function GlobalSearchBox({
         onKeyDown={(event) => {
           if (event.key === "Enter") {
             event.preventDefault()
-            onSearchCommit?.(event.currentTarget.value)
+            const value = event.currentTarget.value
+            // No type pill → same as "Show all search results" (object=all mixed results).
+            if (selectedTypeFilters.length === 0) {
+              onShowAll?.(value)
+            } else {
+              onSearchCommit?.(value)
+            }
+            onSearchOpenChange?.(false)
           } else if (event.key === "Escape") {
             onSearchOpenChange?.(false)
           }

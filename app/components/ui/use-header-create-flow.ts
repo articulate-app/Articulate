@@ -6,6 +6,7 @@ import { createClientComponentClient } from "@supabase/auth-helpers-nextjs"
 import { useRouter } from "next/navigation"
 import { useCurrentUserStore } from "../../store/current-user"
 import { createProject } from "../../lib/services/projects"
+import { extractProjectBrand } from "../../lib/services/project-brand-kit"
 import { invokeEdgeFunctionFetch } from "@/lib/edge-functions"
 import { getRoles } from "../../lib/services/teams"
 import type { AdminCreateUserPayload, AdminCreateUserResponse } from "../../types/users"
@@ -59,6 +60,7 @@ export function useHeaderCreateFlow(options?: { enabled?: boolean }) {
   const [isSubmittingCreate, setIsSubmittingCreate] = useState(false)
   const [createError, setCreateError] = useState<string | null>(null)
   const [projectName, setProjectName] = useState("")
+  const [projectUrl, setProjectUrl] = useState("")
   const [projectTeamId, setProjectTeamId] = useState<number | null>(null)
   const [userEmail, setUserEmail] = useState("")
   const [userName, setUserName] = useState("")
@@ -228,6 +230,7 @@ export function useHeaderCreateFlow(options?: { enabled?: boolean }) {
     setCreateError(null)
     setIsSubmittingCreate(false)
     setProjectName("")
+    setProjectUrl("")
     setProjectTeamId(null)
     setUserEmail("")
     setUserName("")
@@ -257,9 +260,23 @@ export function useHeaderCreateFlow(options?: { enabled?: boolean }) {
     setIsSubmittingCreate(true)
     setCreateError(null)
     try {
-      const { data, error } = await createProject(projectName.trim(), projectTeamId)
+      const trimmedProjectUrl = projectUrl.trim()
+      const { data, error } = await createProject(projectName.trim(), projectTeamId, {
+        projectUrl: trimmedProjectUrl || null,
+      })
       if (error) throw error
       const projectId = data?.id
+
+      if (projectId && trimmedProjectUrl) {
+        void extractProjectBrand({
+          projectId: Number(projectId),
+          url: trimmedProjectUrl,
+          replaceAll: true,
+        }).catch(() => {
+          // Brand extract is best-effort on create; retry from project settings.
+        })
+      }
+
       resetCreateState()
       if (projectId && globalSearch?.openSearchResult) {
         const item: GlobalSearchDocument = {
@@ -290,7 +307,7 @@ export function useHeaderCreateFlow(options?: { enabled?: boolean }) {
     } finally {
       setIsSubmittingCreate(false)
     }
-  }, [globalSearch, projectName, projectTeamId, resetCreateState, router])
+  }, [globalSearch, projectName, projectTeamId, projectUrl, resetCreateState, router])
 
   const handleCreateUserSubmit = useCallback(async () => {
     if (!userEmail.trim()) {
@@ -391,6 +408,8 @@ export function useHeaderCreateFlow(options?: { enabled?: boolean }) {
     isSubmittingCreate,
     projectName,
     setProjectName,
+    projectUrl,
+    setProjectUrl,
     projectTeamId,
     setProjectTeamId,
     userEmail,

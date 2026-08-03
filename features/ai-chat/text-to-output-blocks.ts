@@ -196,6 +196,24 @@ export function markdownFromRenderableBlocks(
   return parts.join("\n\n").trim()
 }
 
+/** Plain markdown table for clipboard copy. */
+export function tableBlockToClipboardText(headers: string[], rows: string[][]): string {
+  const escapeCell = (value: string) => String(value ?? "").replace(/\|/g, "\\|").replace(/\n/g, " ")
+  const safeHeaders = (headers ?? []).map(escapeCell)
+  if (safeHeaders.length === 0) {
+    const width = Math.max(0, ...rows.map((row) => row.length))
+    if (width === 0) return ""
+    const inferred = Array.from({ length: width }, (_, index) => `Col ${index + 1}`)
+    return tableBlockToClipboardText(inferred, rows)
+  }
+  const headerLine = `| ${safeHeaders.join(" | ")} |`
+  const separatorLine = `| ${safeHeaders.map(() => "---").join(" | ")} |`
+  const rowLines = (rows ?? []).map((row) =>
+    `| ${safeHeaders.map((_, index) => escapeCell(row[index] ?? "")).join(" | ")} |`,
+  )
+  return [headerLine, separatorLine, ...rowLines].join("\n")
+}
+
 export function enhanceBlocksWithMarkdownTables<T extends BlockWithAttachment>(
   blocks: T[],
   fallbackMarkdown?: string | null

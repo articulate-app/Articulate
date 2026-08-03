@@ -7,8 +7,8 @@ import {
   Bot,
   ChevronDown,
   ChevronRight,
+  FileText,
   FolderKanban,
-  Lightbulb,
   ListTodo,
   MoreHorizontal,
   Pin,
@@ -27,6 +27,7 @@ import { useCenterPaneTabsStore } from "../../store/center-pane-tabs"
 import {
   HOME_SIDEBAR_PAGE_SIZE,
   fetchHomeRecentAiChats,
+  fetchHomeRecentArtifacts,
   fetchHomeRecentMentions,
   fetchHomeRecentProjects,
   fetchHomeRecentTasks,
@@ -42,18 +43,35 @@ import {
 } from "../../lib/home-sidebar-recents-cache"
 import type { SearchObjectRoute } from "../../lib/search-routing"
 import type { HeaderCreateType } from "./use-header-create-flow"
+import { openArtifactCenterTab } from "../../../features/artifacts/open-artifact-center-tab"
 
 export const OPEN_HEADER_CREATE_EVENT = "app:open-header-create"
 export const TOGGLE_AI_PANE_EVENT = "app:toggle-ai-pane"
+export const TOGGLE_RESEARCH_EVENT = "app:toggle-research"
+export const OPEN_RESEARCH_EVENT = "app:open-research"
+/** @deprecated Prefer TOGGLE_RESEARCH_EVENT. */
 export const TOGGLE_KEYWORD_RESEARCH_EVENT = "app:toggle-keyword-research"
-/** Open keyword research in the middle pane (does not toggle closed). Optional seed query. */
+/** Open Research (keywords tab). Optional seed query. */
 export const OPEN_KEYWORD_RESEARCH_EVENT = "app:open-keyword-research"
+/** @deprecated Prefer TOGGLE_RESEARCH_EVENT. */
+export const TOGGLE_PROMPT_RESEARCH_EVENT = "app:toggle-prompt-research"
+/** Open Research (prompts tab). Optional seed query. */
+export const OPEN_PROMPT_RESEARCH_EVENT = "app:open-prompt-research"
 
 export type OpenHeaderCreateDetail = {
   type: HeaderCreateType | "ai"
 }
 
+export type OpenResearchDetail = {
+  query?: string | null
+  tab?: "keywords" | "prompts" | null
+}
+
 export type OpenKeywordResearchDetail = {
+  query?: string | null
+}
+
+export type OpenPromptResearchDetail = {
   query?: string | null
 }
 
@@ -81,24 +99,13 @@ type SidebarObjectDef = {
   createType?: HeaderCreateType | "ai"
 }
 
-type SidebarToolDef = {
-  id: "ai_pane" | "keyword_research"
-  name: string
-  icon: LucideIcon
-  event: string
-}
-
 const SIDEBAR_NAV_OBJECTS: SidebarObjectDef[] = [
   { object: "task", name: "Tasks", icon: ListTodo, feedKey: "tasks", createType: "task" },
   { object: "project", name: "Projects", icon: FolderKanban, feedKey: "projects", createType: "project" },
   { object: "mention", name: "Mentions", icon: AtSign, feedKey: "mentions" },
   { object: "user", name: "Users", icon: User, feedKey: "users", createType: "user" },
   { object: "ai_thread", name: "AI chats", icon: Bot, feedKey: "ai_chats", createType: "ai" },
-]
-
-const SIDEBAR_TOOLS: SidebarToolDef[] = [
-  { id: "ai_pane", name: "AI pane", icon: Bot, event: TOGGLE_AI_PANE_EVENT },
-  { id: "keyword_research", name: "Keyword research", icon: Lightbulb, event: TOGGLE_KEYWORD_RESEARCH_EVENT },
+  { object: "artifact", name: "Artifacts", icon: FileText, feedKey: "artifacts" },
 ]
 
 const FEED_ICON: Record<FeedSectionKey, LucideIcon> = {
@@ -107,6 +114,7 @@ const FEED_ICON: Record<FeedSectionKey, LucideIcon> = {
   mentions: AtSign,
   users: User,
   ai_chats: Bot,
+  artifacts: FileText,
 }
 
 const FEED_LABEL: Record<FeedSectionKey, string> = {
@@ -115,9 +123,9 @@ const FEED_LABEL: Record<FeedSectionKey, string> = {
   mentions: "Mention",
   users: "User",
   ai_chats: "AI chat",
+  artifacts: "Artifact",
 }
 
-const TOOLS_COLLAPSED_KEY = "sidebar-tools-collapsed-v1"
 const PINNED_COLLAPSED_KEY = "sidebar-pinned-collapsed-v1"
 const RECENTS_COLLAPSED_KEY = "sidebar-recents-collapsed-v1"
 
@@ -226,7 +234,7 @@ function ItemOptionsMenu({
   extraItems?: React.ReactNode
 }) {
   return (
-    <DropdownMenu>
+    <DropdownMenu modal={false}>
       <DropdownMenuTrigger asChild>
         <button
           type="button"
@@ -313,8 +321,6 @@ export function SidebarHomeFeed({
   onOpenUser,
   onOpenAiChat,
   onCreateAiChat,
-  isAiPaneActive = false,
-  isKeywordResearchActive = false,
 }: {
   showExpandedChrome: boolean
   isObjectActive: (object: SearchObjectRoute) => boolean
@@ -327,11 +333,8 @@ export function SidebarHomeFeed({
   onOpenUser: (userId: number) => void
   onOpenAiChat: (threadId: string) => void
   onCreateAiChat: () => void
-  isAiPaneActive?: boolean
-  isKeywordResearchActive?: boolean
 }) {
   const scrollRef = useRef<HTMLDivElement | null>(null)
-  const [toolsCollapsed, setToolsCollapsed] = useState(false)
   const [pinnedCollapsed, setPinnedCollapsed] = useState(false)
   const [recentsCollapsed, setRecentsCollapsed] = useState(false)
   const [pinnedItems, setPinnedItems] = useState<HomeSidebarPinnedItem[]>([])
@@ -339,24 +342,11 @@ export function SidebarHomeFeed({
   useEffect(() => {
     setPinnedItems(readHomeSidebarPinnedItems())
     try {
-      setToolsCollapsed(window.localStorage.getItem(TOOLS_COLLAPSED_KEY) === "1")
       setPinnedCollapsed(window.localStorage.getItem(PINNED_COLLAPSED_KEY) === "1")
       setRecentsCollapsed(window.localStorage.getItem(RECENTS_COLLAPSED_KEY) === "1")
     } catch {
       // ignore
     }
-  }, [])
-
-  const toggleToolsCollapsed = useCallback(() => {
-    setToolsCollapsed((prev) => {
-      const next = !prev
-      try {
-        window.localStorage.setItem(TOOLS_COLLAPSED_KEY, next ? "1" : "0")
-      } catch {
-        // ignore
-      }
-      return next
-    })
   }, [])
 
   const togglePinnedCollapsed = useCallback(() => {
@@ -412,6 +402,7 @@ export function SidebarHomeFeed({
   const mentionsQuery = useRecentSectionQuery("mentions", fetchHomeRecentMentions, recentsEnabled)
   const usersQuery = useRecentSectionQuery("users", fetchHomeRecentUsers, recentsEnabled)
   const aiQuery = useRecentSectionQuery("ai_chats", fetchHomeRecentAiChats, recentsEnabled)
+  const artifactsQuery = useRecentSectionQuery("artifacts", fetchHomeRecentArtifacts, recentsEnabled)
 
   const unifiedRecents = useMemo(() => {
     const rows: UnifiedRecentItem[] = []
@@ -463,6 +454,15 @@ export function SidebarHomeFeed({
         recentAt: item.recentAt,
       })
     }
+    for (const item of artifactsQuery.data?.pages.flat() ?? []) {
+      if (isPinned("artifacts", item.id)) continue
+      rows.push({
+        feedKey: "artifacts",
+        id: item.id,
+        title: item.title,
+        recentAt: item.recentAt,
+      })
+    }
 
     rows.sort((a, b) => {
       const delta = recentAtMs(b.recentAt) - recentAtMs(a.recentAt)
@@ -477,6 +477,7 @@ export function SidebarHomeFeed({
     mentionsQuery.data,
     usersQuery.data,
     aiQuery.data,
+    artifactsQuery.data,
     isPinned,
   ])
 
@@ -495,6 +496,9 @@ export function SidebarHomeFeed({
     }
     for (const item of aiQuery.data?.pages.flat() ?? []) {
       titleByKey.set(pinnedItemKey("ai_chats", item.id), item.title)
+    }
+    for (const item of artifactsQuery.data?.pages.flat() ?? []) {
+      titleByKey.set(pinnedItemKey("artifacts", item.id), item.title)
     }
     for (const item of (mentionsQuery.data?.pages.flat() ?? []) as MentionRecentItem[]) {
       titleByKey.set(pinnedItemKey("mentions", item.id), item.title)
@@ -518,6 +522,7 @@ export function SidebarHomeFeed({
     tasksQuery.data,
     usersQuery.data,
     aiQuery.data,
+    artifactsQuery.data,
     mentionsQuery.data,
   ])
 
@@ -526,21 +531,24 @@ export function SidebarHomeFeed({
     tasksQuery.isLoading ||
     mentionsQuery.isLoading ||
     usersQuery.isLoading ||
-    aiQuery.isLoading
+    aiQuery.isLoading ||
+    artifactsQuery.isLoading
 
   const hasMoreRecents =
     Boolean(projectsQuery.hasNextPage) ||
     Boolean(tasksQuery.hasNextPage) ||
     Boolean(mentionsQuery.hasNextPage) ||
     Boolean(usersQuery.hasNextPage) ||
-    Boolean(aiQuery.hasNextPage)
+    Boolean(aiQuery.hasNextPage) ||
+    Boolean(artifactsQuery.hasNextPage)
 
   const isFetchingMoreRecents =
     projectsQuery.isFetchingNextPage ||
     tasksQuery.isFetchingNextPage ||
     mentionsQuery.isFetchingNextPage ||
     usersQuery.isFetchingNextPage ||
-    aiQuery.isFetchingNextPage
+    aiQuery.isFetchingNextPage ||
+    artifactsQuery.isFetchingNextPage
 
   const loadMoreRecents = useCallback(() => {
     if (projectsQuery.hasNextPage && !projectsQuery.isFetchingNextPage) {
@@ -558,7 +566,10 @@ export function SidebarHomeFeed({
     if (aiQuery.hasNextPage && !aiQuery.isFetchingNextPage) {
       void aiQuery.fetchNextPage()
     }
-  }, [projectsQuery, tasksQuery, mentionsQuery, usersQuery, aiQuery])
+    if (artifactsQuery.hasNextPage && !artifactsQuery.isFetchingNextPage) {
+      void artifactsQuery.fetchNextPage()
+    }
+  }, [projectsQuery, tasksQuery, mentionsQuery, usersQuery, aiQuery, artifactsQuery])
 
   const handleCreate = useCallback(
     (createType: HeaderCreateType | "ai") => {
@@ -569,19 +580,6 @@ export function SidebarHomeFeed({
       dispatchOpenHeaderCreate(createType)
     },
     [onCreateAiChat],
-  )
-
-  const dispatchTool = useCallback((eventName: string) => {
-    if (typeof window === "undefined") return
-    window.dispatchEvent(new CustomEvent(eventName))
-  }, [])
-
-  const isToolActive = useCallback(
-    (id: SidebarToolDef["id"]) => {
-      if (id === "ai_pane") return isAiPaneActive
-      return isKeywordResearchActive
-    },
-    [isAiPaneActive, isKeywordResearchActive],
   )
 
   const openUnifiedItem = useCallback(
@@ -633,6 +631,13 @@ export function SidebarHomeFeed({
         onOpenAiChat(item.id)
         return
       }
+      if (item.feedKey === "artifacts") {
+        openArtifactCenterTab({
+          artifactId: item.id,
+          title: title || null,
+        })
+        return
+      }
       const mention = item as UnifiedRecentItem
       onOpenMention({
         threadId: mention.threadId ?? item.id,
@@ -671,7 +676,9 @@ export function SidebarHomeFeed({
               item.feedKey === "projects" ? (
                 <DropdownMenuItem
                   onSelect={() => {
-                    if (Number.isFinite(projectId)) onOpenProjectDefinitions(projectId)
+                    if (!Number.isFinite(projectId)) return
+                    // Defer so the menu can unmount before the dialog locks pointer-events.
+                    window.setTimeout(() => onOpenProjectDefinitions(projectId), 0)
                   }}
                 >
                   Definitions
@@ -700,23 +707,6 @@ export function SidebarHomeFeed({
               title={item.name}
             >
               <item.icon className="h-5 w-5 shrink-0" strokeWidth={1.75} />
-            </button>
-          </li>
-        ))}
-        <li className="my-1 border-t border-gray-100" aria-hidden />
-        {SIDEBAR_TOOLS.map((tool) => (
-          <li key={tool.id}>
-            <button
-              type="button"
-              onClick={() => dispatchTool(tool.event)}
-              className={cn(
-                "flex w-full items-center justify-center rounded-md px-0 py-2 text-gray-700 transition-colors hover:bg-gray-100",
-                isToolActive(tool.id) && "bg-gray-100 text-gray-900",
-              )}
-              aria-label={tool.name}
-              title={tool.name}
-            >
-              <tool.icon className="h-5 w-5 shrink-0" strokeWidth={1.75} />
             </button>
           </li>
         ))}
@@ -761,81 +751,63 @@ export function SidebarHomeFeed({
         ))}
       </ul>
 
-      <div className="px-1 pt-2">
-        <SectionHeader label="Tools" collapsed={toolsCollapsed} onToggle={toggleToolsCollapsed} />
-        {!toolsCollapsed ? (
-          <ul className="space-y-0.5 pb-1">
-            {SIDEBAR_TOOLS.map((tool) => (
-              <li key={tool.id}>
-                <NavRow
-                  icon={tool.icon}
-                  label={tool.name}
-                  active={isToolActive(tool.id)}
-                  onClick={() => dispatchTool(tool.event)}
-                />
-              </li>
-            ))}
-          </ul>
-        ) : null}
-      </div>
+        <div className="mt-1 border-t border-gray-100 px-1 pt-2">
+          {pinnedItems.length > 0 ? (
+            <section className="pt-0.5">
+              <SectionHeader
+                label="Pinned"
+                collapsed={pinnedCollapsed}
+                onToggle={togglePinnedCollapsed}
+              />
+              {!pinnedCollapsed ? (
+                <div className="pb-1">
+                  {pinnedItems.map((item) => (
+                    <TitleRow
+                      key={`pinned:${item.feedKey}:${item.id}`}
+                      title={item.title}
+                      onClick={() => openUnifiedItem(item)}
+                      leading={
+                        <Pin
+                          className="h-3.5 w-3.5 shrink-0 text-gray-400"
+                          aria-label={`Pinned ${FEED_LABEL[item.feedKey]}`}
+                        />
+                      }
+                      trailing={
+                        <ItemOptionsMenu isPinned onTogglePin={() => togglePin(item)} />
+                      }
+                    />
+                  ))}
+                </div>
+              ) : null}
+            </section>
+          ) : null}
 
-      <div className="mt-1 border-t border-gray-100 px-1 pt-2">
-        {pinnedItems.length > 0 ? (
           <section className="pt-0.5">
             <SectionHeader
-              label="Pinned"
-              collapsed={pinnedCollapsed}
-              onToggle={togglePinnedCollapsed}
+              label="Recents"
+              collapsed={recentsCollapsed}
+              onToggle={toggleRecentsCollapsed}
             />
-            {!pinnedCollapsed ? (
+            {!recentsCollapsed ? (
               <div className="pb-1">
-                {pinnedItems.map((item) => (
-                  <TitleRow
-                    key={`pinned:${item.feedKey}:${item.id}`}
-                    title={item.title}
-                    onClick={() => openUnifiedItem(item)}
-                    leading={
-                      <Pin
-                        className="h-3.5 w-3.5 shrink-0 text-gray-400"
-                        aria-label={`Pinned ${FEED_LABEL[item.feedKey]}`}
-                      />
-                    }
-                    trailing={
-                      <ItemOptionsMenu isPinned onTogglePin={() => togglePin(item)} />
-                    }
-                  />
-                ))}
+                {unifiedRecents.length === 0 && !isRecentsLoading ? (
+                  <div className="px-3 py-1.5 text-xs font-normal text-gray-400">No recent items</div>
+                ) : null}
+                {unifiedRecents.map((item) =>
+                  renderUnifiedRow(item, `recent:${item.feedKey}:${item.id}`),
+                )}
+                <InfiniteSentinel
+                  enabled={hasMoreRecents}
+                  onVisible={loadMoreRecents}
+                  rootRef={scrollRef}
+                />
+                {isFetchingMoreRecents ? (
+                  <div className="px-3 py-1.5 text-xs font-normal text-gray-400">Loading…</div>
+                ) : null}
               </div>
             ) : null}
           </section>
-        ) : null}
-
-        <section className="pt-0.5">
-          <SectionHeader
-            label="Recents"
-            collapsed={recentsCollapsed}
-            onToggle={toggleRecentsCollapsed}
-          />
-          {!recentsCollapsed ? (
-            <div className="pb-1">
-              {unifiedRecents.length === 0 && !isRecentsLoading ? (
-                <div className="px-3 py-1.5 text-xs font-normal text-gray-400">No recent items</div>
-              ) : null}
-              {unifiedRecents.map((item) =>
-                renderUnifiedRow(item, `recent:${item.feedKey}:${item.id}`),
-              )}
-              <InfiniteSentinel
-                enabled={hasMoreRecents}
-                onVisible={loadMoreRecents}
-                rootRef={scrollRef}
-              />
-              {isFetchingMoreRecents ? (
-                <div className="px-3 py-1.5 text-xs font-normal text-gray-400">Loading…</div>
-              ) : null}
-            </div>
-          ) : null}
-        </section>
-      </div>
+        </div>
     </div>
   )
 }

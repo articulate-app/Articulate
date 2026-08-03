@@ -121,8 +121,10 @@ export function useTaskSuggestionsQuery(args: {
   contentTypeIds?: number[] | null
   channelIds?: number[] | null
   q?: string | null
-  from: Date
-  to: Date
+  /** When omitted/null, no planned_for_date lower bound is applied. */
+  from?: Date | null
+  /** When omitted/null, no planned_for_date upper bound is applied. */
+  to?: Date | null
   limit?: number
   enabled?: boolean
   cacheKeyParts?: unknown[]
@@ -132,8 +134,8 @@ export function useTaskSuggestionsQuery(args: {
     contentTypeIds,
     channelIds,
     q,
-    from,
-    to,
+    from = null,
+    to = null,
     limit = 500,
     enabled = true,
     cacheKeyParts = [],
@@ -155,6 +157,8 @@ export function useTaskSuggestionsQuery(args: {
       ? normalizedChannelIds.slice().sort((a, b) => a - b).join(',')
       : 'all'
   const normalizedQ = (q ?? '').trim()
+  const fromKey = from instanceof Date ? toIsoDate(from) : 'none'
+  const toKey = to instanceof Date ? toIsoDate(to) : 'none'
 
   return useQuery<SuggestionItem[]>({
     queryKey: [
@@ -162,8 +166,8 @@ export function useTaskSuggestionsQuery(args: {
       projectKey,
       contentTypeKey,
       channelKey,
-      toIsoDate(from),
-      toIsoDate(to),
+      fromKey,
+      toKey,
       normalizedQ,
       limit,
       ...cacheKeyParts,
@@ -171,8 +175,8 @@ export function useTaskSuggestionsQuery(args: {
     enabled: enabled,
     queryFn: async () => {
       const supabase = createClientComponentClient()
-      const fromIso = toIsoDate(from)
-      const toIso = toIsoDate(to)
+      const fromIso = from instanceof Date ? toIsoDate(from) : null
+      const toIso = to instanceof Date ? toIsoDate(to) : null
 
       const { data, error } = await supabase.rpc('task_suggestions_filtered', {
         p_project_ids: normalizedProjectIds.length > 0 ? normalizedProjectIds : null,

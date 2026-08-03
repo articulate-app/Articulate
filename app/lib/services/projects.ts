@@ -161,11 +161,16 @@ function generateSlug(text: string): string {
 /**
  * Create a new project with minimal required fields
  */
-export async function createProject(name: string, teamId: number) {
+export async function createProject(
+  name: string,
+  teamId: number,
+  options?: { projectUrl?: string | null },
+) {
   const supabase = createClientComponentClient()
 
   const trimmedName = name.trim()
   const slug = generateSlug(trimmedName)
+  const projectUrl = options?.projectUrl?.trim() || null
 
   const { data, error } = await supabase
     .from("projects")
@@ -175,6 +180,7 @@ export async function createProject(name: string, teamId: number) {
       team_id: teamId,
       billing_team_id: teamId,
       active: true,
+      ...(projectUrl ? { project_url: projectUrl } : null),
     })
     .select("id, name")
     .single()

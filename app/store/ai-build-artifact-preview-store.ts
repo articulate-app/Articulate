@@ -29,6 +29,8 @@ export type AiBuildArtifactPreviewEntry = {
   unitId: string
   artifactId: string
   taskId: number | null
+  /** Optional project scope when the live preview is project-bound. */
+  projectId?: number | null
   aiThreadId: string | null
   channelId: number | null
   languageId: number | null
@@ -38,6 +40,12 @@ export type AiBuildArtifactPreviewEntry = {
   artifactRole: string | null
   title: string | null
   contentText: string
+  /** Prior artifact body for update diffs (green/red +/- like component edits). */
+  beforeContentText: string | null
+  /** Frozen pre-edit content_json (from artifact.started) for honest HTML-based diffs. */
+  beforeContentJson: ArtifactContentJson | null
+  /** Canonical plain after-text for diffs when provided by the worker. */
+  diffContentText: string | null
   contentJson: ArtifactContentJson | null
   assetData: ArtifactAssetData | null
   currentVersion: number | null
@@ -45,6 +53,17 @@ export type AiBuildArtifactPreviewEntry = {
   sequence: number
   errorMessage: string | null
   media: AiBuildArtifactMediaProgress[]
+  /** True while the worker is still streaming tool args (body not authoritative yet). */
+  streaming: boolean
+  /** Approximate streamed chars for progress UI (body kept on baseline until save). */
+  streamChars: number | null
+  /** Compact live snippet (section/plain) for chat preview while generating. */
+  streamSnippet: string | null
+  /** Heading of the section being edited, when the worker runs in section mode. */
+  targetSectionHeading: string | null
+  /** HTML for the edited section only (chat preview — never the full article). */
+  sectionHtml: string | null
+  sectionBeforeHtml: string | null
   threadId: string | null
   assistantMessageIds: Record<string, true>
   updatedAt: string
@@ -68,16 +87,35 @@ type AiBuildArtifactPreviewState = {
     artifactRole?: string | null
     title?: string | null
     contentText?: string | null
+    beforeContentText?: string | null
+    beforeContentJson?: ArtifactContentJson | null
+    diffContentText?: string | null
     contentJson?: ArtifactContentJson | null
     assetData?: ArtifactAssetData | null
     currentVersion?: number | null
     errorMessage?: string | null
     mediaItem?: AiBuildArtifactMediaProgress | null
+    streaming?: boolean | null
+    streamChars?: number | null
+    streamSnippet?: string | null
+    targetSectionHeading?: string | null
+    sectionHtml?: string | null
+    sectionBeforeHtml?: string | null
+    /** When true, explicitly clear diffContentText (streaming heartbeats). */
+    clearDiffContentText?: boolean
     threadId?: string | null
     assistantMessageId?: string | null
   }) => string
   clearForBuild: (buildId: string) => void
+  /** Safety net: clear stuck "generating" cards when the build is already terminal. */
+  forceTerminalForBuild: (
+    buildId: string,
+    phase?: "saved" | "failed",
+    errorMessage?: string | null,
+  ) => void
   clearExceptThread: (threadId: string | null) => void
+  /** Drop saved/failed previews whose version is already reflected on the server row. */
+  pruneConsumedSavedPreviews: (artifactId: string, currentVersion: number) => void
   getPreview: (key: string) => AiBuildArtifactPreviewEntry | null
   listForAssistantMessage: (assistantMessageId: string) => AiBuildArtifactPreviewEntry[]
   listForThread: (threadId: string) => AiBuildArtifactPreviewEntry[]
@@ -135,7 +173,8 @@ export function isArtifactBuildEventType(eventType: string): boolean {
 export function isArtifactCardContentEventType(eventType: string): boolean {
   const normalized = normalizeArtifactBuildEventType(eventType)
   return (
-    normalized.includes("artifact.preview")
+    normalized.includes("artifact.started")
+    || normalized.includes("artifact.preview")
     || normalized.includes("artifact.version_saved")
     || normalized.includes("artifact.media")
     || normalized.includes("artifact.failed")
@@ -168,16 +207,26 @@ export function parseBuildArtifactPreviewPayload(payload: Record<string, unknown
   artifactRole: string | null
   title: string | null
   contentText: string | null
+  beforeContentText: string | null
+  diffContentText: string | null
   contentJson: ArtifactContentJson | null
   assetData: ArtifactAssetData | null
   currentVersion: number | null
   errorMessage: string | null
   mediaItem: AiBuildArtifactMediaProgress | null
+  streaming: boolean
+  streamChars: number | null
+  streamSnippet: string | null
+  targetSectionHeading: string | null
+  sectionHtml: string | null
+  sectionBeforeHtml: string | null
+  clearDiffContentText: boolean
 } {
   const record = payload ?? {}
   const nestedArtifact = asRecord(record.artifact)
   const nestedSnapshot = asRecord(record.snapshot) ?? asRecord(nestedArtifact?.snapshot)
   const source = nestedSnapshot ?? nestedArtifact ?? record
+  const streaming = record.streaming === true
 
   const mediaItemRaw = asRecord(record.media_item) ?? asRecord(record.mediaItem)
   const mediaItem: AiBuildArtifactMediaProgress | null = mediaItemRaw
@@ -238,12 +287,27 @@ export function parseBuildArtifactPreviewPayload(payload: Record<string, unknown
       toTrimmedString(record.title)
       ?? toTrimmedString(source.title)
       ?? toTrimmedString(record.artifact_title),
+    // Never treat snippet as content_text — that made previews look like plain dumps.
     contentText:
       typeof record.content_text === "string"
         ? record.content_text
         : typeof source.content_text === "string"
           ? source.content_text
-          : toTrimmedString(record.snippet),
+          : null,
+    beforeContentText:
+      typeof record.before_content_text === "string"
+        ? record.before_content_text
+        : typeof record.beforeContentText === "string"
+          ? record.beforeContentText
+          : typeof source.before_content_text === "string"
+            ? source.before_content_text
+            : null,
+    diffContentText:
+      typeof record.diff_content_text === "string"
+        ? record.diff_content_text
+        : typeof record.diffContentText === "string"
+          ? record.diffContentText
+          : null,
     contentJson:
       (asRecord(record.content_json) as ArtifactContentJson | null)
       ?? (asRecord(source.content_json) as ArtifactContentJson | null),
@@ -259,6 +323,26 @@ export function parseBuildArtifactPreviewPayload(payload: Record<string, unknown
       ?? toTrimmedString(record.error_message)
       ?? toTrimmedString(record.message),
     mediaItem,
+    streaming,
+    streamChars: toFiniteNumber(record.stream_chars) ?? toFiniteNumber(record.streamChars),
+    streamSnippet: toTrimmedString(record.snippet),
+    targetSectionHeading:
+      toTrimmedString(record.target_section_heading)
+      ?? toTrimmedString(record.targetSectionHeading),
+    sectionHtml:
+      typeof record.section_html === "string"
+        ? record.section_html
+        : typeof record.sectionHtml === "string"
+          ? record.sectionHtml
+          : null,
+    sectionBeforeHtml:
+      typeof record.section_before_html === "string"
+        ? record.section_before_html
+        : typeof record.sectionBeforeHtml === "string"
+          ? record.sectionBeforeHtml
+          : null,
+    // Explicit null from streaming heartbeats must clear prior bogus full-doc diffs.
+    clearDiffContentText: streaming || record.diff_content_text === null,
   }
 }
 
@@ -302,11 +386,21 @@ export const useAiBuildArtifactPreviewStore = create<AiBuildArtifactPreviewState
     artifactRole,
     title,
     contentText,
+    beforeContentText,
+    beforeContentJson,
+    diffContentText,
     contentJson,
     assetData,
     currentVersion,
     errorMessage,
     mediaItem,
+    streaming,
+    streamChars,
+    streamSnippet,
+    targetSectionHeading,
+    sectionHtml,
+    sectionBeforeHtml,
+    clearDiffContentText,
     threadId,
     assistantMessageId,
   }) => {
@@ -316,6 +410,11 @@ export const useAiBuildArtifactPreviewStore = create<AiBuildArtifactPreviewState
     set((state) => {
       const prev = state.previews[key] ?? null
       if (prev && sequence < prev.sequence) return state
+      const startedBaselineJson =
+        phase === "started" && contentJson
+          ? contentJson
+          : null
+      const isStreamingHeartbeat = streaming === true
       const next: AiBuildArtifactPreviewEntry = {
         key,
         buildId: buildId.trim(),
@@ -330,17 +429,70 @@ export const useAiBuildArtifactPreviewStore = create<AiBuildArtifactPreviewState
         artifactType: artifactType?.trim() || prev?.artifactType || null,
         artifactRole: artifactRole?.trim() || prev?.artifactRole || null,
         title: title?.trim() || prev?.title || null,
+        // Streaming heartbeats omit body — keep the last authoritative content (usually started baseline).
         contentText:
-          typeof contentText === "string" && contentText.length > 0
+          !isStreamingHeartbeat && typeof contentText === "string" && contentText.length > 0
             ? contentText
             : prev?.contentText || "",
-        contentJson: contentJson ?? prev?.contentJson ?? null,
-        assetData: assetData ?? prev?.assetData ?? null,
+        beforeContentText:
+          typeof beforeContentText === "string"
+            ? beforeContentText
+            : prev?.beforeContentText ?? null,
+        beforeContentJson:
+          beforeContentJson
+          ?? prev?.beforeContentJson
+          ?? startedBaselineJson
+          ?? null,
+        diffContentText: clearDiffContentText
+          ? (typeof diffContentText === "string" ? diffContentText : null)
+          : typeof diffContentText === "string"
+            ? diffContentText
+            : prev?.diffContentText ?? null,
+        contentJson:
+          !isStreamingHeartbeat && contentJson
+            ? contentJson
+            : prev?.contentJson ?? contentJson ?? null,
+        // Empty `{ assets: [] }` is truthy and used to wipe prior media — only adopt when non-empty.
+        assetData: (() => {
+          const incomingAssets = Array.isArray((assetData as { assets?: unknown } | null)?.assets)
+            ? (assetData as { assets: unknown[] }).assets
+            : null
+          if (incomingAssets && incomingAssets.length > 0) return assetData ?? null
+          return prev?.assetData ?? assetData ?? null
+        })(),
         currentVersion: currentVersion ?? prev?.currentVersion ?? null,
         phase,
         sequence,
         errorMessage: errorMessage ?? (phase === "failed" ? prev?.errorMessage ?? null : null),
         media: mergeMedia(prev?.media ?? [], mediaItem),
+        streaming:
+          phase === "saved" || phase === "failed"
+            ? false
+            : isStreamingHeartbeat,
+        streamChars:
+          phase === "saved" || phase === "failed"
+            ? null
+            : typeof streamChars === "number" && Number.isFinite(streamChars)
+              ? streamChars
+              : isStreamingHeartbeat
+                ? prev?.streamChars ?? null
+                : null,
+        streamSnippet:
+          typeof streamSnippet === "string" && streamSnippet.trim()
+            ? streamSnippet.trim()
+            : prev?.streamSnippet ?? null,
+        targetSectionHeading:
+          typeof targetSectionHeading === "string" && targetSectionHeading.trim()
+            ? targetSectionHeading.trim()
+            : prev?.targetSectionHeading ?? null,
+        sectionHtml:
+          typeof sectionHtml === "string" && sectionHtml.trim()
+            ? sectionHtml
+            : prev?.sectionHtml ?? null,
+        sectionBeforeHtml:
+          typeof sectionBeforeHtml === "string" && sectionBeforeHtml.trim()
+            ? sectionBeforeHtml
+            : prev?.sectionBeforeHtml ?? null,
         threadId: threadId ?? prev?.threadId ?? null,
         assistantMessageIds: { ...(prev?.assistantMessageIds ?? {}) },
         updatedAt: new Date().toISOString(),
@@ -363,6 +515,36 @@ export const useAiBuildArtifactPreviewStore = create<AiBuildArtifactPreviewState
     })
   },
 
+  forceTerminalForBuild: (buildId, phase = "saved", errorMessage = null) => {
+    const id = buildId.trim()
+    if (!id) return
+    set((state) => {
+      let changed = false
+      const next: Record<string, AiBuildArtifactPreviewEntry> = { ...state.previews }
+      for (const [key, entry] of Object.entries(next)) {
+        if (entry.buildId !== id) continue
+        if (entry.phase === "saved" || entry.phase === "failed") continue
+        changed = true
+        next[key] = {
+          ...entry,
+          phase,
+          streaming: false,
+          streamChars: null,
+          errorMessage:
+            phase === "failed"
+              ? (errorMessage?.trim() || entry.errorMessage || "Work unit failed")
+              : entry.errorMessage,
+          // Prefer authoritative body when present; otherwise keep baseline so UI isn't blank.
+          contentText: entry.contentText || entry.beforeContentText || "",
+          contentJson: entry.contentJson ?? entry.beforeContentJson,
+          diffContentText: entry.diffContentText ?? entry.beforeContentText,
+          updatedAt: new Date().toISOString(),
+        }
+      }
+      return changed ? { previews: next } : state
+    })
+  },
+
   clearExceptThread: (threadId) => {
     set((state) => {
       if (!threadId) return { previews: {} }
@@ -372,6 +554,12 @@ export const useAiBuildArtifactPreviewStore = create<AiBuildArtifactPreviewState
       }
       return { previews: next }
     })
+  },
+
+  pruneConsumedSavedPreviews: (_artifactId, _currentVersion) => {
+    // No-op: saved preview cards are required by AI chat history after hard
+    // refresh. Editor/overview overlays already ignore saved previews when the
+    // list/get row has caught up (see ArtifactWorkspace / ArtifactPane).
   },
 
   getPreview: (key) => get().previews[key] ?? null,
@@ -394,9 +582,16 @@ export const useAiBuildArtifactPreviewStore = create<AiBuildArtifactPreviewState
   listLiveByArtifactId: (artifactId) => {
     const id = artifactId.trim()
     if (!id) return null
-    const matches = Object.values(get().previews)
-      .filter((row) => row.artifactId === id)
-      .sort((a, b) => b.sequence - a.sequence)
-    return matches[0] ?? null
+    const matches = Object.values(get().previews).filter((row) => row.artifactId === id)
+    if (matches.length === 0) return null
+    return matches.reduce((best, row) => {
+      const bestVersion = best.currentVersion ?? 0
+      const rowVersion = row.currentVersion ?? 0
+      if (rowVersion !== bestVersion) return rowVersion > bestVersion ? row : best
+      if (row.updatedAt !== best.updatedAt) {
+        return row.updatedAt > best.updatedAt ? row : best
+      }
+      return row.sequence > best.sequence ? row : best
+    })
   },
 }))

@@ -231,34 +231,13 @@ export function SEOPanel({
   
   useEffect(() => {
     const loadComponentOutputs = async () => {
-      // For task channels: use parent-provided outputs when available (no extra fetch; same data as Component Output fields)
+      // Task SEO is artifact-based now — never query deprecated task_component_outputs.
       if (taskId && channelId && !cttId) {
-        if (componentOutputTexts !== undefined) {
-          clearComponentOutputs()
-          setIsLoadingContent(false)
-          return
-        }
-        setIsLoadingContent(true)
-        try {
-          const { data, error } = await supabase
-            .from('task_component_outputs')
-            .select('content_text')
-            .eq('task_id', taskId)
-            .eq('channel_id', channelId)
-          
-          if (error) throw error
-          
-          const texts = (data || []).map(item => item.content_text || '').filter(Boolean)
-          setComponentOutputs(texts)
-        } catch (err: any) {
-          console.error('Failed to load task component outputs for density:', err)
-          clearComponentOutputs()
-        } finally {
-          setIsLoadingContent(false)
-        }
+        clearComponentOutputs()
+        setIsLoadingContent(false)
         return
       }
-      
+
       // For CTT variants (original behavior)
       if (!cttId || languageId === null) {
         clearComponentOutputs()
@@ -1114,34 +1093,9 @@ export function SEOPanel({
       document.removeEventListener("keydown", handleDocumentKeyDown)
     }
   }, [isKeywordSuggestionsOpen])
-  
-  if (!isTaskChannel && languageId === null) {
-    return (
-      <div className="p-4 text-center text-gray-500 bg-gray-50 rounded-lg">
-        <Info className="w-5 h-5 mx-auto mb-2 text-gray-400" />
-        <div className="text-sm">Select a variation to configure SEO.</div>
-      </div>
-    )
-  }
 
-  if (isLoading) {
-    return (
-      <div className="p-4 text-center">
-        <div className="text-sm text-gray-500">Loading SEO settings...</div>
-      </div>
-    )
-  }
-
-  // For task channels, always show the panel (can override)
-  // For CTT variants, only show if SEO is required
-  if (!isTaskChannel && (!variantSEO || !variantSEO.seo_required)) {
-    return (
-      <div className="p-4 text-center text-gray-500 bg-gray-50 rounded-lg">
-        <Info className="w-5 h-5 mx-auto mb-2 text-gray-400" />
-        <div className="text-sm">SEO not required for this variation.</div>
-      </div>
-    )
-  }
+  // NOTE: Do not early-return before the hooks below — that caused
+  // "Rendered more hooks than during the previous render" when isLoading flipped.
   
   const keywordRows = useMemo(() => {
     if (isTaskChannel) {
@@ -1629,6 +1583,34 @@ export function SEOPanel({
     loadKeywordCompetitors,
     renderPageTypeBadge,
   ])
+
+  if (!isTaskChannel && languageId === null) {
+    return (
+      <div className="p-4 text-center text-gray-500 bg-gray-50 rounded-lg">
+        <Info className="w-5 h-5 mx-auto mb-2 text-gray-400" />
+        <div className="text-sm">Select a variation to configure SEO.</div>
+      </div>
+    )
+  }
+
+  if (isLoading) {
+    return (
+      <div className="p-4 text-center">
+        <div className="text-sm text-gray-500">Loading SEO settings...</div>
+      </div>
+    )
+  }
+
+  // For task channels, always show the panel (can override)
+  // For CTT variants, only show if SEO is required
+  if (!isTaskChannel && (!variantSEO || !variantSEO.seo_required)) {
+    return (
+      <div className="p-4 text-center text-gray-500 bg-gray-50 rounded-lg">
+        <Info className="w-5 h-5 mx-auto mb-2 text-gray-400" />
+        <div className="text-sm">SEO not required for this variation.</div>
+      </div>
+    )
+  }
 
   return (
     <div ref={keywordTableRef} className="space-y-4">

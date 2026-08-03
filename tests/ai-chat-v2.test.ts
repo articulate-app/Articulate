@@ -175,13 +175,15 @@ describe("AI Chat protocol V2 intent correction", () => {
       )
     })
 
-    it("allows a visible task with no selected channel or component", () => {
+    it("allows a visible task as ambient target without ownership scope", () => {
       const fields = buildAiChatV2RequestFields({
         clientRequestId: "req-task-only",
         visibleTaskId: 55,
       })
       expect(fields.targets.some((t) => t.target_kind === "task" && t.task_id === 55)).toBe(true)
-      expect(fields.scope.task_id).toBe(55)
+      // Open center-pane task is ambient context only — not artifact/task ownership.
+      expect(fields.scope.task_id).toBeNull()
+      expect(fields.scope.source).toBe("none")
       expect(fields.scope.component_id).toBeNull()
     })
 

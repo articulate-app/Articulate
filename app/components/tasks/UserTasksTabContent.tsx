@@ -366,7 +366,7 @@ function UserTasksTabContentInner({
       >
         <div
           className={cn(
-            "flex min-w-0 flex-1 items-center overflow-x-auto overflow-y-hidden py-2",
+            "flex min-w-0 flex-1 items-center py-2",
             TOOLBAR_CONTENT_PX,
           )}
           style={{ WebkitOverflowScrolling: "touch" }}
@@ -406,7 +406,7 @@ function UserTasksTabContentInner({
               <div className={cn("w-full flex-shrink-0", TOOLBAR_CONTENT_PX)}>
                 <FilterBadges badges={badges} onClearAll={onClearAll} className="mb-2 ml-2 mt-1" />
               </div>
-              <div className="min-h-0 flex-1">
+              <div className="min-h-0 min-w-0 flex-1 overflow-hidden">
                 <TaskList
                   onTaskSelect={handleTaskSelect}
                   selectedTaskId={selectedTaskId}
