@@ -12,6 +12,8 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '../co
 import { Input } from '../components/ui/input';
 import { Label } from '../components/ui/label';
 
+type OAuthProvider = 'google' | 'apple'
+
 function GoogleIcon({ className }: { className?: string }) {
   return (
     <svg className={className} viewBox="0 0 24 24" aria-hidden="true">
@@ -31,6 +33,14 @@ function GoogleIcon({ className }: { className?: string }) {
         d="M12 5.38c1.62 0 3.06.56 4.21 1.64l3.15-3.15C17.45 2.09 14.97 1 12 1 7.7 1 3.99 3.47 2.18 7.07l3.66 2.84c.87-2.6 3.3-4.53 6.16-4.53z"
         fill="#EA4335"
       />
+    </svg>
+  );
+}
+
+function AppleIcon({ className }: { className?: string }) {
+  return (
+    <svg className={className} viewBox="0 0 24 24" aria-hidden="true" fill="currentColor">
+      <path d="M16.365 1.43c0 1.14-.42 2.2-1.18 3.01-.79.85-2.1 1.5-3.22 1.41-.14-1.1.41-2.25 1.17-3.05.8-.86 2.2-1.5 3.23-1.37zM20.5 17.2c-.58 1.34-.86 1.93-1.61 3.11-1.04 1.61-2.51 3.62-4.34 3.64-1.62.02-2.04-1.06-4.25-1.05-2.2.01-2.67 1.07-4.29 1.05-1.83-.02-3.23-1.83-4.27-3.44C-.2 16.86-.9 12.2 1.08 9.2c1.14-1.73 2.95-2.82 4.64-2.82 1.73 0 2.82 1.07 4.25 1.07 1.39 0 2.24-1.08 4.25-1.08 1.52 0 3.13.83 4.27 2.26-3.75 2.06-3.14 7.42 2.01 8.57z" />
     </svg>
   );
 }
@@ -144,7 +154,7 @@ export default function AuthPage() {
     }
   };
 
-  const handleGoogleLogin = async () => {
+  const handleSocialLogin = async (provider: OAuthProvider) => {
     setError(null);
     setMessage(null);
     setIsLoading(true);
@@ -153,7 +163,7 @@ export default function AuthPage() {
       const nextPath =
         redirect && redirect.startsWith('/') ? redirect : '/tasks';
       const { error } = await supabase.auth.signInWithOAuth({
-        provider: 'google',
+        provider,
         options: {
           redirectTo: `${window.location.origin}/auth/oauth?next=${encodeURIComponent(nextPath)}`,
         },
@@ -161,8 +171,8 @@ export default function AuthPage() {
 
       if (error) throw error;
     } catch (error: any) {
-      console.error('Google sign-in error:', error);
-      setError(error.message || 'An error occurred during Google sign-in');
+      console.error(`${provider} sign-in error:`, error);
+      setError(error.message || `An error occurred during ${provider} sign-in`);
       setIsLoading(false);
     }
   };
@@ -258,10 +268,20 @@ export default function AuthPage() {
                 variant="outline"
                 className="w-full"
                 disabled={isLoading}
-                onClick={handleGoogleLogin}
+                onClick={() => handleSocialLogin('google')}
               >
                 <GoogleIcon className="mr-2 h-4 w-4" />
-                {isLoading ? 'Redirecting...' : 'Continue with Google'}
+                Continue with Google
+              </Button>
+              <Button
+                type="button"
+                variant="outline"
+                className="w-full"
+                disabled={isLoading}
+                onClick={() => handleSocialLogin('apple')}
+              >
+                <AppleIcon className="mr-2 h-4 w-4" />
+                Continue with Apple
               </Button>
               <div className="text-center text-sm">
                 {mode === 'sign-in' ? (
