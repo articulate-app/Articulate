@@ -6,17 +6,20 @@ import { useSearchParams } from 'next/navigation'
 import dynamic from 'next/dynamic'
 import { Button } from '../ui/button'
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '../ui/tabs'
-import { X, Loader2, Maximize2, Minimize2, MoreVertical, Settings } from 'lucide-react'
+import { X, Loader2, Maximize2, Minimize2, MoreVertical, Settings, Trash2 } from 'lucide-react'
 import { OverviewTab } from '../projects/OverviewTab'
 import { CommentsTab } from '../projects/CommentsTab'
 import { getProjectOverview, type ProjectOverview, uploadProjectFile } from '../../lib/services/projects-briefing'
+import { deleteProject } from '../../lib/services/projects'
 import { ProjectAnalyticsTab } from '../projects/ProjectAnalyticsTab'
 import { ProjectKeywordTrackingTab } from '../projects/ProjectKeywordTrackingTab'
 import { ProjectAiVisibilityTab } from '../projects/ProjectAiVisibilityTab'
+import { ProjectCompetitorsTab } from '../projects/ProjectCompetitorsTab'
 import { ProjectSuggestionsTab } from '../projects/ProjectSuggestionsTab'
 import { FilesTab } from '../projects/FilesTab'
 import { ArtifactWorkspace } from '../../../features/artifacts/ArtifactWorkspace'
 import { ProjectHeaderWatchers } from '../projects/ProjectHeaderWatchers'
+import { ProjectHeaderTitleSwitcher } from '../projects/project-header-title-switcher'
 import {
   ProjectSettingsPanel,
   type ProjectSettingsCategory,
@@ -28,6 +31,23 @@ import { TASKS_SHALLOW_NAV_EVENT } from '../../lib/tasks-shallow-nav'
 import { mergeWorkspaceUrlState } from '../../lib/workspace-url-state'
 import { useMobileDetection } from '../../hooks/use-mobile-detection'
 import { MobileDetailHeader, type MobileDetailAction } from '../ui/mobile-detail-header'
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuSeparator,
+  DropdownMenuTrigger,
+} from '../ui/dropdown-menu'
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from '../ui/alert-dialog'
 
 interface BriefingsPageProps {
   projectId: number
@@ -45,6 +65,7 @@ const ALLOWED_TABS = [
   'analytics',
   'ai-visibility',
   'keywords',
+  'competitors',
   'files',
   'tasks',
   'suggestions',
@@ -99,6 +120,8 @@ export function BriefingsPage({
   const [projectMiddlePaneHost, setProjectMiddlePaneHost] = useState<HTMLDivElement | null>(null)
   const [showProjectSettings, setShowProjectSettings] = useState(false)
   const [settingsCategory, setSettingsCategory] = useState<ProjectSettingsCategory>("details")
+  const [showDeleteDialog, setShowDeleteDialog] = useState(false)
+  const [isDeleting, setIsDeleting] = useState(false)
   const [isTabsHovered, setIsTabsHovered] = useState(false)
   const [isDropzoneActive, setIsDropzoneActive] = useState(false)
   const tabsScrollRef = useRef<HTMLDivElement | null>(null)
@@ -257,7 +280,31 @@ export function BriefingsPage({
   }, [searchParams, openProjectSettings])
 
   const tabTriggerClassName =
-    "-mb-px rounded-none border-b-0 data-[state=active]:bg-transparent data-[state=active]:shadow-[inset_0_-2px_0_0_#111827]"
+    "rounded-none border-b-0 data-[state=active]:bg-transparent data-[state=active]:shadow-[inset_0_-2px_0_0_#111827]"
+
+  const handleDeleteProject = useCallback(async () => {
+    setIsDeleting(true)
+    try {
+      const { error } = await deleteProject(projectId)
+      if (error) throw error
+      toast({
+        title: "Project deleted",
+        description: "The project was archived and removed from active lists.",
+      })
+      queryClient.invalidateQueries({ queryKey: ["projects-minimal"] })
+      queryClient.invalidateQueries({ queryKey: ["project-overview", projectId] })
+      setShowDeleteDialog(false)
+      onClose?.()
+    } catch (err: any) {
+      toast({
+        title: "Error",
+        description: err?.message || "Failed to delete project",
+        variant: "destructive",
+      })
+    } finally {
+      setIsDeleting(false)
+    }
+  }, [onClose, projectId, queryClient])
 
   const handleProjectDrop = useCallback(
     async (event: React.DragEvent<HTMLDivElement>) => {
@@ -318,8 +365,14 @@ export function BriefingsPage({
         <MobileDetailHeader
           onBack={onClose}
           backLabel="Close details"
-          title={projectOverview?.name || 'Project'}
+          title={(
+            <ProjectHeaderTitleSwitcher
+              projectId={projectId}
+              title={projectOverview?.name || 'Project'}
+            />
+          )}
           rightSlot={<ProjectHeaderWatchers projectId={projectId} />}
+          className="border-b border-gray-200"
           actions={(
             [
               {
@@ -328,12 +381,20 @@ export function BriefingsPage({
                 icon: <Settings className="h-4 w-4" />,
                 onSelect: () => openProjectSettings('details'),
               },
+              {
+                id: 'project-delete',
+                label: 'Delete project',
+                icon: <Trash2 className="h-4 w-4" />,
+                onSelect: () => setShowDeleteDialog(true),
+                destructive: true,
+                separatorBefore: true,
+              },
             ] as MobileDetailAction[]
           )}
         />
       ) : (
       /* Header */
-      <div className="flex min-w-0 items-center justify-between gap-2 border-t-0 bg-white px-6 py-2.5">
+      <div className="flex min-w-0 items-center justify-between gap-2 border-b border-gray-200 border-t-0 bg-white px-6 py-2.5">
         <div className="flex min-w-0 flex-1 items-center gap-2.5">
           <div className="flex h-8 w-8 shrink-0 items-center justify-center overflow-hidden rounded border border-gray-200 bg-gray-50">
             {logoUrl ? (
@@ -345,9 +406,10 @@ export function BriefingsPage({
           </div>
 
           <div className="flex min-w-0 items-center gap-2">
-            <h1 className="truncate text-sm font-semibold text-gray-900">
-              {projectOverview?.name || 'Project'}
-            </h1>
+            <ProjectHeaderTitleSwitcher
+              projectId={projectId}
+              title={projectOverview?.name || 'Project'}
+            />
             {projectOverviewFetching && (projectOverview as ProjectOverview & { __partial?: boolean })?.__partial ? (
               <Loader2 className="h-3 w-3 shrink-0 animate-spin text-gray-400" aria-label="Loading full details" />
             ) : null}
@@ -355,16 +417,33 @@ export function BriefingsPage({
           </div>
         </div>
         <div className="flex shrink-0 items-center gap-1">
-          <Button
-            variant="ghost"
-            size="sm"
-            className="h-8 w-8 p-0"
-            title="Project settings"
-            aria-label="Project settings"
-            onClick={() => openProjectSettings('details')}
-          >
-            <MoreVertical className="h-4 w-4" />
-          </Button>
+          <DropdownMenu>
+            <DropdownMenuTrigger asChild>
+              <Button
+                variant="ghost"
+                size="sm"
+                className="h-8 w-8 p-0"
+                title="Project actions"
+                aria-label="Project actions"
+              >
+                <MoreVertical className="h-4 w-4" />
+              </Button>
+            </DropdownMenuTrigger>
+            <DropdownMenuContent align="end" className="min-w-[12rem]">
+              <DropdownMenuItem onClick={() => openProjectSettings('details')}>
+                <Settings className="mr-2 h-4 w-4" />
+                Project settings
+              </DropdownMenuItem>
+              <DropdownMenuSeparator />
+              <DropdownMenuItem
+                className="text-red-600 focus:text-red-600"
+                onClick={() => setShowDeleteDialog(true)}
+              >
+                <Trash2 className="mr-2 h-4 w-4" />
+                Delete project
+              </DropdownMenuItem>
+            </DropdownMenuContent>
+          </DropdownMenu>
           {onFocusToggle ? (
             <Button
               variant="ghost"
@@ -395,12 +474,36 @@ export function BriefingsPage({
         initialCategory={settingsCategory}
       />
 
+      <AlertDialog open={showDeleteDialog} onOpenChange={setShowDeleteDialog}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Delete project?</AlertDialogTitle>
+            <AlertDialogDescription>
+              This archives the project (soft delete). You can restore it later from the database if needed.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel disabled={isDeleting}>Cancel</AlertDialogCancel>
+            <AlertDialogAction
+              onClick={(event) => {
+                event.preventDefault()
+                void handleDeleteProject()
+              }}
+              disabled={isDeleting}
+              className="bg-red-600 hover:bg-red-700 focus:ring-red-600"
+            >
+              {isDeleting ? "Deleting…" : "Delete project"}
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
+
       {/* Main content with tabs */}
       <div ref={setProjectMiddlePaneHost} className="relative flex flex-1 flex-col overflow-hidden">
         <Tabs value={activeTab} onValueChange={handleTabChange} className="h-full flex flex-col">
           <div
             ref={tabsScrollRef}
-            className="ai-chat-tabs-scroll min-h-0 min-w-0 overflow-x-auto overflow-y-hidden border-b border-gray-200"
+            className="ai-chat-tabs-scroll min-h-0 min-w-0 overflow-x-auto overflow-y-hidden"
             onMouseEnter={() => setIsTabsHovered(true)}
             onMouseLeave={() => setIsTabsHovered(false)}
           >
@@ -442,6 +545,12 @@ export function BriefingsPage({
               className={tabTriggerClassName}
             >
               Keyword Tracking
+            </TabsTrigger>
+            <TabsTrigger
+              value="competitors"
+              className={tabTriggerClassName}
+            >
+              Competition
             </TabsTrigger>
             <TabsTrigger
               value="files"
@@ -499,6 +608,10 @@ export function BriefingsPage({
 
             <TabsContent value="keywords" className="h-full m-0 mt-0 p-6">
               <ProjectKeywordTrackingTab projectId={projectId} />
+            </TabsContent>
+
+            <TabsContent value="competitors" className="h-full m-0 mt-0 p-6">
+              <ProjectCompetitorsTab projectId={projectId} />
             </TabsContent>
 
             <TabsContent value="files" className="h-full m-0 mt-0 p-6">

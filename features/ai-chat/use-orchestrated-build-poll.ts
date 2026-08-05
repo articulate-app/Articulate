@@ -287,6 +287,7 @@ function applyBuildPreviewEventsFromSnapshot(
           sequence: event.sequence,
           eventType: type,
           taskId: artifactParsed.taskId,
+          projectId: artifactParsed.projectId,
           aiThreadId: artifactParsed.aiThreadId ?? entry.threadId,
           channelId: artifactParsed.channelId,
           languageId: artifactParsed.languageId,

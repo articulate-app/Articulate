@@ -1,7 +1,7 @@
 "use client"
 
 import React, { useMemo } from "react"
-import { AlertCircle, Check, Loader2 } from "lucide-react"
+import { AlertCircle, Loader2 } from "lucide-react"
 import { cn } from "../../app/lib/utils"
 import { useAiExecutionTraceStore } from "../../app/store/ai-execution-trace-store"
 import {
@@ -21,24 +21,20 @@ type ExecutionTimelineProps = {
 }
 
 function StepIcon({ phase }: { phase: AiExecutionTraceStep["phase"] }) {
-  if (phase === "completed") {
-    return (
-      <span className="flex h-4 w-4 shrink-0 items-center justify-center rounded-full bg-gray-900 text-white">
-        <Check className="h-2.5 w-2.5" strokeWidth={3} aria-hidden />
-      </span>
-    )
-  }
+  // Completed rows stay text-only — a left checkmark reads like a selected
+  // radio and makes the stack feel like a single active item.
+  if (phase === "completed") return null
   if (phase === "failed") {
     return (
       <span className="flex h-4 w-4 shrink-0 items-center justify-center text-red-600">
-        <AlertCircle className="h-4 w-4" aria-hidden />
+        <AlertCircle className="h-3.5 w-3.5" aria-hidden />
       </span>
     )
   }
   if (phase === "warning") {
     return (
       <span className="flex h-4 w-4 shrink-0 items-center justify-center text-amber-600">
-        <AlertCircle className="h-4 w-4" aria-hidden />
+        <AlertCircle className="h-3.5 w-3.5" aria-hidden />
       </span>
     )
   }
@@ -101,31 +97,33 @@ function TimelineRow({
   // Completed rows stay to a single concise line; expand active/failed/warning for entities.
   const showExpandedDetails = isActive || step.phase === "failed" || step.phase === "warning"
 
+  const icon = <StepIcon phase={step.phase} />
+
   return (
-    <li className="relative min-w-0 pl-6">
-      <div className="absolute left-0 top-0.5">
-        <StepIcon phase={step.phase} />
-      </div>
-      <div
-        className={cn(
-          "min-w-0 text-xs leading-snug text-gray-700",
-          step.phase === "failed" && "text-red-700",
-          step.phase === "warning" && "text-amber-800",
-          isActive && "font-medium text-gray-900",
-        )}
-      >
-        <p className="break-words [overflow-wrap:anywhere]">{step.text}</p>
-        {showExpandedDetails && step.entities.length > 0 ? (
-          <div className="mt-1 flex flex-wrap gap-1">
-            {step.entities.map((entity, index) => (
-              <EntityChip
-                key={`${entity.type}:${entity.id ?? entity.label}:${index}`}
-                entity={entity}
-                onClick={onEntityClick}
-              />
-            ))}
-          </div>
-        ) : null}
+    <li className="min-w-0">
+      <div className="flex min-w-0 items-start gap-2">
+        {icon ? <div className="mt-0.5">{icon}</div> : null}
+        <div
+          className={cn(
+            "min-w-0 flex-1 text-xs leading-snug text-gray-600",
+            step.phase === "failed" && "text-red-700",
+            step.phase === "warning" && "text-amber-800",
+            isActive && "text-gray-900",
+          )}
+        >
+          <p className="break-words [overflow-wrap:anywhere]">{step.text}</p>
+          {showExpandedDetails && step.entities.length > 0 ? (
+            <div className="mt-1 flex flex-wrap gap-1">
+              {step.entities.map((entity, index) => (
+                <EntityChip
+                  key={`${entity.type}:${entity.id ?? entity.label}:${index}`}
+                  entity={entity}
+                  onClick={onEntityClick}
+                />
+              ))}
+            </div>
+          ) : null}
+        </div>
       </div>
       {attachedChangePreviews.length > 0 || attachedEditPreviews.length > 0 ? (
         <div className="mt-2 space-y-2">
@@ -193,7 +191,7 @@ export function ExecutionTimeline({
 
   return (
     <div className={cn("w-full min-w-0 max-w-full", className)}>
-      <ol className="space-y-2.5">
+      <ol className="flex flex-col gap-1.5">
         {steps.map((step) => (
           <TimelineRow
             key={step.stepId}

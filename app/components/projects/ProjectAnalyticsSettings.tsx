@@ -10,6 +10,8 @@ import { Button } from "../ui/button"
 import { Input } from "../ui/input"
 import { Label } from "../ui/label"
 import { cn } from "@/lib/utils"
+import { GoogleConnectPanel } from "./google-connect-panel"
+import { isGoogleOAuthConnectEnabledInMainUi } from "@/lib/google-oauth-feature"
 
 type Mapping = {
   id: number
@@ -198,14 +200,25 @@ export function ProjectAnalyticsSettings({ projectId }: ProjectAnalyticsSettings
             Google Analytics connection
           </h3>
           <p className="mt-1 text-xs text-gray-500">
-            Connect a GA4 property to pull traffic data into this project. Make
-            sure{" "}
-            <span className="font-mono text-[11px]">
-              app@whyarticulate.com
-            </span>{" "}
-            has Viewer access to your GA4 property.
+            {isGoogleOAuthConnectEnabledInMainUi()
+              ? "Prefer one-click Google connect (Search Console + Analytics). Legacy option: share Viewer access with "
+              : "Connect a GA4 property by sharing Viewer access with "}
+            <span className="font-mono text-[11px]">app@whyarticulate.com</span>
+            {isGoogleOAuthConnectEnabledInMainUi()
+              ? " and paste a GA4 property ID below."
+              : ", then paste the GA4 property ID below."}
           </p>
         </div>
+
+        {isGoogleOAuthConnectEnabledInMainUi() ? (
+          <GoogleConnectPanel
+            projectId={projectId}
+            onConnected={() => {
+              void refetchMappings()
+              void triggerSync()
+            }}
+          />
+        ) : null}
 
         {isLoadingMappings ? (
           <div className="flex items-center gap-2 text-xs text-gray-500">

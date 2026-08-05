@@ -53,12 +53,68 @@ export type BrandKitEffective = {
 
 export type ProjectBrandKitStatus = "empty" | "ready" | "stale"
 
+/** Media kinds allowed inside a design template. */
+export type ProjectDesignMediaType =
+  | "image"
+  | "video"
+  | "pdf"
+  | "html"
+  | "docx"
+  | "url"
+  | "other"
+
+/** @deprecated Use ProjectDesignMediaType */
+export type ProjectDesignExampleMediaType = ProjectDesignMediaType
+
+/** One visual asset inside a layout template (image, video, PDF, or link). */
+export type ProjectDesignTemplateAsset = {
+  id: string
+  media_type: ProjectDesignMediaType
+  title: string | null
+  /** External URL (link, hosted media, or public storage URL). */
+  url: string | null
+  /** Storage path in public-media when uploaded. */
+  storage_path: string | null
+  mime_type: string | null
+}
+
+/**
+ * Layout/post template used as visual guidance for AI creatives.
+ * A template may contain multiple images/assets (carousel, multi-panel, etc.).
+ */
+export type ProjectDesignTemplate = {
+  id: string
+  title: string | null
+  notes: string | null
+  assets: ProjectDesignTemplateAsset[]
+  source_artifact_id: string | null
+  created_at: string
+}
+
+/** @deprecated Flat single-asset shape — migrated into ProjectDesignTemplate on parse. */
+export type ProjectDesignExample = {
+  id: string
+  kind?: "example" | "template"
+  media_type: ProjectDesignMediaType
+  title: string | null
+  url: string | null
+  storage_path: string | null
+  mime_type: string | null
+  notes: string | null
+  source_artifact_id: string | null
+  created_at: string
+}
+
 export type ProjectBrandKit = {
   schema_version: typeof PROJECT_BRAND_KIT_SCHEMA_VERSION
   status: ProjectBrandKitStatus
   source_url: string | null
   extracted_at: string | null
   last_run_id: string | null
+  /** Free-text description of the desired design / visual system. */
+  design_description: string | null
+  /** Layout templates (multi-asset) for AI visual reference. */
+  design_templates: ProjectDesignTemplate[]
   effective: BrandKitEffective
   overrides: PartialBrandKitEffective
   source: BrandKitEffective | null
@@ -129,6 +185,8 @@ export function emptyProjectBrandKit(): ProjectBrandKit {
     source_url: null,
     extracted_at: null,
     last_run_id: null,
+    design_description: null,
+    design_templates: [],
     effective: emptyBrandKitEffective(),
     overrides: {},
     source: null,
@@ -356,6 +414,154 @@ export function mergeBrandKitEffective(
   }
 }
 
+function normalizeDesignMediaType(value: unknown): ProjectDesignMediaType {
+  const raw = toTrimmedString(value)?.toLowerCase()
+  if (
+    raw === "image"
+    || raw === "video"
+    || raw === "pdf"
+    || raw === "html"
+    || raw === "docx"
+    || raw === "url"
+    || raw === "other"
+  ) {
+    return raw
+  }
+  // Legacy aliases
+  if (raw === "htm" || raw === "xhtml") return "html"
+  if (raw === "doc" || raw === "word" || raw === "msword") return "docx"
+  return "other"
+}
+
+export function normalizeDesignTemplateAsset(raw: unknown): ProjectDesignTemplateAsset | null {
+  const record = asRecord(raw)
+  if (!record) return null
+  const id = toTrimmedString(record.id)
+  if (!id) return null
+  return {
+    id,
+    media_type: normalizeDesignMediaType(record.media_type ?? record.mediaType),
+    title: toTrimmedString(record.title),
+    url: toTrimmedString(record.url),
+    storage_path: toTrimmedString(record.storage_path ?? record.storagePath),
+    mime_type: toTrimmedString(record.mime_type ?? record.mimeType),
+  }
+}
+
+/** Migrate legacy flat design_examples entries into a single-asset template. */
+function templateFromLegacyExample(raw: unknown): ProjectDesignTemplate | null {
+  const record = asRecord(raw)
+  if (!record) return null
+  const id = toTrimmedString(record.id)
+  if (!id) return null
+  const asset: ProjectDesignTemplateAsset = {
+    id: `${id}-asset`,
+    media_type: normalizeDesignMediaType(record.media_type ?? record.mediaType),
+    title: toTrimmedString(record.title),
+    url: toTrimmedString(record.url),
+    storage_path: toTrimmedString(record.storage_path ?? record.storagePath),
+    mime_type: toTrimmedString(record.mime_type ?? record.mimeType),
+  }
+  return {
+    id,
+    title: toTrimmedString(record.title),
+    notes: toTrimmedString(record.notes),
+    assets: [asset],
+    source_artifact_id: toTrimmedString(record.source_artifact_id ?? record.sourceArtifactId),
+    created_at: toTrimmedString(record.created_at ?? record.createdAt) ?? new Date().toISOString(),
+  }
+}
+
+export function normalizeDesignTemplate(raw: unknown): ProjectDesignTemplate | null {
+  const record = asRecord(raw)
+  if (!record) return null
+  const id = toTrimmedString(record.id)
+  if (!id) return null
+
+  const assetsRaw = record.assets
+  if (Array.isArray(assetsRaw)) {
+    const assets: ProjectDesignTemplateAsset[] = []
+    for (const entry of assetsRaw) {
+      const asset = normalizeDesignTemplateAsset(entry)
+      if (asset) assets.push(asset)
+    }
+    if (assets.length === 0) return null
+    return {
+      id,
+      title: toTrimmedString(record.title),
+      notes: toTrimmedString(record.notes),
+      assets,
+      source_artifact_id: toTrimmedString(record.source_artifact_id ?? record.sourceArtifactId),
+      created_at: toTrimmedString(record.created_at ?? record.createdAt) ?? new Date().toISOString(),
+    }
+  }
+
+  // Flat legacy shape (design_examples item without assets[]).
+  return templateFromLegacyExample(record)
+}
+
+export function normalizeDesignTemplates(raw: unknown): ProjectDesignTemplate[] {
+  if (!Array.isArray(raw)) return []
+  const out: ProjectDesignTemplate[] = []
+  for (const entry of raw) {
+    const normalized = normalizeDesignTemplate(entry)
+    if (normalized) out.push(normalized)
+  }
+  return out
+}
+
+/** Resolve templates from either the new field or legacy design_examples. */
+export function resolveDesignTemplates(record: Record<string, unknown>): ProjectDesignTemplate[] {
+  const fromTemplates = normalizeDesignTemplates(
+    record.design_templates ?? record.designTemplates,
+  )
+  if (fromTemplates.length > 0) return fromTemplates
+  return normalizeDesignTemplates(record.design_examples ?? record.designExamples)
+}
+
+function effectiveHasVisualTokens(effective: BrandKitEffective): boolean {
+  const colors = Object.values(effective.colors).some(Boolean)
+  const fonts = Object.values(effective.fonts).some(Boolean)
+  return Boolean(
+    colors
+    || fonts
+    || effective.color_scheme
+    || effective.logo_path
+    || effective.favicon_path
+    || effective.spacing.base_unit != null
+    || effective.spacing.border_radius,
+  )
+}
+
+/** True when the kit has nothing useful for humans or AI. */
+export function isProjectBrandKitVacant(kit: ProjectBrandKit): boolean {
+  if (kit.design_description?.trim()) return false
+  if (kit.design_templates.length > 0) return false
+  if (kit.source) return false
+  return !effectiveHasVisualTokens(kit.effective)
+}
+
+function resolveBrandKitStatus(args: {
+  statusRaw: string | null
+  source: BrandKitEffective | null
+  overrides: PartialBrandKitEffective
+  designDescription: string | null
+  designTemplates: ProjectDesignTemplate[]
+}): ProjectBrandKitStatus {
+  const hasOverrides = hasOverrideKeys(args.overrides)
+  const hasDesign =
+    Boolean(args.designDescription?.trim()) || args.designTemplates.length > 0
+
+  if (args.source) return hasOverrides ? "stale" : "ready"
+  if (hasDesign || effectiveHasVisualTokens(args.source ?? emptyBrandKitEffective())) {
+    return "ready"
+  }
+  // When only overrides exist without source (manual-only kit).
+  if (hasOverrides) return "ready"
+  if (args.statusRaw === "ready" || args.statusRaw === "stale") return "ready"
+  return "empty"
+}
+
 function hasOverrideKeys(overrides: PartialBrandKitEffective | null | undefined): boolean {
   if (!overrides) return false
   return Object.keys(overrides).length > 0
@@ -375,20 +581,29 @@ export function parseProjectBrandKit(raw: unknown): ProjectBrandKit {
       ? mergeBrandKitEffective(source, overrides)
       : emptyBrandKitEffective()
 
+  const designDescription = toTrimmedString(record.design_description ?? record.designDescription)
+  const designTemplates = resolveDesignTemplates(record)
   const statusRaw = toTrimmedString(record.status)
-  const status: ProjectBrandKitStatus =
-    statusRaw === "ready" || statusRaw === "stale" || statusRaw === "empty"
-      ? statusRaw
-      : source
-        ? "ready"
-        : "empty"
+  const status = resolveBrandKitStatus({
+    statusRaw,
+    source,
+    overrides,
+    designDescription,
+    designTemplates,
+  })
+
+  // Manual token edits without extract still count as ready.
+  const finalStatus =
+    status === "empty" && effectiveHasVisualTokens(effectiveRaw) ? "ready" : status
 
   return {
     schema_version: PROJECT_BRAND_KIT_SCHEMA_VERSION,
-    status,
+    status: finalStatus,
     source_url: toTrimmedString(record.source_url),
     extracted_at: toTrimmedString(record.extracted_at),
     last_run_id: toTrimmedString(record.last_run_id),
+    design_description: designDescription,
+    design_templates: designTemplates,
     effective: effectiveRaw,
     overrides,
     source,
@@ -416,6 +631,8 @@ export function applyExtractedBrandSource(args: {
     source_url: args.sourceUrl,
     extracted_at: new Date().toISOString(),
     last_run_id: args.runId,
+    design_description: previous.design_description,
+    design_templates: previous.design_templates,
     source: args.source,
     overrides,
     effective: mergeBrandKitEffective(args.source, overrides),
@@ -428,22 +645,206 @@ export function applyBrandKitOverrides(args: {
 }): ProjectBrandKit {
   const source = args.previous.source ?? emptyBrandKitEffective()
   const overrides = args.overrides
-  return {
+  const next: ProjectBrandKit = {
     ...args.previous,
     schema_version: PROJECT_BRAND_KIT_SCHEMA_VERSION,
-    status: args.previous.source ? "ready" : "empty",
+    status: args.previous.source ? (hasOverrideKeys(overrides) ? "stale" : "ready") : "ready",
     overrides,
     effective: mergeBrandKitEffective(source, overrides),
   }
+  if (isProjectBrandKitVacant(next) && !args.previous.source) {
+    next.status = "empty"
+  }
+  return next
 }
 
-/** Compact payload for future AI-chat injection. */
+/** Persist design direction + visual templates without touching token overrides. */
+export function applyBrandKitDesignFields(args: {
+  previous: ProjectBrandKit
+  designDescription?: string | null
+  designTemplates?: ProjectDesignTemplate[]
+}): ProjectBrandKit {
+  const designDescription =
+    args.designDescription !== undefined
+      ? toTrimmedString(args.designDescription)
+      : args.previous.design_description
+  const designTemplates =
+    args.designTemplates !== undefined
+      ? normalizeDesignTemplates(args.designTemplates)
+      : args.previous.design_templates
+
+  const next: ProjectBrandKit = {
+    ...args.previous,
+    schema_version: PROJECT_BRAND_KIT_SCHEMA_VERSION,
+    design_description: designDescription,
+    design_templates: designTemplates,
+  }
+  next.status = resolveBrandKitStatus({
+    statusRaw: next.status,
+    source: next.source,
+    overrides: next.overrides,
+    designDescription: next.design_description,
+    designTemplates: next.design_templates,
+  })
+  if (next.status === "empty" && effectiveHasVisualTokens(next.effective)) {
+    next.status = "ready"
+  }
+  return next
+}
+
+/** Compact payload for AI-chat / worker injection. */
 export function getEffectiveBrandKitForAi(kit: ProjectBrandKit | null | undefined) {
   const effective = kit?.effective ?? emptyBrandKitEffective()
   return {
     schema_version: PROJECT_BRAND_KIT_SCHEMA_VERSION,
     status: kit?.status ?? "empty",
     source_url: kit?.source_url ?? null,
+    design_description: kit?.design_description ?? null,
+    design_templates: kit?.design_templates ?? [],
     ...effective,
   }
+}
+
+/**
+ * Build the AI-facing brand kit from a projects row (or any object with brand_kit).
+ * Returns null when empty so callers can omit it from prompts/tools.
+ */
+export function brandKitForAiFromProject(
+  project: { brand_kit?: unknown } | null | undefined,
+) {
+  if (!project) return null
+  const kit = parseProjectBrandKit(project.brand_kit)
+  if (isProjectBrandKitVacant(kit)) return null
+  return getEffectiveBrandKitForAi(kit)
+}
+
+function assetHref(asset: ProjectDesignTemplateAsset): string | null {
+  return asset.url?.trim() || asset.storage_path?.trim() || null
+}
+
+export type BrandTemplateVisualRef = {
+  template_id: string
+  template_title: string | null
+  asset_id: string
+  title: string | null
+  url: string | null
+  storage_path: string | null
+  media_type: ProjectDesignMediaType
+}
+
+function looksLikeImagePath(value: string | null | undefined): boolean {
+  return Boolean(value && /\.(png|jpe?g|webp|gif|avif)(\?|#|$)/i.test(value))
+}
+
+/**
+ * Collect image assets from brand layout templates for multimodal generation.
+ * Prefers uploaded images; includes link assets only when the URL points at an image file.
+ */
+export function collectBrandTemplateVisualRefs(
+  brandKit:
+    | ReturnType<typeof getEffectiveBrandKitForAi>
+    | ProjectBrandKit
+    | null
+    | undefined,
+  max = 8,
+): BrandTemplateVisualRef[] {
+  const templates = brandKit?.design_templates ?? []
+  const out: BrandTemplateVisualRef[] = []
+  for (const template of templates) {
+    for (const asset of template.assets ?? []) {
+      if (out.length >= max) return out
+      const url = asset.url?.trim() || null
+      const storagePath = asset.storage_path?.trim() || null
+      if (!url && !storagePath) continue
+      const isImage =
+        asset.media_type === "image"
+        || looksLikeImagePath(url)
+        || looksLikeImagePath(storagePath)
+      if (!isImage) continue
+      out.push({
+        template_id: template.id,
+        template_title: template.title,
+        asset_id: asset.id,
+        title: asset.title,
+        url,
+        storage_path: storagePath,
+        media_type: asset.media_type,
+      })
+    }
+  }
+  return out
+}
+
+function formatDesignTemplatesForPrompt(templates: ProjectDesignTemplate[]): string | null {
+  if (!templates.length) return null
+  const lines = templates.slice(0, 12).map((template, index) => {
+    const label = template.title?.trim() || `template ${index + 1}`
+    const notes = template.notes?.trim()
+    const assets = template.assets
+      .slice(0, 8)
+      .map((asset, assetIndex) => {
+        const href = assetHref(asset)
+        const assetLabel = asset.title?.trim() || `${asset.media_type} ${assetIndex + 1}`
+        return href ? `${assetLabel} → ${href}` : assetLabel
+      })
+      .join("; ")
+    return `- [template] ${label}${assets ? ` | assets: ${assets}` : ""}${notes ? ` (${notes})` : ""}`
+  })
+  return `Brand layout templates (match composition, hierarchy, framing, and multi-panel structure — do not copy protected logos/faces verbatim):\n${lines.join("\n")}`
+}
+
+/** Compact natural-language brand brief for image/video prompts. */
+export function formatBrandKitForMediaPrompt(
+  brandKit: ReturnType<typeof getEffectiveBrandKitForAi> | null | undefined,
+  projectName?: string | null,
+): string | null {
+  if (!brandKit) return null
+  if (
+    brandKit.status === "empty"
+    && !brandKit.design_description
+    && !(brandKit.design_templates?.length > 0)
+  ) {
+    return null
+  }
+  const lines: string[] = []
+  const name = String(projectName ?? "").trim()
+  lines.push(
+    name
+      ? `Brand kit for "${name}" (prefer these tokens over web/training knowledge of the brand):`
+      : "Brand kit (prefer these tokens over web/training knowledge of the brand):",
+  )
+  const designDescription = String(brandKit.design_description ?? "").trim()
+  if (designDescription) {
+    lines.push(`Design direction: ${designDescription}`)
+  }
+  const colors = brandKit.colors
+  const colorParts = [
+    colors.primary ? `primary ${colors.primary}` : null,
+    colors.secondary ? `secondary ${colors.secondary}` : null,
+    colors.accent ? `accent ${colors.accent}` : null,
+    colors.background ? `background ${colors.background}` : null,
+    colors.text_primary ? `text ${colors.text_primary}` : null,
+    colors.text_secondary ? `text secondary ${colors.text_secondary}` : null,
+  ].filter(Boolean)
+  if (colorParts.length) lines.push(`Colors: ${colorParts.join("; ")}.`)
+  const fonts = brandKit.fonts
+  const fontParts = [
+    fonts.primary ? `body ${fonts.primary}` : null,
+    fonts.heading ? `heading ${fonts.heading}` : null,
+    fonts.code ? `code ${fonts.code}` : null,
+  ].filter(Boolean)
+  if (fontParts.length) lines.push(`Fonts: ${fontParts.join("; ")}.`)
+  if (brandKit.color_scheme) lines.push(`Color scheme: ${brandKit.color_scheme}.`)
+  if (brandKit.spacing?.border_radius) lines.push(`Corner radius: ${brandKit.spacing.border_radius}.`)
+  if (brandKit.logo_path) lines.push("Include/respect the project logo when it fits the creative.")
+  const templatesBrief = formatDesignTemplatesForPrompt(brandKit.design_templates ?? [])
+  if (templatesBrief) lines.push(templatesBrief)
+  const visualCount = collectBrandTemplateVisualRefs(brandKit).length
+  if (visualCount > 0) {
+    lines.push(
+      `Visual template images (${visualCount}) are attached as reference inputs — match their layout, spacing, typography hierarchy, and framing; invent new on-brand content rather than copying protected logos or faces.`,
+    )
+  }
+  lines.push("Do not invent conflicting brand colors, fonts, or logo treatments.")
+  return lines.join(" ")
 }

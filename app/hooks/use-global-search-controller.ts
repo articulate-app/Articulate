@@ -421,17 +421,38 @@ const SHELL_ALLOWED_PARAMS = new Set([
   "centerArtifactId",
   "centerSourceId",
   "centerTab",
+  "centerView",
+  "centerSuggestionId",
   "middleTaskId",
   "middleProjectId",
   "middleUserId",
   "middleThreadId",
   "taskAiOpen",
   "focus",
+  "aiFocus",
   "layout",
+  "itemKind",
+  "tasksView",
+  "mode",
+  "groupBy",
+  "groupOrder",
+  "project",
+  "projectId",
+  "version",
+  "artifactVersion",
+  "artifactHistory",
+  "researchTab",
+  "rQuery",
+  "rRegion",
+  "createType",
+  "chatPreFill",
+  "chatMode",
+  "newAiThread",
   // Preferences / settings modal — must survive home shell sanitize
   "settings",
   "settingsCategory",
 ])
+
 
 function getShellStateParams(searchParams: SearchParamsLike): URLSearchParams {
   const source = new URLSearchParams(searchParams.toString())
@@ -627,10 +648,13 @@ export function useGlobalSearchController({
     void livePathname
     if (!(isPrimaryRoute && !isTasksRoute && routeObject === "all")) return
     if (isRecentObjectNavigation()) return
-    const sanitizedParams = getShellStateParams(searchParams)
-    if (sanitizedParams.toString() === new URLSearchParams(searchParams.toString()).toString()) return
+    // Sanitize the live address bar — Next `searchParams` lag behind shallow writes
+    // (e.g. aiFocus) and rewriting from them would strip focus/layout flags.
+    const liveParams = effectiveSearchParams
+    const sanitizedParams = getShellStateParams(liveParams)
+    if (sanitizedParams.toString() === liveParams.toString()) return
     shallowReplaceSearchParams("/", sanitizedParams, "global-search-shell-sanitize")
-  }, [effectivePathname, isPrimaryRoute, isTasksRoute, routeObject, searchParams])
+  }, [effectivePathname, effectiveSearchParams, isPrimaryRoute, isTasksRoute, routeObject])
 
   const routeEntityType = routeTabToEntityType(urlTab)
   const visibleEntityTypes = useMemo(

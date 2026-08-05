@@ -9,13 +9,31 @@ export const GROUP_KEY_NO_DATE = '__no_date__'
 /** Internal DnD-only sentinel when a null grouped value must appear in a string id. Never sent to the API. */
 export const NULL_GROUP_DND_VALUE = '__null__'
 
+/**
+ * Generic legacy aliases (case-insensitive lookup). Prefer field-aware resolution in
+ * `normalizeCanonicalGroupKey` — `none` is ambiguous across project vs content_type/etc.
+ */
 const LEGACY_NULL_GROUP_ALIASES: Record<string, string> = {
   none: GROUP_KEY_NO_PROJECT,
   unassigned: GROUP_KEY_UNASSIGNED,
   'no-date': GROUP_KEY_NO_DATE,
   'no_date': GROUP_KEY_NO_DATE,
+  'no date': GROUP_KEY_NO_DATE,
   'no-status': GROUP_KEY_UNASSIGNED,
   'no_status': GROUP_KEY_UNASSIGNED,
+  'no status': GROUP_KEY_UNASSIGNED,
+}
+
+/** Backend RPC null-bucket keys (`task_group_*_filtered`). */
+const BACKEND_NULL_GROUP_KEY: Record<string, string> = {
+  status: 'No Status',
+  assigned_to: 'unassigned',
+  project: 'none',
+  content_type: 'none',
+  production_type: 'none',
+  language: 'none',
+  delivery_date: 'no-date',
+  publication_date: 'no-date',
 }
 
 export function getNullGroupKeyForField(
@@ -39,8 +57,8 @@ export function getNullGroupKeyForField(
 }
 
 /**
- * Normalize any raw group key (including null, empty, legacy aliases) to the canonical sentinel
- * used for grouping, DnD, and optimistic cache updates.
+ * Normalize any raw group key (including null, empty, backend + legacy aliases) to the
+ * canonical sentinel used for grouping, DnD, and optimistic cache updates.
  */
 export function normalizeCanonicalGroupKey(
   raw: string | null | undefined,
@@ -52,9 +70,79 @@ export function normalizeCanonicalGroupKey(
   if (trimmed.length === 0 || trimmed === 'null' || trimmed === NULL_GROUP_DND_VALUE) {
     return getNullGroupKeyForField(groupBy)
   }
-  const legacy = LEGACY_NULL_GROUP_ALIASES[trimmed]
+  if (
+    trimmed === GROUP_KEY_UNASSIGNED ||
+    trimmed === GROUP_KEY_NO_PROJECT ||
+    trimmed === GROUP_KEY_NO_DATE
+  ) {
+    return trimmed
+  }
+
+  const lower = trimmed.toLowerCase()
+
+  // Field-aware backend null buckets (must win over the ambiguous generic `none` alias).
+  switch (groupBy) {
+    case 'status':
+      if (
+        lower === 'no status' ||
+        lower === 'no-status' ||
+        lower === 'no_status' ||
+        lower === 'unassigned'
+      ) {
+        return GROUP_KEY_UNASSIGNED
+      }
+      break
+    case 'assigned_to':
+      if (lower === 'unassigned') return GROUP_KEY_UNASSIGNED
+      break
+    case 'project':
+      if (
+        lower === 'none' ||
+        lower === 'no project' ||
+        lower === 'no-project' ||
+        lower === 'no_project'
+      ) {
+        return GROUP_KEY_NO_PROJECT
+      }
+      break
+    case 'content_type':
+    case 'production_type':
+    case 'language':
+      if (lower === 'none' || lower === 'unassigned') return GROUP_KEY_UNASSIGNED
+      break
+    case 'delivery_date':
+    case 'publication_date':
+      if (lower === 'no-date' || lower === 'no_date' || lower === 'no date') {
+        return GROUP_KEY_NO_DATE
+      }
+      break
+    default:
+      break
+  }
+
+  const legacy = LEGACY_NULL_GROUP_ALIASES[lower] ?? LEGACY_NULL_GROUP_ALIASES[trimmed]
   if (legacy) return legacy
   return trimmed
+}
+
+/**
+ * Convert a FE canonical (or raw) group key to the string the `task_group_*` RPCs expect
+ * for `p_group_key` equality checks.
+ */
+export function toBackendGroupKey(
+  groupKey: string | null | undefined,
+  groupBy: GroupByField | string | null | undefined,
+): string | null {
+  if (groupKey == null) return null
+  const trimmed = String(groupKey).trim()
+  if (!trimmed) return getNullGroupKeyForField(groupBy) ? (BACKEND_NULL_GROUP_KEY[String(groupBy)] ?? null) : null
+
+  const canonical = normalizeCanonicalGroupKey(trimmed, groupBy) ?? trimmed
+  if (canonical === 'all') return 'all'
+  if (isNullGroupKey(canonical)) {
+    return BACKEND_NULL_GROUP_KEY[String(groupBy)] ?? canonical
+  }
+  return canonical
 }
 
 export function encodeGroupKeyForDndId(

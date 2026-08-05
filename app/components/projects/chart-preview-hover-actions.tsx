@@ -1,6 +1,7 @@
 "use client"
 
 import { forwardRef, type ButtonHTMLAttributes, type ReactNode } from "react"
+import { format } from "date-fns"
 import { Calendar as CalendarIcon } from "lucide-react"
 import { cn } from "@/lib/utils"
 import { DateRangePicker } from "../ui/date-range-picker"
@@ -79,6 +80,11 @@ export function ChartPreviewDateRangeButton({
   value: DateRangeValue
   onChange: (range: DateRangeValue) => void
 }) {
+  const rangeLabel =
+    value.from && value.to
+      ? `${format(value.from, "MMM d, yyyy")} – ${format(value.to, "MMM d, yyyy")}`
+      : "Pick a date range"
+
   return (
     <Popover modal={false}>
       {/*
@@ -93,12 +99,10 @@ export function ChartPreviewDateRangeButton({
       >
         <CalendarIcon className="h-3.5 w-3.5" />
       </PopoverTrigger>
-      <PopoverContent align="end" className="z-[80] w-auto p-3" sideOffset={6}>
-        <div className="space-y-1.5">
-          <div className="text-[11px] font-medium text-gray-500">Range</div>
-          <div className="w-56">
-            <DateRangePicker value={value} onChange={onChange} />
-          </div>
+      <PopoverContent align="end" className="z-[80] w-auto max-w-[min(100vw-1.5rem,44rem)] p-3" sideOffset={6}>
+        <div className="space-y-2">
+          <div className="text-[11px] font-medium text-gray-500">{rangeLabel}</div>
+          <DateRangePicker inline value={value} onChange={onChange} />
         </div>
       </PopoverContent>
     </Popover>

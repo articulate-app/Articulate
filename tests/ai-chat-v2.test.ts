@@ -197,6 +197,39 @@ describe("AI Chat protocol V2 intent correction", () => {
       expect(message).toBe("Update Task Rubber alternatives introduction")
     })
 
+    it("only registers attachment targets with real UUIDs (not storage paths)", () => {
+      const attachmentUuid = "b2d64e19-531a-4f6d-bd0d-b18da09c8301"
+      const fields = buildAiChatV2RequestFields({
+        clientRequestId: "req-attachment-ids",
+        attachments: [
+          {
+            id: attachmentUuid,
+            file_name: "template.docx",
+            file_path: "sources/template.docx",
+            mime_type: "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+            size: 12,
+          },
+          {
+            file_name: "orphan.docx",
+            file_path: "ai/thread/orphan.docx",
+            mime_type: "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+            size: 8,
+          },
+        ],
+      })
+      expect(fields.attachment_ids).toEqual([attachmentUuid])
+      expect(
+        fields.targets.some(
+          (t) => t.target_kind === "attachment" && t.attachment_id === attachmentUuid,
+        ),
+      ).toBe(true)
+      expect(
+        fields.targets.some(
+          (t) => t.target_kind === "attachment" && String(t.attachment_id ?? "").includes("ai/"),
+        ),
+      ).toBe(false)
+    })
+
     it("keeps selected component and other explicit targets while omitting conflicting ambient", () => {
       const targets = buildAiRunTargets({
         messageTags: [{ type: "task", id: 99, label: "Other task", source: "mention" }],

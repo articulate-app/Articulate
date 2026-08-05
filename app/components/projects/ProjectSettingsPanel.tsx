@@ -14,6 +14,8 @@ import {
   Users,
   X,
   Globe2,
+  Palette,
+  Swords,
 } from "lucide-react"
 
 import { cn } from "@/lib/utils"
@@ -47,6 +49,8 @@ import { LibraryTab } from "../project-briefings/LibraryTab"
 import { ProjectTeamSettingsPanel } from "./project-team-settings-panel"
 import { ProjectWebsiteIndexSection } from "./project-website-index-section"
 import { ProjectBrandKitSection } from "./project-brand-kit-section"
+import { ProjectCompetitorsTab } from "./ProjectCompetitorsTab"
+import { ProjectOverviewWatchers } from "./project-overview-watchers"
 import {
   PROJECT_SITE_INDEX_STATUS_QUERY_KEY,
   fetchProjectSiteIndexStatus,
@@ -55,21 +59,25 @@ import {
 
 export type ProjectSettingsCategory =
   | "details"
+  | "brand"
   | "configuration"
   | "status"
   | "planning"
   | "billing"
   | "website-index"
+  | "competitors"
   | "team"
   | "components"
 
 const CATEGORIES: { id: ProjectSettingsCategory; label: string; icon: typeof Target }[] = [
   { id: "details", label: "Details", icon: Target },
+  { id: "brand", label: "Brand", icon: Palette },
   { id: "configuration", label: "Configuration", icon: Settings2 },
   { id: "status", label: "Status", icon: FileText },
   { id: "planning", label: "AI planning", icon: Sparkles },
   { id: "billing", label: "Billing", icon: CreditCard },
   { id: "website-index", label: "Website index", icon: Globe2 },
+  { id: "competitors", label: "Competition", icon: Swords },
   { id: "team", label: "Team", icon: Users },
   { id: "components", label: "Components", icon: Layers },
 ]
@@ -523,23 +531,43 @@ export function ProjectSettingsPanel({
             />
           </div>
         </div>
-
-        <ProjectBrandKitSection
-          projectId={projectId}
-          projectUrl={formData.project_url ?? data?.project_url ?? null}
-          canEdit
-          onApplied={(kit) => {
-            const primary = kit.effective.colors.primary
-            const logoPath = kit.effective.logo_path
-            setFormData((prev) => ({
-              ...prev,
-              ...(primary ? { color: primary } : {}),
-              ...(logoPath ? { logo: logoPath } : {}),
-              ...(kit.source_url ? { project_url: kit.source_url } : {}),
-            }))
-          }}
-        />
       </div>
+    )
+  }
+
+  const renderBrand = () => {
+    if (isLoading) {
+      return (
+        <div className="flex items-center justify-center py-12 text-sm text-gray-500">
+          <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+          Loading...
+        </div>
+      )
+    }
+    if (error || !data) {
+      return (
+        <div className="py-12 text-center text-sm text-red-500">
+          Failed to load project details.
+        </div>
+      )
+    }
+
+    return (
+      <ProjectBrandKitSection
+        projectId={projectId}
+        projectUrl={formData.project_url ?? data.project_url ?? null}
+        canEdit
+        onOpenDetails={() => setActiveCategory("details")}
+        onApplied={(kit) => {
+          const primary = kit.effective.colors.primary
+          const logoPath = kit.effective.logo_path
+          setFormData((prev) => ({
+            ...prev,
+            ...(primary ? { color: primary } : {}),
+            ...(logoPath ? { logo: logoPath } : {}),
+          }))
+        }}
+      />
     )
   }
 
@@ -547,6 +575,8 @@ export function ProjectSettingsPanel({
     switch (activeCategory) {
       case "details":
         return renderDetails()
+      case "brand":
+        return renderBrand()
       case "configuration":
         return <OverviewConfigDropdowns projectId={projectId} />
       case "status":
@@ -563,13 +593,20 @@ export function ProjectSettingsPanel({
             canEdit
           />
         )
+      case "competitors":
+        return <ProjectCompetitorsTab projectId={projectId} variant="manage" />
       case "team":
         return (
-          <ProjectTeamSettingsPanel
-            teamId={data?.team_id ?? null}
-            teamName={data?.team_name ?? null}
-            isLoading={isLoading}
-          />
+          <div className="space-y-8">
+            <ProjectOverviewWatchers projectId={projectId} />
+            <div className="border-t border-gray-100 pt-6">
+              <ProjectTeamSettingsPanel
+                teamId={data?.team_id ?? null}
+                teamName={data?.team_name ?? null}
+                isLoading={isLoading}
+              />
+            </div>
+          </div>
         )
       case "components":
         return (
@@ -656,7 +693,7 @@ export function ProjectSettingsPanel({
                 </button>
               </div>
 
-              <div className="min-h-0 flex-1 overflow-auto px-6 py-5">
+              <div className="min-h-0 min-w-0 flex-1 overflow-auto px-6 py-5">
                 {renderCategory()}
               </div>
 

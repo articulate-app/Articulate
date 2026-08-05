@@ -10,6 +10,7 @@ export type AiTagType =
   | "task_component"
   | "artifact"
   | "source"
+  | "brand_template"
 export type AiTagSource = "mention" | "selection"
 
 export type AiContextTag = {
@@ -37,6 +38,9 @@ export type AiContextTag = {
   /** source tag — factual input context only; does not grant write/attach/delete. */
   sourceId?: string
   sourceTitle?: string | null
+  /** brand layout template from project Brand kit — factual layout reference. */
+  brandTemplateId?: string
+  brandTemplateTitle?: string | null
   /** When set, this tag may drive ai-chat write scope (maps to context_source). */
   contextSource?: string | null
 }
@@ -311,6 +315,10 @@ export function chipDisplayText(tag: AiContextTag): string {
     const title = (tag.sourceTitle ?? tag.label).trim()
     return `@${title || "Source"}`
   }
+  if (tag.type === "brand_template") {
+    const title = (tag.brandTemplateTitle ?? tag.label).trim()
+    return `@${title || "Template"}`
+  }
   return `@${tag.label}`
 }
 
@@ -349,6 +357,9 @@ export function chipTooltipText(tag: AiContextTag): string {
     lines.push(`Source: ${clean(tag.sourceTitle) || clean(tag.label)}`)
     if (tag.taskId != null) lines.push(`Task: ${tag.taskId}`)
     if (tag.projectId != null) lines.push(`Project: ${tag.projectId}`)
+  } else if (tag.type === "brand_template") {
+    lines.push(`Brand template: ${clean(tag.brandTemplateTitle) || clean(tag.label)}`)
+    if (tag.projectId != null) lines.push(`Project: ${tag.projectId}`)
   } else {
     lines.push(clean(tag.label))
   }
@@ -381,6 +392,8 @@ export function createTagChip(tag: AiContextTag): HTMLSpanElement {
   if (tag.artifactTitle) outer.setAttribute("data-artifact-title", tag.artifactTitle)
   if (tag.sourceId) outer.setAttribute("data-source-id", tag.sourceId)
   if (tag.sourceTitle) outer.setAttribute("data-source-title", tag.sourceTitle)
+  if (tag.brandTemplateId) outer.setAttribute("data-brand-template-id", tag.brandTemplateId)
+  if (tag.brandTemplateTitle) outer.setAttribute("data-brand-template-title", tag.brandTemplateTitle)
   if (tag.projectId != null) outer.setAttribute("data-project-id", String(tag.projectId))
   if (tag.contextSource) outer.setAttribute("data-tag-context-source", tag.contextSource)
 
@@ -453,6 +466,8 @@ export function readTagFromChip(el: HTMLElement): AiContextTag | null {
   if (el.dataset.artifactTitle) base.artifactTitle = el.dataset.artifactTitle
   if (el.dataset.sourceId) base.sourceId = el.dataset.sourceId
   if (el.dataset.sourceTitle) base.sourceTitle = el.dataset.sourceTitle
+  if (el.dataset.brandTemplateId) base.brandTemplateId = el.dataset.brandTemplateId
+  if (el.dataset.brandTemplateTitle) base.brandTemplateTitle = el.dataset.brandTemplateTitle
   if (el.dataset.projectId) {
     const projectId = Number(el.dataset.projectId)
     if (Number.isFinite(projectId)) base.projectId = projectId
@@ -462,6 +477,9 @@ export function readTagFromChip(el: HTMLElement): AiContextTag | null {
   }
   if (type === "source") {
     base.sourceId = base.sourceId ?? String(id)
+  }
+  if (type === "brand_template") {
+    base.brandTemplateId = base.brandTemplateId ?? String(id)
   }
   if (el.dataset.tagContextSource) base.contextSource = el.dataset.tagContextSource
   return base

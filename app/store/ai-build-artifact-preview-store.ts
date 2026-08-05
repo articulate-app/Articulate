@@ -78,6 +78,7 @@ type AiBuildArtifactPreviewState = {
     sequence: number
     eventType: string
     taskId?: number | null
+    projectId?: number | null
     aiThreadId?: string | null
     channelId?: number | null
     languageId?: number | null
@@ -198,6 +199,7 @@ export function phaseForArtifactEventType(eventType: string): AiBuildArtifactPre
 export function parseBuildArtifactPreviewPayload(payload: Record<string, unknown> | null | undefined): {
   artifactId: string | null
   taskId: number | null
+  projectId: number | null
   aiThreadId: string | null
   channelId: number | null
   languageId: number | null
@@ -225,7 +227,11 @@ export function parseBuildArtifactPreviewPayload(payload: Record<string, unknown
   const record = payload ?? {}
   const nestedArtifact = asRecord(record.artifact)
   const nestedSnapshot = asRecord(record.snapshot) ?? asRecord(nestedArtifact?.snapshot)
-  const source = nestedSnapshot ?? nestedArtifact ?? record
+  const planArtifacts = Array.isArray(record.artifacts) ? record.artifacts : null
+  const firstPlanArtifact = planArtifacts?.[0] && typeof planArtifacts[0] === "object"
+    ? asRecord(planArtifacts[0] as Record<string, unknown>)
+    : null
+  const source = nestedSnapshot ?? nestedArtifact ?? firstPlanArtifact ?? record
   const streaming = record.streaming === true
 
   const mediaItemRaw = asRecord(record.media_item) ?? asRecord(record.mediaItem)
@@ -255,6 +261,11 @@ export function parseBuildArtifactPreviewPayload(payload: Record<string, unknown
       toFiniteNumber(record.task_id)
       ?? toFiniteNumber(record.taskId)
       ?? toFiniteNumber(source.task_id),
+    projectId:
+      toFiniteNumber(record.project_id)
+      ?? toFiniteNumber(record.projectId)
+      ?? toFiniteNumber(source.project_id)
+      ?? toFiniteNumber(nestedArtifact?.project_id),
     aiThreadId:
       toTrimmedString(record.ai_thread_id)
       ?? toTrimmedString(record.aiThreadId)
@@ -377,6 +388,7 @@ export const useAiBuildArtifactPreviewStore = create<AiBuildArtifactPreviewState
     sequence,
     eventType,
     taskId,
+    projectId,
     aiThreadId,
     channelId,
     languageId,
@@ -421,6 +433,7 @@ export const useAiBuildArtifactPreviewStore = create<AiBuildArtifactPreviewState
         unitId: unitId.trim() || "unit",
         artifactId: artifactId.trim(),
         taskId: taskId ?? prev?.taskId ?? null,
+        projectId: projectId ?? prev?.projectId ?? null,
         aiThreadId: aiThreadId ?? prev?.aiThreadId ?? null,
         channelId: channelId ?? prev?.channelId ?? null,
         languageId: languageId ?? prev?.languageId ?? null,

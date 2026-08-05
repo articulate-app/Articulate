@@ -160,26 +160,17 @@ export function ProjectSuggestionsTab({
   return (
     <div className={cn("min-w-0", isPreview ? "" : "p-6")}>
       {!isPreview ? (
-        <div className="mb-4 flex items-baseline justify-between gap-3">
-          <div>
-            <h2 className="text-base font-semibold text-gray-900">AI suggestions</h2>
-            <p className="mt-0.5 text-sm text-muted-foreground">
-              Proposed tasks from the project planner. Open one to review, approve, or dismiss.
-            </p>
-          </div>
-          <span className="shrink-0 text-xs text-muted-foreground">
-            {items.length} pending
-          </span>
+        <div className="mb-4">
+          <h2 className="text-base font-semibold text-gray-900">AI suggestions</h2>
+          <p className="mt-0.5 text-sm text-muted-foreground">
+            Proposed tasks from the project planner. Open one to review, approve, or dismiss.
+          </p>
         </div>
-      ) : items.length > 0 ? (
-        <p className="mb-2 px-2 text-xs text-muted-foreground">
-          {items.length} pending
-        </p>
       ) : null}
 
       <div
         className={cn(
-          "min-w-0 divide-y divide-gray-100",
+          "min-w-0",
           !isPreview && "rounded-md border border-gray-200",
         )}
       >

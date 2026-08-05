@@ -12,26 +12,24 @@ export function Attachments({ items }: { items?: AiAttachmentMeta[] | null }) {
   const [signedUrlsByKey, setSignedUrlsByKey] = useState<Record<string, string>>({})
   const attachmentItems = items ?? []
 
-  const imageAttachments = useMemo(
-    () => attachmentItems.filter((attachment) => (attachment.mime_type || "").toLowerCase().startsWith("image/")),
-    [attachmentItems]
-  )
-  const imageAttachmentSignature = useMemo(
-    () => imageAttachments.map((attachment) => getAttachmentKey(attachment)).join("|"),
-    [imageAttachments]
+  const attachmentSignature = useMemo(
+    () => attachmentItems.map((attachment) => getAttachmentKey(attachment)).join("|"),
+    [attachmentItems],
   )
 
   useEffect(() => {
     let cancelled = false
-    const currentImageAttachments = attachmentItems.filter((attachment) =>
-      (attachment.mime_type || "").toLowerCase().startsWith("image/")
-    )
 
     const existing: Record<string, string> = {}
     const missing: AiAttachmentMeta[] = []
 
-    for (const attachment of currentImageAttachments) {
+    for (const attachment of attachmentItems) {
       const key = getAttachmentKey(attachment)
+      if (!attachment.file_path?.trim()) continue
+      if (attachment.preview_url?.trim()) {
+        existing[key] = attachment.preview_url.trim()
+        continue
+      }
       const cached = signedAttachmentPreviewCache.get(key)
       if (cached) {
         existing[key] = cached
@@ -50,13 +48,19 @@ export function Attachments({ items }: { items?: AiAttachmentMeta[] | null }) {
       const signedPairs = await Promise.all(
         missing.map(async (attachment) => {
           const key = getAttachmentKey(attachment)
-          const { data, error } = await supabase.storage.from("attachments").createSignedUrl(attachment.file_path, 600)
+          const path = attachment.file_path?.trim()
+          if (!path) {
+            failedSignedAttachmentCache.add(key)
+            return null
+          }
+          // Bucket `attachments` is private — never use /object/public/…
+          const { data, error } = await supabase.storage.from("attachments").createSignedUrl(path, 600)
           if (error || !data?.signedUrl) {
             failedSignedAttachmentCache.add(key)
             return null
           }
           return { key, url: data.signedUrl }
-        })
+        }),
       )
 
       if (cancelled) return
@@ -74,7 +78,7 @@ export function Attachments({ items }: { items?: AiAttachmentMeta[] | null }) {
     return () => {
       cancelled = true
     }
-  }, [imageAttachmentSignature, attachmentItems, supabase])
+  }, [attachmentSignature, attachmentItems, supabase])
 
   if (attachmentItems.length === 0) return null
 
@@ -82,13 +86,17 @@ export function Attachments({ items }: { items?: AiAttachmentMeta[] | null }) {
     <div className="mt-2 grid gap-2">
       {attachmentItems.map((attachment) => {
         const key = getAttachmentKey(attachment)
-        const publicUrl = getPublicUrl(attachment.file_path)
-        const signedUrl = attachment.preview_url ?? signedUrlsByKey[key] ?? signedAttachmentPreviewCache.get(key) ?? null
-        const href = signedUrl || publicUrl
+        const signedUrl =
+          attachment.preview_url
+          ?? signedUrlsByKey[key]
+          ?? signedAttachmentPreviewCache.get(key)
+          ?? null
         const isImage = (attachment.mime_type || "").toLowerCase().startsWith("image/")
         const fileSizeText = formatFileSize(attachment.size)
+        const failed = failedSignedAttachmentCache.has(key) && !signedUrl
+
         if (isImage) {
-          if (failedSignedAttachmentCache.has(key)) {
+          if (failed || !signedUrl) {
             return (
               <div
                 key={key}
@@ -99,6 +107,7 @@ export function Attachments({ items }: { items?: AiAttachmentMeta[] | null }) {
                 <div className="mt-0.5 text-[11px] text-gray-500">
                   {attachment.mime_type || "image"}
                   {fileSizeText ? ` • ${fileSizeText}` : ""}
+                  {failed ? " • preview unavailable" : ""}
                 </div>
               </div>
             )
@@ -106,14 +115,14 @@ export function Attachments({ items }: { items?: AiAttachmentMeta[] | null }) {
           return (
             <a
               key={key}
-              href={href}
+              href={signedUrl}
               target="_blank"
               rel="noreferrer"
               className="block max-w-[340px] overflow-hidden rounded-md border border-gray-200 bg-white"
               title={attachment.file_name}
             >
               <img
-                src={href}
+                src={signedUrl}
                 alt={attachment.file_name}
                 loading="lazy"
                 className="block max-h-56 w-full object-cover"
@@ -125,10 +134,28 @@ export function Attachments({ items }: { items?: AiAttachmentMeta[] | null }) {
             </a>
           )
         }
+
+        if (!signedUrl) {
+          return (
+            <div
+              key={key}
+              className="max-w-[340px] rounded-md border border-gray-200 bg-gray-50 px-2 py-1.5 text-xs text-gray-700"
+              title={attachment.file_name}
+            >
+              <div className="truncate font-medium text-gray-800">{attachment.file_name}</div>
+              <div className="mt-0.5 text-[11px] text-gray-500">
+                {attachment.mime_type || "file"}
+                {fileSizeText ? ` • ${fileSizeText}` : ""}
+                {failed ? " • download unavailable" : " • preparing link…"}
+              </div>
+            </div>
+          )
+        }
+
         return (
           <a
             key={key}
-            href={publicUrl}
+            href={signedUrl}
             target="_blank"
             rel="noreferrer"
             className="max-w-[340px] rounded-md border border-gray-200 bg-gray-50 px-2 py-1.5 text-xs text-gray-700 hover:bg-gray-100"
@@ -145,13 +172,6 @@ export function Attachments({ items }: { items?: AiAttachmentMeta[] | null }) {
   )
 }
 
-function getPublicUrl(path: string) {
-  // Rely on signed/public policy configured for the attachments bucket
-  const base = process.env.NEXT_PUBLIC_SUPABASE_URL
-  if (!base) return path
-  return `${base}/storage/v1/object/public/attachments/${path}`
-}
-
 function formatFileSize(size: number | null | undefined): string {
   if (!Number.isFinite(size) || !size || size <= 0) return ""
   if (size < 1024) return `${size} B`
@@ -162,5 +182,3 @@ function formatFileSize(size: number | null | undefined): string {
 function getAttachmentKey(attachment: AiAttachmentMeta): string {
   return attachment.id || attachment.file_path
 }
-
-

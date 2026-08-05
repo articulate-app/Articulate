@@ -26,6 +26,13 @@ export function positiveIntOrNull(value: unknown): number | null {
   return n
 }
 
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i
+
+function uuidOrNull(value: unknown): string | null {
+  const text = typeof value === "string" ? value.trim() : ""
+  return UUID_RE.test(text) ? text : null
+}
+
 export type BuildAiRunTargetsArgs = {
   messageTags?: AiContextTag[]
   attachments?: AiAttachmentMeta[]
@@ -471,6 +478,18 @@ export function buildAiRunTargets(args: BuildAiRunTargetsArgs): AiRunTarget[] {
         })
       }
     }
+    if (tag.type === "brand_template") {
+      const projectId = positiveIntOrNull(tag.projectId)
+      if (projectId != null) {
+        pushTarget(rawTargets, {
+          target_kind: "project",
+          project_id: projectId,
+          source: tagSourceToTargetSource(tag),
+          allow_write: false,
+          label: tag.projectName ?? tag.brandTemplateTitle ?? tag.label ?? null,
+        })
+      }
+    }
   }
 
   for (const ref of taggedTaskChannelRefs) {
@@ -495,7 +514,8 @@ export function buildAiRunTargets(args: BuildAiRunTargetsArgs): AiRunTarget[] {
   }
 
   for (const attachment of attachments) {
-    const attachmentId = attachment.id?.trim() || attachment.file_path?.trim()
+    // Only real attachment UUIDs may become run targets. Storage paths are not authz identifiers.
+    const attachmentId = uuidOrNull(attachment.id)
     if (!attachmentId) continue
     pushTarget(rawTargets, {
       target_kind: "attachment",
@@ -797,7 +817,7 @@ export function buildAiChatV2RequestFields(args: BuildAiRunTargetsArgs & {
     threadScope: args.threadScope,
   })
   const attachment_ids = (args.attachments ?? [])
-    .map((a) => a.id?.trim() || a.file_path?.trim() || "")
+    .map((a) => uuidOrNull(a.id) ?? "")
     .filter(Boolean)
 
   return {

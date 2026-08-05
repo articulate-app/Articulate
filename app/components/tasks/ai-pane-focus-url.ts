@@ -3,15 +3,18 @@ export function buildAiPaneFocusParams(current: URLSearchParams, shouldFocus: bo
     ? migrateThreadSelectionToCenterPane(new URLSearchParams(current.toString()))
     : new URLSearchParams(current.toString())
   if (shouldFocus) {
-    const layout = new Set((next.get("layout") || "left,middle").split(",").filter(Boolean))
-    layout.add("right")
-    next.set("layout", Array.from(layout).join(","))
+    // Solo AI pane: hide left/middle columns in the layout param itself.
+    next.set("layout", "right")
     next.set("rightView", "ai")
     next.set("taskAiOpen", "true")
     next.set("aiFocus", "true")
     return next
   }
   next.delete("aiFocus")
+  // Restore a normal 3-pane shell when leaving focus if we were solo-right.
+  if ((next.get("layout") || "") === "right") {
+    next.set("layout", "left,middle,right")
+  }
   return next
 }
 

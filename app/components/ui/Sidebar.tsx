@@ -19,7 +19,6 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from ".
 import { TooltipProvider } from "./tooltip"
 import { toast } from "./use-toast"
 import { createProject, createProjectWithTeam } from "../../lib/services/projects"
-import { extractProjectBrand } from "../../lib/services/project-brand-kit"
 import { getRoles } from "../../lib/services/teams"
 import { Checkbox } from "./checkbox"
 import type { AdminCreateUserPayload, AdminCreateUserResponse } from "../../types/users"
@@ -99,7 +98,6 @@ export function Sidebar({
   const [showNewProjectModal, setShowNewProjectModal] = useState(false);
   const [showNewUserModal, setShowNewUserModal] = useState(false);
   const [newProjectName, setNewProjectName] = useState("");
-  const [newProjectUrl, setNewProjectUrl] = useState("");
   const [selectedTeamValue, setSelectedTeamValue] = useState<string>("");
   const [newTeamName, setNewTeamName] = useState("");
   const [isCreatingProject, setIsCreatingProject] = useState(false);
@@ -426,12 +424,9 @@ export function Sidebar({
 
     setIsCreatingProject(true);
     try {
-      const trimmedProjectUrl = newProjectUrl.trim();
       const { data, error } = isCreatingNewTeam
         ? await createProjectWithTeam(trimmedProjectName, trimmedTeamName)
-        : await createProject(trimmedProjectName, selectedExistingTeamId as number, {
-            projectUrl: trimmedProjectUrl || null,
-          });
+        : await createProject(trimmedProjectName, selectedExistingTeamId as number);
 
       if (error) throw error;
 
@@ -446,41 +441,10 @@ export function Sidebar({
         throw new Error("Failed to create project");
       }
 
-      if (trimmedProjectUrl) {
-        if (isCreatingNewTeam) {
-          const { error: urlError } = await supabase
-            .from("projects")
-            .update({ project_url: trimmedProjectUrl })
-            .eq("id", createdProjectId);
-          if (urlError) {
-            console.warn("Failed to set project URL after create", urlError);
-          }
-        }
-
-        const brandResult = await extractProjectBrand({
-          projectId: Number(createdProjectId),
-          url: trimmedProjectUrl,
-          replaceAll: true,
-        });
-        if (!brandResult.ok) {
-          toast({
-            title: "Project created",
-            description:
-              brandResult.error ||
-              "Project was created, but brand extraction failed. You can retry in Settings.",
-          });
-        } else {
-          toast({
-            title: "Success",
-            description: "Project created and brand extracted",
-          });
-        }
-      } else {
-        toast({
-          title: "Success",
-          description: "Project created successfully",
-        });
-      }
+      toast({
+        title: "Success",
+        description: "Project created successfully",
+      });
 
       // Refresh project and team lists to keep modal/options up to date.
       queryClient.invalidateQueries({ queryKey: ['projects-minimal'] });
@@ -492,7 +456,6 @@ export function Sidebar({
       // Close modal and reset
       setShowNewProjectModal(false);
       setNewProjectName("");
-      setNewProjectUrl("");
       setSelectedTeamValue("");
       setNewTeamName("");
       if (onClose) onClose();
@@ -702,7 +665,7 @@ export function Sidebar({
           <DialogHeader>
             <DialogTitle>Create New Project</DialogTitle>
             <DialogDescription>
-              Enter a name and optional website URL. We can extract brand colors, fonts, and logo from the URL.
+              Enter a name for your new project. You can configure all other details later.
             </DialogDescription>
           </DialogHeader>
 
@@ -723,21 +686,6 @@ export function Sidebar({
                 }}
                 autoFocus
               />
-            </div>
-
-            <div className="space-y-2">
-              <Label htmlFor="project-url">Website URL</Label>
-              <Input
-                id="project-url"
-                type="url"
-                value={newProjectUrl}
-                onChange={(e) => setNewProjectUrl(e.target.value)}
-                placeholder="https://example.com"
-                disabled={isCreatingProject}
-              />
-              <p className="text-xs text-muted-foreground">
-                Optional. If provided, we extract brand colors, fonts, and logo after create.
-              </p>
             </div>
 
             <div className="space-y-2">

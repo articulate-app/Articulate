@@ -31,6 +31,16 @@ export type AiChatTaggedRefsPayload = {
   tagged_artifact_refs: TaggedArtifactRef[]
   tagged_source_ids: string[]
   tagged_source_refs: TaggedSourceRef[]
+  tagged_brand_template_ids: string[]
+  tagged_brand_template_refs: TaggedBrandTemplateRef[]
+}
+
+export type TaggedBrandTemplateRef = {
+  template_id: string
+  title: string | null
+  project_id: number | null
+  notes?: string | null
+  asset_count?: number | null
 }
 
 const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
@@ -174,6 +184,23 @@ export function buildAiChatTaggedRefs(tags: AiContextTag[]): AiChatTaggedRefsPay
     })
   }
 
+  const tagged_brand_template_refs: TaggedBrandTemplateRef[] = []
+  const brandTemplateIdSet = new Set<string>()
+  for (const t of tags) {
+    if (t.type !== "brand_template") continue
+    const templateId = String(t.brandTemplateId ?? t.id).trim()
+    if (!templateId) continue
+    if (brandTemplateIdSet.has(templateId)) continue
+    brandTemplateIdSet.add(templateId)
+    tagged_brand_template_refs.push({
+      template_id: templateId,
+      title: t.brandTemplateTitle ?? t.label ?? null,
+      project_id: t.projectId != null && t.projectId > 0 ? t.projectId : null,
+      notes: null,
+      asset_count: null,
+    })
+  }
+
   return {
     tagged_task_ids: Array.from(taskIdSet).sort((a, b) => a - b),
     tagged_project_ids,
@@ -185,5 +212,7 @@ export function buildAiChatTaggedRefs(tags: AiContextTag[]): AiChatTaggedRefsPay
     tagged_artifact_refs,
     tagged_source_ids: Array.from(sourceIdSet),
     tagged_source_refs,
+    tagged_brand_template_ids: Array.from(brandTemplateIdSet),
+    tagged_brand_template_refs,
   }
 }

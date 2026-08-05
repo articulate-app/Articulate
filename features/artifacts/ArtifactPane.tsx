@@ -10,6 +10,7 @@ import {
   History,
   Link2,
   Loader2,
+  Save,
   Trash2,
   X,
 } from "lucide-react"
@@ -83,6 +84,7 @@ import {
   openArtifactSelectionInAiPane,
 } from "./open-artifact-selection-in-ai-pane"
 import { computeArtifactContentHash } from "./artifact-selection"
+import { artifactHasAnnotatableMedia } from "./artifact-media-annotate-dialog"
 import debounce from "lodash.debounce"
 
 export type ArtifactPaneProps = {
@@ -578,6 +580,10 @@ export function ArtifactPane({
         projectId: artifact?.project_id ?? null,
         channelId: artifact?.channel_id ?? null,
       })
+      toast({
+        title: "Sent to AI chat",
+        description: "Selection attached in the composer — add a note and send.",
+      })
     },
     [],
   )
@@ -695,9 +701,18 @@ export function ArtifactPane({
   }, [changeDiff, hasChangeDiff])
 
   // Show recent changes in the document body by default when a prior version differs.
+  // Media creatives stay on the interactive document so annotate/click-point remains available.
   useEffect(() => {
+    if (!displayArtifact) {
+      setShowChanges(false)
+      return
+    }
+    if (artifactHasAnnotatableMedia(displayArtifact)) {
+      setShowChanges(false)
+      return
+    }
     setShowChanges(hasChangeDiff)
-  }, [hasChangeDiff, artifactId, version])
+  }, [hasChangeDiff, artifactId, version, displayArtifact])
 
   if (artifactQuery.isLoading) {
     return (
@@ -805,6 +820,20 @@ export function ArtifactPane({
             )}
           </div>
           <div className="flex flex-wrap items-center gap-1">
+            <button
+              type="button"
+              onClick={() => void handleSave()}
+              disabled={isLivePreview || isSaving}
+              className="inline-flex h-8 items-center gap-1.5 rounded-md px-2.5 text-xs font-medium text-gray-700 hover:bg-gray-50 hover:text-gray-900 disabled:opacity-50"
+              title="Save"
+            >
+              {isSaving ? (
+                <Loader2 className="h-3.5 w-3.5 animate-spin" aria-hidden />
+              ) : (
+                <Save className="h-3.5 w-3.5" aria-hidden />
+              )}
+              <span>{isSaving ? "Saving…" : "Save"}</span>
+            </button>
             {hasChangeDiff ? (
               <button
                 type="button"
@@ -996,6 +1025,66 @@ export function ArtifactPane({
               }}
               forceContentKey={editorForceContentKey}
               readOnly={isLivePreview}
+              onSelectImagePoint={({ attachmentId, x, y }) => {
+                attachArtifactSelection(
+                  {
+                    source_type: "task_artifact",
+                    artifact_id: displayArtifact.id,
+                    artifact_version_number: displayArtifact.current_version ?? 0,
+                    anchor_type: "image_point",
+                    attachment_id: attachmentId,
+                    anchor_x: x,
+                    anchor_y: y,
+                    title: displayArtifact.title,
+                  },
+                  displayArtifact,
+                )
+              }}
+              onSelectImageRect={({ attachmentId, x, y, width, height }) => {
+                attachArtifactSelection(
+                  {
+                    source_type: "task_artifact",
+                    artifact_id: displayArtifact.id,
+                    artifact_version_number: displayArtifact.current_version ?? 0,
+                    anchor_type: "image_rect",
+                    attachment_id: attachmentId,
+                    anchor_x: x,
+                    anchor_y: y,
+                    anchor_width: width,
+                    anchor_height: height,
+                    title: displayArtifact.title,
+                  },
+                  displayArtifact,
+                )
+              }}
+              onSelectVideoTime={({ attachmentId, timeStart, timeEnd }) => {
+                attachArtifactSelection(
+                  {
+                    source_type: "task_artifact",
+                    artifact_id: displayArtifact.id,
+                    artifact_version_number: displayArtifact.current_version ?? 0,
+                    anchor_type: "video_time",
+                    attachment_id: attachmentId,
+                    anchor_time_start: timeStart,
+                    anchor_time_end: timeEnd ?? timeStart,
+                    title: displayArtifact.title,
+                  },
+                  displayArtifact,
+                )
+              }}
+              onSelectAsset={(attachmentId) => {
+                attachArtifactSelection(
+                  {
+                    source_type: "task_artifact",
+                    artifact_id: displayArtifact.id,
+                    artifact_version_number: displayArtifact.current_version ?? 0,
+                    anchor_type: "asset",
+                    attachment_id: attachmentId,
+                    title: displayArtifact.title,
+                  },
+                  displayArtifact,
+                )
+              }}
               onContentJsonChange={(contentJson) => {
                 if (isLivePreview || applyingServerContentRef.current) return
                 setDraftContentJson(contentJson)

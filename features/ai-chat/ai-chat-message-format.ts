@@ -6,6 +6,15 @@ function hasHtmlMarkup(value: string): boolean {
   return /<\/?[a-z][\s\S]*>/i.test(value)
 }
 
+/** Remove leaked `__AI_*__{…}` control payloads if stream parsing ever fails open. */
+export function stripLeakedAiStreamMarkers(value: string): string {
+  return String(value ?? "")
+    .replace(/__AI_[A-Z0-9_]+__\s*\{.*?\}(?=\s*__AI_|\s*$)/gs, "")
+    .replace(/__AI_[A-Z0-9_]+__/g, "")
+    .replace(/\n{3,}/g, "\n\n")
+    .trim()
+}
+
 /** Preserve user-entered newlines for display (pre-wrap container). */
 export function formatUserMessageForDisplay(content: string | null | undefined): string {
   return String(content ?? "").replace(/\r\n/g, "\n")
@@ -29,7 +38,7 @@ type MarkdownBlockLike = {
  * Convert assistant plain text / markdown / mixed HTML into rich HTML with paragraph spacing.
  */
 export function formatAssistantContentForDisplay(content: string | null | undefined): string {
-  const raw = String(content ?? "").replace(/\r\n/g, "\n")
+  const raw = stripLeakedAiStreamMarkers(String(content ?? "").replace(/\r\n/g, "\n"))
   if (!raw.trim()) return ""
 
   if (hasHtmlMarkup(raw)) {

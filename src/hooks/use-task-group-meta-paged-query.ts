@@ -3,6 +3,7 @@ import { createClientComponentClient } from '@supabase/auth-helpers-nextjs';
 import type { SearchSessionRef } from '../../app/lib/types/search-session';
 import type { BootstrapResponse } from './use-task-group-tasks-query';
 import { getDefaultGroupOrderForGroupBy } from '@/lib/tasks-grouping-url';
+import { normalizeCanonicalGroupKey } from '@/lib/task-grouping-drop-config';
 
 type GroupOrder = 'asc' | 'desc';
 type RowSortOrder = 'asc' | 'desc';
@@ -471,16 +472,54 @@ export function useTaskGroupMetaPagedQuery({
               })),
             );
           }
-          const normalizedBootstrapGroups = (payload.groups ?? []).map(group => ({
-            group_key: String(group.group_key ?? ''),
-            label: typeof group.label === 'string' ? group.label : String(group.group_key ?? ''),
-            task_count: undefined,
-            rows: Array.isArray(group.rows) ? group.rows : [],
-            has_more_rows:
-              typeof group.has_more_rows === 'boolean' ? group.has_more_rows : null,
-            is_hydrated: Boolean(group.is_hydrated),
-            next_row_cursor: group.next_row_cursor ?? null,
-          }));
+          const normalizedBootstrapGroups = (payload.groups ?? []).map(group => {
+            const rawKey = String(group.group_key ?? '')
+            const canonicalKey = normalizeCanonicalGroupKey(rawKey, groupBy) ?? rawKey
+            return {
+              group_key: canonicalKey,
+              label: typeof group.label === 'string' ? group.label : canonicalKey,
+              task_count: undefined,
+              rows: Array.isArray(group.rows) ? group.rows : [],
+              has_more_rows:
+                typeof group.has_more_rows === 'boolean' ? group.has_more_rows : null,
+              is_hydrated: Boolean(group.is_hydrated),
+              next_row_cursor: group.next_row_cursor ?? null,
+            }
+          }).reduce<
+            Array<{
+              group_key: string
+              label: string
+              task_count: undefined
+              rows: any[]
+              has_more_rows: boolean | null
+              is_hydrated: boolean
+              next_row_cursor: any
+            }>
+          >((acc, group) => {
+            const existing = acc.find(g => g.group_key === group.group_key)
+            if (!existing) {
+              acc.push(group)
+              return acc
+            }
+            const seenIds = new Set(existing.rows.map((r: any) => String(r.id)))
+            for (const row of group.rows) {
+              if (!seenIds.has(String(row.id))) {
+                existing.rows.push(row)
+                seenIds.add(String(row.id))
+              }
+            }
+            existing.is_hydrated = existing.is_hydrated || group.is_hydrated
+            if (existing.has_more_rows == null) existing.has_more_rows = group.has_more_rows
+            else if (group.has_more_rows != null) {
+              existing.has_more_rows = existing.has_more_rows || group.has_more_rows
+            }
+            if (!existing.next_row_cursor && group.next_row_cursor) {
+              existing.next_row_cursor = group.next_row_cursor
+            }
+            // Prefer the human label from backend (e.g. "No Status") over a sentinel.
+            if (group.label && group.label !== group.group_key) existing.label = group.label
+            return acc
+          }, []);
           const totalRows = normalizedBootstrapGroups.reduce(
             (sum, group) => sum + (group.rows?.length ?? 0),
             0,
@@ -526,14 +565,18 @@ export function useTaskGroupMetaPagedQuery({
         const rawGroups = payload.groups ?? [];
         const newCursor = payload.next_cursor ?? null;
 
-        const normalized = rawGroups.map(g => ({
-          group_key: String(g.group_key ?? ''),
-          label: typeof g.label === 'string' ? g.label : String(g.group_key ?? ''),
-          task_count:
-            g.task_count == null || Number.isNaN(Number(g.task_count))
-              ? undefined
-              : Number(g.task_count),
-        }));
+        const normalized = rawGroups.map(g => {
+          const rawKey = String(g.group_key ?? '')
+          const canonicalKey = normalizeCanonicalGroupKey(rawKey, groupBy) ?? rawKey
+          return {
+            group_key: canonicalKey,
+            label: typeof g.label === 'string' ? g.label : canonicalKey,
+            task_count:
+              g.task_count == null || Number.isNaN(Number(g.task_count))
+                ? undefined
+                : Number(g.task_count),
+          }
+        });
 
         setGroups(prev => {
           const existingKeys = new Set(prev.map(g => g.group_key));

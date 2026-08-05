@@ -1,6 +1,10 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { createClientComponentClient } from '@supabase/auth-helpers-nextjs';
-import type { TaskListRow } from '@/lib/types/task-list-view';
+import type { TaskListRow } from '@/lib/types/task-list-view'
+import {
+  normalizeCanonicalGroupKey,
+  toBackendGroupKey,
+} from '@/lib/task-grouping-drop-config';
 import type { SearchSession, SearchSessionRef } from '../../app/lib/types/search-session';
 
 type RowSortOrder = 'asc' | 'desc';
@@ -792,7 +796,7 @@ export function useTaskGroupTasksQuery({
         p_is_publication_overdue:
           typeof isPublicationOverdue === 'boolean' ? isPublicationOverdue : null,
         p_group_by: groupByVal && groupByVal !== 'none' ? groupByVal : null,
-        p_group_key: groupKey,
+        p_group_key: toBackendGroupKey(groupKey, groupByVal && groupByVal !== 'none' ? groupByVal : null) ?? groupKey,
         p_row_sort_by: mappedRowSortBy ?? null,
         p_row_sort_order: rowSortOrderVal ?? null,
         p_limit: perPage,
@@ -1278,15 +1282,41 @@ export function useTaskGroupTasksQuery({
     const groups = Array.isArray(payload?.groups) ? payload.groups : [];
     const normalized: BootstrapGroup[] = groups
       .filter((group): group is BootstrapGroup => !!group && typeof group.group_key === 'string')
-      .map(group => ({
-        group_key: String(group.group_key),
-        label: typeof group.label === 'string' ? group.label : String(group.group_key),
-        is_hydrated: Boolean(group.is_hydrated),
-        rows: Array.isArray(group.rows) ? group.rows : [],
-        has_more_rows:
-          typeof group.has_more_rows === 'boolean' ? group.has_more_rows : null,
-        next_row_cursor: (group.next_row_cursor ?? null) as GroupRowCursor,
-      }));
+      .map(group => {
+        const rawKey = String(group.group_key)
+        const canonicalKey = normalizeCanonicalGroupKey(rawKey, groupBy) ?? rawKey
+        return {
+          group_key: canonicalKey,
+          label: typeof group.label === 'string' ? group.label : canonicalKey,
+          is_hydrated: Boolean(group.is_hydrated),
+          rows: Array.isArray(group.rows) ? group.rows : [],
+          has_more_rows:
+            typeof group.has_more_rows === 'boolean' ? group.has_more_rows : null,
+          next_row_cursor: (group.next_row_cursor ?? null) as GroupRowCursor,
+        }
+      })
+      // Collapse backend+FE aliases of the same null bucket into one entry.
+      .reduce<BootstrapGroup[]>((acc, group) => {
+        const existing = acc.find(g => g.group_key === group.group_key)
+        if (!existing) {
+          acc.push(group)
+          return acc
+        }
+        const seenIds = new Set(existing.rows.map(r => String(r.id)))
+        for (const row of group.rows) {
+          if (!seenIds.has(String(row.id))) {
+            existing.rows.push(row)
+            seenIds.add(String(row.id))
+          }
+        }
+        existing.is_hydrated = existing.is_hydrated || group.is_hydrated
+        if (existing.has_more_rows == null) existing.has_more_rows = group.has_more_rows
+        else if (group.has_more_rows != null) existing.has_more_rows = existing.has_more_rows || group.has_more_rows
+        if (!existing.next_row_cursor && group.next_row_cursor) {
+          existing.next_row_cursor = group.next_row_cursor
+        }
+        return acc
+      }, []);
 
     if (DEBUG_GROUPED_BOOTSTRAP) {
       const totalRows = normalized.reduce((sum, group) => sum + (group.rows?.length ?? 0), 0);
@@ -1363,7 +1393,7 @@ export function useTaskGroupTasksQuery({
     firstPageRequestedRef.current = new Set(
       normalized.filter(group => group.is_hydrated).map(group => group.group_key),
     );
-  }, []);
+  }, [groupBy]);
 
   const resetAll = useCallback(() => {
     queryGenerationRef.current += 1;

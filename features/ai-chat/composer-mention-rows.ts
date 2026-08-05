@@ -1,5 +1,5 @@
 /** Duplicated from Composer.tsx to avoid circular imports — keep in sync. */
-export type MentionGroupId = "task" | "project" | "user" | "artifact" | "source"
+export type MentionGroupId = "task" | "project" | "user" | "artifact" | "source" | "template"
 type ProjectMention = { id: number; name: string; color?: string | null; logo?: string | null }
 type TaskMention = {
   id: number
@@ -23,12 +23,21 @@ type SourceMention = {
   project_id: number | null
   status: string | null
 }
+type BrandTemplateMention = {
+  id: string
+  title: string | null
+  project_id: number
+  project_name?: string | null
+  asset_count: number
+  notes?: string | null
+}
 export type MentionSuggestion =
   | { kind: "project"; id: number; label: string; project: ProjectMention }
   | { kind: "task"; id: number; label: string; task: TaskMention }
   | { kind: "user"; id: number; label: string; user: UserMention }
   | { kind: "artifact"; id: string; label: string; artifact: ArtifactMention }
   | { kind: "source"; id: string; label: string; source: SourceMention }
+  | { kind: "brand_template"; id: string; label: string; template: BrandTemplateMention }
 
 export type TaskMentionLite = TaskMention
 
@@ -116,7 +125,7 @@ export function nextSelectableMentionIndex(
 }
 
 type BuildLevel1Args = {
-  mentionFilter: "all" | "task" | "project" | "user" | "artifact" | "source"
+  mentionFilter: "all" | "task" | "project" | "user" | "artifact" | "source" | "template"
   mentionQuery: string | null
   mentionSuggestionsFiltered: MentionSuggestion[]
   directCombined: MentionSuggestion[]
@@ -142,6 +151,7 @@ export function buildLevel1MentionRows(args: BuildLevel1Args): MentionPickerRow[
     rows.push({ kind: "group", id: "user", label: "Users" })
     rows.push({ kind: "group", id: "artifact", label: "Artifacts" })
     rows.push({ kind: "group", id: "source", label: "Sources" })
+    rows.push({ kind: "group", id: "template", label: "Templates" })
   }
   for (const s of mentionSuggestionsFiltered) {
     rows.push({ kind: "suggestion", suggestion: s })

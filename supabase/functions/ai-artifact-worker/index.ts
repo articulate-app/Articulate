@@ -10,6 +10,7 @@ import {
   mergeArtifactSelection,
   type ArtifactSelectionLike,
 } from "./artifact-selection-patch.ts";
+import { brandKitForAiFromProject } from "../_shared/project-brand-kit.ts";
 
 function cleanPersistedArtifactMetadata(meta: unknown): Record<string, unknown> {
   const next =
@@ -581,7 +582,9 @@ function buildInitialMessages(
   const system = [
     "You are a durable artifact-generation agent. Complete exactly the artifact in the current work unit.",
     "Sources are inputs; artifacts are outputs. Read a source only when its summary is insufficient.",
+    "LANGUAGE: Keep the deliverable in the language of the provided sources/templates/URLs unless task_instruction or request explicitly asks to translate or rewrite in another language. Do not switch language just because the chat request is written in a different language.",
     "SELECTED ARTIFACT CONTEXT (if present) is factual UI context about what the user highlighted — not a write lock and not a scope limiter. Interpret the user request yourself.",
+    "When brand_kit is present, match its colors, fonts, typography, and spacing for any styled or visual output. Prefer brand_kit over inventing a conflicting palette.",
     "Prefer apply_artifact_patches for surgical edits: you specify exact old_html/new_html (or verified plain_start/plain_end+expected_text on artifact_plain_for_offsets). You may pass multiple non-overlapping patches.",
     "Use save_artifact_version when creating a new document or when a full rewrite is simpler. Always return the full updated document in that case.",
     "Put authoritative HTML in content_json.blocks[].html when using save_artifact_version. Preserve <figure data-attachment-id> media you are not changing.",
@@ -593,6 +596,19 @@ function buildInitialMessages(
   const plainForOffsets = artifactHtml
     ? buildHtmlFlatIndexMap(artifactHtml).plain
     : (typeof artifact?.content_text === "string" ? artifact.content_text : "")
+  const brandKit = brandKitForAiFromProject(context?.project)
+  const project = context?.project
+    ? {
+        id: context.project.id ?? null,
+        name: context.project.name ?? null,
+        editorial_line: context.project.editorial_line ?? null,
+        goal: context.project.goal ?? null,
+        target_audience: context.project.target_audience ?? null,
+        color: context.project.color ?? null,
+        logo: context.project.logo ?? null,
+        project_url: context.project.project_url ?? null,
+      }
+    : null
   const user = {
     request: context?.build?.request_text ?? unit?.instruction ?? "",
     task_instruction: unit?.instruction ?? "",
@@ -605,6 +621,8 @@ function buildInitialMessages(
     task_keywords: compact(context?.task_keywords, 8000),
     source_summaries: compact(context?.sources ?? context?.source_summaries ?? [], 12000),
     selected_artifact_context: compact(selection ?? spec?.selection ?? null, 12000),
+    project: compact(project, 4000),
+    brand_kit: brandKit,
   };
   return [{ role: "system", content: system }, { role: "user", content: JSON.stringify(user) }];
 }

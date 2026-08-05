@@ -65,6 +65,14 @@ export type SourceCreateResult = {
   source: SourceRecord
   version_number: number
   import_started?: boolean
+  /** Present when the source was created from an uploaded file. */
+  attachment?: {
+    id: string
+    file_path: string
+    file_name: string
+    mime_type: string
+    size: number
+  } | null
 }
 
 export type SourceListResult = {

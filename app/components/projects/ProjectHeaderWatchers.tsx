@@ -115,7 +115,7 @@ export function ProjectHeaderWatchers({ projectId }: ProjectHeaderWatchersProps)
 
   if (isLoading && currentWatchers.length === 0) {
     return (
-      <div className="inline-flex h-7 min-w-[2.5rem] items-center rounded-full border border-gray-200 bg-white px-2">
+      <div className="inline-flex h-7 min-w-[2.5rem] items-center rounded-full bg-transparent px-1.5">
         <span className="text-[10px] text-gray-400">…</span>
       </div>
     )
@@ -126,7 +126,7 @@ export function ProjectHeaderWatchers({ projectId }: ProjectHeaderWatchersProps)
       <PopoverTrigger asChild>
         <button
           type="button"
-          className="inline-flex max-w-[140px] items-center gap-1 overflow-hidden rounded-full border border-gray-200 bg-white px-1.5 py-0.5"
+          className="inline-flex max-w-[140px] items-center gap-1 overflow-hidden rounded-full bg-transparent px-1.5 py-0.5 hover:bg-gray-50"
           title="Manage watchers"
           aria-label="Manage watchers"
         >

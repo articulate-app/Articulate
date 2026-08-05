@@ -184,7 +184,7 @@ export function UserMessageBody({
     () =>
       cn(
         AI_CHAT_USER_MESSAGE_CLASS,
-        isCollapsed && "ai-chat-user-message--collapsed",
+        isCollapsed && "ai-chat-user-message--truncated",
       ),
     [isCollapsed],
   )

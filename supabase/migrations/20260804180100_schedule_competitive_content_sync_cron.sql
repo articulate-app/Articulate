@@ -1,0 +1,58 @@
+-- Competitive content sync schedules via pg_cron + pg_net.
+-- Requires: FIRECRAWL_API_KEY; COMPETITIVE_CONTENT_CRON_SECRET (or service_role).
+-- Hours: app_runtime_settings.competitive_content_sync
+--
+-- Example (ops after deploy):
+--
+--   -- Daily article sync + keyword extraction + GSC/GA refresh
+--   select cron.schedule(
+--     'sync-competitive-content-daily',
+--     '0 7 * * *',
+--     $$
+--     select net.http_post(
+--       url := (select decrypted_secret from vault.decrypted_secrets where name = 'project_url') || '/functions/v1/sync-competitive-content',
+--       headers := jsonb_build_object(
+--         'Content-Type', 'application/json',
+--         'Authorization', 'Bearer ' || (select decrypted_secret from vault.decrypted_secrets where name = 'service_role_key')
+--       ),
+--       body := jsonb_build_object('trigger', 'automatic', 'run_type', 'daily')
+--     );
+--     $$
+--   );
+--
+--   -- Weekly ranking sync
+--   select cron.schedule(
+--     'sync-competitive-content-weekly',
+--     '0 8 * * 1',
+--     $$
+--     select net.http_post(
+--       url := (select decrypted_secret from vault.decrypted_secrets where name = 'project_url') || '/functions/v1/sync-competitive-content',
+--       headers := jsonb_build_object(
+--         'Content-Type', 'application/json',
+--         'Authorization', 'Bearer ' || (select decrypted_secret from vault.decrypted_secrets where name = 'service_role_key')
+--       ),
+--       body := jsonb_build_object('trigger', 'automatic', 'run_type', 'weekly')
+--     );
+--     $$
+--   );
+--
+--   -- Monthly source rediscovery
+--   select cron.schedule(
+--     'discover-competitive-content-sources-monthly',
+--     '0 9 1 * *',
+--     $$
+--     select net.http_post(
+--       url := (select decrypted_secret from vault.decrypted_secrets where name = 'project_url') || '/functions/v1/discover-editorial-sources',
+--       headers := jsonb_build_object(
+--         'Content-Type', 'application/json',
+--         'Authorization', 'Bearer ' || (select decrypted_secret from vault.decrypted_secrets where name = 'service_role_key')
+--       ),
+--       body := jsonb_build_object('trigger', 'automatic')
+--     );
+--     $$
+--   );
+--
+-- This migration does not auto-schedule against a hardcoded secret.
+
+create extension if not exists pg_net with schema extensions;
+create extension if not exists pg_cron with schema extensions;

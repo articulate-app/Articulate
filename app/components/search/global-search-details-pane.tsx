@@ -18,6 +18,7 @@ const PROJECT_ALLOWED_TABS = new Set([
   "analytics",
   "ai-visibility",
   "keywords",
+  "competitors",
   "ai-usage",
   "briefings",
   "library",

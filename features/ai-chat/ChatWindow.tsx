@@ -888,6 +888,29 @@ export function ChatWindow({
     )
   }
 
+  const handleAssistantStreamReset = (tempId: string) => {
+    console.debug("[ai-chat] assistant stream reset", { tempId })
+    setPendingMsgs((prev) =>
+      prev.map((message) =>
+        message.id === tempId
+          ? {
+              ...message,
+              content: "",
+              content_json: [],
+              status: "streaming",
+            }
+          : message
+      )
+    )
+    if (threadTitleStreamRef.current?.assistantTempId === tempId) {
+      threadTitleStreamRef.current = {
+        ...threadTitleStreamRef.current,
+        hasStarted: false,
+        buffer: "",
+      }
+    }
+  }
+
   const handleAssistantStreamStatus = (tempId: string, statusText: string | null) => {
     if (!statusText || statusText.trim().length === 0) {
       setAssistantActivity((prev) => (prev?.tempId === tempId ? null : prev))
@@ -2134,6 +2157,7 @@ export function ChatWindow({
         includeOptimisticUser: false,
         onAssistantStreamStart: handleAssistantStreamStart,
         onAssistantStreamChunk: handleAssistantStreamChunk,
+        onAssistantStreamReset: handleAssistantStreamReset,
         onAssistantStreamStatus: handleAssistantStreamStatus,
         onAssistantStreamComplete: handleAssistantStreamComplete,
         onAssistantStreamError: handleAssistantStreamError,
@@ -2160,6 +2184,7 @@ export function ChatWindow({
       chatContext?.componentId,
       handleAssistantStreamStart,
       handleAssistantStreamChunk,
+      handleAssistantStreamReset,
       handleAssistantStreamStatus,
       handleAssistantStreamComplete,
       handleAssistantStreamError,
@@ -2224,6 +2249,7 @@ export function ChatWindow({
         signal: streamAbortRef.current.signal,
         onAssistantStreamStart: handleAssistantStreamStart,
         onAssistantStreamChunk: handleAssistantStreamChunk,
+        onAssistantStreamReset: handleAssistantStreamReset,
         onAssistantStreamStatus: handleAssistantStreamStatus,
         onAssistantStreamComplete: handleAssistantStreamComplete,
         onAssistantStreamError: handleAssistantStreamError,
@@ -2255,6 +2281,7 @@ export function ChatWindow({
       handleAssistantMessageOutput,
       handleAssistantStreamAsset,
       handleAssistantStreamChunk,
+      handleAssistantStreamReset,
       handleAssistantStreamComplete,
       handleAssistantStreamError,
       handleAssistantStreamStart,
@@ -2576,6 +2603,7 @@ export function ChatWindow({
           v2Request,
           onAssistantStreamStart: handleAssistantStreamStart,
           onAssistantStreamChunk: handleAssistantStreamChunk,
+          onAssistantStreamReset: handleAssistantStreamReset,
           onAssistantStreamStatus: handleAssistantStreamStatus,
           onAssistantStreamComplete: handleAssistantStreamComplete,
           onAssistantStreamError: handleAssistantStreamError,
@@ -2621,6 +2649,7 @@ export function ChatWindow({
       handleAssistantMessageOutput,
       handleAssistantStreamAsset,
       handleAssistantStreamChunk,
+      handleAssistantStreamReset,
       handleAssistantStreamComplete,
       handleAssistantStreamError,
       handleAssistantStreamStart,
@@ -2990,23 +3019,23 @@ export function ChatWindow({
 
     // Keep scroll-room padding long enough that builds/previews can mount
     // after a short assistant ack — otherwise the bubble can't reach the top.
-    userMessageScrollAnchorUntilRef.current = performance.now() + 12000
-    ignoreUserScrollReleaseUntilRef.current = performance.now() + 1200
+    userMessageScrollAnchorUntilRef.current = performance.now() + 20000
+    ignoreUserScrollReleaseUntilRef.current = performance.now() + 2800
     setKeepUserMessageScrollRoom(true)
 
     // Same layout pass as padding: avoid rAF-only scroll that races paint.
     scrollLatestUserMessageIntoComfortView("auto")
-    const delayedTimers = [50, 160, 400, 900].map((delayMs) =>
+    const delayedTimers = [40, 120, 280, 600, 1200, 2400].map((delayMs) =>
       window.setTimeout(() => {
         if (performance.now() >= userMessageScrollAnchorUntilRef.current) return
-        scrollLatestUserMessageIntoComfortView(delayMs <= 50 ? "auto" : "smooth")
+        scrollLatestUserMessageIntoComfortView(delayMs <= 120 ? "auto" : "smooth")
       }, delayMs),
     )
     const releaseTimer = window.setTimeout(() => {
       if (performance.now() >= userMessageScrollAnchorUntilRef.current) {
         setKeepUserMessageScrollRoom(false)
       }
-    }, 12200)
+    }, 20200)
 
     return () => {
       for (const timer of delayedTimers) window.clearTimeout(timer)
@@ -3047,16 +3076,15 @@ export function ChatWindow({
     const container = scrollContainerRef.current
     if (!container) return
 
-    // An explicit manual scroll gesture releases the top-anchor lock so the user
-    // keeps control of the viewport while the assistant is still streaming.
-    // Ignore tiny/trackpad noise and a short grace window after programmatic scroll.
+    // An explicit manual scroll gesture stops re-anchoring so the user keeps
+    // control — but keep bottom padding until the timer expires. Dropping
+    // padding early shrinks scrollHeight and clips the user bubble mid-viewport.
     const releaseAnchor = (event: Event) => {
       if (performance.now() < ignoreUserScrollReleaseUntilRef.current) return
-      if (event instanceof WheelEvent && Math.abs(event.deltaY) < 6 && Math.abs(event.deltaX) < 6) {
+      if (event instanceof WheelEvent && Math.abs(event.deltaY) < 10 && Math.abs(event.deltaX) < 10) {
         return
       }
       userMessageScrollAnchorUntilRef.current = 0
-      setKeepUserMessageScrollRoom(false)
     }
 
     container.addEventListener("wheel", releaseAnchor, { passive: true })
@@ -3159,7 +3187,7 @@ export function ChatWindow({
           ref={scrollContainerRef}
           className={`flex-1 overflow-x-hidden overflow-y-auto p-4 space-y-4 min-h-0 min-w-0 max-w-full${
             keepUserMessageScrollRoom || isAssistantStreaming
-              ? " pb-[55vh] md:pb-[45vh]"
+              ? " pb-[70vh] md:pb-[60vh]"
               : ""
           }`}
         >
@@ -3510,6 +3538,7 @@ export function ChatWindow({
           onOptimistic={handleOptimistic}
           onAssistantStreamStart={handleAssistantStreamStart}
           onAssistantStreamChunk={handleAssistantStreamChunk}
+          onAssistantStreamReset={handleAssistantStreamReset}
           onAssistantStreamStatus={handleAssistantStreamStatus}
           onAssistantStreamComplete={handleAssistantStreamComplete}
           onAssistantStreamError={handleAssistantStreamError}

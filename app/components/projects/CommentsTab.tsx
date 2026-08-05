@@ -824,9 +824,8 @@ export function CommentsTab({
                 {feedFilter === "updates" ? "No activity yet." : "No updates or comments yet."}
               </li>
             ) : null}
-            {mergedFeedItems.map((item, index) => (
+            {mergedFeedItems.map((item) => (
               <li key={item.key}>
-                {index > 0 ? <div className="border-t border-gray-200" /> : null}
                 <button
                   type="button"
                   className="flex w-full items-center gap-2 py-1.5 min-h-0 text-left transition-colors hover:bg-gray-50"
@@ -887,7 +886,7 @@ export function CommentsTab({
                 <h4 className="text-xs font-semibold uppercase tracking-wide text-gray-500">
                   {group.label}
                 </h4>
-                {group.items.map((mention, index) => {
+                {group.items.map((mention) => {
                   const preview = toReplyPreview(mention.body)
                   const createdAt = mention.createdAt
                   const relative = createdAt
@@ -898,7 +897,6 @@ export function CommentsTab({
                     : ""
                   return (
                     <div key={`mention-${mention.id}-${mention.threadId}`}>
-                      {index > 0 ? <div className="border-t border-gray-200" /> : null}
                       <button
                         type="button"
                         className="flex w-full items-center gap-2 py-1.5 min-h-0 text-left transition-colors hover:bg-gray-50"

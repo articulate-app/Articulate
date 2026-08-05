@@ -4,7 +4,7 @@ import React, { useCallback, useMemo, useRef, useState, useEffect, useReducer, t
 import { createPortal } from "react-dom"
 import { getSupabaseBrowser } from "../../lib/supabase-browser"
 import type { AiAttachmentMeta } from "./types"
-import { ArrowUp, BookOpen, FileText, FolderKanban, ListTodo, Paperclip, Plus, Square, User, X } from "lucide-react"
+import { ArrowUp, BookOpen, FileText, FolderKanban, LayoutTemplate, ListTodo, Paperclip, Plus, Square, User, X } from "lucide-react"
 import {
   selectQueuedMessagesForThread,
   useAiChatMessageQueueStore,
@@ -39,7 +39,7 @@ import { useQueryClient } from "@tanstack/react-query"
 import type { InFlightAiTurnMeta } from "./types"
 import { buildAiChatTaggedRefs } from "./build-ai-chat-tagged-refs"
 import { createSourceFromFile } from "../../app/lib/services/sources"
-import { openSourceCenterTab } from "../sources/open-source-center-tab"
+import type { TaggedSourceRef } from "../../app/lib/sources/source-types"
 import {
   type MentionPickerRow,
   buildLevel1MentionRows,
@@ -100,6 +100,7 @@ import {
   useArtifactSelectionStore,
 } from "../artifacts/artifact-selection"
 import { sanitizeStorageFileName } from "../../utils/storage"
+import { parseProjectBrandKit } from "../../app/lib/project-brand-kit"
 
 type ProjectMention = { id: number; name: string; color?: string | null; logo?: string | null }
 type TaskMention = {
@@ -124,14 +125,27 @@ type SourceMention = {
   project_id: number | null
   status: string | null
 }
-type MentionEntityFilter = "all" | "task" | "project" | "user" | "artifact" | "source"
-type MentionGroupId = "task" | "project" | "user" | "artifact" | "source"
+type MentionEntityFilter = "all" | "task" | "project" | "user" | "artifact" | "source" | "template"
+type MentionGroupId = "task" | "project" | "user" | "artifact" | "source" | "template"
 export type MentionSuggestion =
   | { kind: "project"; id: number; label: string; project: ProjectMention }
   | { kind: "task"; id: number; label: string; task: TaskMention }
   | { kind: "user"; id: number; label: string; user: UserMention }
   | { kind: "artifact"; id: string; label: string; artifact: ArtifactMention }
   | { kind: "source"; id: string; label: string; source: SourceMention }
+  | {
+      kind: "brand_template"
+      id: string
+      label: string
+      template: {
+        id: string
+        title: string | null
+        project_id: number
+        project_name?: string | null
+        asset_count: number
+        notes?: string | null
+      }
+    }
 
 /** “Open task detail” — high contrast so it stays visible on light UI. */
 const PICKER_DRILL_CHEVRON_BTN =
@@ -189,7 +203,7 @@ function isSupportedComposerAttachment(file: File): boolean {
 }
 
 type RecentStoredMention = {
-  kind: "project" | "task" | "user" | "artifact" | "source"
+  kind: "project" | "task" | "user" | "artifact" | "source" | "brand_template"
   id: number | string
   label: string
   projectName?: string | null
@@ -200,6 +214,7 @@ type RecentStoredMention = {
   taskId?: number | null
   projectId?: number | null
   artifactVersionNumber?: number | null
+  assetCount?: number | null
 }
 
 function loadRecentMentions(): RecentStoredMention[] {
@@ -250,6 +265,16 @@ function suggestionToStored(s: MentionSuggestion): RecentStoredMention {
       projectId: s.source.project_id,
     }
   }
+  if (s.kind === "brand_template") {
+    return {
+      kind: "brand_template",
+      id: s.template.id,
+      label: s.label,
+      projectId: s.template.project_id,
+      projectName: s.template.project_name ?? null,
+      assetCount: s.template.asset_count,
+    }
+  }
   return {
     kind: "user",
     id: s.user.id,
@@ -290,6 +315,23 @@ function storedToSuggestion(r: RecentStoredMention): MentionSuggestion | null {
         task_id: r.taskId ?? null,
         project_id: r.projectId ?? null,
         status: null,
+      },
+    }
+  }
+  if (r.kind === "brand_template") {
+    const id = String(r.id).trim()
+    const projectId = Number(r.projectId)
+    if (!id || !Number.isFinite(projectId) || projectId <= 0) return null
+    return {
+      kind: "brand_template",
+      id,
+      label: r.label,
+      template: {
+        id,
+        title: r.label,
+        project_id: projectId,
+        project_name: r.projectName ?? null,
+        asset_count: r.assetCount ?? 0,
       },
     }
   }
@@ -341,6 +383,7 @@ interface ComposerProps {
   }) => void
   onAssistantStreamStart?: (temp: { id: string; content: string }) => void
   onAssistantStreamChunk?: (tempId: string, chunk: string) => void
+  onAssistantStreamReset?: (tempId: string) => void
   onAssistantStreamStatus?: (tempId: string, statusText: string | null) => void
   onAssistantStreamComplete?: (tempId: string, payload: { content?: string; messageId?: string | null }) => void
   onAssistantStreamError?: (tempId: string) => void
@@ -433,6 +476,7 @@ export function Composer({
   onOptimistic,
   onAssistantStreamStart,
   onAssistantStreamChunk,
+  onAssistantStreamReset,
   onAssistantStreamStatus,
   onAssistantStreamComplete,
   onAssistantStreamError,
@@ -533,7 +577,16 @@ export function Composer({
   const [userOptions, setUserOptions] = useState<UserMention[]>([])
   const [artifactOptions, setArtifactOptions] = useState<ArtifactMention[]>([])
   const [sourceOptions, setSourceOptions] = useState<SourceMention[]>([])
-  const [creatingSourceFromFileIndex, setCreatingSourceFromFileIndex] = useState<number | null>(null)
+  const [brandTemplateOptions, setBrandTemplateOptions] = useState<
+    Array<{
+      id: string
+      title: string | null
+      project_id: number
+      project_name?: string | null
+      asset_count: number
+      notes?: string | null
+    }>
+  >([])
   const [viewportSize, setViewportSize] = useState<{ width: number; height: number }>({ width: 0, height: 0 })
   const refreshEditorEmpty = useCallback(() => {}, [])
   const [, bumpEditor] = useReducer((n: number) => n + 1, 0)
@@ -738,19 +791,53 @@ export function Composer({
     setFiles((prev) => prev.filter((_, i) => i !== index))
   }, [])
 
-  const uploadAttachments = useCallback(
-    async (filesToUpload: File[]): Promise<AiAttachmentMeta[]> => {
+  /**
+   * Chat attachments are sources: upload + attachments row + pending source import.
+   * Returns attachment metas (for multimodal / message display) and source refs (for run targets).
+   */
+  const uploadAttachmentsAsSources = useCallback(
+    async (
+      filesToUpload: File[],
+    ): Promise<{ attachments: AiAttachmentMeta[]; sourceRefs: TaggedSourceRef[] }> => {
       const attachments: AiAttachmentMeta[] = []
+      const sourceRefs: TaggedSourceRef[] = []
       for (const file of filesToUpload) {
-        const safeFileName = sanitizeStorageFileName(file.name)
-        const path = `ai/${threadId}/${Date.now()}_${crypto.randomUUID()}_${safeFileName}`
-        const { data: up, error } = await supabase.storage.from("attachments").upload(path, file, { upsert: false })
-        if (error) throw error
-        attachments.push({ file_name: file.name, file_path: up.path, mime_type: file.type, size: file.size })
+        const result = await createSourceFromFile({
+          file,
+          title: file.name,
+          taskId: taskId ?? null,
+          aiThreadId: threadId || null,
+        })
+        const attachment = result.attachment
+        if (attachment) {
+          attachments.push({
+            id: attachment.id,
+            file_name: attachment.file_name,
+            file_path: attachment.file_path,
+            mime_type: attachment.mime_type,
+            size: attachment.size,
+          })
+        } else if (result.source.attachment_id) {
+          // Fallback if older createSourceFromFile shape is returned without attachment meta.
+          const safeFileName = sanitizeStorageFileName(file.name)
+          attachments.push({
+            id: result.source.attachment_id,
+            file_name: file.name,
+            file_path: `sources/${safeFileName}`,
+            mime_type: file.type || "application/octet-stream",
+            size: file.size,
+          })
+        }
+        sourceRefs.push({
+          source_id: result.source.id,
+          title: result.source.title,
+          task_id: result.source.task_id,
+          project_id: result.source.project_id,
+        })
       }
-      return attachments
+      return { attachments, sourceRefs }
     },
-    [supabase, threadId]
+    [taskId, threadId],
   )
 
   const selectionTags = useMemo(
@@ -857,8 +944,10 @@ export function Composer({
         tagged_task_component_refs: taggedTaskComponentRefs,
         tagged_artifact_ids: taggedArtifactIds,
         tagged_artifact_refs: taggedArtifactRefs,
-        tagged_source_ids: taggedSourceIds,
-        tagged_source_refs: taggedSourceRefs,
+        tagged_source_ids: taggedSourceIdsFromTags,
+        tagged_source_refs: taggedSourceRefsFromTags,
+        tagged_brand_template_ids: taggedBrandTemplateIds,
+        tagged_brand_template_refs: taggedBrandTemplateRefs,
       } = buildAiChatTaggedRefs(messageTags)
       const optimisticUserTempId = `temp-${Date.now()}`
 
@@ -926,7 +1015,32 @@ export function Composer({
       const abortCtl = streamAbortRef ? new AbortController() : null
       if (streamAbortRef && abortCtl) streamAbortRef.current = abortCtl
       try {
-        const attachments = await uploadAttachments(messageFiles)
+        const { attachments, sourceRefs: uploadedSourceRefs } =
+          await uploadAttachmentsAsSources(messageFiles)
+        const sourceIdSet = new Set(taggedSourceIdsFromTags)
+        const taggedSourceRefs = [...taggedSourceRefsFromTags]
+        for (const ref of uploadedSourceRefs) {
+          if (sourceIdSet.has(ref.source_id)) continue
+          sourceIdSet.add(ref.source_id)
+          taggedSourceRefs.push(ref)
+        }
+        const taggedSourceIds = Array.from(sourceIdSet)
+        // Ensure uploaded sources are also represented as message tags for v2 run targets.
+        const messageTagsWithUploads: AiContextTag[] = [
+          ...messageTags,
+          ...uploadedSourceRefs
+            .filter((ref) => !taggedSourceIdsFromTags.includes(ref.source_id))
+            .map((ref) => ({
+              type: "source" as const,
+              id: ref.source_id,
+              label: ref.title?.trim() || "Source",
+              source: "mention" as const,
+              sourceId: ref.source_id,
+              sourceTitle: ref.title ?? null,
+              taskId: ref.task_id ?? undefined,
+              projectId: ref.project_id ?? undefined,
+            })),
+        ]
         const selectionPills = buildSelectionPillsFromContexts({
           artifactContext: selectedArtifactForSend,
           artifactTooltip: selectedArtifactForSend
@@ -938,7 +1052,7 @@ export function Composer({
             : null,
         })
         const userContentJson = buildUserMessageContentJson({
-          tags: messageTags,
+          tags: messageTagsWithUploads,
           segments: messageSegments,
           selectionPills,
         })
@@ -1000,7 +1114,7 @@ export function Composer({
         })()
         const v2Request = buildAiChatV2RequestFields({
           clientRequestId,
-          messageTags,
+          messageTags: messageTagsWithUploads,
           attachments,
           activeFieldContext,
           selectedTextContext: selectedTextForSend,
@@ -1040,6 +1154,8 @@ export function Composer({
           taggedArtifactRefs,
           taggedSourceIds,
           taggedSourceRefs,
+          taggedBrandTemplateIds,
+          taggedBrandTemplateRefs,
           mode: writeMode,
           componentId: writeComponentId,
           taskId: writeTaskId,
@@ -1065,6 +1181,7 @@ export function Composer({
             onAssistantStreamStart?.(temp)
           },
           onAssistantStreamChunk,
+          onAssistantStreamReset,
           onAssistantStreamStatus,
           onAssistantStreamComplete,
           onAssistantStreamError,
@@ -1108,10 +1225,11 @@ export function Composer({
       isSending,
       supabase,
       threadId,
-      uploadAttachments,
+      uploadAttachmentsAsSources,
       onOptimistic,
       onAssistantStreamStart,
       onAssistantStreamChunk,
+      onAssistantStreamReset,
       onAssistantStreamStatus,
       onAssistantStreamComplete,
       onAssistantStreamError,
@@ -1401,7 +1519,7 @@ export function Composer({
   const handleMentionListScroll = useCallback(
     (e: React.UIEvent<HTMLDivElement>) => {
       if (mentionExpandedTask) return
-      if (mentionFilter === "project" || mentionFilter === "user" || mentionFilter === "artifact" || mentionFilter === "source") return
+      if (mentionFilter === "project" || mentionFilter === "user" || mentionFilter === "artifact" || mentionFilter === "source" || mentionFilter === "template") return
       const el = e.currentTarget
       if (taskMentionLoadingRef.current || !taskMentionHasMoreRef.current) return
       if (el.scrollTop + el.clientHeight < el.scrollHeight - 48) return
@@ -1429,7 +1547,8 @@ export function Composer({
       mentionFilter === "project" ||
       mentionFilter === "user" ||
       mentionFilter === "artifact" ||
-      mentionFilter === "source"
+      mentionFilter === "source" ||
+      mentionFilter === "template"
     ) {
       taskRemoteFetchGen.current += 1
       taskMentionCursorRef.current = null
@@ -1633,6 +1752,78 @@ export function Composer({
     }
   }, [mentionFilter, mentionQuery, supabase])
 
+  useEffect(() => {
+    if (mentionQuery == null) return
+    const shouldLoad =
+      mentionFilter === "template" || (mentionFilter === "all" && mentionQuery.trim().length >= 1)
+    if (!shouldLoad) {
+      setBrandTemplateOptions([])
+      return
+    }
+    let cancelled = false
+    const q = mentionQuery.trim().toLowerCase()
+    const projectIds = Array.from(
+      new Set(
+        [
+          threadScope?.project_id ?? null,
+          ...(projectOptions.map((p) => p.id) ?? []),
+        ].filter((id): id is number => Number.isFinite(id) && Number(id) > 0),
+      ),
+    )
+    const timeoutId = window.setTimeout(() => {
+      void (async () => {
+        let request = supabase
+          .from("projects")
+          .select("id,name,brand_kit")
+          .order("updated_at", { ascending: false })
+          .limit(projectIds.length > 0 ? Math.min(projectIds.length, 12) : 20)
+        if (projectIds.length > 0) {
+          request = request.in("id", projectIds)
+        }
+        const { data, error } = await request
+        if (cancelled) return
+        if (error) {
+          console.error("Failed to load brand template mentions:", error)
+          setBrandTemplateOptions([])
+          return
+        }
+        const rows: Array<{
+          id: string
+          title: string | null
+          project_id: number
+          project_name?: string | null
+          asset_count: number
+          notes?: string | null
+        }> = []
+        for (const project of (data ?? []) as Array<Record<string, unknown>>) {
+          const projectId = Number(project.id)
+          if (!Number.isFinite(projectId) || projectId <= 0) continue
+          const projectName = typeof project.name === "string" ? project.name : null
+          const kit = parseProjectBrandKit(project.brand_kit)
+          for (const template of kit.design_templates) {
+            const title = template.title?.trim() || "Untitled template"
+            if (q && !title.toLowerCase().includes(q) && !(projectName ?? "").toLowerCase().includes(q)) {
+              continue
+            }
+            rows.push({
+              id: template.id,
+              title,
+              project_id: projectId,
+              project_name: projectName,
+              asset_count: template.assets.length,
+              notes: template.notes,
+            })
+          }
+        }
+        setBrandTemplateOptions(rows.slice(0, 30))
+      })()
+    }, 200)
+    return () => {
+      cancelled = true
+      window.clearTimeout(timeoutId)
+    }
+  }, [mentionFilter, mentionQuery, projectOptions, supabase, threadScope?.project_id])
+
   const mentionSuggestionsFull = useMemo<MentionSuggestion[]>(() => {
     const results: MentionSuggestion[] = []
     const seen = new Set<string>()
@@ -1692,8 +1883,27 @@ export function Composer({
         source,
       })
     }
+    for (const template of brandTemplateOptions) {
+      const key = `brand_template:${template.id}`
+      if (seen.has(key)) continue
+      seen.add(key)
+      results.push({
+        kind: "brand_template",
+        id: template.id,
+        label: template.title?.trim() || "Untitled template",
+        template,
+      })
+    }
     return results
-  }, [artifactOptions, localTaskOptions, projectOptions, remoteTaskOptions, sourceOptions, userOptions])
+  }, [
+    artifactOptions,
+    brandTemplateOptions,
+    localTaskOptions,
+    projectOptions,
+    remoteTaskOptions,
+    sourceOptions,
+    userOptions,
+  ])
 
   const mentionSuggestionsFiltered = useMemo(() => {
     if (mentionFilter === "project") {
@@ -1710,6 +1920,9 @@ export function Composer({
     }
     if (mentionFilter === "source") {
       return mentionSuggestionsFull.filter((s) => s.kind === "source")
+    }
+    if (mentionFilter === "template") {
+      return mentionSuggestionsFull.filter((s) => s.kind === "brand_template")
     }
     const q = (mentionQuery ?? "").trim()
     if (q.length === 0) return []
@@ -1974,52 +2187,6 @@ export function Composer({
     [insertAiTagsIntoEditor]
   )
 
-  const handleUseFileAsSource = useCallback(
-    async (index: number) => {
-      const file = files[index]
-      if (!file || creatingSourceFromFileIndex != null) return
-      setCreatingSourceFromFileIndex(index)
-      setAttachmentError(null)
-      try {
-        const result = await createSourceFromFile({
-          file,
-          title: file.name,
-          taskId: taskId ?? null,
-          aiThreadId: threadId || null,
-        })
-        openSourceCenterTab({
-          sourceId: result.source.id,
-          title: result.source.title,
-        })
-        insertAiTagIntoEditor({
-          type: "source",
-          id: result.source.id,
-          label: result.source.title,
-          source: "mention",
-          sourceId: result.source.id,
-          sourceTitle: result.source.title,
-          taskId: result.source.task_id ?? undefined,
-          projectId: result.source.project_id,
-        })
-        removePendingFile(index)
-      } catch (err) {
-        setAttachmentError(
-          err instanceof Error ? err.message : "Failed to create source from file",
-        )
-      } finally {
-        setCreatingSourceFromFileIndex(null)
-      }
-    },
-    [
-      creatingSourceFromFileIndex,
-      files,
-      insertAiTagIntoEditor,
-      removePendingFile,
-      taskId,
-      threadId,
-    ],
-  )
-
   const handleSelectMention = useCallback(
     (suggestion: MentionSuggestion) => {
       let tag: AiContextTag
@@ -2066,6 +2233,18 @@ export function Composer({
           sourceTitle: source.title,
           taskId: source.task_id ?? undefined,
           projectId: source.project_id,
+        }
+      } else if (suggestion.kind === "brand_template") {
+        const template = suggestion.template
+        tag = {
+          type: "brand_template",
+          id: template.id,
+          label: suggestion.label,
+          source: "mention",
+          brandTemplateId: template.id,
+          brandTemplateTitle: template.title,
+          projectId: template.project_id,
+          projectName: template.project_name,
         }
       } else {
         const user = suggestion.user
@@ -2375,16 +2554,9 @@ export function Composer({
               className="inline-flex items-center gap-2 rounded border bg-gray-50 px-2 py-1 text-xs text-gray-700"
             >
               <Paperclip className="h-3 w-3 text-gray-500" />
-              <span className="max-w-[180px] truncate">{file.name}</span>
-              <button
-                type="button"
-                onClick={() => void handleUseFileAsSource(index)}
-                disabled={creatingSourceFromFileIndex != null}
-                className="rounded border border-teal-200 bg-teal-50 px-1.5 py-0.5 text-[10px] font-medium text-teal-800 hover:bg-teal-100 disabled:opacity-50"
-                title="Use as source (async import)"
-              >
-                {creatingSourceFromFileIndex === index ? "…" : "Use as source"}
-              </button>
+              <span className="max-w-[180px] truncate" title="Attached files become sources when you send">
+                {file.name}
+              </span>
               <button
                 type="button"
                 onClick={() => removePendingFile(index)}
@@ -2715,6 +2887,10 @@ export function Composer({
                                 <User className="h-3.5 w-3.5 shrink-0 text-gray-400" aria-hidden />
                               ) : row.id === "source" ? (
                                 <BookOpen className="h-3.5 w-3.5 shrink-0 text-gray-400" aria-hidden />
+                              ) : row.id === "template" ? (
+                                <LayoutTemplate className="h-3.5 w-3.5 shrink-0 text-orange-500" aria-hidden />
+                              ) : row.id === "artifact" ? (
+                                <FileText className="h-3.5 w-3.5 shrink-0 text-gray-400" aria-hidden />
                               ) : (
                                 <FolderKanban className="h-3.5 w-3.5 shrink-0 text-gray-400" aria-hidden />
                               )}
@@ -2754,7 +2930,9 @@ export function Composer({
                                         ? suggestion.project.name
                                         : suggestion.kind === "task"
                                           ? taskTitleFull
-                                          : suggestion.kind === "artifact" || suggestion.kind === "source"
+                                          : suggestion.kind === "artifact"
+                                            || suggestion.kind === "source"
+                                            || suggestion.kind === "brand_template"
                                             ? suggestion.label
                                             : userTitle || userDisplay
                                     }
@@ -2817,6 +2995,19 @@ export function Composer({
                                         {suggestion.source.status ? (
                                           <span className="shrink-0 text-[10px] capitalize text-gray-500">
                                             {suggestion.source.status}
+                                          </span>
+                                        ) : null}
+                                      </>
+                                    ) : suggestion.kind === "brand_template" ? (
+                                      <>
+                                        <LayoutTemplate className="h-3.5 w-3.5 shrink-0 text-orange-500" aria-hidden />
+                                        <span className="min-w-0 flex-1 truncate text-gray-800">{suggestion.label}</span>
+                                        {suggestion.template.project_name ? (
+                                          <span
+                                            className="max-w-[4.5rem] shrink-0 truncate text-[10px] text-gray-500"
+                                            title={suggestion.template.project_name}
+                                          >
+                                            {suggestion.template.project_name}
                                           </span>
                                         ) : null}
                                       </>

@@ -36,6 +36,7 @@ import {
   resolveDestinationGroupKeyFromDropId,
   resolveTaskDropTarget,
   resolveTaskGroupDrop,
+  toBackendGroupKey,
   type TaskGroupingEditFields,
 } from '../app/lib/task-grouping-drop-config'
 import {
@@ -324,9 +325,22 @@ describe('null group destinations', () => {
   it('normalizes legacy and empty raw keys to canonical null group sentinels', () => {
     expect(normalizeCanonicalGroupKey('', 'status')).toBe(GROUP_KEY_UNASSIGNED)
     expect(normalizeCanonicalGroupKey('null', 'status')).toBe(GROUP_KEY_UNASSIGNED)
+    expect(normalizeCanonicalGroupKey('No Status', 'status')).toBe(GROUP_KEY_UNASSIGNED)
+    expect(normalizeCanonicalGroupKey('no status', 'status')).toBe(GROUP_KEY_UNASSIGNED)
     expect(normalizeCanonicalGroupKey('unassigned', 'assigned_to')).toBe(GROUP_KEY_UNASSIGNED)
     expect(normalizeCanonicalGroupKey('none', 'project')).toBe(GROUP_KEY_NO_PROJECT)
+    expect(normalizeCanonicalGroupKey('none', 'content_type')).toBe(GROUP_KEY_UNASSIGNED)
     expect(normalizeCanonicalGroupKey('no-date', 'delivery_date')).toBe(GROUP_KEY_NO_DATE)
+  })
+
+  it('maps canonical null keys back to backend RPC group keys', () => {
+    expect(toBackendGroupKey(GROUP_KEY_UNASSIGNED, 'status')).toBe('No Status')
+    expect(toBackendGroupKey('No Status', 'status')).toBe('No Status')
+    expect(toBackendGroupKey(GROUP_KEY_UNASSIGNED, 'assigned_to')).toBe('unassigned')
+    expect(toBackendGroupKey(GROUP_KEY_NO_PROJECT, 'project')).toBe('none')
+    expect(toBackendGroupKey(GROUP_KEY_UNASSIGNED, 'content_type')).toBe('none')
+    expect(toBackendGroupKey(GROUP_KEY_NO_DATE, 'delivery_date')).toBe('no-date')
+    expect(toBackendGroupKey('Draft', 'status')).toBe('Draft')
   })
 
   it('resolves explicit null payloads for every supported null group', () => {

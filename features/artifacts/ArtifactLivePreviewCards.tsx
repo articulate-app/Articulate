@@ -155,9 +155,6 @@ function SectionPreviewCard({
           onClick={onOpen}
           className="min-w-0 flex-1 truncate text-left text-sm text-foreground"
         >
-          {isLive || preview.phase === "started" ? (
-            <Loader2 className="mr-1.5 inline h-3.5 w-3.5 shrink-0 animate-spin text-muted-foreground align-[-2px]" aria-hidden />
-          ) : null}
           {preview.phase === "saved" ? (
             <Check className="mr-1.5 inline h-3.5 w-3.5 shrink-0 text-emerald-600 align-[-2px]" aria-hidden />
           ) : null}
@@ -274,9 +271,6 @@ function ArtifactHunkPreviewCard({
           onClick={onOpen}
           className="min-w-0 flex-1 truncate text-left text-sm text-foreground"
         >
-          {(isLive || preview.phase === "started") && (
-            <Loader2 className="mr-1.5 inline h-3.5 w-3.5 shrink-0 animate-spin text-muted-foreground align-[-2px]" aria-hidden />
-          )}
           {preview.phase === "saved" ? (
             <Check className="mr-1.5 inline h-3.5 w-3.5 shrink-0 text-emerald-600 align-[-2px]" aria-hidden />
           ) : null}
@@ -525,6 +519,7 @@ export function ArtifactLivePreviewCards({
         defaultChannelId={defaultChannelId}
         chatPreview
         className="rounded-xl"
+        onOpen={() => onOpenArtifact?.(preview.artifactId)}
       />
     </li>
   )

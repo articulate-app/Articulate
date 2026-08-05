@@ -2,6 +2,10 @@ export function getInitialSplitLayoutMountState(isAiFocusModeEnabled: boolean): 
   return !isAiFocusModeEnabled
 }
 
+/**
+ * Keep the 3-pane group mounted while AI focus is on so AiPane does not remount/refetch.
+ * Focus is applied by resizing panels to 0/0/100 (see TasksLayout).
+ */
 export function shouldRenderSplitLayout(args: {
   isAiFocusModeEnabled: boolean
   hasMountedSplitLayout: boolean
@@ -13,6 +17,7 @@ export function nextSplitLayoutMountStateOnToggle(args: {
   isAiFocusModeEnabled: boolean
   hasMountedSplitLayout: boolean
 }): boolean {
-  if (!args.isAiFocusModeEnabled) return true
+  void args.isAiFocusModeEnabled
+  // Always keep split mounted after the first mount — expand/collapse is size-only.
   return true
 }

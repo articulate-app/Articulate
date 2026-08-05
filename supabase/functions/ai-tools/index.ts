@@ -3,6 +3,7 @@ import "jsr:@supabase/functions-js/edge-runtime.d.ts";
 
 
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
+import { brandKitForAiFromProject, collectBrandTemplateVisualRefs } from "../_shared/project-brand-kit.ts";
 
 
 
@@ -642,6 +643,286 @@ function decorateEntity(row: any, entityType: "task" | "project" | "user" | "art
 
 const decorateTask = (row: any) => decorateEntity(row, "task");
 const decorateProject = (row: any) => decorateEntity(row, "project");
+
+/** Top-level brand layout templates for tools — easy for the model to spot (not artifacts). */
+function brandLayoutTemplatesSummary(projectRow: { brand_kit?: unknown } | null | undefined) {
+  const kit = brandKitForAiFromProject(projectRow);
+  const templates = kit?.design_templates ?? [];
+  const visuals = collectBrandTemplateVisualRefs(kit, 12);
+  return {
+    count: templates.length,
+    visual_image_count: visuals.length,
+    note:
+      templates.length > 0
+        ? "These are Brand → Templates on the project (layout refs for creatives). They are not artifacts or attachments."
+        : "No Brand layout templates saved on this project yet.",
+    templates: templates.map((template) => ({
+      id: template.id,
+      title: template.title,
+      notes: template.notes,
+      asset_count: template.assets.length,
+      assets: template.assets.map((asset) => ({
+        id: asset.id,
+        media_type: asset.media_type,
+        title: asset.title,
+        url: asset.url,
+        storage_path: asset.storage_path,
+      })),
+    })),
+  };
+}
+
+function withBrandKitForAi(projectRow: any) {
+  if (!projectRow) return projectRow;
+  const brand_kit = brandKitForAiFromProject(projectRow);
+  return {
+    ...projectRow,
+    brand_kit,
+    brand_layout_templates: brandLayoutTemplatesSummary(projectRow),
+  };
+}
+
+function normalizeProjectLookupName(value: unknown): string {
+  return String(value ?? "")
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, " ")
+    .trim()
+    .replace(/\s+/g, " ");
+}
+
+function levenshteinDistance(a: string, b: string): number {
+  if (a === b) return 0;
+  if (!a.length) return b.length;
+  if (!b.length) return a.length;
+  const rows = a.length + 1;
+  const cols = b.length + 1;
+  const matrix: number[][] = Array.from({ length: rows }, () => Array(cols).fill(0));
+  for (let i = 0; i < rows; i++) matrix[i][0] = i;
+  for (let j = 0; j < cols; j++) matrix[0][j] = j;
+  for (let i = 1; i < rows; i++) {
+    for (let j = 1; j < cols; j++) {
+      const cost = a[i - 1] === b[j - 1] ? 0 : 1;
+      matrix[i][j] = Math.min(
+        matrix[i - 1][j] + 1,
+        matrix[i][j - 1] + 1,
+        matrix[i - 1][j - 1] + cost,
+      );
+    }
+  }
+  return matrix[a.length][b.length];
+}
+
+function fuzzyStringScore(a: string, b: string): number {
+  if (!a || !b) return 0;
+  if (a === b) return 100;
+  const longer = a.length >= b.length ? a : b;
+  const shorter = a.length >= b.length ? b : a;
+  if (longer.includes(shorter)) {
+    return Math.max(70, Math.round((shorter.length / longer.length) * 100));
+  }
+  const distance = levenshteinDistance(a, b);
+  const maxLen = Math.max(a.length, b.length);
+  return Math.max(0, Math.round((1 - distance / maxLen) * 100));
+}
+
+function scoreProjectNameMatch(projectName: string, query: string): number {
+  const name = normalizeProjectLookupName(projectName);
+  const q = normalizeProjectLookupName(query);
+  if (!name || !q) return 0;
+  if (name === q) return 100;
+  if (name.startsWith(q) || q.startsWith(name)) return 92;
+  if (name.includes(q) || q.includes(name)) return 82;
+
+  const nameTokens = name.split(" ").filter(Boolean);
+  const queryTokens = q.split(" ").filter(Boolean);
+  let tokenScore = 0;
+  if (queryTokens.length > 0) {
+    const overlaps = queryTokens.map((qt) => {
+      let best = 0;
+      for (const nt of nameTokens) best = Math.max(best, fuzzyStringScore(nt, qt));
+      return best;
+    });
+    const avg = overlaps.reduce((sum, value) => sum + value, 0) / overlaps.length;
+    const allStrong = overlaps.every((value) => value >= 70);
+    tokenScore = Math.round(avg * (allStrong ? 0.85 : 0.65));
+  }
+
+  const fullFuzzy = Math.round(fuzzyStringScore(name, q) * 0.9);
+  return Math.max(tokenScore, fullFuzzy);
+}
+
+/** Pull likely project/brand name phrases from free text for soft ownership attach. */
+function inferProjectNameCandidatesFromText(text: string): string[] {
+  const source = String(text ?? "");
+  const candidates: string[] = [];
+  const patterns = [
+    /\b(?:for|para)\s+(?:the\s+|o\s+|a\s+|projecto?\s+|projeto\s+|marca\s+|brand\s+|client[ea]?\s+)?([A-ZÁÉÍÓÚÂÊÔÃÕÀÜ][\w&'’.-]*(?:\s+[A-ZÁÉÍÓÚÂÊÔÃÕÀÜ][\w&'’.-]*){0,3})/gi,
+    /\b(?:project|projeto|projecto|marca|brand|client[ea]?)\s+["']?([A-Za-zÁÉÍÓÚÂÊÔÃÕÀÜ][\w&'’ .-]{1,40})["']?/gi,
+    /\b(?:for|para)\s+([a-záéíóúâêôãõàü][\w&'’.-]{2,40})\b/gi,
+  ];
+  for (const pattern of patterns) {
+    pattern.lastIndex = 0;
+    let match: RegExpExecArray | null;
+    while ((match = pattern.exec(source)) != null) {
+      const value = String(match[1] ?? "").trim().replace(/[.,;:!?]+$/g, "");
+      if (value.length >= 3 && value.length <= 60) candidates.push(value);
+    }
+  }
+  return [...new Set(candidates)];
+}
+
+/**
+ * Resolve a visible project by id and/or name. Name lookup does not require
+ * thread/task tags — it searches projects the caller can already see.
+ * Supports imperfect names (typos / truncated tokens) via fuzzy scoring.
+ */
+async function resolveVisibleProjectTarget(args: {
+  db: any;
+  projectId?: unknown;
+  projectName?: unknown;
+  query?: unknown;
+  allowScopeFallbackIds?: number[];
+}): Promise<{
+  ok: true;
+  project: { id: number; name: string | null; color?: string | null; logo?: string | null };
+  resolution: "project_id" | "project_name" | "scope_fallback";
+  match_score?: number;
+} | {
+  ok: false;
+  error: string;
+  needs_clarification: boolean;
+  candidates?: Array<{ id: number; name: string | null; score: number }>;
+}> {
+  const explicitId = positiveInt(args.projectId);
+  if (explicitId) {
+    const { data, error } = await args.db
+      .from("v_projects_minimal")
+      .select("id,name,color,logo")
+      .eq("id", explicitId)
+      .maybeSingle();
+    if (error) {
+      return { ok: false, error: error.message, needs_clarification: false };
+    }
+    if (!data) {
+      return {
+        ok: false,
+        error: `Project ${explicitId} was not found or is not visible.`,
+        needs_clarification: true,
+      };
+    }
+    return {
+      ok: true,
+      project: {
+        id: Number(data.id),
+        name: data.name ?? null,
+        color: data.color ?? null,
+        logo: data.logo ?? null,
+      },
+      resolution: "project_id",
+      match_score: 100,
+    };
+  }
+
+  const lookup =
+    String(args.projectName ?? "").trim() ||
+    String(args.query ?? "").trim();
+
+  if (lookup) {
+    // Broad visible set so typos like "articulat"/"artikulate" can still score.
+    const { data, error } = await args.db
+      .from("v_projects_minimal")
+      .select("id,name,color,logo")
+      .order("name", { ascending: true })
+      .limit(150);
+    if (error) {
+      return { ok: false, error: error.message, needs_clarification: false };
+    }
+
+    const ranked = (data ?? [])
+      .map((row: any) => ({
+        id: Number(row.id),
+        name: (row.name ?? null) as string | null,
+        color: row.color ?? null,
+        logo: row.logo ?? null,
+        score: scoreProjectNameMatch(String(row.name ?? ""), lookup),
+      }))
+      .filter((row: { id: number; score: number }) => Number.isFinite(row.id) && row.score >= 55)
+      .sort((a: { score: number; name: string | null }, b: { score: number; name: string | null }) =>
+        b.score - a.score || String(a.name ?? "").localeCompare(String(b.name ?? "")),
+      );
+
+    if (ranked.length === 0) {
+      return {
+        ok: false,
+        error: `No visible project matched "${lookup}". Ask the user to clarify the project name.`,
+        needs_clarification: true,
+        candidates: [],
+      };
+    }
+
+    const best = ranked[0];
+    const second = ranked[1];
+    const clearWinner =
+      best.score >= 88 ||
+      (best.score >= 70 && (!second || best.score - second.score >= 12));
+    const isAmbiguous = !clearWinner && ranked.length > 1 && second && second.score >= best.score - 10;
+
+    if (isAmbiguous || !clearWinner) {
+      return {
+        ok: false,
+        error: `Could not confidently match "${lookup}". Ask the user which project to use.`,
+        needs_clarification: true,
+        candidates: ranked.slice(0, 8).map((row: any) => ({
+          id: row.id,
+          name: row.name,
+          score: row.score,
+        })),
+      };
+    }
+
+    return {
+      ok: true,
+      project: {
+        id: best.id,
+        name: best.name,
+        color: best.color,
+        logo: best.logo,
+      },
+      resolution: "project_name",
+      match_score: best.score,
+    };
+  }
+
+  const scopeId = (args.allowScopeFallbackIds ?? []).find((id) => Number.isFinite(id) && id > 0) ?? null;
+  if (scopeId) {
+    const { data, error } = await args.db
+      .from("v_projects_minimal")
+      .select("id,name,color,logo")
+      .eq("id", scopeId)
+      .maybeSingle();
+    if (!error && data) {
+      return {
+        ok: true,
+        project: {
+          id: Number(data.id),
+          name: data.name ?? null,
+          color: data.color ?? null,
+          logo: data.logo ?? null,
+        },
+        resolution: "scope_fallback",
+        match_score: 100,
+      };
+    }
+  }
+
+  return {
+    ok: false,
+    error: "Provide project_id or project_name so the target project can be resolved.",
+    needs_clarification: true,
+  };
+}
 const decorateUser = (row: any) => decorateEntity(row, "user");
 const decorateArtifact = (row: any) => decorateEntity(row, "artifact");
 
@@ -1418,8 +1699,8 @@ if (toolName === "ai_start_artifact_build") {
       artifactSpecs = (Array.isArray(rawArgs.artifacts) ? rawArgs.artifacts : []).slice(0, 100).map((raw: any, index: number) => {
         const handle = String(raw?.handle ?? `artifact_${index + 1}`).trim().slice(0, 100);
         const operation = allowedOperations.has(String(raw?.operation ?? "")) ? String(raw.operation) : (cleanUuidOrNull(raw?.artifact_id) ? "update" : "create");
-        // Ownership is tag-driven. Never trust model-copied ambient/open-pane task_id or project_id
-        // for creates — those stay chat-owned unless the user tagged a destination.
+        // Ownership is tag-driven for ambient panes. Model-supplied project_id is allowed when
+        // the project is visible (e.g. after read_project for a named brand), without requiring a tag.
         const modelTaskId = Object.prototype.hasOwnProperty.call(raw ?? {}, "task_id")
           ? positiveInt(raw?.task_id)
           : null;
@@ -1433,6 +1714,7 @@ if (toolName === "ai_start_artifact_build") {
           else if (taggedTaskIds.length === 1) taskId = taggedTaskIds[0] ?? null;
           if (modelProjectId != null && taggedProjectIds.includes(modelProjectId)) projectId = modelProjectId;
           else if (taskId == null && taggedProjectIds.length === 1) projectId = taggedProjectIds[0] ?? null;
+          else if (taskId == null && modelProjectId != null) projectId = modelProjectId; // validated for visibility below
         } else {
           // Updates may keep an explicit model task/project when already attached, or use a single tag.
           if (modelTaskId != null && (taggedTaskIds.length === 0 || taggedTaskIds.includes(modelTaskId))) {
@@ -1452,10 +1734,17 @@ if (toolName === "ai_start_artifact_build") {
         seenHandles.add(handle);
         if (!title) throw new Error("artifact_editorial_title_required");
         if (!artifactType) throw new Error("artifact_type_required");
+        const projectNameHint = String(
+          raw?.project_name
+            ?? raw?.metadata?.project_name
+            ?? raw?.metadata?.brand_project_name
+            ?? "",
+        ).trim().slice(0, 120) || null;
         return {
           handle,
           task_id: taskId,
           project_id: projectId,
+          project_name_hint: projectNameHint,
           artifact_id: cleanUuidOrNull(raw?.artifact_id),
           operation,
           artifact_type: artifactType,
@@ -1540,6 +1829,82 @@ if (toolName === "ai_start_artifact_build") {
     if (!requestText || artifactSpecs.length === 0) {
       return finalize({ name: toolName, ok: false, error: "request_text_and_artifact_plan_required", data: null });
     }
+
+    // Soft-attach project ownership for brand creatives when the user named a project
+    // and no task/project tag was provided. Prefer explicit project_id / project_name;
+    // fall back to confident name matches from the request text.
+    const topLevelProjectName = String(rawArgs.project_name ?? "").trim();
+    const needsProjectResolve = artifactSpecs.some((spec: any) =>
+      (spec.operation === "create" || spec.operation === "generate")
+      && !spec.task_id
+      && !spec.project_id
+    );
+    if (needsProjectResolve || artifactSpecs.some((spec: any) => spec.project_name_hint)) {
+      const nameCandidates = [
+        topLevelProjectName,
+        ...artifactSpecs.map((spec: any) => String(spec.project_name_hint ?? "").trim()),
+      ].filter(Boolean);
+      if (needsProjectResolve) {
+        const inferred = inferProjectNameCandidatesFromText([
+          requestText,
+          ...artifactSpecs.map((spec: any) => String(spec.instruction ?? "")),
+          ...artifactSpecs.map((spec: any) => String(spec.title ?? "")),
+        ].join("\n"));
+        nameCandidates.push(...inferred);
+      }
+      const resolvedByName = new Map<string, number>();
+      for (const candidate of [...new Set(nameCandidates.map((value) => value.trim().toLowerCase()))]) {
+        const resolved = await resolveVisibleProjectTarget({
+          db,
+          projectName: candidate,
+        });
+        if (resolved.ok) {
+          resolvedByName.set(candidate, resolved.project.id);
+        }
+      }
+      artifactSpecs = artifactSpecs.map((spec: any) => {
+        if (spec.task_id || spec.project_id) return spec;
+        if (spec.operation !== "create" && spec.operation !== "generate") return spec;
+        const hint = String(spec.project_name_hint ?? topLevelProjectName ?? "").trim().toLowerCase();
+        if (hint && resolvedByName.has(hint)) {
+          return { ...spec, project_id: resolvedByName.get(hint) ?? null };
+        }
+        // If every confident name resolved to the same project, attach it.
+        const uniqueProjectIds = [...new Set([...resolvedByName.values()])];
+        if (uniqueProjectIds.length === 1) {
+          return { ...spec, project_id: uniqueProjectIds[0] ?? null };
+        }
+        return spec;
+      });
+    }
+
+    // Drop non-RPC helper fields and validate create project_ids are visible.
+    artifactSpecs = artifactSpecs.map((spec: any) => {
+      const { project_name_hint: _hint, ...rest } = spec;
+      return rest;
+    });
+    const createProjectIds = uniqueInts(
+      artifactSpecs
+        .filter((spec: any) => (spec.operation === "create" || spec.operation === "generate") && spec.project_id)
+        .map((spec: any) => spec.project_id),
+    );
+    if (createProjectIds.length > 0) {
+      const { data: visibleProjects, error: projectVisibilityError } = await db
+        .from("v_projects_minimal")
+        .select("id")
+        .in("id", createProjectIds);
+      if (projectVisibilityError) {
+        return finalize({ name: toolName, ok: false, error: projectVisibilityError.message, data: null });
+      }
+      const visibleProjectIds = new Set((visibleProjects ?? []).map((row: any) => Number(row.id)));
+      artifactSpecs = artifactSpecs.map((spec: any) => {
+        if (!spec.project_id) return spec;
+        if (visibleProjectIds.has(Number(spec.project_id))) return spec;
+        // Invisible / ambient-only project ids must not attach ownership.
+        return { ...spec, project_id: null };
+      });
+    }
+
     // In-place updates must not treat the target as its own source
     // (DB check: task_artifacts_source_not_self / dependency cycle).
     artifactSpecs = artifactSpecs.map((spec: any) => {
@@ -1871,9 +2236,9 @@ if (toolName === "read_project") {
   const { data, error } = await db
     .from("projects")
     .select(`
-      id,name,slug,color,description,status,goal,target_audience,targets,deliverables,
+      id,name,slug,color,logo,description,status,goal,target_audience,targets,deliverables,
       editorial_line,topics,languages,project_url,sectors,assigned_competitors,
-      active,team_id,created_at,updated_at
+      brand_kit,active,team_id,created_at,updated_at
     `)
     .eq("id", projectId)
     .maybeSingle();
@@ -1884,10 +2249,10 @@ if (toolName === "read_project") {
     name: toolName,
     ok: !error && !!data,
     error: error?.message ?? null,
-    data: decorateProject({
+    data: decorateProject(withBrandKitForAi({
       ...data,
       project_languages: projectLanguages,
-    }),
+    })),
   });
 }
 
@@ -1897,9 +2262,9 @@ if (toolName === "read_projects") {
   const { data, error } = await db
     .from("projects")
     .select(`
-      id,name,slug,color,description,status,goal,target_audience,targets,deliverables,
+      id,name,slug,color,logo,description,status,goal,target_audience,targets,deliverables,
       editorial_line,topics,languages,project_url,sectors,assigned_competitors,
-      active,team_id,created_at,updated_at
+      brand_kit,active,team_id,created_at,updated_at
     `)
     .in("id", projectIds);
 
@@ -1931,12 +2296,132 @@ if (toolName === "read_projects") {
     ok: !error,
     error: error?.message ?? null,
     data: (data ?? []).map((project) =>
-      decorateProject({
+      decorateProject(withBrandKitForAi({
         ...project,
         project_languages: langsByProject.get(project.id) ?? [],
-      }),
+      })),
     ),
   });
+}
+
+if (toolName === "extract_project_brand") {
+  const namedLookup = String(
+    rawArgs.project_name ?? rawArgs.projectName ?? rawArgs.query ?? rawArgs.name ?? "",
+  ).trim();
+  const resolved = await resolveVisibleProjectTarget({
+    db,
+    projectId: rawArgs.project_id ?? rawArgs.projectId,
+    projectName: namedLookup || null,
+    // Only use thread/scope when the user did not name a project.
+    allowScopeFallbackIds: namedLookup
+      ? []
+      : [
+          Number(thread?.project_id ?? 0),
+          Number(ctx?.project_id ?? 0),
+        ],
+  });
+
+  if (!resolved.ok) {
+    return finalize({
+      name: toolName,
+      ok: false,
+      error: resolved.error,
+      needs_clarification: resolved.needs_clarification === true,
+      data: {
+        candidates: resolved.candidates ?? [],
+      },
+    });
+  }
+
+  const projectId = resolved.project.id;
+  const replaceAll = rawArgs.replace_all === true || rawArgs.replaceAll === true;
+  let url: string | null = null;
+  try {
+    const rawUrl = String(rawArgs.url ?? rawArgs.website_url ?? rawArgs.project_url ?? "").trim();
+    if (rawUrl) url = sanitizePublicUrl(rawUrl);
+  } catch (error: any) {
+    return finalize({
+      name: toolName,
+      ok: false,
+      error: error?.message ?? "Invalid website URL",
+      data: null,
+    });
+  }
+
+  if (url) {
+    const { error: urlUpdateError } = await db
+      .from("projects")
+      .update({ project_url: url })
+      .eq("id", projectId);
+    if (urlUpdateError) {
+      return finalize({
+        name: toolName,
+        ok: false,
+        error: urlUpdateError.message ?? "Failed to update project_url",
+        data: null,
+      });
+    }
+  }
+
+  try {
+    const result = await invokeJsonEdgeFunction(
+      "extract-project-brand",
+      {
+        project_id: projectId,
+        ...(url ? { url } : {}),
+        replace_all: replaceAll,
+        apply_legacy: true,
+      },
+      90000,
+      ctx?.request_auth_header,
+      ctx?.ai_run_id,
+    );
+
+    if (!result?.ok) {
+      return finalize({
+        name: toolName,
+        ok: false,
+        error: result?.error ?? result?.error_code ?? "Brand extract failed",
+        data: {
+          project_id: projectId,
+          project_name: resolved.project.name,
+          resolution: resolved.resolution,
+          run_id: result?.run_id ?? null,
+          root_url: result?.root_url ?? url,
+        },
+      });
+    }
+
+    return finalize({
+      name: toolName,
+      ok: true,
+      error: null,
+      data: decorateProject(withBrandKitForAi({
+        id: projectId,
+        project_id: projectId,
+        name: resolved.project.name,
+        resolution: resolved.resolution,
+        match_score: resolved.match_score ?? null,
+        run_id: result.run_id ?? null,
+        root_url: result.root_url ?? url,
+        brand_kit: result.brand_kit,
+        applied_legacy: result.applied_legacy === true,
+        app_link: canonicalProjectLink(projectId),
+      })),
+    });
+  } catch (error: any) {
+    return finalize({
+      name: toolName,
+      ok: false,
+      error: error?.message ?? "Brand extract failed",
+      data: {
+        project_id: projectId,
+        project_name: resolved.project.name,
+        resolution: resolved.resolution,
+        root_url: url,
+      },
+    });
+  }
 }
 
 if (toolName === "list_visible_projects") {
@@ -3005,6 +3490,7 @@ const TOOL_HANDLER_BY_NAME = new Map<string, (runtime: any) => Promise<any>>([
   ["ai_update_project_fields", executeProjectTool],
   ["read_project", executeProjectTool],
   ["read_projects", executeProjectTool],
+  ["extract_project_brand", executeProjectTool],
   ["list_visible_projects", executeProjectTool],
   ["ai_update_project_configuration", executeProjectTool],
   ["ai_manage_project_templates", executeProjectTool],

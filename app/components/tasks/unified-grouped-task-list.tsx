@@ -35,7 +35,7 @@ import {
 } from '@/lib/task-card-colors'
 import { TaskGroupHeaderLabel } from './task-list-visuals'
 import { TaskGroupHeaderActions } from './task-group-header-actions'
-import { supportsTaskGroupDragDrop, normalizeCanonicalGroupKey, GROUP_KEY_NO_DATE, GROUP_KEY_NO_PROJECT, GROUP_KEY_UNASSIGNED } from '@/lib/task-grouping-drop-config'
+import { supportsTaskGroupDragDrop, normalizeCanonicalGroupKey, toBackendGroupKey, GROUP_KEY_NO_DATE, GROUP_KEY_NO_PROJECT, GROUP_KEY_UNASSIGNED } from '@/lib/task-grouping-drop-config'
 import {
   DraggableTaskRow,
   GroupDropZone,
@@ -103,16 +103,28 @@ function resolveTasksForGroupKey(
   groupBy: string | null,
 ): any[] {
   const canonical = normalizeCanonicalGroupKey(groupKey, groupBy) ?? groupKey
-  if (tasksByGroup[canonical]?.length) return tasksByGroup[canonical] ?? []
-  if (tasksByGroup[groupKey]?.length) return tasksByGroup[groupKey] ?? []
-  const legacyAliases = ['', 'null', 'none', 'unassigned', 'no-date', '__no_date__']
-  for (const alias of legacyAliases) {
-    const normalizedAlias = normalizeCanonicalGroupKey(alias, groupBy)
-    if (normalizedAlias === canonical && tasksByGroup[alias]?.length) {
-      return tasksByGroup[alias] ?? []
+  const backendKey = toBackendGroupKey(canonical, groupBy)
+  const candidates = Array.from(
+    new Set(
+      [canonical, groupKey, backendKey, GROUP_KEY_UNASSIGNED, GROUP_KEY_NO_DATE, GROUP_KEY_NO_PROJECT, 'No Status', 'unassigned', 'none', 'no-date', '']
+        .filter((k): k is string => typeof k === 'string' && k.length > 0)
+        .filter(k => (normalizeCanonicalGroupKey(k, groupBy) ?? k) === canonical),
+    ),
+  )
+
+  const merged: any[] = []
+  const seenIds = new Set<string>()
+  for (const key of candidates) {
+    const rows = tasksByGroup[key]
+    if (!rows?.length) continue
+    for (const row of rows) {
+      const id = String((row as any)?.entity_id ?? (row as any)?.id ?? '')
+      if (!id || seenIds.has(id)) continue
+      seenIds.add(id)
+      merged.push(row)
     }
   }
-  return tasksByGroup[canonical] ?? tasksByGroup[groupKey] ?? []
+  return merged
 }
 
 function renderTaskRowInsertDropEdges(args: {
@@ -166,9 +178,9 @@ function getFlattenedItemKey(item: FlattenedItem): string {
     case 'empty':
       return `empty-${item.groupKey}`
     case 'task':
-      return `${String((item.task as any)?.entity_type)}:${String((item.task as any)?.entity_id)}`
+      return `${item.groupKey}:${String((item.task as any)?.entity_type)}:${String((item.task as any)?.entity_id)}`
     case 'subtasks':
-      return `subtasks-${String(item.parentId)}`
+      return `subtasks-${item.groupKey}-${String(item.parentId)}`
     default: {
       const _exhaustive: never = item
       return String(_exhaustive)
@@ -753,14 +765,15 @@ export function UnifiedGroupedTaskList<T>({
     if (plannerVisibility.showTasks) {
       const tasksByGroup = groupTasksQuery.tasksByGroup ?? {}
       for (const key of Object.keys(tasksByGroup)) {
-        if (!key || seen.has(key)) continue
+        const normalizedKey = normalizeCanonicalGroupKey(key, effectiveGroupBy) ?? key
+        if (!normalizedKey || seen.has(normalizedKey)) continue
         const rows = tasksByGroup[key] ?? []
         const label =
           rows.length > 0
             ? computeGroupLabelForTask(rows[0] as any, effectiveGroupBy)
-            : getGroupLabelFromKey(key, effectiveGroupBy)
-        seen.add(key)
-        merged.push({ group_key: key, label })
+            : getGroupLabelFromKey(normalizedKey, effectiveGroupBy)
+        seen.add(normalizedKey)
+        merged.push({ group_key: normalizedKey, label })
       }
     }
 
@@ -1048,6 +1061,7 @@ export function UnifiedGroupedTaskList<T>({
       }
 
       if (plannerVisibility.showTasks) {
+        const seenEntityIds = new Set<string>()
         for (const t of optimisticForGroup) {
           const task = mapTaskListRowToTableFormat(t as any) as any
           task.kind = 'task'
@@ -1060,6 +1074,9 @@ export function UnifiedGroupedTaskList<T>({
           task.assignedToPhotoUrl = getImageUrl(
             (task as any).assigned_to_photo ?? (task as any).assigned_user?.photo,
           )
+          const entityKey = String(task.entity_id)
+          if (seenEntityIds.has(entityKey)) continue
+          seenEntityIds.add(entityKey)
           normalizedRows.push(task)
         }
         for (const row of taskRowsForGroup) {
@@ -1076,6 +1093,9 @@ export function UnifiedGroupedTaskList<T>({
           task.assignedToPhotoUrl = getImageUrl(
             (task as any).assigned_to_photo ?? (task as any).assigned_user?.photo,
           )
+          const entityKey = String(task.entity_id)
+          if (seenEntityIds.has(entityKey)) continue
+          seenEntityIds.add(entityKey)
           normalizedRows.push(task)
         }
       }

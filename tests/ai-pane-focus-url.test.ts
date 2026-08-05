@@ -17,17 +17,18 @@ describe("ai pane focus url helpers", () => {
     expect(next.get("aiFocus")).toBe("true")
     expect(next.get("taskAiOpen")).toBe("true")
     expect(next.get("rightView")).toBe("ai")
-    expect(next.get("layout")?.includes("right")).toBe(true)
+    expect(next.get("layout")).toBe("right")
     expect(next.get("aiThreadId")).toBe("thread-a")
     expect(isAiPaneFocusMode(next)).toBe(true)
   })
 
   it("disables ai focus mode without mutating thread id", () => {
-    const current = new URLSearchParams("layout=left,middle,right&taskAiOpen=true&aiThreadId=thread-b&aiFocus=true")
+    const current = new URLSearchParams("layout=right&taskAiOpen=true&aiThreadId=thread-b&aiFocus=true")
     const next = buildAiPaneFocusParams(current, false)
 
     expect(next.get("aiFocus")).toBeNull()
     expect(next.get("aiThreadId")).toBe("thread-b")
+    expect(next.get("layout")).toBe("left,middle,right")
     expect(isAiPaneFocusMode(next)).toBe(false)
   })
 

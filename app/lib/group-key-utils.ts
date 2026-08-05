@@ -27,7 +27,8 @@ export function getGroupLabelFromKey(groupKey: string, groupBy: string | null): 
   if (!groupKey) return ''
   switch (groupKey) {
     case '__unassigned__':
-      return 'Unassigned'
+      // Match backend `task_group_*` labels for the null status bucket.
+      return groupBy === 'status' ? 'No Status' : 'Unassigned'
     case '__no_project__':
       return 'No Project'
     case '__no_date__':

@@ -37,7 +37,7 @@ export function ProjectActivityFeedList({
 
   return (
     <ul className="flex flex-col">
-      {visible.map((log, idx) => {
+      {visible.map((log) => {
         const photoUrl = getImageUrl(log.assigned_to_photo)
         const userDisplay =
           log.assigned_to_name ??
@@ -49,7 +49,6 @@ export function ProjectActivityFeedList({
 
         return (
           <li key={log.uid}>
-            {idx > 0 ? <div className="border-t border-gray-200" /> : null}
             <button
               type="button"
               onClick={() => onSelect?.(log)}

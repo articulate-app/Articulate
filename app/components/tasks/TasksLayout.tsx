@@ -1000,6 +1000,8 @@ export function TasksLayout({
   const sidebarContext = useTasksSidebar();
   // Prefer context for sidebar (layout provides it); fallback to props from cloneElement
   const effectiveOnSidebarToggle = sidebarContext?.onSidebarToggle ?? _onSidebarToggle;
+  const effectiveSidebarCollapsed = isSidebarCollapsed;
+  const aiFocusCollapsedSidebarRef = useRef(false);
   const [mobileView, setMobileView] = useState<MobileViewMode>('list');
   const [mobileFilterOpen, setMobileFilterOpen] = useState(false);
   const [mobileOptionsOpen, setMobileOptionsOpen] = useState(false);
@@ -3489,8 +3491,9 @@ export function TasksLayout({
   const [aiPanelPercent, setAiPanelPercent] = useState(33);
 
   const handleExpandAiPane = useCallback(() => {
-    const currentlyFocused = isAiPaneFocusMode(new URLSearchParams(params.toString()))
-    const nextParams = buildAiPaneFocusParams(new URLSearchParams(params.toString()), !currentlyFocused)
+    const latestParams = getLatestSearchParams()
+    const currentlyFocused = isAiPaneFocusMode(latestParams)
+    const nextParams = buildAiPaneFocusParams(latestParams, !currentlyFocused)
     setHasMountedSplitLayout((prev) =>
       nextSplitLayoutMountStateOnToggle({
         isAiFocusModeEnabled: currentlyFocused,
@@ -3498,59 +3501,58 @@ export function TasksLayout({
       })
     )
     shallowReplaceSearchParams(effectivePathname, nextParams, "task-ai-focus-toggle")
-    if (currentlyFocused) {
+    // Collapse the app sidebar while focused so only the AI pane remains.
+    if (!currentlyFocused) {
+      if (effectiveSidebarCollapsed === false && typeof effectiveOnSidebarToggle === "function") {
+        aiFocusCollapsedSidebarRef.current = true
+        effectiveOnSidebarToggle()
+      }
       const group = newLayoutDesktopPanelGroupRef.current
-      const hadBackup = Boolean(aiPaneExpandedLayoutBackupRef.current)
-      if (group && aiPaneExpandedLayoutBackupRef.current) {
-        const restored = aiPaneExpandedLayoutBackupRef.current
-        group.setLayout(restored)
-        if (restored[0] != null) setMainPanelPercent(restored[0])
-        if (restored[1] != null) setDetailsPanelPercent(restored[1])
-        if (restored[2] != null) setAiPanelPercent(restored[2])
+      if (group) {
+        const layout = group.getLayout()
+        if (layout.length >= 3 && !aiPaneExpandedLayoutBackupRef.current) {
+          aiPaneExpandedLayoutBackupRef.current = [...layout]
+        }
+        group.setLayout([0, 0, 100])
+        setMainPanelPercent(0)
+        setDetailsPanelPercent(0)
+        setAiPanelPercent(100)
       }
-      aiPaneExpandedLayoutBackupRef.current = null
-      setIsAiPaneExpandedMax(false)
-      if (group && !hadBackup) {
-        const fallbackLayout = [34, 33, 33]
-        group.setLayout(fallbackLayout)
-        setMainPanelPercent(fallbackLayout[0])
-        setDetailsPanelPercent(fallbackLayout[1])
-        setAiPanelPercent(fallbackLayout[2])
+      if (detailsPaneExpandedLayoutBackupRef.current) {
+        detailsPaneExpandedLayoutBackupRef.current = null
+        setIsDetailsPaneExpandedMax(false)
       }
+      setIsAiPaneExpandedMax(true)
       return
+    }
+
+    // Leaving focus: restore sidebar if we collapsed it for focus.
+    if (aiFocusCollapsedSidebarRef.current && effectiveSidebarCollapsed === true && typeof effectiveOnSidebarToggle === "function") {
+      aiFocusCollapsedSidebarRef.current = false
+      effectiveOnSidebarToggle()
+    } else {
+      aiFocusCollapsedSidebarRef.current = false
     }
 
     const group = newLayoutDesktopPanelGroupRef.current
-    if (!group) return
-    const layout = group.getLayout()
-    if (layout.length < 3) return
-
-    if (aiPaneExpandedLayoutBackupRef.current) {
-      group.setLayout(aiPaneExpandedLayoutBackupRef.current)
+    const hadBackup = Boolean(aiPaneExpandedLayoutBackupRef.current)
+    if (group && aiPaneExpandedLayoutBackupRef.current) {
       const restored = aiPaneExpandedLayoutBackupRef.current
-      aiPaneExpandedLayoutBackupRef.current = null
-      setIsAiPaneExpandedMax(false)
+      group.setLayout(restored)
       if (restored[0] != null) setMainPanelPercent(restored[0])
       if (restored[1] != null) setDetailsPanelPercent(restored[1])
       if (restored[2] != null) setAiPanelPercent(restored[2])
-      return
     }
-
-    if (detailsPaneExpandedLayoutBackupRef.current) {
-      detailsPaneExpandedLayoutBackupRef.current = null
-      setIsDetailsPaneExpandedMax(false)
+    aiPaneExpandedLayoutBackupRef.current = null
+    setIsAiPaneExpandedMax(false)
+    if (group && !hadBackup) {
+      const fallbackLayout = [34, 33, 33]
+      group.setLayout(fallbackLayout)
+      setMainPanelPercent(fallbackLayout[0])
+      setDetailsPanelPercent(fallbackLayout[1])
+      setAiPanelPercent(fallbackLayout[2])
     }
-
-    aiPaneExpandedLayoutBackupRef.current = [...layout]
-    const nextMain = 0
-    const nextDetails = 0
-    const nextAi = 100
-    group.setLayout([nextMain, nextDetails, nextAi])
-    setMainPanelPercent(nextMain)
-    setDetailsPanelPercent(nextDetails)
-    setAiPanelPercent(nextAi)
-    setIsAiPaneExpandedMax(true)
-  }, [params, pathname])
+  }, [effectiveOnSidebarToggle, effectivePathname, effectiveSidebarCollapsed, getLatestSearchParams])
 
   const handleExpandDetailsPane = useCallback(() => {
     const latestParams = getLatestSearchParams()
@@ -3616,17 +3618,30 @@ export function TasksLayout({
     return '';
   }
 
-  const isAiFocusModeEnabled = isAiPaneFocusMode(new URLSearchParams(params.toString()))
-  const isTaskDetailsFocusContextEnabled = isTaskDetailsFocusContext(new URLSearchParams(params.toString()))
-  const isDetailsFocusModeEnabled = isTaskDetailsOnlyFocusMode(new URLSearchParams(params.toString()))
-  const isTaskDetailsAiSplitModeEnabled = isTaskDetailsAiSplitMode(new URLSearchParams(params.toString()))
+  // Read focus flags from the live window URL — shallowReplaceSearchParams does not
+  // update Next.js useSearchParams, so params.toString() would miss aiFocus.
+  void tasksShallowUrlEpoch
+  const liveFocusParams =
+    typeof window !== "undefined"
+      ? new URLSearchParams(window.location.search)
+      : new URLSearchParams(params.toString())
+  const isAiFocusModeEnabled = isAiPaneFocusMode(liveFocusParams)
+  const isTaskDetailsFocusContextEnabled = isTaskDetailsFocusContext(liveFocusParams)
+  const isDetailsFocusModeEnabled = isTaskDetailsOnlyFocusMode(liveFocusParams)
+  const isTaskDetailsAiSplitModeEnabled = isTaskDetailsAiSplitMode(liveFocusParams)
   const isLeftPaneHiddenInDesktopSplit =
     isAiFocusModeEnabled || isDetailsFocusModeEnabled || isTaskDetailsAiSplitModeEnabled
   useEffect(() => {
     if (!isAiFocusModeEnabled) {
       setHasMountedSplitLayout(true)
+      return
     }
-  }, [isAiFocusModeEnabled])
+    // Deep-link / restored focus: keep sidebar collapsed while solo AI is on.
+    if (effectiveSidebarCollapsed === false && typeof effectiveOnSidebarToggle === "function") {
+      aiFocusCollapsedSidebarRef.current = true
+      effectiveOnSidebarToggle()
+    }
+  }, [effectiveOnSidebarToggle, effectiveSidebarCollapsed, isAiFocusModeEnabled])
   useEffect(() => {
     if (!isAiFocusModeEnabled) return
     const group = newLayoutDesktopPanelGroupRef.current

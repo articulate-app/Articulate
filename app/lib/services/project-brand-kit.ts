@@ -2,12 +2,17 @@
 
 import { createClientComponentClient } from "@supabase/auth-helpers-nextjs"
 import {
+  applyBrandKitDesignFields,
   applyBrandKitOverrides,
   emptyProjectBrandKit,
   parseProjectBrandKit,
   type PartialBrandKitEffective,
   type ProjectBrandKit,
+  type ProjectDesignMediaType,
+  type ProjectDesignTemplate,
+  type ProjectDesignTemplateAsset,
 } from "@/lib/project-brand-kit"
+import { PUBLIC_MEDIA_BUCKET, getImageUrl } from "@/lib/public-media"
 
 export const PROJECT_BRAND_KIT_QUERY_KEY = "project-brand-kit" as const
 
@@ -182,5 +187,427 @@ export async function resetBrandKitFieldToSource(args: {
     projectId: args.projectId,
     brandKit: args.brandKit,
     overrides,
+  })
+}
+
+export async function saveProjectBrandKitDesign(args: {
+  projectId: number
+  brandKit: ProjectBrandKit
+  designDescription?: string | null
+  designTemplates?: ProjectDesignTemplate[]
+}): Promise<{ data: ProjectBrandKit; error: Error | null }> {
+  const supabase = createClientComponentClient()
+  const nextKit = applyBrandKitDesignFields({
+    previous: args.brandKit,
+    designDescription: args.designDescription,
+    designTemplates: args.designTemplates,
+  })
+
+  const { error } = await supabase
+    .from("projects")
+    .update({ brand_kit: nextKit })
+    .eq("id", args.projectId)
+
+  if (error) {
+    return { data: emptyProjectBrandKit(), error: error as unknown as Error }
+  }
+  return { data: nextKit, error: null }
+}
+
+function mediaTypeFromFile(file: File): ProjectDesignMediaType {
+  const mime = (file.type || "").toLowerCase()
+  const name = file.name.toLowerCase()
+  if (mime.startsWith("image/")) return "image"
+  if (mime.startsWith("video/")) return "video"
+  if (mime === "application/pdf" || name.endsWith(".pdf")) return "pdf"
+  if (
+    mime === "text/html"
+    || mime === "application/xhtml+xml"
+    || name.endsWith(".html")
+    || name.endsWith(".htm")
+  ) {
+    return "html"
+  }
+  if (
+    mime === "application/msword"
+    || mime === "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+    || name.endsWith(".doc")
+    || name.endsWith(".docx")
+  ) {
+    return "docx"
+  }
+  return "other"
+}
+
+function extensionForUpload(file: File): string {
+  const fromName = file.name.split(".").pop()?.toLowerCase().trim()
+  if (fromName && /^[a-z0-9]{1,8}$/.test(fromName)) return fromName
+  const mime = (file.type || "").toLowerCase()
+  if (mime === "image/png") return "png"
+  if (mime === "image/jpeg") return "jpg"
+  if (mime === "image/webp") return "webp"
+  if (mime === "image/gif") return "gif"
+  if (mime.startsWith("video/")) return "mp4"
+  if (mime === "application/pdf") return "pdf"
+  if (mime === "text/html" || mime === "application/xhtml+xml") return "html"
+  if (mime === "application/msword") return "doc"
+  if (mime === "application/vnd.openxmlformats-officedocument.wordprocessingml.document") {
+    return "docx"
+  }
+  return "bin"
+}
+
+function contentTypeForUpload(file: File): string | undefined {
+  if (file.type) return file.type
+  const mediaType = mediaTypeFromFile(file)
+  if (mediaType === "html") return "text/html"
+  if (mediaType === "docx") {
+    return file.name.toLowerCase().endsWith(".doc")
+      ? "application/msword"
+      : "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+  }
+  if (mediaType === "pdf") return "application/pdf"
+  return undefined
+}
+
+/** Pull a short plain-text excerpt from an HTML file for AI layout notes. */
+async function htmlFileTextExcerpt(file: File, maxChars = 1200): Promise<string | null> {
+  try {
+    const raw = await file.text()
+    const withoutScripts = raw
+      .replace(/<script[\s\S]*?<\/script>/gi, " ")
+      .replace(/<style[\s\S]*?<\/style>/gi, " ")
+      .replace(/<[^>]+>/g, " ")
+      .replace(/&nbsp;/gi, " ")
+      .replace(/&amp;/gi, "&")
+      .replace(/&lt;/gi, "<")
+      .replace(/&gt;/gi, ">")
+      .replace(/\s+/g, " ")
+      .trim()
+    if (!withoutScripts) return null
+    return withoutScripts.length > maxChars
+      ? `${withoutScripts.slice(0, maxChars - 1)}…`
+      : withoutScripts
+  } catch {
+    return null
+  }
+}
+
+/** Extract readable text from a .docx (Office Open XML) for card preview + AI notes. */
+async function docxFileTextExcerpt(file: File, maxChars = 1200): Promise<string | null> {
+  try {
+    const JSZip = (await import("jszip")).default
+    const zip = await JSZip.loadAsync(await file.arrayBuffer())
+    const documentXml = await zip.file("word/document.xml")?.async("string")
+    if (!documentXml) return null
+    const text = documentXml
+      .replace(/<w:tab[^/]*\/>/gi, "\t")
+      .replace(/<\/w:p>/gi, "\n")
+      .replace(/<w:br[^/]*\/>/gi, "\n")
+      .replace(/<[^>]+>/g, "")
+      .replace(/&amp;/gi, "&")
+      .replace(/&lt;/gi, "<")
+      .replace(/&gt;/gi, ">")
+      .replace(/&quot;/gi, '"')
+      .replace(/&#(\d+);/g, (_, code) => String.fromCharCode(Number(code)))
+      .replace(/[ \t]+\n/g, "\n")
+      .replace(/\n{3,}/g, "\n\n")
+      .replace(/[ \t]{2,}/g, " ")
+      .trim()
+    if (!text) return null
+    return text.length > maxChars ? `${text.slice(0, maxChars - 1)}…` : text
+  } catch {
+    return null
+  }
+}
+
+async function uploadDesignAssetFile(args: {
+  projectId: number
+  file: File
+}): Promise<{ asset: ProjectDesignTemplateAsset | null; error: Error | null }> {
+  const supabase = createClientComponentClient()
+  const ext = extensionForUpload(args.file)
+  const storagePath =
+    `projects/${args.projectId}/design-examples/${crypto.randomUUID()}.${ext}`
+
+  const { error: uploadError } = await supabase.storage
+    .from(PUBLIC_MEDIA_BUCKET)
+    .upload(storagePath, args.file, {
+      upsert: false,
+      contentType: contentTypeForUpload(args.file),
+    })
+
+  if (uploadError) {
+    return { asset: null, error: uploadError as unknown as Error }
+  }
+
+  const publicUrl = getImageUrl(storagePath)
+  const mediaType = mediaTypeFromFile(args.file)
+  return {
+    asset: {
+      id: crypto.randomUUID(),
+      media_type: mediaType,
+      title: args.file.name.replace(/\.[^.]+$/, "") || args.file.name,
+      url: publicUrl,
+      storage_path: storagePath,
+      mime_type: contentTypeForUpload(args.file) ?? (args.file.type || null),
+    },
+    error: null,
+  }
+}
+
+/** Upload one or more files as a single multi-asset template. */
+export async function uploadProjectDesignTemplateFiles(args: {
+  projectId: number
+  brandKit: ProjectBrandKit
+  files: File[]
+  title?: string | null
+  notes?: string | null
+  /** When set, append assets to this template instead of creating a new one. */
+  templateId?: string | null
+}): Promise<{ data: ProjectBrandKit; template: ProjectDesignTemplate | null; error: Error | null }> {
+  const files = args.files.filter(Boolean)
+  if (files.length === 0) {
+    return { data: args.brandKit, template: null, error: new Error("No files selected") }
+  }
+
+  const assets: ProjectDesignTemplateAsset[] = []
+  for (const file of files) {
+    const uploaded = await uploadDesignAssetFile({ projectId: args.projectId, file })
+    if (uploaded.error || !uploaded.asset) {
+      return {
+        data: args.brandKit,
+        template: null,
+        error: uploaded.error ?? new Error(`Failed to upload ${file.name}`),
+      }
+    }
+    assets.push(uploaded.asset)
+  }
+
+  if (args.templateId) {
+    const nextTemplates = args.brandKit.design_templates.map((entry) => {
+      if (entry.id !== args.templateId) return entry
+      return { ...entry, assets: [...entry.assets, ...assets] }
+    })
+    const template = nextTemplates.find((entry) => entry.id === args.templateId) ?? null
+    const saved = await saveProjectBrandKitDesign({
+      projectId: args.projectId,
+      brandKit: args.brandKit,
+      designTemplates: nextTemplates,
+    })
+    return {
+      data: saved.data,
+      template: saved.error ? null : template,
+      error: saved.error,
+    }
+  }
+
+  const title =
+    args.title?.trim()
+    || (files.length === 1
+      ? files[0].name.replace(/\.[^.]+$/, "") || files[0].name
+      : `${files.length} assets`)
+
+  let notes = args.notes?.trim() || null
+  if (!notes) {
+    const htmlFile = files.find((file) => mediaTypeFromFile(file) === "html")
+    const docxFile = files.find((file) => mediaTypeFromFile(file) === "docx")
+    if (htmlFile) {
+      const excerpt = await htmlFileTextExcerpt(htmlFile)
+      if (excerpt) notes = `HTML excerpt: ${excerpt}`
+    } else if (docxFile) {
+      const excerpt = await docxFileTextExcerpt(docxFile)
+      if (excerpt) {
+        notes = `Word excerpt: ${excerpt}`
+      } else {
+        notes =
+          "Word document layout template — match structure, hierarchy, and formatting cues from this file."
+      }
+    }
+  }
+
+  const template: ProjectDesignTemplate = {
+    id: crypto.randomUUID(),
+    title,
+    notes,
+    assets,
+    source_artifact_id: null,
+    created_at: new Date().toISOString(),
+  }
+
+  const saved = await saveProjectBrandKitDesign({
+    projectId: args.projectId,
+    brandKit: args.brandKit,
+    designTemplates: [...args.brandKit.design_templates, template],
+  })
+
+  return {
+    data: saved.data,
+    template: saved.error ? null : template,
+    error: saved.error,
+  }
+}
+
+export async function addProjectDesignTemplateLink(args: {
+  projectId: number
+  brandKit: ProjectBrandKit
+  url: string
+  title?: string | null
+  notes?: string | null
+}): Promise<{ data: ProjectBrandKit; template: ProjectDesignTemplate | null; error: Error | null }> {
+  const url = args.url.trim()
+  if (!url) {
+    return { data: args.brandKit, template: null, error: new Error("URL is required") }
+  }
+
+  let hostname: string | null = null
+  try {
+    hostname = new URL(url).hostname.replace(/^www\./, "")
+  } catch {
+    /* ignore */
+  }
+
+  const lowerUrl = url.toLowerCase()
+  const looksLikeHtml =
+    lowerUrl.endsWith(".html")
+    || lowerUrl.endsWith(".htm")
+    || lowerUrl.includes(".html?")
+    || lowerUrl.includes(".htm?")
+  const looksLikeDocx =
+    lowerUrl.endsWith(".docx")
+    || lowerUrl.endsWith(".doc")
+    || lowerUrl.includes(".docx?")
+    || lowerUrl.includes(".doc?")
+
+  const template: ProjectDesignTemplate = {
+    id: crypto.randomUUID(),
+    title: args.title?.trim() || hostname || url,
+    notes: args.notes?.trim() || null,
+    assets: [
+      {
+        id: crypto.randomUUID(),
+        media_type: looksLikeHtml ? "html" : looksLikeDocx ? "docx" : "url",
+        title: args.title?.trim() || hostname || url,
+        url,
+        storage_path: null,
+        mime_type: looksLikeHtml
+          ? "text/html"
+          : looksLikeDocx
+            ? "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+            : null,
+      },
+    ],
+    source_artifact_id: null,
+    created_at: new Date().toISOString(),
+  }
+
+  const saved = await saveProjectBrandKitDesign({
+    projectId: args.projectId,
+    brandKit: args.brandKit,
+    designTemplates: [...args.brandKit.design_templates, template],
+  })
+
+  return {
+    data: saved.data,
+    template: saved.error ? null : template,
+    error: saved.error,
+  }
+}
+
+export async function updateProjectDesignTemplate(args: {
+  projectId: number
+  brandKit: ProjectBrandKit
+  templateId: string
+  patch: Partial<Pick<ProjectDesignTemplate, "title" | "notes">>
+}): Promise<{ data: ProjectBrandKit; error: Error | null }> {
+  const nextTemplates = args.brandKit.design_templates.map((entry) => {
+    if (entry.id !== args.templateId) return entry
+    return {
+      ...entry,
+      title: args.patch.title !== undefined ? (args.patch.title?.trim() || null) : entry.title,
+      notes: args.patch.notes !== undefined ? (args.patch.notes?.trim() || null) : entry.notes,
+    }
+  })
+  return saveProjectBrandKitDesign({
+    projectId: args.projectId,
+    brandKit: args.brandKit,
+    designTemplates: nextTemplates,
+  })
+}
+
+export async function removeProjectDesignTemplate(args: {
+  projectId: number
+  brandKit: ProjectBrandKit
+  templateId: string
+}): Promise<{ data: ProjectBrandKit; error: Error | null }> {
+  const nextTemplates = args.brandKit.design_templates.filter(
+    (entry) => entry.id !== args.templateId,
+  )
+  return saveProjectBrandKitDesign({
+    projectId: args.projectId,
+    brandKit: args.brandKit,
+    designTemplates: nextTemplates,
+  })
+}
+
+export async function removeProjectDesignTemplateAsset(args: {
+  projectId: number
+  brandKit: ProjectBrandKit
+  templateId: string
+  assetId: string
+}): Promise<{ data: ProjectBrandKit; error: Error | null }> {
+  const nextTemplates = args.brandKit.design_templates.map((entry) => {
+    if (entry.id !== args.templateId) return entry
+    return {
+      ...entry,
+      assets: entry.assets.filter((asset) => asset.id !== args.assetId),
+    }
+  })
+
+  return saveProjectBrandKitDesign({
+    projectId: args.projectId,
+    brandKit: args.brandKit,
+    designTemplates: nextTemplates,
+  })
+}
+
+/** @deprecated Use uploadProjectDesignTemplateFiles */
+export async function uploadProjectDesignExampleFile(args: {
+  projectId: number
+  brandKit: ProjectBrandKit
+  file: File
+  notes?: string | null
+}): Promise<{ data: ProjectBrandKit; example: ProjectDesignTemplate | null; error: Error | null }> {
+  const result = await uploadProjectDesignTemplateFiles({
+    projectId: args.projectId,
+    brandKit: args.brandKit,
+    files: [args.file],
+    notes: args.notes,
+  })
+  return { data: result.data, example: result.template, error: result.error }
+}
+
+/** @deprecated Use addProjectDesignTemplateLink */
+export async function addProjectDesignExampleLink(args: {
+  projectId: number
+  brandKit: ProjectBrandKit
+  url: string
+  title?: string | null
+  notes?: string | null
+}): Promise<{ data: ProjectBrandKit; example: ProjectDesignTemplate | null; error: Error | null }> {
+  const result = await addProjectDesignTemplateLink(args)
+  return { data: result.data, example: result.template, error: result.error }
+}
+
+/** @deprecated Use removeProjectDesignTemplate */
+export async function removeProjectDesignExample(args: {
+  projectId: number
+  brandKit: ProjectBrandKit
+  exampleId: string
+}): Promise<{ data: ProjectBrandKit; error: Error | null }> {
+  return removeProjectDesignTemplate({
+    projectId: args.projectId,
+    brandKit: args.brandKit,
+    templateId: args.exampleId,
   })
 }

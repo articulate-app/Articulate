@@ -268,6 +268,10 @@ export async function createSourceFromFile(args: {
     .upload(path, args.file, { upsert: false })
   if (uploadError) throw uploadError
 
+  const { data: actorId } = await supabase.rpc("current_user_id")
+  const uploadedBy = toFiniteNumber(actorId)
+
+  const mimeType = args.file.type || "application/octet-stream"
   const { data: attachmentRow, error: attachmentError } = await supabase
     .from("attachments")
     .insert({
@@ -275,10 +279,11 @@ export async function createSourceFromFile(args: {
       record_id: "pending",
       file_name: args.file.name,
       file_path: up.path,
-      mime_type: args.file.type || "application/octet-stream",
+      mime_type: mimeType,
       size: args.file.size,
+      ...(uploadedBy != null ? { uploaded_by: uploadedBy } : {}),
     })
-    .select("id")
+    .select("id, file_path, file_name, mime_type, size")
     .single()
   if (attachmentError) throw attachmentError
   const attachmentId = toTrimmedString(attachmentRow?.id)
@@ -295,12 +300,24 @@ export async function createSourceFromFile(args: {
     startImport: true,
   })
 
-  void supabase
+  const { error: linkError } = await supabase
     .from("attachments")
     .update({ record_id: result.source.id })
     .eq("id", attachmentId)
+  if (linkError) {
+    console.warn("createSourceFromFile: failed to link attachment record_id", linkError)
+  }
 
-  return result
+  return {
+    ...result,
+    attachment: {
+      id: attachmentId,
+      file_path: toTrimmedString(attachmentRow?.file_path) ?? up.path,
+      file_name: toTrimmedString(attachmentRow?.file_name) ?? args.file.name,
+      mime_type: toTrimmedString(attachmentRow?.mime_type) ?? mimeType,
+      size: toFiniteNumber(attachmentRow?.size) ?? args.file.size,
+    },
+  }
 }
 
 export async function createSourceFromUrl(args: {

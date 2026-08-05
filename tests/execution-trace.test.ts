@@ -57,7 +57,9 @@ describe("mergeExecutionTraceStep", () => {
     const merged = mergeExecutionTraceStep(started, completed)
     expect(merged.phase).toBe("completed")
     expect(merged.text).toContain("Resolved task")
-    expect(merged.sequence).toBe(2)
+    // Keep first-seen sequence so completed tools stay stacked in start order.
+    expect(merged.sequence).toBe(1)
+    expect(merged.emittedAt).toBe(TRACE_STARTED.emitted_at)
   })
 
   it("preserves attached preview keys across phase updates", () => {
@@ -108,6 +110,30 @@ describe("statusPayloadToExecutionTraceEvent", () => {
     )
     expect(merged.phase).toBe("completed")
     expect(merged.text).toContain("Finished looking up projects")
+  })
+
+  it("keeps parallel tool calls as distinct stacked steps", () => {
+    const first = statusPayloadToExecutionTraceEvent({
+      sequence: 1,
+      type: "tool_started",
+      phase: "started",
+      round: 0,
+      tool_name: "ai_read_artifact",
+      tool_call_id: "call_a",
+      tool_index: 0,
+    })
+    const second = statusPayloadToExecutionTraceEvent({
+      sequence: 2,
+      type: "tool_started",
+      phase: "started",
+      round: 0,
+      tool_name: "ai_read_artifact",
+      tool_call_id: "call_b",
+      tool_index: 1,
+    })
+    expect(first?.step_id).toBe("tool:0:call_a")
+    expect(second?.step_id).toBe("tool:0:call_b")
+    expect(first?.step_id).not.toBe(second?.step_id)
   })
 
   it("ignores generic status payloads", () => {

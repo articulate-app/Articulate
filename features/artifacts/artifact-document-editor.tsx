@@ -283,6 +283,7 @@ export type ArtifactDocumentEditorProps = {
     timeEnd?: number | null
   }) => void
   onSelectAsset?: (attachmentId: string) => void
+  onOpenFullscreen?: () => void
 }
 
 /**
@@ -300,6 +301,7 @@ export function ArtifactDocumentEditor({
   onSelectImageRect,
   onSelectVideoTime,
   onSelectAsset,
+  onOpenFullscreen,
 }: ArtifactDocumentEditorProps) {
   const initialBlocks = useMemo(
     () => extractArtifactBlocks(artifact.content_json),
@@ -357,6 +359,7 @@ export function ArtifactDocumentEditor({
     onSelectImageRect,
     onSelectVideoTime,
     onSelectAsset,
+    onOpenFullscreen,
   }
 
   if (readOnly) {

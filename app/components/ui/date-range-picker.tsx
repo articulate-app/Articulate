@@ -24,6 +24,11 @@ interface DateRangePickerProps {
   value?: { from?: Date; to?: Date }
   onChange?: (value: { from?: Date; to?: Date }) => void
   className?: string
+  /**
+   * When true, render only the calendar + quick ranges panel (no trigger / outer popover).
+   * Use inside a parent Popover to avoid nested popovers.
+   */
+  inline?: boolean
 }
 
 type QuickPresetKey =
@@ -102,10 +107,110 @@ function matchPreset(from?: Date, to?: Date): QuickPresetKey {
   return "custom"
 }
 
+function formatRangeLabel(date: DateRange | undefined): string {
+  if (!date?.from) return "Pick a date range"
+  const preset = matchPreset(date.from, date.to)
+  if (preset !== "custom") return PRESET_LABELS[preset]
+  if (date.to) {
+    return `${format(date.from, "MMM d, yyyy")} – ${format(date.to, "MMM d, yyyy")}`
+  }
+  return format(date.from, "MMM d, yyyy")
+}
+
+function DateRangePickerPanel({
+  date,
+  activePreset,
+  onSelectRange,
+  onApplyPreset,
+  className,
+}: {
+  date: DateRange | undefined
+  activePreset: QuickPresetKey
+  onSelectRange: (range: DateRange | undefined) => void
+  onApplyPreset: (preset: QuickPresetKey) => void
+  className?: string
+}) {
+  return (
+    <div className={cn("flex flex-col gap-4 sm:flex-row sm:items-start", className)}>
+      <Calendar
+        initialFocus
+        mode="range"
+        defaultMonth={date?.from}
+        selected={date}
+        onSelect={onSelectRange}
+        numberOfMonths={2}
+        className="flex flex-col space-y-4"
+        classNames={{
+          months: "flex space-x-4",
+          month: "space-y-4",
+          caption: "flex justify-center pt-1 relative items-center",
+          caption_label: "text-sm font-medium",
+          nav: "space-x-1 flex items-center",
+          nav_button: "h-7 w-7 bg-transparent p-0 opacity-50 hover:opacity-100",
+          nav_button_previous: "absolute left-1",
+          nav_button_next: "absolute right-1",
+          table: "w-full border-collapse space-y-1",
+          head_row: "flex justify-between",
+          head_cell: "text-muted-foreground rounded-md w-8 font-normal text-[0.8rem]",
+          row: "flex w-full mt-2 justify-between",
+          cell: cn(
+            "relative p-0 text-center text-sm focus-within:relative focus-within:z-20 [&:has([aria-selected])]:bg-accent/50",
+            "[&:has([aria-selected].day-range-end)]:rounded-r-md",
+            "[&:has([aria-selected].day-range-start)]:rounded-l-md",
+            "[&:has([aria-selected].day-range-start)]:bg-accent",
+            "[&:has([aria-selected].day-range-end)]:bg-accent",
+          ),
+          day: cn(
+            "h-8 w-8 p-0 font-normal aria-selected:opacity-100",
+            "hover:bg-accent hover:text-accent-foreground",
+            "focus:bg-accent focus:text-accent-foreground focus:rounded-md",
+          ),
+          day_range_start: "day-range-start rounded-l-md",
+          day_range_end: "day-range-end rounded-r-md",
+          day_selected:
+            "bg-primary text-primary-foreground hover:bg-primary hover:text-primary-foreground focus:bg-primary focus:text-primary-foreground",
+        }}
+      />
+
+      <div className="mt-2 w-full border-t pt-3 text-xs sm:mt-0 sm:w-40 sm:shrink-0 sm:border-t-0 sm:border-l sm:pt-0 sm:pl-4">
+        <div className="mb-2 font-medium text-gray-700">Quick ranges</div>
+        <div className="max-h-56 space-y-1 overflow-y-auto sm:max-h-[280px]">
+          {(
+            [
+              "today",
+              "yesterday",
+              "last-7-days",
+              "last-30-days",
+              "this-month",
+              "last-month",
+              "this-year",
+              "last-year",
+              "custom",
+            ] as QuickPresetKey[]
+          ).map((key) => (
+            <button
+              key={key}
+              type="button"
+              className={cn(
+                "flex w-full items-center justify-between rounded px-2 py-1.5 text-left hover:bg-gray-100",
+                activePreset === key && "bg-gray-100 font-medium",
+              )}
+              onClick={() => onApplyPreset(key)}
+            >
+              <span>{PRESET_LABELS[key]}</span>
+            </button>
+          ))}
+        </div>
+      </div>
+    </div>
+  )
+}
+
 export function DateRangePicker({
   value,
   onChange,
   className,
+  inline = false,
 }: DateRangePickerProps) {
   const [date, setDate] = React.useState<DateRange | undefined>(
     value?.from && value?.to
@@ -139,15 +244,28 @@ export function DateRangePicker({
     onChange({ from: nextRange.from, to: nextRange.to })
   }
 
-  const triggerLabel = (() => {
-    if (!date?.from) return "Pick a date range"
-    const preset = matchPreset(date.from, date.to)
-    if (preset !== "custom") return PRESET_LABELS[preset]
-    if (date.to) {
-      return `${format(date.from, "MMM d, yyyy")} – ${format(date.to, "MMM d, yyyy")}`
+  const selectRange = (range: DateRange | undefined) => {
+    setDate(range)
+    setActivePreset(matchPreset(range?.from, range?.to))
+    if (onChange) {
+      onChange({
+        from: range?.from,
+        to: range?.to,
+      })
     }
-    return format(date.from, "MMM d, yyyy")
-  })()
+  }
+
+  if (inline) {
+    return (
+      <DateRangePickerPanel
+        className={className}
+        date={date}
+        activePreset={activePreset}
+        onSelectRange={selectRange}
+        onApplyPreset={applyPreset}
+      />
+    )
+  }
 
   return (
     <div className={cn("grid gap-2", className)}>
@@ -165,92 +283,15 @@ export function DateRangePicker({
           )}
         >
           <CalendarIcon className="mr-2 h-4 w-4" />
-          <span className="truncate">{triggerLabel}</span>
+          <span className="truncate">{formatRangeLabel(date)}</span>
         </PopoverTrigger>
         <PopoverContent className="w-auto p-4" align="start">
-          <div className="flex flex-col gap-4 sm:flex-row sm:items-start">
-            <Calendar
-              initialFocus
-              mode="range"
-              defaultMonth={date?.from}
-              selected={date}
-              onSelect={(range) => {
-                setDate(range)
-                setActivePreset(matchPreset(range?.from, range?.to))
-                if (onChange) {
-                  onChange({
-                    from: range?.from,
-                    to: range?.to,
-                  })
-                }
-              }}
-              numberOfMonths={2}
-              className="flex flex-col space-y-4"
-              classNames={{
-                months: "flex space-x-4",
-                month: "space-y-4",
-                caption: "flex justify-center pt-1 relative items-center",
-                caption_label: "text-sm font-medium",
-                nav: "space-x-1 flex items-center",
-                nav_button: "h-7 w-7 bg-transparent p-0 opacity-50 hover:opacity-100",
-                nav_button_previous: "absolute left-1",
-                nav_button_next: "absolute right-1",
-                table: "w-full border-collapse space-y-1",
-                head_row: "flex justify-between",
-                head_cell: "text-muted-foreground rounded-md w-8 font-normal text-[0.8rem]",
-                row: "flex w-full mt-2 justify-between",
-                cell: cn(
-                  "relative p-0 text-center text-sm focus-within:relative focus-within:z-20 [&:has([aria-selected])]:bg-accent/50",
-                  "[&:has([aria-selected].day-range-end)]:rounded-r-md",
-                  "[&:has([aria-selected].day-range-start)]:rounded-l-md",
-                  "[&:has([aria-selected].day-range-start)]:bg-accent",
-                  "[&:has([aria-selected].day-range-end)]:bg-accent",
-                ),
-                day: cn(
-                  "h-8 w-8 p-0 font-normal aria-selected:opacity-100",
-                  "hover:bg-accent hover:text-accent-foreground",
-                  "focus:bg-accent focus:text-accent-foreground focus:rounded-md",
-                ),
-                day_range_start: "day-range-start rounded-l-md",
-                day_range_end: "day-range-end rounded-r-md",
-                day_selected:
-                  "bg-primary text-primary-foreground hover:bg-primary hover:text-primary-foreground focus:bg-primary focus:text-primary-foreground",
-              }}
-            />
-
-            <div className="mt-2 w-full border-t pt-3 text-xs sm:mt-0 sm:w-40 sm:border-t-0 sm:border-l sm:pt-0 sm:pl-4">
-              <div className="mb-2 font-medium text-gray-700">
-                Quick ranges
-              </div>
-              <div className="space-y-1">
-                {(
-                  [
-                    "today",
-                    "yesterday",
-                    "last-7-days",
-                    "last-30-days",
-                    "this-month",
-                    "last-month",
-                    "this-year",
-                    "last-year",
-                    "custom",
-                  ] as QuickPresetKey[]
-                ).map((key) => (
-                  <button
-                    key={key}
-                    type="button"
-                    className={cn(
-                      "flex w-full items-center justify-between rounded px-2 py-1.5 text-left hover:bg-gray-100",
-                      activePreset === key && "bg-gray-100 font-medium",
-                    )}
-                    onClick={() => applyPreset(key)}
-                  >
-                    <span>{PRESET_LABELS[key]}</span>
-                  </button>
-                ))}
-              </div>
-            </div>
-          </div>
+          <DateRangePickerPanel
+            date={date}
+            activePreset={activePreset}
+            onSelectRange={selectRange}
+            onApplyPreset={applyPreset}
+          />
         </PopoverContent>
       </Popover>
     </div>

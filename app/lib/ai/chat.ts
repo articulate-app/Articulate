@@ -194,6 +194,8 @@ export type AiChatChangePreviewEvent = {
   round?: number | null
   entity_type: string
   entity_id?: string | number | null
+  /** Present for durable build dispatch previews (`ai_start_artifact_build`). */
+  build_id?: string | null
   task_id?: number | null
   channel_id?: number | null
   project_id?: number | null
@@ -628,6 +630,12 @@ function processAiStatusInlinePayload(
       return
     }
 
+    // Tool progress is rendered as a stacked execution timeline — do not also
+    // overwrite the single status line with only the latest tool label.
+    if (eventType === "tool_started" || eventType === "tool_finished") {
+      return
+    }
+
     emitStatusTextFromJson(jsonPayload, handlers)
   } catch {
     // ignore malformed
@@ -827,6 +835,10 @@ export function parseAiChangePreviewEvent(
     round: parseStreamNumericId(parsed.round),
     entity_type: entityType,
     entity_id: entityId,
+    build_id:
+      typeof parsed.build_id === "string" && parsed.build_id.trim().length > 0
+        ? parsed.build_id.trim()
+        : null,
     task_id: parseStreamNumericId(parsed.task_id),
     channel_id: parseStreamNumericId(parsed.channel_id),
     project_id: parseStreamNumericId(parsed.project_id),
@@ -1127,7 +1139,11 @@ export async function consumeTextStream(
   }
 
   const contentType = response.headers.get("content-type")?.toLowerCase() ?? ""
-  const isSse = contentType.includes("text/event-stream")
+  // Only treat as SSE when the body actually uses `data:` frames. Our ai-chat
+  // stream historically mislabeled `__AI_*__` + plain deltas as event-stream,
+  // which caused the client to buffer everything and paint only on reconcile.
+  let isSse = contentType.includes("text/event-stream")
+  let sseProbeResolved = !isSse
   const isJsonContentType = contentType.includes("application/json")
   const reader = response.body.getReader()
   const decoder = new TextDecoder()
@@ -1231,6 +1247,11 @@ export async function consumeTextStream(
 
       if (sentinelIndex < 0) {
         if (flushFinal) {
+          // Drop trailing incomplete `__AI_*` control payloads instead of leaking them into chat.
+          if (/^\s*__AI_[A-Z0-9_]+__/.test(mixedPlainBuffer)) {
+            mixedPlainBuffer = ""
+            return
+          }
           emitText(mixedPlainBuffer)
           mixedPlainBuffer = ""
           return
@@ -1303,7 +1324,13 @@ export async function consumeTextStream(
       }
 
       const parsedObject = parseTopLevelJsonObject(mixedPlainBuffer, cursor)
-      if (parsedObject.status === "incomplete") return
+      if (parsedObject.status === "incomplete") {
+        // Never flush incomplete control markers into visible assistant text.
+        if (flushFinal) {
+          mixedPlainBuffer = ""
+        }
+        return
+      }
 
       if (kind === "status") {
         processAiStatusInlinePayload(parsedObject.raw, handlers, (ev) => {
@@ -1475,6 +1502,26 @@ export async function consumeTextStream(
       }
 
       sseBuffer += chunkText
+      if (!sseProbeResolved) {
+        const probe = sseBuffer.trimStart()
+        if (probe.length > 0) {
+          sseProbeResolved = true
+          const looksLikeSse =
+            probe.startsWith("data:")
+            || probe.startsWith("event:")
+            || probe.startsWith("id:")
+            || probe.startsWith(":")
+          const looksLikeAiMarker =
+            probe.startsWith("__AI_")
+            || probe.includes("\n__AI_")
+          if (!looksLikeSse || looksLikeAiMarker) {
+            isSse = false
+            processMixedPlainBuffer(sseBuffer)
+            sseBuffer = ""
+            continue
+          }
+        }
+      }
       let separatorIndex = sseBuffer.indexOf("\n\n")
       while (separatorIndex >= 0) {
         const block = sseBuffer.slice(0, separatorIndex)
@@ -1497,7 +1544,19 @@ export async function consumeTextStream(
   }
 
   if (isSse && sseBuffer.trim()) {
-    handleSseBlock(sseBuffer)
+    const probe = sseBuffer.trimStart()
+    const looksLikeSse =
+      probe.startsWith("data:")
+      || probe.startsWith("event:")
+      || probe.startsWith("id:")
+      || probe.startsWith(":")
+    if (looksLikeSse) {
+      handleSseBlock(sseBuffer)
+    } else {
+      isSse = false
+      processMixedPlainBuffer(sseBuffer)
+      sseBuffer = ""
+    }
   }
 
   const trailing = decoder.decode()

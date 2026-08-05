@@ -5,9 +5,9 @@ import { TaskOverviewPreviewSection } from "../tasks/task-overview-preview-secti
 import { ProjectAnalyticsTab } from "./ProjectAnalyticsTab"
 import { ProjectAiVisibilityTab } from "./ProjectAiVisibilityTab"
 import { ProjectKeywordTrackingTab } from "./ProjectKeywordTrackingTab"
+import { ProjectCompetitorsTab } from "./ProjectCompetitorsTab"
 import { ProjectSuggestionsTab } from "./ProjectSuggestionsTab"
 import { ProjectOverviewUpdatesComments } from "./project-overview-updates-comments"
-import { ProjectOverviewWatchers } from "./project-overview-watchers"
 import { ArtifactWorkspace } from "../../../features/artifacts/ArtifactWorkspace"
 
 export type ProjectOverviewTab =
@@ -16,6 +16,7 @@ export type ProjectOverviewTab =
   | "analytics"
   | "ai-visibility"
   | "keywords"
+  | "competitors"
   | "tasks"
   | "suggestions"
   | "files"
@@ -35,12 +36,11 @@ export function ProjectOverviewPreviews({ projectId, onNavigateTab }: ProjectOve
   const [analyticsReady, setAnalyticsReady] = useState(false)
   const [aiVisibilityReady, setAiVisibilityReady] = useState(false)
   const [keywordsReady, setKeywordsReady] = useState(false)
+  const [competitorsReady, setCompetitorsReady] = useState(false)
   const [suggestionsReady, setSuggestionsReady] = useState(false)
 
   return (
     <div className="min-w-0 space-y-0">
-      <ProjectOverviewWatchers projectId={projectId} />
-
       <TaskOverviewPreviewSection
         title="Analytics"
         onViewAll={() => onNavigateTab("analytics")}
@@ -74,9 +74,20 @@ export function ProjectOverviewPreviews({ projectId, onNavigateTab }: ProjectOve
       </TaskOverviewPreviewSection>
 
       <TaskOverviewPreviewSection
+        title="Competition"
+        onViewAll={() => onNavigateTab("competitors")}
+        active={keywordsReady}
+        onVisible={() => setCompetitorsReady(true)}
+      >
+        {competitorsReady ? (
+          <ProjectCompetitorsTab projectId={projectId} variant="preview" />
+        ) : null}
+      </TaskOverviewPreviewSection>
+
+      <TaskOverviewPreviewSection
         title="Suggestions"
         onViewAll={() => onNavigateTab("suggestions")}
-        active={keywordsReady}
+        active={competitorsReady}
         onVisible={() => setSuggestionsReady(true)}
       >
         {suggestionsReady ? (

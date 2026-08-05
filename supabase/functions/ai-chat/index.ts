@@ -743,13 +743,47 @@ const TOOLS = [
     type: "function",
     function: {
       name: "read_project",
-      description: "Read one existing project by id. Use this when the user tagged a project or explicitly references a specific project. Use `project_languages` as the source of truth for the project's languages.  The legacy `projects.languages` field may contain raw IDs only and should not be used to infer language names when `project_languages` is available.",
+      description: "Read one existing project by id. Use this when the user tagged a project or explicitly references a specific project. Use `project_languages` as the source of truth for the project's languages.  The legacy `projects.languages` field may contain raw IDs only and should not be used to infer language names when `project_languages` is available. Includes brand_kit (colors, fonts, logo, design_description, design_templates) and brand_layout_templates. Brand layout templates live in Brand kit — not in artifacts or attachments.",
       parameters: {
         type: "object",
         properties: {
           project_id: { type: "integer" },
         },
         required: ["project_id"],
+      },
+    },
+  },
+
+  {
+    type: "function",
+    function: {
+      name: "extract_project_brand",
+      description: "Extract and save a project's brand kit (colors, fonts, typography, spacing, logo) from a website URL using Firecrawl branding. Use when the user asks to extract/import/update brand identity for a named project (e.g. 'update the brand kit of project Articulate' or imperfect names like 'articulat'). Prefer project_name from the current or earlier conversation turns — do not require tags, thread project scope, or a tagged task. If a project was already identified earlier in this chat, reuse that project_name/project_id. The tool fuzzy-resolves visible projects by name server-side. If multiple/no confident matches, it returns candidates and you should ask for clarification. If url is omitted, uses the project's existing project_url. Prefer replace_all=false unless the user wants a full replace.",
+      parameters: {
+        type: "object",
+        properties: {
+          project_id: {
+            type: "integer",
+            nullable: true,
+            description: "Exact project id when already known from a previous tool result in this conversation.",
+          },
+          project_name: {
+            type: "string",
+            nullable: true,
+            description: "Project name as said by the user in this or an earlier turn (including typos/abbreviations). Used to find the project without tags or thread scope.",
+          },
+          url: {
+            type: "string",
+            nullable: true,
+            description: "Website URL to extract from. When provided, also updates the project's project_url. When omitted, uses the existing project_url.",
+          },
+          replace_all: {
+            type: "boolean",
+            nullable: true,
+            description: "When true, discard existing brand overrides and replace the full kit. Default false.",
+          },
+        },
+        required: [],
       },
     },
   },
@@ -1457,13 +1491,14 @@ const TOOLS = [
     type: "function",
     function: {
       name: "ai_start_artifact_build",
-      description: "Start a durable, cancellable and parallel artifact build. Decide the minimum useful number of artifacts for the current mission. Keep one deliverable in one artifact; use separate artifacts when format, language, channel, source dependency, approval or publication lifecycle differs. Do not split article sections into separate artifacts. To improve/rewrite an existing tagged artifact, set artifact_id + operation=update and leave source_artifact_id/source_handle null (in-place new version). Only set source_* when creating a DIFFERENT derived artifact. Existing channels/languages are optional artifact metadata. Add a concise metadata.reason for each artifact so the live build monitor can show why it was created separately. A chat-owned artifact may have task_id=null and can later be attached with ai_attach_artifact_to_task. The backend creates exact artifact identities, dependencies, versions and work units.",
+      description: "Start a durable, cancellable and parallel artifact build when the user needs a lasting workspace deliverable (not for every chat answer). Decide the minimum useful number of artifacts for the current mission — zero is valid when a chat reply is enough. Keep one deliverable in one artifact; use separate artifacts when format, language, channel, source dependency, approval or publication lifecycle differs. Do not split article sections into separate artifacts. To improve/rewrite an existing tagged artifact, set artifact_id + operation=update and leave source_artifact_id/source_handle null (in-place new version). Only set source_* when creating a DIFFERENT derived artifact. Existing channels/languages are optional artifact metadata. Add a concise metadata.reason for each artifact so the live build monitor can show why it was created separately. A chat-owned artifact may have task_id=null and can later be attached with ai_attach_artifact_to_task. The backend creates exact artifact identities, dependencies, versions and work units.",
       parameters: {
         type: "object",
         additionalProperties: false,
         properties: {
           request_text: { type: "string" },
           shared_context: { type: ["string", "null"] },
+          project_name: { type: ["string", "null"], description: "Optional project/brand name mentioned by the user (e.g. Articulate). Backend fuzzy-resolves a visible project and attaches project_id for creates when no task owner is set, so brand_kit can drive media." },
           concurrency_limit: { type: "integer", minimum: 1, maximum: 8 },
           artifacts: {
             type: "array",
@@ -1475,7 +1510,8 @@ const TOOLS = [
               properties: {
                 handle: { type: "string", description: "Unique mission-local handle such as article_en or video_script_pt." },
                 task_id: { type: ["integer", "null"], description: "Optional task owner for creates. For operation=update with artifact_id, omit — ownership is resolved from the existing artifact. Do NOT copy ambient/open center-pane task_id unless the user tagged that task or asked to create for that task." },
-                project_id: { type: ["integer", "null"], description: "Optional project owner for creates when the artifact should not belong to a task. For operation=update with artifact_id, omit — do not pass ambient thread/project scope project_id (causes artifact_target_not_in_project on task-owned artifacts)." },
+                project_id: { type: ["integer", "null"], description: "Optional project owner for creates when the artifact should not belong to a task. When the user names a brand/client, pass the project_id from read_project (or project_name) so brand_kit is used. For operation=update with artifact_id, omit ambient thread/project scope project_id (causes artifact_target_not_in_project on task-owned artifacts)." },
+                project_name: { type: ["string", "null"], description: "Optional project/brand name for creates when project_id is unknown; backend resolves a visible project." },
                 artifact_id: { type: ["string", "null"], description: "Exact existing artifact UUID for an in-place update; null for creation. When set with operation=update, do not also set source_artifact_id/source_handle to the same artifact." },
                 operation: { type: "string", enum: ["create", "update", "translate", "adapt", "transcribe", "summarize", "merge", "generate"] },
                 artifact_type: { type: "string", description: "Examples: article, script, caption, transcript, research, document, image, images, article_with_images, carousel, presentation, video. For social copy + carousel/slide SCRIPT (headlines and captions only), use document or caption — not carousel. Use carousel/presentation only when the user asks to GENERATE visual slide images/assets. Use image/images/video for pure media generation. Set media_items only when visuals must be generated now." },
@@ -1728,6 +1764,7 @@ function logToolEvent(event: string, payload: Record<string, unknown> = {}) {
 
 const STREAM_STATUS_PREFIX = "__AI_STATUS__";
 const STREAM_EXECUTION_TRACE_PREFIX = "__AI_EXECUTION_TRACE__";
+const STREAM_CHANGE_PREVIEW_PREFIX = "__AI_CHANGE_PREVIEW__";
 
 
 
@@ -2162,9 +2199,17 @@ function buildArtifactOnlySystemPrompt(args: {
     task_id?: number | null;
     project_id?: number | null;
   }>;
+  taggedBrandTemplates?: Array<{
+    template_id: string;
+    title: string | null;
+    project_id: number | null;
+    notes?: string | null;
+    asset_count?: number | null;
+  }>;
 }) {
   const selectedPrompt = buildSelectedArtifactContextPrompt(args.selectedArtifactContext);
   const recentArtifacts = Array.isArray(args.recentThreadArtifacts) ? args.recentThreadArtifacts : [];
+  const taggedBrandTemplates = Array.isArray(args.taggedBrandTemplates) ? args.taggedBrandTemplates : [];
   const ambient = args.ambientContext ?? null;
   const ambientArtifactHint = ambient?.center_artifact_id
     ? {
@@ -2175,17 +2220,21 @@ function buildArtifactOnlySystemPrompt(args: {
   return [
     "You are the AI workspace assistant.",
     "Use the complete user request, recent conversation, explicit scope and factual tool results to understand intent semantically. Do not depend on exact spelling, tags, UI selection, language-specific keywords or literal aliases.",
-    "ARTIFACT ARCHITECTURE: all generated or edited deliverables are artifacts. An artifact can contain structured text, one or several images, mixed text and media, audio, video, presentations, files or datasets. System and project libraries contain reusable planning templates only. They guide artifact structure but are never output records.",
-    "SOURCE ARCHITECTURE: sources are inputs, not outputs. A source may belong to a task, project or AI thread, or remain unattached. Import URLs, uploaded files, pasted text and research with source tools; then use those sources when planning or building artifacts.",
+    "DELIVERABLES: Artifacts are durable workspace records (structured text, media, presentations, files, datasets). Create or update an artifact when the user needs a lasting deliverable they can open, version, attach to a task/project, or download later. Do NOT create an artifact for every content-shaped request — short answers, clarifications, comparisons and one-off chat replies may stay in chat. Do NOT refuse artifacts when they are clearly the right durable home. When the user asks to adapt a Word/template file into a downloadable document, an artifact document is appropriate if they can download/export it afterwards; prefer that over inventing a separate ad-hoc file pipeline, and mention download/export when relevant. System/project libraries contain reusable planning templates only — never treat them as output records.",
+    "SOURCE ARCHITECTURE: sources are inputs, not outputs. A source may belong to a task, project or AI thread, or remain unattached. Import URLs, uploaded files, pasted text and research with source tools; then use those sources when answering or when building artifacts.",
+    "LANGUAGE: Match conversational replies and clarifications to the language of the user's latest message. For deliverable content adapted from sources, templates or URLs, keep the language of that source material unless the user explicitly asks to translate or rewrite in another language.",
     "Artifacts may belong to a task, project or AI thread. task_id, channel_id and language_id are optional metadata. Do not ask for any of them unless the user's actual goal requires that choice.",
     "FACTUAL CONTEXT ONLY: CURRENT SCOPE, AMBIENT UI CONTEXT, OPEN CENTER-PANE ARTIFACT, FACTUAL UI/THREAD TARGETS, RECENT THREAD ARTIFACTS and SELECTED ARTIFACT CONTEXT are facts about what is open, tagged or recently touched. Interpret the user's actual request against that context. Do not treat any of those facts as an automatic instruction to create, update, attach ownership, or skip a response.",
     "OPEN CENTER-PANE TASK / PROJECT: ambient center_task_id or scoped project_id may reflect an open pane. Ownership for creates/updates should follow the user request and tool facts (including ai_attach_artifact_to_task when attaching later), not the mere presence of an open pane.",
     "COPY + CAROUSEL SCRIPT: when the user asks for post copy plus a carousel/slide breakdown (headline + short line per slide), create ONE document/caption artifact with the ready-to-publish copy and the slide script in text. Do NOT use artifact_type=carousel and do NOT set media_items unless they explicitly ask to generate the slide images/visuals.",
-    "For a content request, decide whether to create/update one artifact or several. Use separate artifacts when they have independent formats, languages, publication lifecycles, tool requirements or version histories. Use depends_on_handles/source_handle for dependencies so independent artifacts can build in parallel.",
+    "When an artifact is warranted, decide whether to create/update one artifact or several. Use separate artifacts when they have independent formats, languages, publication lifecycles, tool requirements or version histories. Use depends_on_handles/source_handle for dependencies so independent artifacts can build in parallel.",
     "When updating an existing artifact, use ai_start_artifact_build with artifact_id + operation=update (leave source_artifact_id/source_handle null). Use source_* only when creating a different derived artifact. Do not invent a second deliverable when the request is clearly about an existing one already identified in context.",
     "Task-level SEO keywords (keyword, secondary_keywords) live on the task via ai_update_task_fields / ai_create_task and apply to every artifact under that task. Use them for pure SEO keyword edits. meta_title / meta_description / h1 / h2 are separate task SEO fields.",
     "Tags and ambient UI facts are optional context. Users often name the project, task or deliverable in plain language with no tags. Resolve those names with tools when needed.",
-    "When project_id is missing from CURRENT SCOPE / TARGETS but the user names a client, brand, website or blog (e.g. Dimas): call list_visible_projects, pick the best semantic match, then read_project. Ask which project only when multiple candidates remain equally plausible.",
+    "When project_id is missing from CURRENT SCOPE / TARGETS but the user names a client, brand, website or blog (e.g. Dimas, Articulate): call list_visible_projects, pick the best semantic match, then read_project. Ask which project only when multiple candidates remain equally plausible.",
+    "BRAND KIT: when the user asks to extract/import/update brand colors, fonts, logo or visual identity for a project, call extract_project_brand with project_name (and url if given). Accept imperfect names/typos. If the project was named earlier in this conversation, reuse that project_name or the project_id from a prior tool result — do not ask again unless ambiguous. Do not require tags, an AI-thread project association, or a tagged task. If the tool returns needs_clarification/candidates, ask which project. Do not invent brand tokens.",
+    "ON-BRAND CREATIVES: when generating ads/images/video for a named brand/client that matches a visible project, resolve that project (list_visible_projects + read_project) and pass project_id (or project_name) on ai_start_artifact_build creates so the worker receives brand_kit. Prefer the project's brand_kit (colors, fonts, logo, and layout templates) over web/training knowledge of well-known brands. Layout templates include visual image references — the media worker attaches those images multimodally when generating creatives; you do not need to re-upload them. Use web knowledge only to fill gaps the kit does not cover — never invent conflicting brand tokens when a non-empty kit exists.",
+    "BRAND LAYOUT TEMPLATES: when asked whether a project has visual/layout templates, call read_project and inspect brand_layout_templates (and brand_kit.design_templates). Do not conclude they are missing based on empty artifacts or attachments lists — templates are stored on the project Brand kit. When TAGGED BRAND TEMPLATES are present, treat those specific templates as the user's preferred layout references for this turn; call read_project for the tagged project_id to load full visual details.",
     "For task/project/user names, inspect factual candidates with read/search tools and choose the best semantic match. Ask only when the candidates are genuinely ambiguous.",
     "SELECTED ARTIFACT CONTEXT: when present, it identifies an artifact (and optional span/region). Pass the full selection object unchanged on updates when relevant. It is location/intent context only — not a lock to that span. The artifact worker sees the full document and should make any related edits needed for coherence. Act according to the user request.",
     "IN-PLACE UPDATE OWNERSHIP: for operation=update with artifact_id, omit ambient project_id/task_id unless they are already the artifact's own task/project. Do not attach a project_id just because the thread is scoped to a project — that fails with artifact_target_not_in_project for task-owned artifacts.",
@@ -2202,6 +2251,9 @@ function buildArtifactOnlySystemPrompt(args: {
       ? `OPEN CENTER-PANE ARTIFACT: ${JSON.stringify(ambientArtifactHint)}`
       : null,
     `FACTUAL UI/THREAD TARGETS: ${JSON.stringify(args.targets ?? [])}`,
+    taggedBrandTemplates.length > 0
+      ? `TAGGED BRAND TEMPLATES: ${JSON.stringify(taggedBrandTemplates)}`
+      : null,
     recentArtifacts.length > 0
       ? `RECENT THREAD ARTIFACTS: ${JSON.stringify(recentArtifacts)}`
       : null,
@@ -2421,6 +2473,75 @@ function compactToolValue(value: any, depth = 0): any {
   return String(value);
 }
 
+async function consumeOpenAiChatCompletionStream(args: {
+  response: Response;
+  onContentDelta?: (delta: string) => void;
+}): Promise<{
+  content: string;
+  toolCalls: Array<{ id: string; type: string; function: { name: string; arguments: string } }>;
+  usage: any;
+}> {
+  const reader = args.response.body?.getReader();
+  if (!reader) throw new Error("openai_stream_unavailable");
+  const decoder = new TextDecoder();
+  let buffer = "";
+  let content = "";
+  let usage: any = null;
+  let sawToolCalls = false;
+  const toolCallsByIndex = new Map<number, { id: string; type: string; function: { name: string; arguments: string } }>();
+
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    buffer += decoder.decode(value, { stream: true });
+    const lines = buffer.split("\n");
+    buffer = lines.pop() ?? "";
+    for (const rawLine of lines) {
+      const line = rawLine.trim();
+      if (!line.startsWith("data:")) continue;
+      const data = line.slice(5).trim();
+      if (!data || data === "[DONE]") continue;
+      let chunk: any = null;
+      try { chunk = JSON.parse(data); } catch { continue; }
+      if (chunk?.usage) usage = chunk.usage;
+      const delta = chunk?.choices?.[0]?.delta ?? {};
+      if (typeof delta.content === "string" && delta.content) {
+        content += delta.content;
+        // Pure text rounds stream live. Once tool-call deltas appear, keep
+        // buffering for the transcript but stop painting into the chat bubble.
+        if (!sawToolCalls) args.onContentDelta?.(delta.content);
+      }
+      if (Array.isArray(delta.tool_calls) && delta.tool_calls.length > 0) {
+        sawToolCalls = true;
+        for (const toolDelta of delta.tool_calls) {
+          const index = Number(toolDelta?.index ?? 0);
+          const existing = toolCallsByIndex.get(index) ?? {
+            id: "",
+            type: "function",
+            function: { name: "", arguments: "" },
+          };
+          if (typeof toolDelta?.id === "string" && toolDelta.id) existing.id = toolDelta.id;
+          if (typeof toolDelta?.type === "string" && toolDelta.type) existing.type = toolDelta.type;
+          if (typeof toolDelta?.function?.name === "string" && toolDelta.function.name) {
+            existing.function.name = toolDelta.function.name;
+          }
+          if (typeof toolDelta?.function?.arguments === "string") {
+            existing.function.arguments += toolDelta.function.arguments;
+          }
+          toolCallsByIndex.set(index, existing);
+        }
+      }
+    }
+  }
+
+  const toolCalls = [...toolCallsByIndex.entries()]
+    .sort((a, b) => a[0] - b[0])
+    .map(([, value]) => value)
+    .filter((value) => value.id && value.function.name);
+
+  return { content, toolCalls, usage };
+}
+
 function toolResultForModel(result: any) {
   if (String(result?.name ?? "") === "ai_read_artifact" && result?.ok) {
     const full = JSON.stringify({
@@ -2485,6 +2606,7 @@ async function runArtifactConversation(args: {
   let clarification: any | null = null;
   let assistantText = "";
   let usage: any = null;
+  let markedFirstToken = false;
 
   for (let round = 0; round < 10; round++) {
     const payload: any = {
@@ -2493,6 +2615,8 @@ async function runArtifactConversation(args: {
       tools: args.tools,
       tool_choice: "auto",
       parallel_tool_calls: true,
+      stream: true,
+      stream_options: { include_usage: true },
     };
     const response = await fetchOpenAi("https://api.openai.com/v1/chat/completions", {
       method: "POST",
@@ -2501,21 +2625,48 @@ async function runArtifactConversation(args: {
       signal: args.ctx?.abort_signal ?? undefined,
     }, { quota: args.ctx?.ai_token_quota, stage: `chat_round_${round + 1}`, defaultMaxCompletionTokens: 10000 });
     if (!response.ok) throw new Error(`openai_chat_failed:${response.status}:${await response.text()}`);
-    const data = await response.json();
-    usage = mergeUsage(usage, data?.usage);
-    const choice = data?.choices?.[0]?.message ?? {};
-    const toolCalls = Array.isArray(choice.tool_calls) ? choice.tool_calls : [];
-    const content = typeof choice.content === "string" ? choice.content : "";
+    const streamed = await consumeOpenAiChatCompletionStream({
+      response,
+      onContentDelta: (delta) => {
+        if (!markedFirstToken) {
+          markedFirstToken = true;
+          const runId = cleanUuidOrNull(args.ctx?.ai_run_id);
+          if (runId) {
+            void updateAiChatRun(args.supabaseService, runId, { mark_first_token: true });
+          }
+        }
+        args.onEvent?.({ type: "assistant_text_delta", delta });
+      },
+    });
+    usage = mergeUsage(usage, streamed.usage);
+    const toolCalls = streamed.toolCalls;
+    const content = streamed.content;
 
     if (toolCalls.length === 0) {
       assistantText = content.trim();
       break;
     }
 
+    // A rare content+tools round may have painted early text; clear the bubble
+    // before tool status so the final reply does not append onto that draft.
+    if (content.trim()) {
+      args.onEvent?.({ type: "assistant_text_reset" });
+    }
+
     conversation.push({ role: "assistant", content: content || null, tool_calls: toolCalls });
-    for (const toolCall of toolCalls) {
+    for (let toolIndex = 0; toolIndex < toolCalls.length; toolIndex++) {
+      const toolCall = toolCalls[toolIndex];
       const toolName = String(toolCall?.function?.name ?? "");
-      args.onEvent?.({ type: "tool_started", phase: "started", round, tool_name: toolName, text: `Using ${toolName}…` });
+      const toolCallId = typeof toolCall?.id === "string" ? toolCall.id : "";
+      args.onEvent?.({
+        type: "tool_started",
+        phase: "started",
+        round,
+        tool_name: toolName,
+        tool_call_id: toolCallId || null,
+        tool_index: toolIndex,
+        text: `Using ${toolName}…`,
+      });
       const result = await executeToolCall({
         db: args.db,
         ctx: args.ctx,
@@ -2528,14 +2679,44 @@ async function runArtifactConversation(args: {
         attachments: args.attachments,
       });
       toolResults.push(result);
-      args.onEvent?.({ type: "tool_finished", phase: result?.ok ? "completed" : "failed", round, tool_name: toolName, ok: !!result?.ok, text: result?.ok ? `Finished ${toolName}.` : `${toolName} failed.` });
+      args.onEvent?.({
+        type: "tool_finished",
+        phase: result?.ok ? "completed" : "failed",
+        round,
+        tool_name: toolName,
+        tool_call_id: toolCallId || null,
+        tool_index: toolIndex,
+        ok: !!result?.ok,
+        text: result?.ok ? `Finished ${toolName}.` : `${toolName} failed.`,
+      });
       conversation.push({
         role: "tool",
         tool_call_id: toolCall.id,
         content: toolResultForModel(result),
       });
       const buildId = cleanUuidOrNull(result?.data?.build_id ?? result?.data?.build?.id);
-      if (buildId) buildIds.push(buildId);
+      if (buildId) {
+        buildIds.push(buildId);
+        // Register the live build card as soon as dispatch succeeds — do not wait for message_output.
+        const artifactTitle =
+          (Array.isArray(result?.data?.artifacts) && result.data.artifacts[0]?.title)
+          || result?.data?.title
+          || result?.data?.artifact?.title
+          || null;
+        args.onEvent?.({
+          type: "ai_change_preview",
+          phase: result?.ok === false ? "failed" : "started",
+          ok: result?.ok !== false,
+          change_id: buildId,
+          tool_name: toolName || "ai_start_artifact_build",
+          entity_type: "ai_orchestrated_build",
+          entity_id: buildId,
+          build_id: buildId,
+          title: typeof artifactTitle === "string" ? artifactTitle : null,
+          summary: result?.ok === false ? "Artifact build failed to start" : "Artifact build started",
+          round,
+        });
+      }
       if (result?.requires_clarification === true || result?.data?.clarification_request) {
         clarification = result?.data?.clarification_request ?? null;
       }
@@ -2632,8 +2813,59 @@ function normalizeRequestTargets(values: any[]) {
     if (!allowed.has(value.target_kind)) return false;
     if (value.target_kind === "artifact") return !!value.artifact_id;
     if (value.target_kind === "source") return !!value.source_id;
+    if (value.target_kind === "attachment") return !!value.attachment_id;
     return true;
   });
+}
+
+
+function taggedBrandTemplateContext(body: any) {
+  const refs = Array.isArray(body?.tagged_brand_template_refs) ? body.tagged_brand_template_refs : [];
+  const ids = (Array.isArray(body?.tagged_brand_template_ids) ? body.tagged_brand_template_ids : [])
+    .map((value: unknown) => String(value ?? "").trim())
+    .filter(Boolean);
+  const seen = new Set<string>();
+  const out: Array<{
+    template_id: string;
+    title: string | null;
+    project_id: number | null;
+    notes?: string | null;
+    asset_count?: number | null;
+  }> = [];
+  for (const ref of refs) {
+    const templateId = String(ref?.template_id ?? ref?.id ?? "").trim();
+    if (!templateId || seen.has(templateId)) continue;
+    seen.add(templateId);
+    out.push({
+      template_id: templateId,
+      title: normalizeOptionalString(ref?.title ?? ref?.label, 500),
+      project_id: positiveInt(ref?.project_id),
+      notes: normalizeOptionalString(ref?.notes, 2000),
+      asset_count: positiveInt(ref?.asset_count),
+    });
+  }
+  for (const templateId of ids) {
+    if (seen.has(templateId)) continue;
+    seen.add(templateId);
+    out.push({
+      template_id: templateId,
+      title: null,
+      project_id: null,
+    });
+  }
+  return out;
+}
+
+function taggedBrandTemplateProjectTargets(body: any) {
+  return taggedBrandTemplateContext(body)
+    .map((ref) => ({
+      target_kind: "project",
+      project_id: ref.project_id,
+      source: "explicit_tag",
+      allow_write: false,
+      label: ref.title,
+    }))
+    .filter((ref: any) => !!ref.project_id);
 }
 
 
@@ -2722,7 +2954,9 @@ async function handleAiChatRequest(req: Request) {
       ...(Array.isArray(body.targets) ? body.targets : []),
       ...taggedArtifactTargets(body),
       ...taggedSourceTargets(body),
+      ...taggedBrandTemplateProjectTargets(body),
     ]);
+    const taggedBrandTemplates = taggedBrandTemplateContext(body);
     const attachmentIds = (Array.isArray(body.attachment_ids) ? body.attachment_ids : []).map(cleanUuidOrNull).filter(Boolean);
     const clientRequestId = cleanUuidOrNull(body.client_request_id) ?? crypto.randomUUID();
     const requestHash = await sha256Hex({ thread_id: threadId, message: requestText, display_message: displayText, scope, targets, selected_artifact_context: selectedArtifactContext, attachment_ids: attachmentIds, clarification_response: body.clarification_response ?? null });
@@ -2779,6 +3013,7 @@ async function handleAiChatRequest(req: Request) {
       targets,
       ambientContext,
       recentThreadArtifacts,
+      taggedBrandTemplates,
     });
     const requestAttachments = Array.isArray(body.attachments) ? body.attachments : [];
     const currentContent = await buildCurrentUserMessageContent(supabaseService, requestText, requestAttachments);
@@ -2826,14 +3061,49 @@ async function handleAiChatRequest(req: Request) {
     const stream = new ReadableStream({
       async start(controller) {
         let sequence = Date.now();
+        let clearedStatusForText = false;
         const emitStatus = (event: any) => {
           sequence += 1;
           const payload = { sequence, emitted_at: new Date().toISOString(), ...event };
+          const eventType = typeof payload.type === "string" ? payload.type : "";
+          if (eventType === "assistant_text_reset") {
+            clearedStatusForText = false;
+            controller.enqueue(encoder.encode(`${STREAM_STATUS_PREFIX}${JSON.stringify({
+              type: "assistant_text_reset",
+              phase: "reset",
+              sequence,
+              emitted_at: new Date().toISOString(),
+            })}\n`));
+            return;
+          }
+          if (eventType === "assistant_text_delta") {
+            const delta = typeof payload.delta === "string" ? payload.delta : "";
+            if (!delta) return;
+            if (!clearedStatusForText) {
+              clearedStatusForText = true;
+              sequence += 1;
+              controller.enqueue(encoder.encode(`${STREAM_STATUS_PREFIX}${JSON.stringify({
+                type: "status",
+                phase: "streaming",
+                text: "",
+                sequence,
+                emitted_at: new Date().toISOString(),
+              })}\n`));
+            }
+            // Plain text bytes — consumeTextStream paints these as they arrive.
+            controller.enqueue(encoder.encode(delta));
+            return;
+          }
+          if (eventType === "ai_change_preview") {
+            controller.enqueue(encoder.encode(`${STREAM_CHANGE_PREVIEW_PREFIX}${JSON.stringify(payload)}\n`));
+            return;
+          }
           controller.enqueue(encoder.encode(`${STREAM_STATUS_PREFIX}${JSON.stringify(payload)}\n`));
           const toolName = typeof payload.tool_name === "string" ? payload.tool_name.trim() : "";
-          const eventType = typeof payload.type === "string" ? payload.type : "";
           if (toolName && (eventType === "tool_started" || eventType === "tool_finished")) {
             const round = Number.isFinite(Number(payload.round)) ? Number(payload.round) : 0;
+            const toolCallId = typeof payload.tool_call_id === "string" ? payload.tool_call_id.trim() : "";
+            const toolIndex = Number.isFinite(Number(payload.tool_index)) ? Number(payload.tool_index) : null;
             const ok = payload.ok !== false;
             const phase =
               eventType === "tool_started"
@@ -2857,16 +3127,27 @@ async function handleAiChatRequest(req: Request) {
                   : ok
                     ? `Finished ${toolName}.`
                     : `${toolName} failed.`;
+            const stepId = toolCallId
+              ? `tool:${round}:${toolCallId}`
+              : toolIndex != null
+                ? `tool:${round}:${toolName}:${toolIndex}`
+                : `tool:${round}:${toolName}`;
             sequence += 1;
             controller.enqueue(encoder.encode(`${STREAM_EXECUTION_TRACE_PREFIX}${JSON.stringify({
               type: "execution_trace",
               sequence,
               emitted_at: new Date().toISOString(),
-              step_id: `tool:${round}:${toolName}`,
+              step_id: stepId,
               phase,
               category,
               text,
-              details: { tool_name: toolName, round, source: "ai_status" },
+              details: {
+                tool_name: toolName,
+                round,
+                ...(toolCallId ? { tool_call_id: toolCallId } : {}),
+                ...(toolIndex != null ? { tool_index: toolIndex } : {}),
+                source: "ai_status",
+              },
             })}\n`));
           }
         };
@@ -2888,7 +3169,9 @@ async function handleAiChatRequest(req: Request) {
         }
       },
     });
-    return new Response(stream, { status: 200, headers: { ...corsHeaders, "Content-Type": "text/event-stream; charset=utf-8", "Cache-Control": "no-cache, no-transform", Connection: "keep-alive", ...(activeRunId ? { "X-AI-Run-Id": activeRunId } : {}) } });
+    // text/plain (not event-stream): the body uses __AI_*__ markers + raw text
+    // deltas. Labeling it as SSE makes the browser client buffer/drop chunks.
+    return new Response(stream, { status: 200, headers: { ...corsHeaders, "Content-Type": "text/plain; charset=utf-8", "Cache-Control": "no-cache, no-transform", Connection: "keep-alive", "X-Content-Type-Options": "nosniff", ...(activeRunId ? { "X-AI-Run-Id": activeRunId } : {}) } });
   } catch (error) {
     const publicError = publicRunError(error);
     if (activeRunId && supabaseService) await updateAiChatRun(supabaseService, activeRunId, { status: publicError.code === "cancelled" ? "cancelled" : "failed", error_code: publicError.code, error_message: publicError.message });

@@ -7,11 +7,12 @@ import {
   GripVertical,
   Link2,
   Loader2,
+  Maximize2,
   MessageSquarePlus,
 } from "lucide-react"
 import { useQueryClient } from "@tanstack/react-query"
 import { cn } from "../../app/lib/utils"
-import type { TaskArtifact } from "../../app/lib/artifacts/artifact-types"
+import type { TaskArtifact, SelectedArtifactContext } from "../../app/lib/artifacts/artifact-types"
 import {
   extractArtifactAssets,
   extractArtifactBlocks,
@@ -33,7 +34,11 @@ import {
 import { setArtifactAttachDragData } from "./artifact-attach-dnd"
 import { ArtifactDocumentRenderer } from "./artifact-document-renderer"
 import { ArtifactRichDiffBody } from "./artifact-rich-diff-body"
-import { useArtifactSelectionStore } from "./artifact-selection"
+import { openArtifactSelectionInAiPane } from "./open-artifact-selection-in-ai-pane"
+import {
+  ArtifactMediaAnnotateDialog,
+  artifactHasAnnotatableMedia,
+} from "./artifact-media-annotate-dialog"
 
 function phaseLabel(phase: AiBuildArtifactPreviewEntry["phase"] | "ready"): string {
   switch (phase) {
@@ -100,6 +105,8 @@ export type ArtifactCardProps = {
   compact?: boolean
   /** AI chat live preview: cap body height and scroll (component-edit style). */
   chatPreview?: boolean
+  /** Open full artifact in the center pane (Maximize). */
+  onOpen?: () => void
 }
 
 /**
@@ -118,9 +125,9 @@ export function ArtifactCard({
   onComment,
   compact = false,
   chatPreview = false,
+  onOpen,
 }: ArtifactCardProps) {
   const queryClient = useQueryClient()
-  const setPendingSelection = useArtifactSelectionStore((s) => s.setPendingSelection)
   const [isAttaching, setIsAttaching] = useState(false)
   const [attachError, setAttachError] = useState<string | null>(null)
   const [taskIdInput, setTaskIdInput] = useState(
@@ -128,6 +135,7 @@ export function ArtifactCard({
   )
   const [showAttachForm, setShowAttachForm] = useState(false)
   const [showDiff, setShowDiff] = useState(true)
+  const [annotateOpen, setAnnotateOpen] = useState(false)
 
   const phase = livePreview?.phase ?? "ready"
   const isLive = !!livePreview && phase !== "saved" && phase !== "failed"
@@ -174,6 +182,15 @@ export function ArtifactCard({
   /** Chat/project-unbound (or project-only) cards can be dragged onto an open task/project. */
   const canDragAttach =
     allowAttachToTask && displayArtifact.task_id == null && Boolean(displayArtifact.id)
+
+  const attachSelection = (context: SelectedArtifactContext) => {
+    void openArtifactSelectionInAiPane({
+      context,
+      taskId: displayArtifact.task_id ?? null,
+      projectId: displayArtifact.project_id ?? null,
+      channelId: displayArtifact.channel_id ?? null,
+    })
+  }
 
   const beforeText = useMemo(() => {
     return artifactDiffPlainFromContent(
@@ -243,6 +260,19 @@ export function ArtifactCard({
     if (blocks.length > 0) return true
     return Boolean(displayArtifact.content_text?.trim())
   }, [displayArtifact.content_json, displayArtifact.asset_data, displayArtifact.content_text])
+
+  const hasAnnotatableMedia = useMemo(
+    () => artifactHasAnnotatableMedia(displayArtifact),
+    [displayArtifact],
+  )
+
+  const handleExpand = () => {
+    if (hasAnnotatableMedia) {
+      setAnnotateOpen(true)
+      return
+    }
+    onOpen?.()
+  }
 
   const handleAttach = async () => {
     const taskId = Number(taskIdInput)
@@ -314,17 +344,33 @@ export function ArtifactCard({
           </p>
         </div>
         <div className="flex shrink-0 flex-col items-end gap-1">
-          {diffStats.added > 0 || diffStats.removed > 0 ? (
-            <PreviewDiffCharStats
-              added={diffStats.added}
-              removed={diffStats.removed}
-              canToggle={canShowDiff}
-              onClick={() => {
-                if (!canShowDiff) return
-                setShowDiff((value) => !value)
-              }}
-            />
-          ) : null}
+          <div className="flex items-center gap-1">
+            {onOpen || hasAnnotatableMedia ? (
+              <button
+                type="button"
+                onClick={(event) => {
+                  event.stopPropagation()
+                  handleExpand()
+                }}
+                className="inline-flex h-7 w-7 items-center justify-center rounded-md text-gray-500 transition-colors hover:bg-gray-100 hover:text-gray-800"
+                aria-label="Expand artifact"
+                title="Expand"
+              >
+                <Maximize2 className="h-3.5 w-3.5" />
+              </button>
+            ) : null}
+            {diffStats.added > 0 || diffStats.removed > 0 ? (
+              <PreviewDiffCharStats
+                added={diffStats.added}
+                removed={diffStats.removed}
+                canToggle={canShowDiff}
+                onClick={() => {
+                  if (!canShowDiff) return
+                  setShowDiff((value) => !value)
+                }}
+              />
+            ) : null}
+          </div>
           {phase === "failed" || isLive || phase === "saved" ? (
             <span
               className={cn(
@@ -383,8 +429,9 @@ export function ArtifactCard({
             ) : (
               <ArtifactDocumentRenderer
                 artifact={displayArtifact}
+                onOpenFullscreen={handleExpand}
                 onSelectImagePoint={({ attachmentId, x, y }) => {
-                  setPendingSelection({
+                  attachSelection({
                     source_type: "task_artifact",
                     artifact_id: displayArtifact.id,
                     artifact_version_number: displayArtifact.current_version,
@@ -396,7 +443,7 @@ export function ArtifactCard({
                   })
                 }}
                 onSelectImageRect={({ attachmentId, x, y, width, height }) => {
-                  setPendingSelection({
+                  attachSelection({
                     source_type: "task_artifact",
                     artifact_id: displayArtifact.id,
                     artifact_version_number: displayArtifact.current_version,
@@ -410,7 +457,7 @@ export function ArtifactCard({
                   })
                 }}
                 onSelectVideoTime={({ attachmentId, timeStart, timeEnd }) => {
-                  setPendingSelection({
+                  attachSelection({
                     source_type: "task_artifact",
                     artifact_id: displayArtifact.id,
                     artifact_version_number: displayArtifact.current_version,
@@ -422,7 +469,7 @@ export function ArtifactCard({
                   })
                 }}
                 onSelectAsset={(attachmentId) => {
-                  setPendingSelection({
+                  attachSelection({
                     source_type: "task_artifact",
                     artifact_id: displayArtifact.id,
                     artifact_version_number: displayArtifact.current_version,
@@ -454,7 +501,7 @@ export function ArtifactCard({
                 <ArtifactDocumentRenderer
                   artifact={displayArtifact}
                   onSelectImagePoint={({ attachmentId, x, y }) => {
-                    setPendingSelection({
+                    attachSelection({
                       source_type: "task_artifact",
                       artifact_id: displayArtifact.id,
                       artifact_version_number: displayArtifact.current_version,
@@ -466,7 +513,7 @@ export function ArtifactCard({
                     })
                   }}
                   onSelectImageRect={({ attachmentId, x, y, width, height }) => {
-                    setPendingSelection({
+                    attachSelection({
                       source_type: "task_artifact",
                       artifact_id: displayArtifact.id,
                       artifact_version_number: displayArtifact.current_version,
@@ -480,7 +527,7 @@ export function ArtifactCard({
                     })
                   }}
                   onSelectVideoTime={({ attachmentId, timeStart, timeEnd }) => {
-                    setPendingSelection({
+                    attachSelection({
                       source_type: "task_artifact",
                       artifact_id: displayArtifact.id,
                       artifact_version_number: displayArtifact.current_version,
@@ -492,7 +539,7 @@ export function ArtifactCard({
                     })
                   }}
                   onSelectAsset={(attachmentId) => {
-                    setPendingSelection({
+                    attachSelection({
                       source_type: "task_artifact",
                       artifact_id: displayArtifact.id,
                       artifact_version_number: displayArtifact.current_version,
@@ -570,6 +617,11 @@ export function ArtifactCard({
           </div>
         </div>
       ) : null}
+      <ArtifactMediaAnnotateDialog
+        open={annotateOpen}
+        onOpenChange={setAnnotateOpen}
+        artifact={displayArtifact}
+      />
     </div>
   )
 }

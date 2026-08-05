@@ -134,6 +134,7 @@ function MediaBlock({
   onSelectImagePoint,
   onSelectImageRect,
   onSelectVideoTime,
+  onOpenFullscreen,
 }: {
   block: ArtifactBlock
   signed: SignedAttachmentUrl | null
@@ -150,6 +151,8 @@ function MediaBlock({
     timeStart: number
     timeEnd?: number | null
   }) => void
+  /** Double-click / expand opens the artifact full page for annotate + edit. */
+  onOpenFullscreen?: () => void
 }) {
   const attachmentId = typeof block.attachment_id === "string" ? block.attachment_id : null
   const mime = (signed?.record.mime_type || block.mime_type || "").toLowerCase()
@@ -171,44 +174,76 @@ function MediaBlock({
   if (isImage && href) {
     return (
       <figure data-block-id={block.id ?? undefined} data-attachment-id={attachmentId} className="space-y-1">
-        <button
-          type="button"
-          className="block w-full overflow-hidden rounded-md border border-gray-200 bg-white text-left"
-          onClick={(event) => {
-            if (!onSelectImagePoint) return
-            const rect = event.currentTarget.getBoundingClientRect()
-            const x = (event.clientX - rect.left) / Math.max(rect.width, 1)
-            const y = (event.clientY - rect.top) / Math.max(rect.height, 1)
-            onSelectImagePoint({
-              attachmentId,
-              x: Math.min(1, Math.max(0, x)),
-              y: Math.min(1, Math.max(0, y)),
-            })
-          }}
-          onDoubleClick={(event) => {
-            if (!onSelectImageRect) return
-            // Simple default region around the click (~20% box).
-            const rect = event.currentTarget.getBoundingClientRect()
-            const cx = (event.clientX - rect.left) / Math.max(rect.width, 1)
-            const cy = (event.clientY - rect.top) / Math.max(rect.height, 1)
-            const width = 0.2
-            const height = 0.2
-            onSelectImageRect({
-              attachmentId,
-              x: Math.min(1, Math.max(0, cx - width / 2)),
-              y: Math.min(1, Math.max(0, cy - height / 2)),
-              width,
-              height,
-            })
-          }}
-        >
-          <img
-            src={href}
-            alt={block.alt || signed?.record.alt_text || label}
-            loading="lazy"
-            className="block max-h-96 w-full object-contain"
-          />
-        </button>
+        <div className="group relative overflow-hidden rounded-md border border-gray-200 bg-white">
+          <button
+            type="button"
+            className="relative block w-full text-left"
+            title={
+              onOpenFullscreen
+                ? "Click to mark a point for Ask AI · Double-click to expand full page"
+                : "Click to mark a point · Double-click to mark a region · then ask AI in chat"
+            }
+            onClick={(event) => {
+              if (!onSelectImagePoint) return
+              const rect = event.currentTarget.getBoundingClientRect()
+              const x = (event.clientX - rect.left) / Math.max(rect.width, 1)
+              const y = (event.clientY - rect.top) / Math.max(rect.height, 1)
+              onSelectImagePoint({
+                attachmentId,
+                x: Math.min(1, Math.max(0, x)),
+                y: Math.min(1, Math.max(0, y)),
+              })
+            }}
+            onDoubleClick={(event) => {
+              event.preventDefault()
+              if (onOpenFullscreen) {
+                onOpenFullscreen()
+                return
+              }
+              if (!onSelectImageRect) return
+              // Simple default region around the click (~20% box).
+              const rect = event.currentTarget.getBoundingClientRect()
+              const cx = (event.clientX - rect.left) / Math.max(rect.width, 1)
+              const cy = (event.clientY - rect.top) / Math.max(rect.height, 1)
+              const width = 0.2
+              const height = 0.2
+              onSelectImageRect({
+                attachmentId,
+                x: Math.min(1, Math.max(0, cx - width / 2)),
+                y: Math.min(1, Math.max(0, cy - height / 2)),
+                width,
+                height,
+              })
+            }}
+          >
+            <img
+              src={href}
+              alt={block.alt || signed?.record.alt_text || label}
+              loading="lazy"
+              className="block max-h-96 w-full object-contain"
+            />
+            {onSelectImagePoint || onSelectImageRect || onOpenFullscreen ? (
+              <span className="pointer-events-none absolute bottom-2 left-2 rounded bg-black/65 px-2 py-1 text-[10px] font-medium text-white opacity-0 transition-opacity group-hover:opacity-100">
+                {onOpenFullscreen
+                  ? "Click point → Ask AI · Double-click to expand"
+                  : "Click point · double-click region → Ask AI"}
+              </span>
+            ) : null}
+          </button>
+          {onOpenFullscreen ? (
+            <button
+              type="button"
+              className="absolute right-2 top-2 z-10 rounded bg-black/65 px-2 py-1 text-[10px] font-medium text-white opacity-0 transition-opacity group-hover:opacity-100"
+              onClick={(event) => {
+                event.preventDefault()
+                event.stopPropagation()
+                onOpenFullscreen()
+              }}
+            >
+              Expand
+            </button>
+          ) : null}
+        </div>
         {block.caption ? <figcaption className="text-xs text-gray-500">{block.caption}</figcaption> : null}
       </figure>
     )
@@ -217,16 +252,36 @@ function MediaBlock({
   if (isVideo && href) {
     return (
       <figure data-block-id={block.id ?? undefined} data-attachment-id={attachmentId} className="space-y-1">
-        <video
-          src={href}
-          controls
-          className="max-h-96 w-full rounded-md border border-gray-200 bg-black"
-          onPause={(event) => {
-            if (!onSelectVideoTime) return
-            const current = event.currentTarget.currentTime
-            onSelectVideoTime({ attachmentId, timeStart: current, timeEnd: current })
-          }}
-        />
+        <div className="group relative">
+          <video
+            src={href}
+            controls
+            className="max-h-96 w-full rounded-md border border-gray-200 bg-black"
+            onDoubleClick={(event) => {
+              if (!onOpenFullscreen) return
+              event.preventDefault()
+              onOpenFullscreen()
+            }}
+            onPause={(event) => {
+              if (!onSelectVideoTime) return
+              const current = event.currentTarget.currentTime
+              onSelectVideoTime({ attachmentId, timeStart: current, timeEnd: current })
+            }}
+          />
+          {onOpenFullscreen ? (
+            <button
+              type="button"
+              className="absolute right-2 top-2 rounded bg-black/65 px-2 py-1 text-[10px] font-medium text-white opacity-0 transition-opacity group-hover:opacity-100"
+              onClick={(event) => {
+                event.preventDefault()
+                event.stopPropagation()
+                onOpenFullscreen()
+              }}
+            >
+              Expand
+            </button>
+          ) : null}
+        </div>
         {block.caption ? <figcaption className="text-xs text-gray-500">{block.caption}</figcaption> : null}
       </figure>
     )
@@ -325,6 +380,7 @@ export type ArtifactDocumentRendererProps = {
     timeEnd?: number | null
   }) => void
   onSelectAsset?: (attachmentId: string) => void
+  onOpenFullscreen?: () => void
 }
 
 /**
@@ -339,6 +395,7 @@ export function ArtifactDocumentRenderer({
   onSelectImageRect,
   onSelectVideoTime,
   onSelectAsset,
+  onOpenFullscreen,
 }: ArtifactDocumentRendererProps) {
   const blocks = useMemo(() => extractArtifactBlocks(artifact.content_json), [artifact.content_json])
   const assets = useMemo(() => extractArtifactAssets(artifact.asset_data), [artifact.asset_data])
@@ -423,6 +480,7 @@ export function ArtifactDocumentRenderer({
                 onSelectImagePoint={onSelectImagePoint}
                 onSelectImageRect={onSelectImageRect}
                 onSelectVideoTime={onSelectVideoTime}
+                onOpenFullscreen={onOpenFullscreen}
               />
             )
           case "image_gallery":

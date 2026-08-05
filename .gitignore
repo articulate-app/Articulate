@@ -37,3 +37,4 @@ next-env.d.ts
 # local review bundles (not part of the app)
 /ai-chat-frontend-review-context/
 /ai-chat-frontend-review-context.zip 
+.env*

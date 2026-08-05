@@ -5,7 +5,7 @@ const MENTION_CHIP_BASE =
 
 function resolveMentionChipKind(
   type: AiTagType,
-): "task" | "project" | "component" | "channel" | "user" | "artifact" | "source" | "neutral" {
+): "task" | "project" | "component" | "channel" | "user" | "artifact" | "source" | "brand_template" | "neutral" {
   if (type === "task" || type === "task_channel") return "task"
   if (type === "project") return "project"
   if (type === "component" || type === "task_component") return "component"
@@ -13,6 +13,7 @@ function resolveMentionChipKind(
   if (type === "user") return "user"
   if (type === "artifact") return "artifact"
   if (type === "source") return "source"
+  if (type === "brand_template") return "brand_template"
   return "neutral"
 }
 
@@ -33,6 +34,8 @@ export function getMentionChipClassName(tag: Pick<AiContextTag, "type">): string
       return `${MENTION_CHIP_BASE} bg-sky-50/90 px-1.5 text-sky-800 border border-sky-200/60`
     case "source":
       return `${MENTION_CHIP_BASE} bg-teal-50/90 px-1.5 text-teal-800 border border-teal-200/60`
+    case "brand_template":
+      return `${MENTION_CHIP_BASE} bg-orange-50/90 px-1.5 text-orange-900 border border-orange-200/70`
     default:
       return `${MENTION_CHIP_BASE} bg-gray-100 px-1.5 text-gray-700`
   }

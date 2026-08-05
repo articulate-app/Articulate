@@ -1,5 +1,11 @@
 import "jsr:@supabase/functions-js/edge-runtime.d.ts";
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
+import {
+  brandKitForAiFromProject,
+  collectBrandTemplateVisualRefs,
+  formatBrandKitForMediaPrompt,
+  type BrandTemplateVisualRef,
+} from "../_shared/project-brand-kit.ts";
 
 const SUPABASE_URL = Deno.env.get("SUPABASE_URL")!;
 const SUPABASE_ANON_KEY = Deno.env.get("SUPABASE_ANON_KEY")!;
@@ -7,9 +13,20 @@ const SUPABASE_SERVICE_ROLE_KEY = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!;
 const OPENAI_API_KEY = Deno.env.get("OPENAI_API_KEY")!;
 const OPENAI_IMAGE_MODEL = Deno.env.get("OPENAI_IMAGE_MODEL") || "gpt-image-2";
 const OPENAI_VIDEO_MODEL = Deno.env.get("OPENAI_VIDEO_MODEL") || "sora-2";
+const GEMINI_API_KEY = String(Deno.env.get("GEMINI_API_KEY") ?? "").trim();
+const GEMINI_IMAGE_MODEL = Deno.env.get("GEMINI_IMAGE_MODEL") || "gemini-2.5-flash-image";
 const REPLICATE_API_TOKEN = Deno.env.get("REPLICATE_API_TOKEN") || "";
 const REPLICATE_VIDEO_MODEL = Deno.env.get("REPLICATE_VIDEO_MODEL") || "";
 const MEDIA_PLAN_MODEL = Deno.env.get("OPENAI_ARTIFACT_MODEL") || Deno.env.get("OPENAI_MODEL_FAST") || "gpt-5.4-mini";
+const PUBLIC_MEDIA_BUCKET = "public-media";
+const MAX_BRAND_TEMPLATE_VISUALS = 6;
+const MAX_BRAND_TEMPLATE_BYTES = 8_000_000;
+/** Default image provider when the planner omits provider. Prefer Gemini when configured. */
+const DEFAULT_IMAGE_PROVIDER = (() => {
+  const configured = String(Deno.env.get("MEDIA_IMAGE_PROVIDER") ?? "").trim().toLowerCase();
+  if (configured === "gemini" || configured === "openai") return configured;
+  return GEMINI_API_KEY ? "gemini" : "openai";
+})();
 
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
@@ -42,6 +59,133 @@ function artifactType(value: unknown) { return String(value ?? "").trim().toLowe
 function isVideoType(type: string) { return ["video", "video_clip", "motion", "animation"].includes(type); }
 function isImageType(type: string) { return ["image", "images", "illustration", "photo", "visual"].includes(type); }
 function isMixedType(type: string) { return ["mixed", "document_with_images", "article_with_images", "carousel", "storyboard", "presentation"].includes(type); }
+
+function asRecord(value: unknown): Record<string, unknown> | null {
+  return value && typeof value === "object" && !Array.isArray(value)
+    ? (value as Record<string, unknown>)
+    : null;
+}
+
+/** Models sometimes nest prompt under provider_input; normalize before generation. */
+function normalizeMediaItem(raw: unknown): Record<string, unknown> | null {
+  const item = asRecord(raw);
+  if (!item) return null;
+  const providerInput = asRecord(item.provider_input) ?? {};
+  const prompt = String(
+    item.prompt
+      ?? providerInput.prompt
+      ?? item.image_prompt
+      ?? item.text
+      ?? "",
+  ).trim();
+  const kind = String(item.kind ?? "image").trim().toLowerCase() || "image";
+  const providerRaw = String(item.provider ?? "").trim().toLowerCase();
+  const provider = providerRaw === "google"
+    ? "gemini"
+    : (providerRaw || null);
+  return {
+    ...item,
+    kind,
+    prompt: prompt || null,
+    file_name: item.file_name ?? item.filename ?? null,
+    alt_text: item.alt_text ?? item.alt ?? null,
+    caption: item.caption ?? null,
+    size: item.size ?? null,
+    seconds: item.seconds ?? null,
+    provider,
+    provider_input: Object.keys(providerInput).length ? providerInput : null,
+  };
+}
+
+function normalizeMediaPlan(plan: { content_text?: unknown; content_json?: unknown; items?: unknown }) {
+  const items = Array.isArray(plan?.items)
+    ? plan.items.map(normalizeMediaItem).filter(Boolean)
+    : [];
+  return {
+    content_text: String(plan?.content_text ?? ""),
+    content_json: plan?.content_json ?? null,
+    items: items as Record<string, unknown>[],
+  };
+}
+
+function resolveImageProvider(item: unknown): "gemini" | "openai" {
+  const record = asRecord(item);
+  const raw = String(record?.provider ?? DEFAULT_IMAGE_PROVIDER).trim().toLowerCase();
+  if (raw === "gemini" || raw === "google") {
+    if (!GEMINI_API_KEY) {
+      if (OPENAI_API_KEY) return "openai";
+      throw new MediaError("gemini_api_key_missing", "GEMINI_API_KEY is missing.");
+    }
+    return "gemini";
+  }
+  return "openai";
+}
+
+/** Map planner size strings to Gemini aspectRatio values. */
+function geminiAspectRatio(size: unknown): string | null {
+  const key = String(size ?? "").trim().toLowerCase();
+  if (!key || key === "auto") return null;
+  const map: Record<string, string> = {
+    "1024x1024": "1:1",
+    "1200x1200": "1:1",
+    "1:1": "1:1",
+    "1536x1024": "3:2",
+    "3:2": "3:2",
+    "16:9": "16:9",
+    "1920x1080": "16:9",
+    "1024x1536": "2:3",
+    "2:3": "2:3",
+    "9:16": "9:16",
+    "1080x1920": "9:16",
+    "4:3": "4:3",
+    "3:4": "3:4",
+    "4:5": "4:5",
+    "5:4": "5:4",
+    "21:9": "21:9",
+  };
+  if (map[key]) return map[key];
+  const match = key.match(/^(\d+)\s*[x×]\s*(\d+)$/);
+  if (match) {
+    const w = Number(match[1]);
+    const h = Number(match[2]);
+    if (w > 0 && h > 0) {
+      const ratio = w / h;
+      if (Math.abs(ratio - 1) < 0.08) return "1:1";
+      if (ratio > 1.7) return "16:9";
+      if (ratio > 1.4) return "3:2";
+      if (ratio > 1.2) return "4:3";
+      if (ratio < 0.6) return "9:16";
+      if (ratio < 0.75) return "2:3";
+      if (ratio < 0.9) return "3:4";
+    }
+  }
+  return null;
+}
+
+function bytesToBase64(bytes: Uint8Array): string {
+  let binary = "";
+  const chunk = 0x2000;
+  for (let i = 0; i < bytes.length; i += chunk) {
+    const slice = bytes.subarray(i, i + chunk);
+    binary += String.fromCharCode.apply(null, Array.from(slice) as unknown as number[]);
+  }
+  return btoa(binary);
+}
+
+function base64ToBytes(b64: string): Uint8Array {
+  const binary = atob(b64);
+  const bytes = new Uint8Array(binary.length);
+  for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
+  return bytes;
+}
+
+function mimeExtension(mimeType: string): string {
+  const key = String(mimeType ?? "").toLowerCase();
+  if (key.includes("jpeg") || key.includes("jpg")) return "jpg";
+  if (key.includes("webp")) return "webp";
+  if (key.includes("gif")) return "gif";
+  return "png";
+}
 
 async function appendEvent(supabase: any, args: { buildId: string; unitId?: string | null; eventType: string; phase?: string; payload?: any }) {
   const { error } = await supabase.rpc("ai_append_build_event_v1", {
@@ -77,12 +221,236 @@ function normalizedSelection(spec: any) {
   };
 }
 
+function brandPromptPrefix(context: any): string | null {
+  return formatBrandKitForMediaPrompt(
+    brandKitForAiFromProject(context?.project),
+    context?.project?.name ?? null,
+  );
+}
+
+function withBrandPrompt(basePrompt: string, context: any): string {
+  const brand = brandPromptPrefix(context);
+  const prompt = String(basePrompt ?? "").trim();
+  if (!brand) return prompt;
+  if (!prompt) return brand;
+  if (/brand kit for|prefer these tokens over web/i.test(prompt)) return prompt;
+  return `${brand}\n\nCreative brief:\n${prompt}`;
+}
+
+type BrandTemplateVisualBytes = {
+  ref: BrandTemplateVisualRef
+  bytes: Uint8Array
+  mimeType: string
+  label: string
+}
+
+function publicMediaUrl(storagePath: string): string {
+  const trimmed = storagePath.replace(/^\/+/, "")
+  return `${SUPABASE_URL}/storage/v1/object/public/${PUBLIC_MEDIA_BUCKET}/${trimmed}`
+}
+
+function resolveBrandVisualFetchUrl(ref: BrandTemplateVisualRef): string | null {
+  if (ref.storage_path) return publicMediaUrl(ref.storage_path)
+  const url = String(ref.url ?? "").trim()
+  if (!url) return null
+  if (url.startsWith("http://") || url.startsWith("https://")) return url
+  // Relative/public-media path stored in url by mistake.
+  return publicMediaUrl(url)
+}
+
+function mimeFromBytesOrName(bytes: Uint8Array, hint: string | null): string {
+  if (bytes.length >= 3 && bytes[0] === 0xff && bytes[1] === 0xd8 && bytes[2] === 0xff) return "image/jpeg"
+  if (bytes.length >= 8 && bytes[0] === 0x89 && bytes[1] === 0x50 && bytes[2] === 0x4e && bytes[3] === 0x47) {
+    return "image/png"
+  }
+  if (bytes.length >= 12 && bytes[0] === 0x52 && bytes[8] === 0x57 && bytes[9] === 0x45 && bytes[10] === 0x42) {
+    return "image/webp"
+  }
+  if (bytes.length >= 6 && bytes[0] === 0x47 && bytes[1] === 0x49 && bytes[2] === 0x46) return "image/gif"
+  const lower = String(hint ?? "").toLowerCase()
+  if (lower.includes("jpeg") || lower.includes("jpg")) return "image/jpeg"
+  if (lower.includes("webp")) return "image/webp"
+  if (lower.includes("gif")) return "image/gif"
+  return "image/png"
+}
+
+async function fetchBrandVisualBytes(
+  service: any,
+  ref: BrandTemplateVisualRef,
+): Promise<BrandTemplateVisualBytes | null> {
+  try {
+    if (ref.storage_path) {
+      const { data, error } = await service.storage
+        .from(PUBLIC_MEDIA_BUCKET)
+        .download(ref.storage_path)
+      if (!error && data) {
+        const bytes = new Uint8Array(await data.arrayBuffer())
+        if (bytes.length === 0 || bytes.length > MAX_BRAND_TEMPLATE_BYTES) return null
+        return {
+          ref,
+          bytes,
+          mimeType: mimeFromBytesOrName(bytes, ref.url),
+          label: ref.title || ref.template_title || "brand template",
+        }
+      }
+    }
+
+    const url = resolveBrandVisualFetchUrl(ref)
+    if (!url) return null
+    const response = await fetch(url, { redirect: "follow" })
+    if (!response.ok) return null
+    const contentType = String(response.headers.get("content-type") ?? "").toLowerCase()
+    if (contentType && !contentType.startsWith("image/") && !contentType.includes("octet-stream")) {
+      return null
+    }
+    const bytes = new Uint8Array(await response.arrayBuffer())
+    if (bytes.length === 0 || bytes.length > MAX_BRAND_TEMPLATE_BYTES) return null
+    return {
+      ref,
+      bytes,
+      mimeType: mimeFromBytesOrName(bytes, contentType || ref.url),
+      label: ref.title || ref.template_title || "brand template",
+    }
+  } catch (error) {
+    console.warn("brand template visual fetch failed", {
+      asset_id: ref.asset_id,
+      error: String(error),
+    })
+    return null
+  }
+}
+
+async function loadBrandTemplateVisuals(
+  service: any,
+  context: any,
+): Promise<BrandTemplateVisualBytes[]> {
+  const kit = brandKitForAiFromProject(context?.project)
+  const refs = collectBrandTemplateVisualRefs(kit, MAX_BRAND_TEMPLATE_VISUALS)
+  if (!refs.length) return []
+  const loaded: BrandTemplateVisualBytes[] = []
+  for (const ref of refs) {
+    const visual = await fetchBrandVisualBytes(service, ref)
+    if (visual) loaded.push(visual)
+  }
+  return loaded
+}
+
+function brandTemplateVisualPromptNote(visuals: BrandTemplateVisualBytes[]): string | null {
+  if (!visuals.length) return null
+  const labels = visuals
+    .map((visual, index) => `${index + 1}. ${visual.label}`)
+    .join("; ")
+  return [
+    `Attached reference images (${visuals.length}) are project brand layout templates: ${labels}.`,
+    "Match their composition, hierarchy, spacing, safe zones, and overall framing.",
+    "Create a new on-brand creative — do not copy protected logos, trademarks, or recognizable faces verbatim.",
+  ].join(" ")
+}
+
+function plannerUserContent(args: {
+  context: any
+  spec: any
+  selection: any
+  brandVisualUrls: string[]
+}) {
+  const { context, spec, selection, brandVisualUrls } = args
+  const payload = {
+    request: String(context?.build?.request_text ?? context?.unit?.instruction ?? "").slice(0, 8000),
+    instruction: String(context?.unit?.instruction ?? "").slice(0, 8000),
+    artifact: {
+      id: context?.artifact?.id ?? null,
+      title: context?.artifact?.title ?? null,
+      artifact_type: context?.artifact?.artifact_type ?? null,
+      artifact_role: context?.artifact?.artifact_role ?? null,
+      content_preview: String(context?.artifact?.content_text ?? "").slice(0, 2000) || null,
+    },
+    artifact_spec: {
+      title: spec?.title ?? null,
+      artifact_type: spec?.artifact_type ?? null,
+      instruction: String(spec?.instruction ?? "").slice(0, 8000),
+      metadata: spec?.metadata ?? null,
+    },
+    task: context?.task ? { id: context.task.id ?? context.task_id ?? null, title: context.task.title ?? null } : null,
+    project: context?.project
+      ? {
+          id: context.project.id ?? null,
+          name: context.project.name ?? null,
+          editorial_line: context.project.editorial_line ?? null,
+          color: context.project.color ?? null,
+          logo: context.project.logo ?? null,
+          project_url: context.project.project_url ?? null,
+        }
+      : null,
+    brand_kit: brandKitForAiFromProject(context?.project),
+    brand_template_visuals_attached: brandVisualUrls.length,
+    selection,
+  }
+
+  if (!brandVisualUrls.length) {
+    return JSON.stringify(payload)
+  }
+
+  return [
+    {
+      type: "text",
+      text: [
+        JSON.stringify(payload),
+        "",
+        "The following images are brand layout templates from the project Brand kit.",
+        "Study their composition and encode those layout cues into every media_items[].prompt.",
+      ].join("\n"),
+    },
+    ...brandVisualUrls.map((url) => ({
+      type: "image_url",
+      image_url: { url, detail: "low" },
+    })),
+  ]
+}
+
 async function planMedia(context: any) {
   const spec = context?.unit?.input_snapshot?.artifact_spec ?? {};
   const explicit = Array.isArray(spec?.media_items) ? spec.media_items : Array.isArray(spec?.metadata?.media_items) ? spec.metadata.media_items : null;
-  if (explicit?.length) return { content_text: String(spec?.metadata?.content_text ?? ""), content_json: spec?.metadata?.content_json ?? null, items: explicit.slice(0, 12) };
+  if (explicit?.length) {
+    return normalizeMediaPlan({
+      content_text: String(spec?.metadata?.content_text ?? ""),
+      content_json: spec?.metadata?.content_json ?? null,
+      items: explicit.slice(0, 12).map((item: any) => ({
+        ...item,
+        prompt: withBrandPrompt(String(item?.prompt ?? item?.provider_input?.prompt ?? ""), context),
+        provider: item?.provider ?? DEFAULT_IMAGE_PROVIDER,
+      })),
+    });
+  }
 
   const type = artifactType(context?.artifact?.artifact_type);
+  // Single-image artifacts already carry a production-ready instruction from the
+  // orchestrator — skip the OpenAI planner (faster + avoids plan-stage crashes).
+  if (isImageType(type) && !isMixedType(type) && !isVideoType(type)) {
+    const prompt = withBrandPrompt(String(
+      spec?.instruction
+        ?? context?.unit?.instruction
+        ?? context?.build?.request_text
+        ?? "",
+    ), context);
+    if (prompt) {
+      return normalizeMediaPlan({
+        content_text: "",
+        content_json: { version: 1, blocks: [] },
+        items: [{
+          kind: "image",
+          prompt,
+          file_name: `${safeName(context?.artifact?.title, "image")}.png`,
+          alt_text: String(context?.artifact?.title ?? "Generated image").slice(0, 200) || "Generated image",
+          caption: null,
+          size: "1024x1024",
+          seconds: null,
+          provider: DEFAULT_IMAGE_PROVIDER,
+          provider_input: null,
+        }],
+      });
+    }
+  }
+
   const maxItems = isVideoType(type) ? 4 : 8;
   const schema = {
     name: "artifact_media_plan", strict: false, schema: {
@@ -93,62 +461,78 @@ async function planMedia(context: any) {
         media_items: { type: "array", minItems: 1, maxItems, items: { type: "object", additionalProperties: false, properties: {
           kind: { type: "string", enum: ["image", "video"] }, prompt: { type: "string" }, file_name: { type: ["string", "null"] },
           alt_text: { type: ["string", "null"] }, caption: { type: ["string", "null"] }, size: { type: ["string", "null"] },
-          seconds: { type: ["integer", "null"] }, provider: { type: ["string", "null"], enum: ["openai", "replicate", null] },
+          seconds: { type: ["integer", "null"] }, provider: { type: ["string", "null"], enum: ["openai", "gemini", "replicate", null] },
           provider_input: { type: ["object", "null"], additionalProperties: true },
         }, required: ["kind", "prompt", "file_name", "alt_text", "caption", "size", "seconds", "provider", "provider_input"] } },
       }, required: ["content_text", "content_json", "media_items"],
     },
   };
   const selection = normalizedSelection(spec);
+  const brandKit = brandKitForAiFromProject(context?.project)
+  const brandVisualRefs = collectBrandTemplateVisualRefs(brandKit, MAX_BRAND_TEMPLATE_VISUALS)
+  const brandVisualUrls = brandVisualRefs
+    .map((ref) => resolveBrandVisualFetchUrl(ref))
+    .filter((url): url is string => Boolean(url))
+    .slice(0, MAX_BRAND_TEMPLATE_VISUALS)
+
+  const planPayload: Record<string, unknown> = {
+    model: MEDIA_PLAN_MODEL,
+    response_format: { type: "json_schema", json_schema: schema },
+    messages: [
+      { role: "system", content: [
+        "Plan the exact media assets needed for one artifact. Return concise production prompts, not explanations.",
+        "An artifact may be a single image/video, several images/clips, or text mixed with media. Create the minimum useful set.",
+        "For carousel/storyboard/presentation artifacts, use one media item per meaningful visual only when requested or useful.",
+        "When a selected image/video region or time range is supplied, preserve the rest and describe only the requested targeted change.",
+        "When brand_kit is present, bake its colors, fonts, and visual style into every media prompt so outputs look on-brand.",
+        "When brand layout template images are attached, study their composition/hierarchy/framing and encode those layout cues into every media_items[].prompt. The media worker will also attach those images as visual references at generation time.",
+        "Each media_items[].prompt must be a non-empty top-level string (do not nest the prompt only under provider_input).",
+        `For image items, set provider to "${DEFAULT_IMAGE_PROVIDER}" unless the user explicitly asks for another image provider.`,
+        "Do not claim a media file exists; the media worker will generate it after this plan.",
+      ].join("\n") },
+      { role: "user", content: plannerUserContent({
+        context,
+        spec,
+        selection,
+        brandVisualUrls,
+      }) },
+    ],
+  };
+  // gpt-5 / o-series reject explicit temperature (same as ai-chat).
+  const planModelKey = String(MEDIA_PLAN_MODEL).trim().toLowerCase();
+  if (!(planModelKey.startsWith("gpt-5") || planModelKey.startsWith("o3") || planModelKey.startsWith("o4"))) {
+    planPayload.temperature = 0.2;
+  }
   const resp = await fetch("https://api.openai.com/v1/chat/completions", {
     method: "POST", headers: { Authorization: `Bearer ${OPENAI_API_KEY}`, "Content-Type": "application/json" },
-    body: JSON.stringify({
-      model: MEDIA_PLAN_MODEL, temperature: 0.2, response_format: { type: "json_schema", json_schema: schema },
-      messages: [
-        { role: "system", content: [
-          "Plan the exact media assets needed for one artifact. Return concise production prompts, not explanations.",
-          "An artifact may be a single image/video, several images/clips, or text mixed with media. Create the minimum useful set.",
-          "For carousel/storyboard/presentation artifacts, use one media item per meaningful visual only when requested or useful.",
-          "When a selected image/video region or time range is supplied, preserve the rest and describe only the requested targeted change.",
-          "Do not claim a media file exists; the media worker will generate it after this plan.",
-        ].join("\n") },
-        { role: "user", content: JSON.stringify({
-          request: String(context?.build?.request_text ?? context?.unit?.instruction ?? "").slice(0, 8000),
-          instruction: String(context?.unit?.instruction ?? "").slice(0, 8000),
-          artifact: {
-            id: context?.artifact?.id ?? null,
-            title: context?.artifact?.title ?? null,
-            artifact_type: context?.artifact?.artifact_type ?? null,
-            artifact_role: context?.artifact?.artifact_role ?? null,
-            content_preview: String(context?.artifact?.content_text ?? "").slice(0, 2000) || null,
-          },
-          artifact_spec: {
-            title: spec?.title ?? null,
-            artifact_type: spec?.artifact_type ?? null,
-            instruction: String(spec?.instruction ?? "").slice(0, 8000),
-            metadata: spec?.metadata ?? null,
-          },
-          task: context?.task ? { id: context.task.id ?? context.task_id ?? null, title: context.task.title ?? null } : null,
-          project: context?.project ? { id: context.project.id ?? null, name: context.project.name ?? null } : null,
-          selection,
-        }) },
-      ],
-    }),
+    body: JSON.stringify(planPayload),
   });
   const data = await resp.json().catch(() => null);
   if (!resp.ok) throw new MediaError("media_plan_failed", data?.error?.message ?? `Media plan failed (${resp.status})`, true);
   const raw = String(data?.choices?.[0]?.message?.content ?? data?.choices?.[0]?.message?.parsed ?? "").trim();
   if (!raw && data?.choices?.[0]?.message?.parsed) {
     const parsed = data.choices[0].message.parsed;
-    return {
+    return normalizeMediaPlan({
       content_text: String(parsed.content_text ?? ""),
       content_json: parsed.content_json ?? null,
-      items: Array.isArray(parsed.media_items) ? parsed.media_items.slice(0, maxItems) : [],
-    };
+      items: (Array.isArray(parsed.media_items) ? parsed.media_items.slice(0, maxItems) : []).map((item: any) => ({
+        ...item,
+        prompt: withBrandPrompt(String(item?.prompt ?? item?.provider_input?.prompt ?? ""), context),
+        provider: item?.provider ?? DEFAULT_IMAGE_PROVIDER,
+      })),
+    });
   }
   let parsed: any;
   try { parsed = JSON.parse(raw); } catch { throw new MediaError("media_plan_invalid", `Media planner returned invalid JSON: ${raw.slice(0, 400)}`, true); }
-  return { content_text: String(parsed.content_text ?? ""), content_json: parsed.content_json ?? null, items: Array.isArray(parsed.media_items) ? parsed.media_items.slice(0, maxItems) : [] };
+  return normalizeMediaPlan({
+    content_text: String(parsed.content_text ?? ""),
+    content_json: parsed.content_json ?? null,
+    items: (Array.isArray(parsed.media_items) ? parsed.media_items.slice(0, maxItems) : []).map((item: any) => ({
+      ...item,
+      prompt: withBrandPrompt(String(item?.prompt ?? item?.provider_input?.prompt ?? ""), context),
+      provider: item?.provider ?? DEFAULT_IMAGE_PROVIDER,
+    })),
+  });
 }
 
 async function attachmentRow(service: any, id: string) {
@@ -238,31 +622,59 @@ async function createSelectionMaskPng(width: number, height: number, selection: 
   ]);
 }
 
-async function generateImage(item: any, selection: any, service: any) {
-  const promptParts = [String(item.prompt ?? "").trim()];
-  if (selection?.anchor_type === "image_rect") promptParts.push(`Apply the requested change only inside normalized rectangle x=${selection.x}, y=${selection.y}, width=${selection.width}, height=${selection.height}; preserve everything outside it.`);
-  if (selection?.anchor_type === "image_point") promptParts.push(`Focus the requested change near normalized point x=${selection.x}, y=${selection.y}; preserve unrelated areas.`);
-  const prompt = promptParts.filter(Boolean).join("\n");
-  const size = ["auto", "1024x1024", "1536x1024", "1024x1536"].includes(String(item.size)) ? String(item.size) : "auto";
-
+async function generateOpenAiImage(
+  item: any,
+  selection: any,
+  service: any,
+  prompt: string,
+  size: string,
+  brandVisuals: BrandTemplateVisualBytes[] = [],
+) {
   let response: Response;
-  if (selection?.attachment_id) {
-    const source = await attachmentRow(service, selection.attachment_id);
-    if (!String(source.mime_type ?? "").startsWith("image/")) throw new MediaError("selected_asset_not_image", "The selected asset is not an image.");
-    const bytes = await downloadAttachment(service, source);
+  const hasSelectionImage = Boolean(selection?.attachment_id)
+  const useEdits = hasSelectionImage || brandVisuals.length > 0
+
+  if (useEdits) {
     const form = new FormData();
     form.append("model", OPENAI_IMAGE_MODEL);
     form.append("prompt", prompt);
     form.append("size", size);
     form.append("output_format", "png");
-    form.append("image", new Blob([bytes], { type: source.mime_type || "image/png" }), source.file_name || "source.png");
-    if (["image_rect", "image_point"].includes(selection?.anchor_type)) {
-      const dimensions = imageDimensions(bytes);
-      if (dimensions) {
-        const mask = await createSelectionMaskPng(dimensions.width, dimensions.height, selection);
-        if (mask) form.append("mask", new Blob([mask], { type: "image/png" }), "selection-mask.png");
+
+    const imageParts: Array<{ blob: Blob; filename: string }> = []
+
+    if (hasSelectionImage) {
+      const source = await attachmentRow(service, selection.attachment_id);
+      if (!String(source.mime_type ?? "").startsWith("image/")) {
+        throw new MediaError("selected_asset_not_image", "The selected asset is not an image.");
+      }
+      const bytes = await downloadAttachment(service, source);
+      imageParts.push({
+        blob: new Blob([bytes], { type: source.mime_type || "image/png" }),
+        filename: source.file_name || "source.png",
+      })
+      if (["image_rect", "image_point"].includes(selection?.anchor_type)) {
+        const dimensions = imageDimensions(bytes);
+        if (dimensions) {
+          const mask = await createSelectionMaskPng(dimensions.width, dimensions.height, selection);
+          if (mask) form.append("mask", new Blob([mask], { type: "image/png" }), "selection-mask.png");
+        }
       }
     }
+
+    for (let index = 0; index < brandVisuals.length; index++) {
+      const visual = brandVisuals[index]
+      imageParts.push({
+        blob: new Blob([visual.bytes], { type: visual.mimeType }),
+        filename: `brand-template-${index + 1}.${mimeExtension(visual.mimeType)}`,
+      })
+    }
+
+    const field = imageParts.length > 1 ? "image[]" : "image"
+    for (const part of imageParts) {
+      form.append(field, part.blob, part.filename)
+    }
+
     response = await fetch("https://api.openai.com/v1/images/edits", { method: "POST", headers: { Authorization: `Bearer ${OPENAI_API_KEY}` }, body: form });
   } else {
     response = await fetch("https://api.openai.com/v1/images/generations", {
@@ -274,8 +686,171 @@ async function generateImage(item: any, selection: any, service: any) {
   if (!response.ok) throw new MediaError("image_generation_failed", data?.error?.message ?? `Image generation failed (${response.status})`, true);
   const b64 = data?.data?.[0]?.b64_json;
   if (!b64) throw new MediaError("image_generation_empty", "Image generation returned no image.");
-  const binary = atob(b64); const bytes = new Uint8Array(binary.length); for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
-  return { bytes, mimeType: "image/png", extension: "png", provider: "openai", providerId: data?.id ?? null, model: OPENAI_IMAGE_MODEL, prompt };
+  return {
+    bytes: base64ToBytes(b64),
+    mimeType: "image/png",
+    extension: "png",
+    provider: "openai",
+    providerId: data?.id ?? null,
+    model: OPENAI_IMAGE_MODEL,
+    prompt,
+  };
+}
+
+async function generateGeminiImage(
+  item: any,
+  selection: any,
+  service: any,
+  prompt: string,
+  brandVisuals: BrandTemplateVisualBytes[] = [],
+) {
+  if (!GEMINI_API_KEY) throw new MediaError("gemini_api_key_missing", "GEMINI_API_KEY is missing.");
+  const parts: Array<Record<string, unknown>> = [];
+
+  if (brandVisuals.length > 0) {
+    parts.push({
+      text: brandTemplateVisualPromptNote(brandVisuals) ?? "Brand layout template images follow.",
+    })
+    for (const visual of brandVisuals) {
+      parts.push({
+        inline_data: {
+          mime_type: visual.mimeType,
+          data: bytesToBase64(visual.bytes),
+        },
+      })
+    }
+  }
+
+  parts.push({ text: prompt });
+
+  if (selection?.attachment_id) {
+    const source = await attachmentRow(service, selection.attachment_id);
+    if (!String(source.mime_type ?? "").startsWith("image/")) {
+      throw new MediaError("selected_asset_not_image", "The selected asset is not an image.");
+    }
+    const bytes = await downloadAttachment(service, source);
+    parts.push({
+      inline_data: {
+        mime_type: source.mime_type || "image/png",
+        data: bytesToBase64(bytes),
+      },
+    });
+  }
+
+  const generationConfig: Record<string, unknown> = {
+    responseModalities: ["TEXT", "IMAGE"],
+  };
+  const aspectRatio = geminiAspectRatio(item?.size);
+  if (aspectRatio) {
+    generationConfig.imageConfig = { aspectRatio };
+  }
+
+  const candidateModels = Array.from(new Set([
+    GEMINI_IMAGE_MODEL,
+    "gemini-2.5-flash-image",
+    "gemini-2.0-flash-preview-image-generation",
+  ].filter(Boolean)));
+
+  let lastError = "Gemini image generation failed.";
+  for (const modelName of candidateModels) {
+    const model = encodeURIComponent(modelName);
+    const response = await fetch(
+      `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent`,
+      {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "x-goog-api-key": GEMINI_API_KEY,
+        },
+        body: JSON.stringify({
+          contents: [{ role: "user", parts }],
+          generationConfig,
+        }),
+      },
+    );
+    const data = await response.json().catch(() => null);
+    if (!response.ok) {
+      lastError = String(
+        data?.error?.message ?? data?.error?.status ?? `Gemini image generation failed (${response.status})`,
+      ).slice(0, 1000);
+      // Try the next known image model on not-found / unsupported.
+      if (response.status === 404 || /not found|not supported|unknown model/i.test(lastError)) {
+        continue;
+      }
+      throw new MediaError("image_generation_failed", lastError, true);
+    }
+
+    const responseParts = data?.candidates?.[0]?.content?.parts;
+    const imagePart = Array.isArray(responseParts)
+      ? responseParts.find((part: any) => part?.inlineData?.data || part?.inline_data?.data)
+      : null;
+    const inline = imagePart?.inlineData ?? imagePart?.inline_data ?? null;
+    const b64 = String(inline?.data ?? "").trim();
+    if (!b64) {
+      const blockReason = data?.promptFeedback?.blockReason ?? data?.candidates?.[0]?.finishReason ?? null;
+      lastError = blockReason
+        ? `Gemini returned no image (${blockReason}).`
+        : "Gemini image generation returned no image.";
+      continue;
+    }
+    const mimeType = String(inline?.mimeType ?? inline?.mime_type ?? "image/png");
+    return {
+      bytes: base64ToBytes(b64),
+      mimeType,
+      extension: mimeExtension(mimeType),
+      provider: "gemini",
+      providerId: data?.responseId ?? data?.response_id ?? null,
+      model: modelName,
+      prompt,
+    };
+  }
+
+  throw new MediaError("image_generation_failed", lastError, true);
+}
+
+async function generateImage(item: any, selection: any, service: any, context: any = null) {
+  const normalized = normalizeMediaItem(item) ?? {};
+  const brandVisuals = await loadBrandTemplateVisuals(service, context)
+  const promptParts = [String(normalized.prompt ?? "").trim()];
+  const visualNote = brandTemplateVisualPromptNote(brandVisuals)
+  if (visualNote && !/attached reference images|brand layout template/i.test(promptParts[0] ?? "")) {
+    promptParts.unshift(visualNote)
+  }
+  if (selection?.anchor_type === "image_rect") promptParts.push(`Apply the requested change only inside normalized rectangle x=${selection.x}, y=${selection.y}, width=${selection.width}, height=${selection.height}; preserve everything outside it.`);
+  if (selection?.anchor_type === "image_point") promptParts.push(`Focus the requested change near normalized point x=${selection.x}, y=${selection.y}; preserve unrelated areas.`);
+  const prompt = promptParts.filter(Boolean).join("\n");
+  if (!prompt) {
+    throw new MediaError(
+      "media_prompt_missing",
+      "Media item is missing a prompt. Re-plan with a top-level prompt string.",
+      true,
+    );
+  }
+  const size = ["auto", "1024x1024", "1536x1024", "1024x1536"].includes(String(normalized.size ?? item?.size))
+    ? String(normalized.size ?? item?.size)
+    : "auto";
+
+  // Prefer Gemini when we have visual templates — stronger multimodal layout matching.
+  // Fall back to OpenAI on billing/quota/model failures so creatives still generate.
+  let provider = resolveImageProvider(normalized);
+  if (brandVisuals.length > 0 && GEMINI_API_KEY && provider === "openai") {
+    provider = "gemini"
+  }
+
+  if (provider === "gemini") {
+    try {
+      return await generateGeminiImage(normalized, selection, service, prompt, brandVisuals);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error ?? "")
+      const shouldFallbackToOpenAi =
+        Boolean(OPENAI_API_KEY)
+        && /prepayment|credits?|billing|quota|resource.?exhausted|429|rate.?limit|gemini_api_key_missing/i.test(message)
+      if (!shouldFallbackToOpenAi) throw error
+      console.warn("gemini image generation failed; falling back to openai", message.slice(0, 300))
+      return await generateOpenAiImage(normalized, selection, service, prompt, size, brandVisuals);
+    }
+  }
+  return await generateOpenAiImage(normalized, selection, service, prompt, size, brandVisuals);
 }
 
 async function createOpenAIVideo(item: any, selection: any, service: any) {
@@ -487,11 +1062,11 @@ Deno.serve(async (request) => {
     let jobs: any[] = Array.isArray(existingJobs) ? existingJobs : [];
     const storedRequest = jobs[0]?.request ?? null;
     const plan = jobs.length
-      ? {
+      ? normalizeMediaPlan({
           content_text: String(storedRequest?.plan_content_text ?? ""),
           content_json: storedRequest?.plan_content_json ?? null,
-          items: jobs.map((job: any) => job.request?.item).filter(Boolean),
-        }
+          items: jobs.map((job: any) => normalizeMediaItem(job.request?.item) ?? job.request?.item).filter(Boolean),
+        })
       : await planMedia(context);
     // Text-only mixed artifacts (copy + carousel script) can finalize without generated assets.
     if (!plan.items.length) {
@@ -513,13 +1088,14 @@ Deno.serve(async (request) => {
         if (!mediaItems.length) throw new MediaError("media_plan_empty", "No image items were planned.", true);
         for (let index = 0; index < mediaItems.length; index++) {
           const item = mediaItems[index];
+          const imageProvider = resolveImageProvider(item);
           const { data: row, error: insertError } = await service.from("artifact_media_jobs").insert({
             build_id: buildId,
             unit_id: unitId,
             artifact_id: artifact.id,
             media_index: index,
             media_type: "image",
-            provider: "openai",
+            provider: imageProvider,
             provider_job_id: `pending:image:${index}`,
             status: "pending",
             request: { item, plan_content_text: plan.content_text, plan_content_json: plan.content_json },
@@ -535,21 +1111,42 @@ Deno.serve(async (request) => {
       const pendingJob = jobs.find((job: any) => job.status !== "completed" && job.media_type === "image");
       if (pendingJob) {
         const index = Number(pendingJob.media_index ?? 0);
-        const item = pendingJob.request?.item ?? plan.items[index];
+        const item = normalizeMediaItem(pendingJob.request?.item)
+          ?? normalizeMediaItem(plan.items[index])
+          ?? plan.items[index]
+          ?? {};
+        // Persist normalized item so retries keep a top-level prompt.
+        if (item?.prompt && pendingJob.request?.item?.prompt !== item.prompt) {
+          await service.from("artifact_media_jobs").update({
+            request: {
+              ...(pendingJob.request ?? {}),
+              item,
+              plan_content_text: plan.content_text,
+              plan_content_json: plan.content_json,
+            },
+            updated_at: new Date().toISOString(),
+          }).eq("id", pendingJob.id);
+        }
         await appendEvent(supabase, {
           buildId,
           unitId,
           eventType: "artifact.media_item_started",
           phase: "running",
-          payload: { artifact_id: artifact.id, index, kind: "image", prompt: item?.prompt ?? null },
+          payload: {
+            artifact_id: artifact.id,
+            index,
+            kind: "image",
+            prompt: item?.prompt ?? null,
+            provider: resolveImageProvider(item),
+          },
         });
-        const media = await generateImage(item, selection, service);
+        const media = await generateImage(item, selection, service, context);
         const attachment = await storeAttachment(service, artifact, media, item, index);
         await service.from("artifact_media_jobs").update({
           status: "completed",
-          provider: "openai",
+          provider: media.provider,
           provider_job_id: media.providerId ?? `image:${attachment.id}`,
-          result: { attachment_id: attachment.id },
+          result: { attachment_id: attachment.id, model: media.model ?? null },
           completed_at: new Date().toISOString(),
           updated_at: new Date().toISOString(),
         }).eq("id", pendingJob.id);
@@ -634,14 +1231,26 @@ Deno.serve(async (request) => {
       for (let index = 0; index < mediaItems.length; index++) {
         const item = mediaItems[index];
         if (item.kind === "image") {
-          await appendEvent(supabase, { buildId, unitId, eventType: "artifact.media_item_started", phase: "running", payload: { artifact_id: artifact.id, index, kind: "image", prompt: item.prompt } });
-          const media = await generateImage(item, selection, service);
+          await appendEvent(supabase, {
+            buildId,
+            unitId,
+            eventType: "artifact.media_item_started",
+            phase: "running",
+            payload: {
+              artifact_id: artifact.id,
+              index,
+              kind: "image",
+              prompt: item.prompt,
+              provider: resolveImageProvider(item),
+            },
+          });
+          const media = await generateImage(item, selection, service, context);
           const attachment = await storeAttachment(service, artifact, media, item, index);
           const { data: row, error: insertError } = await service.from("artifact_media_jobs").insert({
-            build_id: buildId, unit_id: unitId, artifact_id: artifact.id, media_index: index, media_type: "image", provider: "openai",
+            build_id: buildId, unit_id: unitId, artifact_id: artifact.id, media_index: index, media_type: "image", provider: media.provider,
             provider_job_id: media.providerId ?? `image:${attachment.id}`, status: "completed",
             request: { item, plan_content_text: plan.content_text, plan_content_json: plan.content_json },
-            result: { attachment_id: attachment.id }, completed_at: new Date().toISOString(), created_by: context?.build?.created_by ?? null,
+            result: { attachment_id: attachment.id, model: media.model ?? null }, completed_at: new Date().toISOString(), created_by: context?.build?.created_by ?? null,
           }).select("*").single();
           if (insertError || !row) throw new MediaError("media_job_insert_failed", insertError?.message ?? "Could not store image job.");
           jobs.push(row);
@@ -715,10 +1324,36 @@ Deno.serve(async (request) => {
   } catch (error: any) {
     const mediaError = error instanceof MediaError ? error : new MediaError("media_worker_failed", error?.message ?? String(error), true);
     console.error("ai-media-artifact-worker failed", { build_id: buildId, unit_id: unitId, code: mediaError.code, message: mediaError.message });
+    await appendEvent(supabase, {
+      buildId,
+      unitId,
+      eventType: "artifact.media_failed",
+      phase: "failed",
+      payload: {
+        code: mediaError.code,
+        message: mediaError.message.slice(0, 1000),
+        retryable: mediaError.retryable,
+        image_provider: DEFAULT_IMAGE_PROVIDER,
+        gemini_configured: Boolean(GEMINI_API_KEY),
+      },
+    }).catch(() => {});
+
+    // Retryable: leave the lease open and return 503 so the orchestrator requeues.
+    // Completing as failed here races with requeue and hides the real error code.
+    if (mediaError.retryable) {
+      return json({
+        ok: false,
+        build_id: buildId,
+        unit_id: unitId,
+        error: { code: mediaError.code, message: mediaError.message },
+      }, 503);
+    }
+
     const { data: failed } = await supabase.rpc("ai_complete_build_work_unit_v1", {
       p_build_id: buildId, p_unit_id: unitId, p_lease_token: leaseToken, p_status: "failed",
       p_result: { saved: [], failed: [{ error: mediaError.code }], saved_count: 0, failed_count: 1 }, p_usage: {}, p_error_code: mediaError.code, p_error_message: mediaError.message.slice(0, 2000),
     }).catch(() => ({ data: null } as any));
-    return json({ ok: false, build_id: buildId, unit_id: unitId, error: { code: mediaError.code, message: mediaError.message }, build: failed?.build ?? null }, mediaError.retryable ? 503 : 500);
+    // Return 200 so the orchestrator does not wrap this as worker_dispatch_http_500.
+    return json({ ok: false, build_id: buildId, unit_id: unitId, error: { code: mediaError.code, message: mediaError.message }, build: failed?.build ?? null }, 200);
   }
 });

@@ -3,13 +3,12 @@
 import { useCallback, useMemo, useState } from "react"
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query"
 import { usePathname } from "next/navigation"
-import { ExternalLink, Loader2, UserPlus, X } from "lucide-react"
+import { Loader2, UserPlus, X } from "lucide-react"
 
 import { UserAvatar } from "../UserAvatar"
 import { Button } from "../ui/button"
 import { Command, CommandEmpty, CommandGroup, CommandInput, CommandItem, CommandList } from "../ui/command"
 import { Popover, PopoverContent, PopoverTrigger } from "../ui/popover"
-import { TaskOverviewPreviewSection } from "../tasks/task-overview-preview-section"
 import { cn } from "@/lib/utils"
 import { getImageUrl } from "../../lib/public-media"
 import { toast } from "../ui/use-toast"
@@ -171,68 +170,79 @@ export function ProjectOverviewWatchers({ projectId }: ProjectOverviewWatchersPr
   )
 
   return (
-    <TaskOverviewPreviewSection title="Watchers" headerActions={addPopover}>
+    <div className="space-y-3">
+      <div className="flex items-center justify-between gap-2">
+        <div>
+          <h3 className="text-sm font-medium text-gray-900">Watchers</h3>
+          <p className="mt-0.5 text-xs text-gray-500">
+            People notified about project activity. Some watchers may be locked if you lack permission to manage them.
+          </p>
+        </div>
+        {addPopover}
+      </div>
       {isLoading && currentWatchers.length === 0 ? (
         <div className="flex items-center justify-center py-6 text-gray-400">
           <Loader2 className="h-4 w-4 animate-spin" />
         </div>
       ) : currentWatchers.length === 0 ? (
-        <div className="rounded-md border border-dashed border-gray-200 px-3 py-6 text-center text-sm text-gray-500">
+        <div className="px-0 py-4 text-sm text-gray-500">
           No watchers yet. Add someone to start watching this project.
         </div>
       ) : (
-        <ul className="divide-y divide-gray-100 rounded-md border border-gray-200">
+        <ul className="flex flex-col gap-0.5">
           {currentWatchers.map((watcher) => {
             const displayName = watcher.full_name || watcher.email || `User #${watcher.user_id}`
             const isManageable = watcher.is_manageable !== false
             return (
-              <li
-                key={watcher.watcher_id ?? watcher.user_id}
-                className="flex items-center gap-3 px-3 py-2.5"
-              >
-                <UserAvatar
-                  name={displayName}
-                  photoUrl={watcher.photo ? getImageUrl(watcher.photo) : null}
-                  size="sm"
-                />
-                <div className="min-w-0 flex-1">
-                  <div className="truncate text-sm font-medium text-gray-900">{displayName}</div>
-                  {watcher.full_name && watcher.email ? (
-                    <div className="truncate text-xs text-gray-500">{watcher.email}</div>
-                  ) : null}
-                </div>
-                <button
-                  type="button"
-                  title={`Open ${displayName}`}
-                  aria-label={`Open ${displayName}`}
-                  className="inline-flex h-7 w-7 shrink-0 items-center justify-center rounded text-gray-400 hover:bg-gray-100 hover:text-gray-700"
-                  onClick={() => handleOpenProfile(watcher.user_id)}
-                >
-                  <ExternalLink className="h-3.5 w-3.5" />
-                </button>
-                {isManageable ? (
-                  <Button
+              <li key={watcher.watcher_id ?? watcher.user_id}>
+                <div className="group flex items-center gap-3 rounded-md px-1 py-2 hover:bg-gray-50">
+                  <button
                     type="button"
-                    variant="ghost"
-                    size="icon"
-                    className="h-7 w-7 shrink-0 text-gray-400 hover:bg-red-50 hover:text-red-600"
-                    title="Remove watcher"
-                    aria-label={`Remove ${displayName}`}
-                    disabled={watchersMutation.isPending}
-                    onClick={() => handleToggle(watcher.user_id)}
+                    className="flex min-w-0 flex-1 items-center gap-3 text-left"
+                    title={`Open ${displayName}`}
+                    aria-label={`Open ${displayName}`}
+                    onClick={() => handleOpenProfile(watcher.user_id)}
                   >
-                    {watchersMutation.isPending ? (
-                      <Loader2 className="h-3.5 w-3.5 animate-spin" />
-                    ) : (
-                      <X className="h-3.5 w-3.5" />
-                    )}
-                  </Button>
-                ) : null}
+                    <UserAvatar
+                      name={displayName}
+                      photoUrl={watcher.photo ? getImageUrl(watcher.photo) : null}
+                      size="sm"
+                    />
+                    <span className="min-w-0 flex-1 truncate text-sm font-medium text-gray-900">
+                      {displayName}
+                    </span>
+                  </button>
+                  {isManageable ? (
+                    <Button
+                      type="button"
+                      variant="ghost"
+                      size="icon"
+                      className="h-7 w-7 shrink-0 text-gray-400 opacity-0 hover:bg-red-50 hover:text-red-600 group-hover:opacity-100 focus-visible:opacity-100"
+                      title="Remove watcher"
+                      aria-label={`Remove ${displayName}`}
+                      disabled={watchersMutation.isPending}
+                      onClick={() => handleToggle(watcher.user_id)}
+                    >
+                      {watchersMutation.isPending ? (
+                        <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                      ) : (
+                        <X className="h-3.5 w-3.5" />
+                      )}
+                    </Button>
+                  ) : (
+                    <span
+                      className="shrink-0 px-1 text-[10px] text-gray-400"
+                      title="You don't have permission to remove this watcher"
+                    >
+                      Locked
+                    </span>
+                  )}
+                </div>
               </li>
             )
           })}
         </ul>
       )}
-    </TaskOverviewPreviewSection>
+    </div>
   )
 }

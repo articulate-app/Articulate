@@ -34,6 +34,9 @@ import {
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "../ui/select"
 import { ProjectAnalyticsSettings } from "./ProjectAnalyticsSettings"
 import { ProjectAnalyticsPagesSection } from "./ProjectAnalyticsPagesSection"
+import { ProjectSearchConsoleSection } from "./project-search-console-section"
+import { GoogleConnectPanel } from "./google-connect-panel"
+import { isGoogleOAuthConnectEnabledInMainUi } from "@/lib/google-oauth-feature"
 import {
   CHART_LINE_STROKE,
   formatChartAxisDate,
@@ -339,7 +342,9 @@ export function ProjectAnalyticsTab({
 
   const queryEnabled = !!projectId && !!from && !!to
 
-  const { data: gaMappings } = useQuery<ProjectAnalyticsPropertyMapping[]>({
+  const { data: gaMappings, isLoading: isLoadingGaMappings } = useQuery<
+    ProjectAnalyticsPropertyMapping[]
+  >({
     queryKey: ["project-analytics-mappings", projectId],
     queryFn: async () => {
       const { data, error } = await (supabase as any)
@@ -359,6 +364,7 @@ export function ProjectAnalyticsTab({
 
   const gaPropertyId =
     gaMappings && gaMappings.length > 0 ? gaMappings[0]?.ga_property_id : null
+  const hasGaConnection = !!gaPropertyId
 
   const { data, isLoading, error } = useQuery<AnalyticsQueryResult>({
     queryKey: [
@@ -869,6 +875,20 @@ export function ProjectAnalyticsTab({
 
   if (isPreview) {
     const chartAvailable = !isLoading && !error && hasData
+
+    if (!isLoadingGaMappings && !hasGaConnection) {
+      return (
+        <div className="min-w-0 space-y-2 rounded-md border border-dashed border-gray-200 p-4">
+          <p className="text-xs text-gray-500">
+            Connect Google Analytics to see traffic for this project.
+          </p>
+          {isGoogleOAuthConnectEnabledInMainUi() ? (
+            <GoogleConnectPanel projectId={projectId} />
+          ) : null}
+        </div>
+      )
+    }
+
     return (
       <div className="min-w-0 space-y-3">
         {summaryCards}
@@ -944,7 +964,7 @@ export function ProjectAnalyticsTab({
         </div>
       </div>
 
-      {!gaPropertyId && <ProjectAnalyticsSettings projectId={projectId} />}
+      <ProjectAnalyticsSettings projectId={projectId} />
 
       {summaryCards}
 
@@ -1028,6 +1048,10 @@ export function ProjectAnalyticsTab({
           dateRange={{ from, to }}
           selectedMetric={yMetric === "sessions" ? "sessions" : "active_users"}
         />
+      )}
+
+      {from && to && (
+        <ProjectSearchConsoleSection projectId={projectId} dateRange={{ from, to }} />
       )}
     </div>
   )

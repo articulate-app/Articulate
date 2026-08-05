@@ -283,15 +283,14 @@ export function ArtifactWorkspace({
       if (known.has(entry.artifactId)) continue
       // Task overview: only show live extras that belong to this task.
       if (taskId != null && taskId > 0 && entry.taskId !== taskId) continue
-      // Project overview (no task): keep project/thread-scoped extras.
+      // Project overview (no task): only show live extras that belong to THIS project.
+      // Missing projectId must not leak across project sheets (previews historically omitted it).
       if (
-        (taskId == null || taskId <= 0) &&
-        projectId != null &&
-        projectId > 0 &&
-        entry.projectId != null &&
-        entry.projectId !== projectId
+        (taskId == null || taskId <= 0)
+        && projectId != null
+        && projectId > 0
       ) {
-        continue
+        if (entry.projectId == null || entry.projectId !== projectId) continue
       }
       if (
         (taskId == null || taskId <= 0) &&
@@ -305,7 +304,7 @@ export function ArtifactWorkspace({
       extras.push({
         id: entry.artifactId,
         task_id: entry.taskId,
-        project_id: projectId,
+        project_id: entry.projectId ?? null,
         ai_thread_id: entry.aiThreadId ?? aiThreadId,
         artifact_type: "document",
         artifact_role: null,
@@ -1133,11 +1132,7 @@ export function ArtifactWorkspace({
           </p>
         ) : null}
         {allArtifacts.length === 0 && !isLoading ? (
-          <p className="text-sm text-gray-500">
-            {canAcceptArtifactAttach
-              ? "No artifacts yet. Drag one from AI chat to attach."
-              : "No artifacts yet."}
-          </p>
+          <p className="text-sm text-gray-500">No artifacts yet.</p>
         ) : (
           <DndContext sensors={sensors} collisionDetection={closestCenter} onDragEnd={onDragEnd}>
             <SortableContext
@@ -1349,6 +1344,12 @@ export function ArtifactWorkspace({
                                 onContentTextChange={(contentText) => {
                                   updateDraft(display.id, { contentText }, display)
                                 }}
+                                onOpenFullscreen={() => {
+                                  openArtifactCenterTab({
+                                    artifactId: display.id,
+                                    title: display.title,
+                                  })
+                                }}
                                 {...mediaSelectHandlers}
                               />
                             </div>
@@ -1422,11 +1423,7 @@ export function ArtifactWorkspace({
       ) : null}
 
       {allArtifacts.length === 0 && !isLoading ? (
-        <p className="text-sm text-gray-500">
-          {canAcceptArtifactAttach
-            ? "No artifacts yet. Drag one from AI chat to attach."
-            : "No artifacts yet."}
-        </p>
+        <p className="text-sm text-gray-500">No artifacts yet.</p>
       ) : (
         <div className="flex min-h-0 flex-1 flex-col gap-3 overflow-hidden lg:flex-row">
           <aside className="flex max-h-40 w-full shrink-0 flex-col gap-1.5 overflow-auto lg:max-h-none lg:w-56">
@@ -1572,6 +1569,12 @@ export function ArtifactWorkspace({
                     }}
                     onContentTextChange={(contentText) => {
                       updateDraft(displaySelected.id, { contentText }, displaySelected)
+                    }}
+                    onOpenFullscreen={() => {
+                      openArtifactCenterTab({
+                        artifactId: displaySelected.id,
+                        title: displaySelected.title,
+                      })
                     }}
                     {...mediaSelectHandlers}
                   />

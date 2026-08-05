@@ -108,7 +108,7 @@ export function computeGroupLabelForTask(row: TaskListRow, groupBy: string | nul
     case 'assigned_to':
       return row.assigned_to_name ?? 'Unassigned';
     case 'status':
-      return row.project_status_name ?? 'Unassigned';
+      return row.project_status_name ?? 'No Status';
     case 'project':
       return row.project_name ?? 'No Project';
     case 'content_type':

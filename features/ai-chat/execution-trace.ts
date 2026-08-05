@@ -198,7 +198,8 @@ export function mergeExecutionTraceStep(
   next: AiExecutionTraceStep,
 ): AiExecutionTraceStep {
   if (!previous) return next
-  // Prefer higher sequence; equal sequence still accepts the newer payload.
+  // Prefer higher sequence for phase/text; keep the first-seen sequence so
+  // completed tools do not jump to the bottom of the stacked timeline.
   if (next.sequence < previous.sequence) {
     return {
       ...previous,
@@ -208,6 +209,8 @@ export function mergeExecutionTraceStep(
   }
   return {
     ...next,
+    sequence: previous.sequence,
+    emittedAt: previous.emittedAt,
     previewKeys: uniqueStrings([...previous.previewKeys, ...next.previewKeys]),
     editStreamKeys: uniqueStrings([...previous.editStreamKeys, ...next.editStreamKeys]),
   }
@@ -370,6 +373,11 @@ export function statusPayloadToExecutionTraceEvent(
   if (!toolName) return null
 
   const round = toFiniteNumber(record.round) ?? 0
+  const toolCallId =
+    toTrimmedString(record.tool_call_id)
+    ?? toTrimmedString(record.toolCallId)
+    ?? toTrimmedString(record.call_id)
+  const toolIndex = toFiniteNumber(record.tool_index) ?? toFiniteNumber(record.toolIndex)
   const sequence =
     toFiniteNumber(record.sequence)
     ?? toFiniteNumber(record.seq)
@@ -388,17 +396,24 @@ export function statusPayloadToExecutionTraceEvent(
   }
 
   const fallbackText = toTrimmedString(record.text)
+  const stepId = toolCallId
+    ? `tool:${round}:${toolCallId}`
+    : toolIndex != null
+      ? `tool:${round}:${toolName}:${toolIndex}`
+      : `tool:${round}:${toolName}`
   return {
     type: "execution_trace",
     sequence,
     emitted_at: emittedAt,
-    step_id: `tool:${round}:${toolName}`,
+    step_id: stepId,
     phase,
     category: categorizeToolName(toolName),
     text: toolStatusTraceText(toolName, phase, fallbackText),
     details: {
       tool_name: toolName,
       round,
+      ...(toolCallId ? { tool_call_id: toolCallId } : {}),
+      ...(toolIndex != null ? { tool_index: toolIndex } : {}),
       source: "ai_status",
     },
   }

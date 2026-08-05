@@ -37,6 +37,7 @@ import {
   isRealTaskComponentOutputId,
   isWritableComponentId,
   type TaggedArtifactRef,
+  type TaggedBrandTemplateRef,
   type TaggedSourceRef,
   type TaggedTaskChannelRef,
   type TaggedTaskComponentRef,
@@ -63,6 +64,8 @@ export type SendConversationAiChatStreamCallbacks = {
   onOptimistic?: (temp: { id: string; content: string; attachments?: AiAttachmentMeta[] }) => void
   onAssistantStreamStart?: (temp: { id: string; content: string }) => void
   onAssistantStreamChunk?: (tempId: string, chunk: string) => void
+  /** Clears optimistic assistant text when a tool round supersedes early streamed draft tokens. */
+  onAssistantStreamReset?: (tempId: string) => void
   onAssistantStreamStatus?: (tempId: string, statusText: string | null) => void
   onAssistantStreamComplete?: (tempId: string, payload: { content?: string; messageId?: string | null }) => void
   onAssistantStreamError?: (tempId: string) => void
@@ -124,6 +127,8 @@ export type SendConversationAiChatStreamArgs = {
   taggedArtifactRefs?: TaggedArtifactRef[]
   taggedSourceIds?: string[]
   taggedSourceRefs?: TaggedSourceRef[]
+  taggedBrandTemplateIds?: string[]
+  taggedBrandTemplateRefs?: TaggedBrandTemplateRef[]
   mode: "build_component" | "build_briefing" | "assistant_only" | null
   componentId: string | null
   taskId?: number | null
@@ -183,6 +188,8 @@ export async function sendConversationAiChatStream(args: SendConversationAiChatS
     taggedArtifactRefs,
     taggedSourceIds,
     taggedSourceRefs,
+    taggedBrandTemplateIds,
+    taggedBrandTemplateRefs,
     mode,
     componentId,
     taskId,
@@ -206,6 +213,7 @@ export async function sendConversationAiChatStream(args: SendConversationAiChatS
     onOptimistic,
     onAssistantStreamStart,
     onAssistantStreamChunk,
+    onAssistantStreamReset,
     onAssistantStreamStatus,
     onAssistantStreamComplete,
     onAssistantStreamError,
@@ -344,6 +352,12 @@ export async function sendConversationAiChatStream(args: SendConversationAiChatS
             : {}),
           ...(taggedSourceRefs && taggedSourceRefs.length > 0
             ? { tagged_source_refs: taggedSourceRefs }
+            : {}),
+          ...(taggedBrandTemplateIds && taggedBrandTemplateIds.length > 0
+            ? { tagged_brand_template_ids: taggedBrandTemplateIds }
+            : {}),
+          ...(taggedBrandTemplateRefs && taggedBrandTemplateRefs.length > 0
+            ? { tagged_brand_template_refs: taggedBrandTemplateRefs }
             : {}),
           mode,
           ...(writableComponentId ? { component_id: writableComponentId } : {}),
@@ -553,6 +567,10 @@ export async function sendConversationAiChatStream(args: SendConversationAiChatS
           },
           onAiStatusPayload: (parsed) => {
             diagnostics.markFirstStatusEvent()
+            if (parsed && typeof parsed === "object" && (parsed as { type?: unknown }).type === "assistant_text_reset") {
+              onAssistantStreamReset?.(assistantId)
+              return
+            }
             const traceEvent = statusPayloadToExecutionTraceEvent(parsed)
             if (traceEvent) {
               onExecutionTraceEvent?.(assistantId, traceEvent as AiChatExecutionTraceEvent)

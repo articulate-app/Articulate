@@ -10,9 +10,18 @@ import {
 } from '../../lib/google-autocomplete';
 import { emptyKeywordIdea, mergeKeywordIdeas } from '../../lib/keyword-ideas-merge';
 import { fetchRelatedKeywordIdeas } from '../../lib/dataforseo-related-keywords';
+import {
+  buildGoogleAdsKeywordSeed,
+  resolveKeywordResearchMode,
+} from '../../lib/keyword-research-input';
 
 interface KeywordIdeasRequest {
-  keyword: string;
+  /** Required for seed mode; optional when mode=url with contentSeedKeyword */
+  keyword?: string;
+  /** URL mode: article or page URL seed for Google Ads */
+  url?: string;
+  mode?: 'seed' | 'url';
+  contentSeedKeyword?: string;
   regionId?: string;
   languageId?: string;
   pageSize?: number;
@@ -144,13 +153,30 @@ async function fetchGenerateKeywordIdeas(args: {
   accessToken: string;
   customerId: string;
   developerToken: string;
-  keyword: string;
+  keyword?: string;
+  url?: string;
+  mode?: 'seed' | 'url';
+  contentSeedKeyword?: string;
   regionId?: string;
   languageId?: string;
   pageSize: number;
 }): Promise<GoogleAdsResponse> {
+  const mode = args.mode ?? (args.url ? 'url' : 'seed');
+  const seed = buildGoogleAdsKeywordSeed(
+    mode === 'url'
+      ? {
+          mode: 'url',
+          url: args.url ?? '',
+          contentSeedKeyword: args.contentSeedKeyword ?? args.keyword,
+        }
+      : {
+          mode: 'seed',
+          seedKeyword: args.keyword ?? '',
+        },
+  );
+
   const payload = {
-    keywordSeed: { keywords: [args.keyword.trim()] },
+    ...seed,
     keywordPlanNetwork: 'GOOGLE_SEARCH',
     pageSize: args.pageSize,
     ...buildGeoLanguagePayload(args.regionId, args.languageId),
@@ -163,7 +189,9 @@ async function fetchGenerateKeywordIdeas(args: {
     url: googleAdsUrl,
     customerId: args.customerId,
     pageSize: args.pageSize,
-    keyword: args.keyword,
+    mode,
+    keyword: args.keyword ?? null,
+    pageUrl: args.url ?? null,
     regionId: args.regionId || null,
     languageId: args.languageId || null,
   });
@@ -268,7 +296,8 @@ export async function POST(request: NextRequest) {
     const body: KeywordIdeasRequest = await request.json();
     const rawPageSize = body.pageSize ?? DEFAULT_PAGE_SIZE;
     const pageSize = Math.max(1, Math.min(MAX_PAGE_SIZE, rawPageSize));
-    const { keyword, regionId, languageId } = body;
+    const { keyword, url, regionId, languageId, contentSeedKeyword } = body;
+    const mode = resolveKeywordResearchMode(body);
     const phase: 'primary' | 'full' = body.phase === 'full' ? 'full' : 'primary';
     // Primary phase uses a smaller page for a faster Google Ads response.
     const effectivePageSize =
@@ -277,17 +306,25 @@ export async function POST(request: NextRequest) {
         : pageSize;
 
     // Validate required fields
-    if (!keyword || keyword.trim().length === 0) {
+    if (mode === 'url') {
+      if (!url || url.trim().length === 0) {
+        return NextResponse.json(
+          { error: { code: 400, message: "URL is required for url mode" } },
+          { status: 400 }
+        );
+      }
+    } else if (!keyword || keyword.trim().length === 0) {
       return NextResponse.json(
         { error: { code: 400, message: "Keyword is required" } },
         { status: 400 }
       );
     }
 
-    const trimmedKeyword = keyword.trim();
+    const trimmedKeyword = (keyword ?? contentSeedKeyword ?? url ?? '').trim();
+    const trimmedUrl = url?.trim() ?? '';
 
-    // Create cache key (v4: phased primary/full)
-    const cacheKey = `v4-${phase}-${trimmedKeyword.toLowerCase()}-${regionId || 'any'}-${languageId || 'any'}-${effectivePageSize}`;
+    // Create cache key (v5: seed + url modes)
+    const cacheKey = `v5-${mode}-${phase}-${trimmedKeyword.toLowerCase()}-${trimmedUrl}-${regionId || 'any'}-${languageId || 'any'}-${effectivePageSize}`;
     
     // Check cache first
     const cachedResponse = getCachedResponse(cacheKey);
@@ -315,7 +352,10 @@ export async function POST(request: NextRequest) {
           accessToken,
           customerId,
           developerToken,
-          keyword: trimmedKeyword,
+          mode,
+          keyword: keyword?.trim() || contentSeedKeyword?.trim() || undefined,
+          url: trimmedUrl || undefined,
+          contentSeedKeyword: contentSeedKeyword?.trim() || undefined,
           regionId,
           languageId,
           pageSize: effectivePageSize,
@@ -372,13 +412,16 @@ export async function POST(request: NextRequest) {
         accessToken,
         customerId,
         developerToken,
-        keyword: trimmedKeyword,
+        mode,
+        keyword: keyword?.trim() || contentSeedKeyword?.trim() || undefined,
+        url: trimmedUrl || undefined,
+        contentSeedKeyword: contentSeedKeyword?.trim() || undefined,
         regionId,
         languageId,
         pageSize,
       }),
       fetchGoogleAutocompleteSuggestions({
-        keyword: trimmedKeyword,
+        keyword: (keyword || contentSeedKeyword || trimmedKeyword).trim(),
         languageId,
         regionId,
         limit: Math.max(AUTOCOMPLETE_FETCH_LIMIT, pageSize),

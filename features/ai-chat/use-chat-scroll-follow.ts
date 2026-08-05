@@ -33,12 +33,12 @@ export function scrollUserMessageIntoComfortView(
   const { behavior = "smooth", offsetFromTop = CHAT_USER_MESSAGE_SCROLL_OFFSET_PX } = options
   const containerRect = container.getBoundingClientRect()
   const elementRect = messageElement.getBoundingClientRect()
-  const currentScrollTop = container.scrollTop
-  const elementTopWithinContainer =
-    elementRect.top - containerRect.top + currentScrollTop
-
+  // Delta from the current viewport — more stable than absolute offsetTop while
+  // bottom padding and streaming content are still changing layout.
+  const delta = elementRect.top - containerRect.top - offsetFromTop
+  if (Math.abs(delta) < 1) return
   container.scrollTo({
-    top: Math.max(0, elementTopWithinContainer - offsetFromTop),
+    top: Math.max(0, container.scrollTop + delta),
     behavior,
   })
 }
