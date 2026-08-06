@@ -12,6 +12,7 @@ import { Label } from "../ui/label"
 import { cn } from "@/lib/utils"
 import { GoogleConnectPanel } from "./google-connect-panel"
 import { isGoogleOAuthConnectEnabledInMainUi } from "@/lib/google-oauth-feature"
+import { syncProjectGoogleAnalytics } from "@/lib/services/project-google-oauth"
 
 type Mapping = {
   id: number
@@ -75,6 +76,30 @@ export function ProjectAnalyticsSettings({ projectId }: ProjectAnalyticsSettings
     setSyncMessage("Syncing analytics data from Google Analytics...")
 
     try {
+      // Preferred path: read GA with the Google account connected to this project.
+      try {
+        const result = await syncProjectGoogleAnalytics({ projectId })
+        setSyncStatus(result.rowCount > 0 ? "success" : "no_data")
+        setSyncMessage(
+          result.rowCount > 0
+            ? `Read ${result.rowCount} daily rows from ${result.gaPropertyId} using ${
+                result.googleAccountEmail ?? "the connected Google account"
+              }.`
+            : "Connected to Google Analytics, but the property returned no rows for the selected range.",
+        )
+        queryClient.invalidateQueries({ queryKey: ["project-analytics", projectId] })
+        return
+      } catch (oauthError) {
+        const message =
+          oauthError instanceof Error ? oauthError.message : "OAuth analytics sync failed"
+        const hasNoConnection = /not connected|No Google Analytics property/i.test(message)
+        if (!hasNoConnection) {
+          setSyncStatus(/analytics\.readonly|permission|403/i.test(message) ? "permission_error" : "error")
+          setSyncMessage(message)
+          return
+        }
+      }
+
       const functionsClient = createClientComponentClient()
       const { data: _, error: fnError } = await functionsClient.functions.invoke(
         "sync-project-analytics",
@@ -109,7 +134,7 @@ export function ProjectAnalyticsSettings({ projectId }: ProjectAnalyticsSettings
         data: rows,
         error: tsError,
       } = await (supabase as any)
-        .from("project_analytics_timeseries")
+        .from("project_analytics_daily")
         .select("id")
         .eq("project_id", projectId)
         .limit(1)

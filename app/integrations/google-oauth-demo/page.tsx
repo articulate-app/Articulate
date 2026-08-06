@@ -53,6 +53,21 @@ export default function GoogleOAuthDemoPage() {
           screen is expected until verification completes — include it in the demo
           video.
         </p>
+        <div className="mt-2 space-y-1 rounded-md border border-gray-200 bg-gray-50 p-3 text-xs text-gray-600">
+          <p className="font-semibold text-gray-800">Requested scopes</p>
+          <ul className="list-disc space-y-0.5 pl-4 font-mono text-[11px]">
+            <li>openid</li>
+            <li>email</li>
+            <li>profile</li>
+            <li>https://www.googleapis.com/auth/webmasters.readonly</li>
+            <li>https://www.googleapis.com/auth/analytics.readonly</li>
+          </ul>
+          <p className="pt-1">
+            After saving an Analytics property, this page reads GA4 report data with
+            the connected account’s <span className="font-mono">analytics.readonly</span>{" "}
+            grant and shows sessions, active users and channel groups below.
+          </p>
+        </div>
         <p className="mt-2 font-mono text-xs text-gray-500">{GOOGLE_OAUTH_DEMO_PATH}</p>
       </div>
 

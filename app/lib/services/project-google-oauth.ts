@@ -74,6 +74,47 @@ export async function selectGoogleConnectedProperties(args: {
   }
 }
 
+export type GoogleAnalyticsSyncResult = {
+  ok: true
+  source: "oauth_user_token"
+  googleAccountEmail: string | null
+  gaPropertyId: string
+  rowCount: number
+  totalSessions: number
+  totalActiveUsers: number
+  channels: string[]
+  firstDate: string | null
+  lastDate: string | null
+}
+
+/**
+ * Pulls GA4 report data for the project using the connected Google account's
+ * analytics.readonly grant (not a platform-wide service account).
+ */
+export async function syncProjectGoogleAnalytics(args: {
+  projectId: number
+  gaPropertyId?: string | null
+}): Promise<GoogleAnalyticsSyncResult> {
+  const response = await fetch("/api/auth/google/analytics-sync", {
+    method: "POST",
+    credentials: "same-origin",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      projectId: args.projectId,
+      gaPropertyId: args.gaPropertyId ?? null,
+    }),
+  })
+  const payload = await response.json().catch(() => ({}))
+  if (!response.ok) {
+    throw new Error(
+      typeof payload?.error === "string"
+        ? payload.error
+        : "Failed to sync Google Analytics data",
+    )
+  }
+  return payload as GoogleAnalyticsSyncResult
+}
+
 export async function disconnectProjectGoogleOAuth(projectId: number): Promise<void> {
   const response = await fetch("/api/auth/google/disconnect", {
     method: "POST",

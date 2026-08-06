@@ -18,6 +18,8 @@ import {
   getProjectGoogleOAuthStatus,
   listGoogleConnectedProperties,
   selectGoogleConnectedProperties,
+  syncProjectGoogleAnalytics,
+  type GoogleAnalyticsSyncResult,
   type GoogleConnectedPropertiesResponse,
   type ProjectGoogleOAuthStatus,
 } from "@/lib/services/project-google-oauth"
@@ -38,6 +40,11 @@ export function GoogleConnectPanel({
   const [gscPropertyUrl, setGscPropertyUrl] = useState<string>("")
   const [gaPropertyId, setGaPropertyId] = useState<string>("")
   const [showPicker, setShowPicker] = useState(false)
+  const [isSyncingAnalytics, setIsSyncingAnalytics] = useState(false)
+  const [analyticsSync, setAnalyticsSync] = useState<GoogleAnalyticsSyncResult | null>(
+    null,
+  )
+  const [analyticsError, setAnalyticsError] = useState<string | null>(null)
 
   const {
     data: status,
@@ -90,6 +97,28 @@ export function GoogleConnectPanel({
     return `/api/auth/google/start?${params.toString()}`
   }, [projectId, returnTo])
 
+  async function handleSyncAnalytics(propertyId?: string) {
+    setIsSyncingAnalytics(true)
+    setAnalyticsError(null)
+    try {
+      const result = await syncProjectGoogleAnalytics({
+        projectId,
+        gaPropertyId: propertyId || null,
+      })
+      setAnalyticsSync(result)
+      await queryClient.invalidateQueries({ queryKey: ["project-analytics", projectId] })
+      await queryClient.invalidateQueries({
+        queryKey: ["project-analytics-mappings", projectId],
+      })
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Analytics sync failed"
+      setAnalyticsSync(null)
+      setAnalyticsError(message)
+    } finally {
+      setIsSyncingAnalytics(false)
+    }
+  }
+
   async function handleSaveSelection() {
     setIsSelecting(true)
     try {
@@ -101,6 +130,9 @@ export function GoogleConnectPanel({
       toast({ title: "Properties saved" })
       setShowPicker(false)
       await queryClient.invalidateQueries({ queryKey: [PROJECT_GOOGLE_OAUTH_QUERY_KEY, projectId] })
+      if (gaPropertyId) {
+        await handleSyncAnalytics(gaPropertyId)
+      }
       onConnected?.()
     } catch (error) {
       toast({
@@ -119,6 +151,8 @@ export function GoogleConnectPanel({
       setShowPicker(false)
       setGscPropertyUrl("")
       setGaPropertyId("")
+      setAnalyticsSync(null)
+      setAnalyticsError(null)
       await refetchStatus()
       toast({ title: "Google disconnected" })
       onConnected?.()
@@ -165,6 +199,16 @@ export function GoogleConnectPanel({
           <>
             <Button variant="outline" onClick={() => setShowPicker(true)}>
               Choose properties
+            </Button>
+            <Button
+              variant="outline"
+              disabled={isSyncingAnalytics}
+              onClick={() => void handleSyncAnalytics()}
+            >
+              {isSyncingAnalytics ? (
+                <Loader2 className="mr-2 h-3.5 w-3.5 animate-spin" />
+              ) : null}
+              Sync Analytics data
             </Button>
             <Button variant="outline" asChild>
               <a href={connectHref}>Reconnect</a>
@@ -244,6 +288,47 @@ export function GoogleConnectPanel({
               </Button>
             </>
           )}
+        </div>
+      ) : null}
+
+      {analyticsError ? (
+        <div className="rounded-md border border-red-200 bg-red-50 px-3 py-2 text-xs text-red-700">
+          {analyticsError}
+        </div>
+      ) : null}
+
+      {analyticsSync ? (
+        <div className="space-y-1 rounded-md border border-green-200 bg-green-50 px-3 py-2 text-xs text-gray-700">
+          <p className="font-semibold text-green-800">
+            Google Analytics data read with the connected account
+          </p>
+          <p>
+            Property{" "}
+            <span className="font-mono text-[11px]">{analyticsSync.gaPropertyId}</span>
+            {analyticsSync.googleAccountEmail ? (
+              <>
+                {" · account "}
+                <span className="font-mono text-[11px]">
+                  {analyticsSync.googleAccountEmail}
+                </span>
+              </>
+            ) : null}
+          </p>
+          <p>
+            {analyticsSync.rowCount} daily rows
+            {analyticsSync.firstDate && analyticsSync.lastDate
+              ? ` · ${analyticsSync.firstDate} → ${analyticsSync.lastDate}`
+              : ""}
+          </p>
+          <p>
+            {analyticsSync.totalSessions.toLocaleString()} sessions ·{" "}
+            {analyticsSync.totalActiveUsers.toLocaleString()} active users
+          </p>
+          {analyticsSync.channels.length > 0 ? (
+            <p className="text-[11px] text-gray-600">
+              Channels: {analyticsSync.channels.join(", ")}
+            </p>
+          ) : null}
         </div>
       ) : null}
     </div>
