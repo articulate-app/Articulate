@@ -30,6 +30,17 @@ The repo ships **no `.env` example**. The app needs at minimum:
 prints. For full production-schema data, point them at the hosted Supabase
 project instead (add the values as secrets).
 
+- **Env precedence gotcha:** Next.js (`@next/env`) does NOT override variables
+  already present in the shell environment, so when the 5 vars above are injected
+  as Cloud secrets the app targets the **hosted** project even if a `.env.local`
+  exists. To use a local Supabase stack instead, unset those shell vars (or run
+  in a shell without them) so `.env.local` takes effect. Restart `npm run dev`
+  after changing which backend you target.
+- Data pages are **RLS-filtered per user/team**, so a brand-new account (or one
+  created via the local stack) sees empty lists ("No results found") even against
+  the populated hosted DB. Viewing real data in the UI requires logging in as an
+  existing hosted user.
+
 ### IMPORTANT gotchas (non-obvious)
 
 - **Docker is required for local Supabase and is not preinstalled.** Install
