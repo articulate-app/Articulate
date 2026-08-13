@@ -6,9 +6,14 @@ export const dynamic = "force-dynamic"
 /** Public JWKS / PEM for Browser Helper JWT verification. No secrets. */
 export async function GET() {
   const jwks = await getLocalBrowserJwks()
+  // Public JWK only — never include PEM/spki material in `keys`.
+  const keys = jwks.keys.map((key) => {
+    const { spki: _spki, ...rest } = key as Record<string, unknown>
+    return rest
+  })
   return NextResponse.json(
     {
-      keys: jwks.keys.map(({ spki: _spki, ...rest }) => rest),
+      keys,
       publicKeyPem: jwks.publicKeyPem,
       alg: "EdDSA",
       issuer: "articulate-local-browser",

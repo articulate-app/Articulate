@@ -233,8 +233,12 @@ function StackArtifactExpandedBody({
       width: number
       height: number
     }) => void
-    onSelectVideoTime?: (args: { attachmentId: string; timeSeconds: number }) => void
-    onSelectAsset?: (args: { attachmentId: string }) => void
+    onSelectVideoTime?: (args: {
+      attachmentId: string
+      timeStart: number
+      timeEnd?: number | null
+    }) => void
+    onSelectAsset?: (attachmentId: string) => void
   }
   updateDraft: (
     artifactId: string,

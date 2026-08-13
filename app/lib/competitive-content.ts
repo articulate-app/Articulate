@@ -555,7 +555,7 @@ export function extractKeywordCandidatesFromContent(args: {
     .sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]))
     .map(([phrase]) => phrase)
 
-  let primary = ranked[0] ?? null
+  let primary: string | null = ranked[0] ?? null
   if (!primary && topicNormalized) {
     const topicWords = topicNormalized
       .split(" ")

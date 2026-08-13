@@ -22,6 +22,7 @@ export type SocialSummaryEntityMetrics = {
   share_of_posts_pct: number | null
   share_of_interactions_pct: number | null
   followers_latest: number | null
+  followers_start: number | null
   followers_delta: number | null
   followers_delta_pct: number | null
   follower_snapshot_days: number | null

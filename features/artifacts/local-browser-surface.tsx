@@ -5,7 +5,7 @@
  * Stream path: Chrome ↔ Local Bridge WS ↔ this canvas (never Cloud / Supabase / LLM).
  */
 
-import { useEffect, useRef, useState, type ClipboardEvent, type KeyboardEvent, type PointerEvent, type WheelEvent } from "react"
+import { useEffect, useRef, useState, type ClipboardEvent, type KeyboardEvent, type PointerEvent } from "react"
 import { Loader2 } from "lucide-react"
 import {
   getBridgeNavState,
@@ -706,7 +706,7 @@ export function LocalBrowserSurface({
     const canvas = canvasRef.current
     if (!host || !interactive) return
 
-    const onWheelNative = (event: WheelEvent) => {
+    const onWheelNative = (event: globalThis.WheelEvent) => {
       if (!interactive) return
       event.preventDefault()
       event.stopPropagation()

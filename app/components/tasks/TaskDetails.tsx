@@ -151,6 +151,7 @@ type Task = Omit<BaseTask, 'id' | 'assigned_to_id' | 'project_id_int' | 'content
   assigned_to_name: string | null;
   project_name: string | null;
   project_color: string | null;
+  project_logo?: string | null;
   project_status_name: string | null;
   project_status_color: string | null;
   content_type_title: string | null;

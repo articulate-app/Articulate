@@ -88,7 +88,7 @@ async function openLocalWithAuth(args: {
   }
 
   const token = await getLocalBrowserAccessToken({
-    deviceId: discovery.state === "missing" ? undefined : discovery.deviceId,
+    deviceId: "deviceId" in discovery ? discovery.deviceId : undefined,
   })
 
   logBrowserOpen({

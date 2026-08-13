@@ -23,11 +23,11 @@ export type PublishMode = "now" | "scheduled"
 export type ScheduleStrategy = "external" | "internal"
 
 export type PublishingDestinationEntryPoints = {
-  article?: string
-  newsletter?: string
-  social_post?: string
-  landing_page?: string
-  other?: string
+  article?: string | null
+  newsletter?: string | null
+  social_post?: string | null
+  landing_page?: string | null
+  other?: string | null
 }
 
 export type PublishingDestinationMemory = {

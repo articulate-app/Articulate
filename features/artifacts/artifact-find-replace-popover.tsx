@@ -184,7 +184,9 @@ export function ArtifactFindReplacePopover({
         className="z-[120] w-[min(92vw,22rem)] space-y-2 p-3"
         onOpenAutoFocus={(event) => {
           // Prefer focusing the Find input over the first focusable control.
-          const target = event.currentTarget.querySelector<HTMLInputElement>(
+          const root = event.currentTarget
+          if (!(root instanceof HTMLElement)) return
+          const target = root.querySelector<HTMLInputElement>(
             'input[data-artifact-find-input="true"]',
           )
           if (target) {
