@@ -7,6 +7,7 @@ import {
   linkifyBareAppEntityUrls,
   stripListMarkersFromAppEntityOnlyLines,
 } from "./assistant-app-entity-links"
+import { softenAssistantMarkdownProse } from "./assistant-markdown-prose"
 import { assistantMarked } from "./assistant-marked"
 import { htmlToPlainTextForReparse, markdownFromRenderableBlocks } from "./text-to-output-blocks"
 
@@ -52,7 +53,9 @@ function prepareAssistantMarkdownForDisplay(
 ): string {
   return linkifyBareAppEntityUrls(
     stripListMarkersFromAppEntityOnlyLines(
-      collapseRedundantAppEntityLinkLines(markdown.replace(/\n{3,}/g, "\n\n")),
+      collapseRedundantAppEntityLinkLines(
+        softenAssistantMarkdownProse(markdown.replace(/\n{3,}/g, "\n\n")),
+      ),
     ),
     labels,
   )

@@ -119,6 +119,35 @@ describe("formatAssistantContentForDisplay", () => {
     expect(html).not.toContain("**Conclusão**")
   })
 
+  it("collapses newlines inside quoted template names", () => {
+    const html = formatAssistantContentForDisplay(
+      'A minha recomendação: avançar com esta proposta como newsletter em inglês, seguindo o template “EN\n\nJuly 2026”, com 4 artigos e tom B2B sóbrio.',
+    )
+    expect(html).toContain("“EN July 2026”")
+    expect(html).not.toMatch(/“EN<\/p>/)
+    expect(html.match(/<p>/g)?.length ?? 0).toBe(1)
+  })
+
+  it("flattens multiline bold structure into inline strong text", () => {
+    const html = formatAssistantContentForDisplay(
+      'Propunha manter a lógica da newsletter de julho — **um tema editorial agregador\n\nintro curta\n\n4 blocos de artigos com CTA “Read on”** — mas dar a agosto um ângulo mais operacional.',
+    )
+    expect(html).toContain("<strong>")
+    expect(html).toContain("um tema editorial agregador, intro curta, 4 blocos de artigos com CTA “Read on”")
+    expect(html).not.toContain("**")
+    expect(html).not.toContain("<ul>")
+  })
+
+  it("flattens short bullet lists after bold used as inline structure", () => {
+    const html = formatAssistantContentForDisplay(
+      'Propunha manter a lógica da newsletter de julho — **um tema editorial agregador**\n- intro curta\n- 4 blocos de artigos com CTA “Read on” — mas dar a agosto um ângulo mais operacional.',
+    )
+    expect(html).toContain("<strong>um tema editorial agregador</strong>")
+    expect(html).toContain("intro curta, 4 blocos de artigos com CTA “Read on”")
+    expect(html).not.toContain("<ul>")
+    expect(html).not.toContain("<li>")
+  })
+
   it("renders numbered lists", () => {
     const markdown = "Here are updates:\n\n1. **Conclusão**: text\n2. **Que tipos existem?**: text"
     const html = formatAssistantContentForDisplay(markdown)
