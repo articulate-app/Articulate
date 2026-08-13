@@ -1,6 +1,6 @@
 "use client"
 
-import { useEffect, useMemo, useState } from "react"
+import { useMemo, useState } from "react"
 import { useQuery, useQueryClient } from "@tanstack/react-query"
 import { Loader2, AlertCircle, CheckCircle2 } from "lucide-react"
 import { createClient } from "../../lib/supabase/client"
@@ -10,7 +10,7 @@ import { Button } from "../ui/button"
 import { Input } from "../ui/input"
 import { Label } from "../ui/label"
 import { cn } from "@/lib/utils"
-import { GoogleConnectPanel } from "./google-connect-panel"
+import { ProjectGoogleIntegrationsSection } from "./project-google-integrations-section"
 import { isGoogleOAuthConnectEnabledInMainUi } from "@/lib/google-oauth-feature"
 import { syncProjectGoogleAnalytics } from "@/lib/services/project-google-oauth"
 
@@ -37,6 +37,7 @@ interface ProjectAnalyticsSettingsProps {
 export function ProjectAnalyticsSettings({ projectId }: ProjectAnalyticsSettingsProps) {
   const supabase = useMemo(() => createClient(), [])
   const queryClient = useQueryClient()
+  const oauthEnabled = isGoogleOAuthConnectEnabledInMainUi()
 
   const [propertyId, setPropertyId] = useState("")
   const [isSubmitting, setIsSubmitting] = useState(false)
@@ -50,6 +51,7 @@ export function ProjectAnalyticsSettings({ projectId }: ProjectAnalyticsSettings
     refetch: refetchMappings,
   } = useQuery<Mapping[]>({
     queryKey: ["project-analytics-mappings", projectId],
+    enabled: !oauthEnabled,
     queryFn: async (): Promise<Mapping[]> => {
       const { data, error } = await (supabase as any)
         .from("project_analytics_properties")
@@ -64,111 +66,56 @@ export function ProjectAnalyticsSettings({ projectId }: ProjectAnalyticsSettings
     },
   })
 
-  useEffect(() => {
-    if (mappingsError) {
-      console.error("Error loading analytics mappings:", mappingsError)
-    }
-  }, [mappingsError])
-
   const triggerSync = async () => {
     setIsSubmitting(true)
     setSyncStatus("syncing")
     setSyncMessage("Syncing analytics data from Google Analytics...")
 
     try {
-      // Preferred path: read GA with the Google account connected to this project.
       try {
-        const result = await syncProjectGoogleAnalytics({ projectId })
-        setSyncStatus(result.rowCount > 0 ? "success" : "no_data")
-        setSyncMessage(
-          result.rowCount > 0
-            ? `Read ${result.rowCount} daily rows from ${result.gaPropertyId} using ${
-                result.googleAccountEmail ?? "the connected Google account"
-              }.`
-            : "Connected to Google Analytics, but the property returned no rows for the selected range.",
-        )
-        queryClient.invalidateQueries({ queryKey: ["project-analytics", projectId] })
+        await syncProjectGoogleAnalytics({ projectId })
+        setSyncStatus("success")
+        setSyncMessage("Google Analytics property connected and data synced successfully.")
+        queryClient.invalidateQueries({
+          queryKey: ["project-analytics", projectId],
+        })
         return
-      } catch (oauthError) {
-        const message =
-          oauthError instanceof Error ? oauthError.message : "OAuth analytics sync failed"
-        const hasNoConnection = /not connected|No Google Analytics property/i.test(message)
-        if (!hasNoConnection) {
-          setSyncStatus(/analytics\.readonly|permission|403/i.test(message) ? "permission_error" : "error")
-          setSyncMessage(message)
-          return
-        }
+      } catch {
+        // Fall through to platform sync path.
       }
 
-      const functionsClient = createClientComponentClient()
-      const { data: _, error: fnError } = await functionsClient.functions.invoke(
-        "sync-project-analytics",
-        { body: { project_id: projectId } },
-      )
-
-      if (fnError) {
-        const message = fnError.message || "Failed to sync analytics data."
-        const isForbidden =
-          (fnError as any).status === 403 ||
-          message.toLowerCase().includes("403") ||
-          message.toLowerCase().includes("permission")
-
-        if (isForbidden) {
-          setSyncStatus("permission_error")
-          setSyncMessage(
-            "We were unable to read data from this Google Analytics property. " +
-              "Please add app@whyarticulate.com as a Viewer on this GA4 property in Google Analytics, " +
-              "then return here and click 'Sync again'.",
-          )
-        } else {
-          setSyncStatus("error")
-          setSyncMessage(
-            message ||
-              "Failed to sync analytics data. Please try again in a moment.",
-          )
-        }
-        return
-      }
-
-      const {
-        data: rows,
-        error: tsError,
-      } = await (supabase as any)
-        .from("project_analytics_daily")
-        .select("id")
-        .eq("project_id", projectId)
-        .limit(1)
-
-      if (tsError) {
+      const authClient = createClientComponentClient()
+      const { data, error } = await authClient.functions.invoke("sync-project-analytics", {
+        body: { project_id: projectId },
+      })
+      if (error) {
         setSyncStatus("error")
-        setSyncMessage(
-          tsError.message ||
-            "Analytics sync completed, but we could not verify the data.",
-        )
+        setSyncMessage(error.message || "Failed to sync Google Analytics.")
         return
       }
+
+      const rows = Array.isArray((data as { rows?: unknown[] } | null)?.rows)
+        ? (data as { rows: unknown[] }).rows
+        : null
 
       if (!rows || rows.length === 0) {
         setSyncStatus("no_data")
         setSyncMessage(
-          "We connected to Google Analytics, but didn't find any recent data for this property. " +
-            "Check your date range or confirm you're using the correct property.",
+          "We connected to Google Analytics, but didn't find any recent data for this property.",
         )
       } else {
         setSyncStatus("success")
-        setSyncMessage(
-          "Google Analytics property connected and data synced successfully.",
-        )
-
+        setSyncMessage("Google Analytics property connected and data synced successfully.")
         queryClient.invalidateQueries({
           queryKey: ["project-analytics", projectId],
         })
       }
-    } catch (error: any) {
-      console.error("Error connecting GA property:", error)
+    } catch (error: unknown) {
       setSyncStatus("error")
       setSyncMessage(
-        error?.message || "Unexpected error while connecting GA property.",
+        error instanceof Error
+          ? error.message
+          : "Unexpected error while connecting GA property.",
       )
     } finally {
       setIsSubmitting(false)
@@ -207,11 +154,14 @@ export function ProjectAnalyticsSettings({ projectId }: ProjectAnalyticsSettings
       }
 
       await refetchMappings()
-
       await triggerSync()
     } finally {
       setIsSubmitting(false)
     }
+  }
+
+  if (oauthEnabled) {
+    return <ProjectGoogleIntegrationsSection projectId={projectId} />
   }
 
   const hasMappings = Array.isArray(mappings) && mappings.length > 0
@@ -225,25 +175,11 @@ export function ProjectAnalyticsSettings({ projectId }: ProjectAnalyticsSettings
             Google Analytics connection
           </h3>
           <p className="mt-1 text-xs text-gray-500">
-            {isGoogleOAuthConnectEnabledInMainUi()
-              ? "Prefer one-click Google connect (Search Console + Analytics). Legacy option: share Viewer access with "
-              : "Connect a GA4 property by sharing Viewer access with "}
+            Connect a GA4 property by sharing Viewer access with{" "}
             <span className="font-mono text-[11px]">app@whyarticulate.com</span>
-            {isGoogleOAuthConnectEnabledInMainUi()
-              ? " and paste a GA4 property ID below."
-              : ", then paste the GA4 property ID below."}
+            , then paste the GA4 property ID below.
           </p>
         </div>
-
-        {isGoogleOAuthConnectEnabledInMainUi() ? (
-          <GoogleConnectPanel
-            projectId={projectId}
-            onConnected={() => {
-              void refetchMappings()
-              void triggerSync()
-            }}
-          />
-        ) : null}
 
         {isLoadingMappings ? (
           <div className="flex items-center gap-2 text-xs text-gray-500">
@@ -275,17 +211,12 @@ export function ProjectAnalyticsSettings({ projectId }: ProjectAnalyticsSettings
                 onChange={(e) => setPropertyId(e.target.value)}
                 className="h-8 text-xs"
               />
-              <p className="text-[11px] text-gray-500">
-                Accepts{" "}
-                <span className="font-mono">347260813</span> or{" "}
-                <span className="font-mono">properties/347260813</span>.
-              </p>
             </div>
             <Button
               type="button"
               size="sm"
               className="mt-2 sm:mt-0"
-              onClick={handleConnectAndSync}
+              onClick={() => void handleConnectAndSync()}
               disabled={isSubmitting}
             >
               {isSubmitting ? (
@@ -300,7 +231,7 @@ export function ProjectAnalyticsSettings({ projectId }: ProjectAnalyticsSettings
           </div>
         )}
 
-        {syncStatus !== "idle" && syncMessage && (
+        {syncStatus !== "idle" && syncMessage ? (
           <div
             className={cn(
               "mt-2 flex items-start gap-2 rounded-md border px-3 py-2 text-xs",
@@ -316,26 +247,12 @@ export function ProjectAnalyticsSettings({ projectId }: ProjectAnalyticsSettings
             ) : (
               <AlertCircle className="mt-0.5 h-4 w-4 text-gray-500" />
             )}
-            <div className="space-y-1">
-              {syncStatus === "permission_error" && (
-                <div className="text-xs font-semibold text-red-700">
-                  We don&apos;t have access to this GA property. Please add{" "}
-                  <span className="font-mono text-[11px]">
-                    app@whyarticulate.com
-                  </span>{" "}
-                  as a Viewer in Google Analytics, then click &quot;Sync
-                  again&quot;.
-                </div>
-              )}
-              <p className="whitespace-pre-line text-[11px] text-gray-700">
-                {syncMessage}
-              </p>
-            </div>
+            <p className="whitespace-pre-line text-[11px] text-gray-700">
+              {syncMessage}
+            </p>
           </div>
-        )}
+        ) : null}
       </div>
     </Card>
   )
 }
-
-

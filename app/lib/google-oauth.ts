@@ -20,20 +20,20 @@ export function getGoogleOAuthClientCredentials(): {
   clientId: string
   clientSecret: string
 } {
+  // Do not fall back to GOOGLE_ADS_* — that is a different OAuth client and
+  // commonly lacks the Search Console / Analytics redirect URIs (esp. localhost).
   const clientId =
     process.env.GA_CLIENT_ID?.trim() ||
     process.env.GSC_CLIENT_ID?.trim() ||
-    process.env.GOOGLE_ADS_CLIENT_ID?.trim() ||
-    process.env.GOOGLE_ADS_OAUTH_CLIENT_ID?.trim() ||
     ""
   const clientSecret =
     process.env.GA_CLIENT_SECRET?.trim() ||
     process.env.GSC_CLIENT_SECRET?.trim() ||
-    process.env.GOOGLE_ADS_CLIENT_SECRET?.trim() ||
     ""
   if (!clientId || !clientSecret) {
     throw new Error(
-      "Missing GA_CLIENT_ID/GA_CLIENT_SECRET (or GSC_* / GOOGLE_ADS_*) for Google OAuth",
+      "Missing GA_CLIENT_ID/GA_CLIENT_SECRET (or GSC_*) for Google OAuth. " +
+        "Use the Articulate Search Console / Analytics OAuth client, not Google Ads.",
     )
   }
   return { clientId, clientSecret }
@@ -91,6 +91,19 @@ export function buildGoogleOAuthAuthorizeUrl(args: {
 
 export function resolveAppOrigin(req: Request): string {
   const url = new URL(req.url)
+  const requestHost = url.hostname.toLowerCase()
+  const isLocalRequest =
+    requestHost === "localhost"
+    || requestHost === "127.0.0.1"
+    || requestHost === "[::1]"
+    || requestHost.endsWith(".local")
+
+  // Local dev must use the browser origin so redirect_uri matches the
+  // authorized localhost callback, even when NEXT_PUBLIC_SITE_URL is production.
+  if (isLocalRequest) {
+    return url.origin
+  }
+
   const forwardedHost = req.headers.get("x-forwarded-host")
   const forwardedProto = req.headers.get("x-forwarded-proto")
   if (forwardedHost) {

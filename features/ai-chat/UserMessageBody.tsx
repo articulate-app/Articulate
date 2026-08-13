@@ -5,6 +5,7 @@ import { usePathname, useSearchParams } from "next/navigation"
 import type { AiContextTag } from "./composer-inline-editor"
 import { chipDisplayText, chipTooltipText } from "./composer-inline-editor"
 import { getMentionChipClassName } from "./mention-chip-styles"
+import { ArtifactContextChip } from "./artifact-context-chip"
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "../../app/components/ui/tooltip"
 import {
   inferUserMessageSegments,
@@ -20,17 +21,86 @@ import { buildNextUrlForEntityLink, isTasksShellPath } from "./app-entity-links"
 import { shallowPushSearchParams } from "../../app/lib/tasks-shallow-nav"
 import { useCenterPaneTabsStore } from "../../app/store/center-pane-tabs"
 import { cn } from "../../app/lib/utils"
+import { splitTextWithUrls } from "./split-text-with-urls"
 
 export function UserMentionChip({ tag }: { tag: AiContextTag }) {
+  const pathname = usePathname()
+  const searchParams = useSearchParams()
   const tooltip = chipTooltipText(tag)
+  const artifactId =
+    tag.type === "artifact"
+      ? String(tag.artifactId ?? tag.id ?? "").trim()
+      : ""
+  const canOpenArtifact = tag.type === "artifact" && Boolean(artifactId)
+
+  const openArtifact = () => {
+    if (!canOpenArtifact) return
+    useCenterPaneTabsStore.getState().upsertTab({
+      kind: "artifact",
+      id: artifactId,
+    })
+    const nextUrl = buildNextUrlForEntityLink({
+      currentPathname: pathname,
+      currentSearchParams: new URLSearchParams(searchParams.toString()),
+      parsedLink: {
+        type: "artifact",
+        id: artifactId,
+        version: tag.artifactVersionNumber ?? null,
+      },
+      fromAiChat: true,
+    })
+    if (!nextUrl) return
+    if (isTasksShellPath(pathname)) {
+      const queryStart = nextUrl.indexOf("?")
+      const nextParams = new URLSearchParams(queryStart >= 0 ? nextUrl.slice(queryStart + 1) : "")
+      shallowPushSearchParams(
+        pathname.startsWith("/artifacts") ? "/" : pathname,
+        nextParams,
+        "ai-chat-mention-chip",
+      )
+      return
+    }
+    window.location.assign(nextUrl)
+  }
+
+  if (tag.type === "artifact") {
+    const title = (tag.artifactTitle ?? tag.label).trim() || "Artifact"
+    const subtitle =
+      tag.artifactVersionNumber != null ? `Artifact · v${tag.artifactVersionNumber}` : "Artifact"
+    return (
+      <TooltipProvider delayDuration={200}>
+        <Tooltip>
+          <TooltipTrigger asChild>
+            <span className="inline-flex align-middle" data-ai-history-tag="1">
+              <ArtifactContextChip
+                title={title}
+                subtitle={subtitle}
+                readOnly
+                onClick={canOpenArtifact ? openArtifact : undefined}
+              />
+            </span>
+          </TooltipTrigger>
+          <TooltipContent side="top" className="max-w-xs whitespace-pre-line text-left">
+            {tooltip}
+          </TooltipContent>
+        </Tooltip>
+      </TooltipProvider>
+    )
+  }
+
+  const chip = (
+    <span
+      className={cn(getMentionChipClassName(tag))}
+      data-ai-history-tag="1"
+    >
+      <span className="min-w-0 truncate whitespace-nowrap">{chipDisplayText(tag)}</span>
+    </span>
+  )
+
   return (
     <TooltipProvider delayDuration={200}>
       <Tooltip>
-        <TooltipTrigger asChild>
-          <span className={getMentionChipClassName(tag)} data-ai-history-tag="1">
-            <span className="min-w-0 truncate whitespace-nowrap">{chipDisplayText(tag)}</span>
-          </span>
-        </TooltipTrigger>
+        <TooltipTrigger asChild>{chip}</TooltipTrigger>
         <TooltipContent side="top" className="max-w-xs whitespace-pre-line text-left">
           {tooltip}
         </TooltipContent>
@@ -145,15 +215,40 @@ function UserSelectionPill({ pill }: { pill: AiUserMessageSelectionPillPart }) {
   )
 }
 
+function LinkifiedPlainText({ text, segmentKey }: { text: string; segmentKey: string }) {
+  const parts = splitTextWithUrls(text)
+  return (
+    <span className="whitespace-pre-wrap">
+      {parts.map((part, partIndex) => {
+        if (part.type === "url") {
+          return (
+            <a
+              key={`${segmentKey}-url-${partIndex}`}
+              href={part.href}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="break-all text-[#2563eb] hover:underline underline-offset-2"
+              onClick={(event) => event.stopPropagation()}
+            >
+              {part.value}
+            </a>
+          )
+        }
+        return (
+          <React.Fragment key={`${segmentKey}-text-${partIndex}`}>
+            {part.value}
+          </React.Fragment>
+        )
+      })}
+    </span>
+  )
+}
+
 function renderSegment(segment: AiMessageSegment, index: number) {
   if (segment.type === "mention") {
     return <UserMentionChip key={`mention-${index}`} tag={segment.tag} />
   }
-  return (
-    <span key={`text-${index}`} className="whitespace-pre-wrap">
-      {segment.text}
-    </span>
-  )
+  return <LinkifiedPlainText key={`text-${index}`} text={segment.text} segmentKey={`text-${index}`} />
 }
 
 export function UserMessageBody({

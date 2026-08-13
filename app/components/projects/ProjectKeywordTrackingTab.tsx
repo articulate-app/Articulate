@@ -1,6 +1,6 @@
 "use client"
 
-import { useEffect, useMemo, useState } from "react"
+import { useEffect, useMemo, useRef, useState } from "react"
 import { createPortal } from "react-dom"
 import { useQuery, useQueryClient } from "@tanstack/react-query"
 import { format, subDays } from "date-fns"
@@ -11,7 +11,8 @@ import { Input } from "../ui/input"
 import { Label } from "../ui/label"
 import { DateRangePicker } from "../ui/date-range-picker"
 import { toast } from "../ui/use-toast"
-import { Loader2, AlertCircle } from "lucide-react"
+import { Loader2, AlertCircle, X } from "lucide-react"
+import { KeywordDifficultyBadge } from "../keyword-expanded-metrics"
 import {
   LineChart,
   Line,
@@ -49,6 +50,7 @@ import {
   ChartPreviewHoverActions,
 } from "./chart-preview-hover-actions"
 import { AddDashedButton } from "../ui/add-dashed-button"
+import { ProjectTrackSuggestions } from "./project-track-suggestions"
 import { cn } from "@/lib/utils"
 
 interface DateRangeValue {
@@ -70,6 +72,8 @@ type KeywordRow = {
   keyword: string
   language_code: string | null
   region_code: string | null
+  search_volume: number | null
+  competition_index: number | null
   is_active: boolean | null
   created_at: string
   updated_at: string
@@ -112,6 +116,76 @@ const LANGUAGE_OPTIONS: { code: string; label: string }[] = [
   { code: "FR", label: "French" },
   { code: "DE", label: "German" },
 ]
+
+const LANGUAGE_TO_ADS_ID: Record<string, string> = {
+  EN: "1000",
+  PT: "1014",
+  ES: "1003",
+  FR: "1002",
+  DE: "1001",
+}
+
+const volumeFormatter = new Intl.NumberFormat("en-US", {
+  notation: "compact",
+  maximumFractionDigits: 1,
+})
+
+function adsLanguageIdFromCode(code: string): string {
+  if (!code || code === "any") return "1014"
+  return LANGUAGE_TO_ADS_ID[code] ?? "1014"
+}
+
+function adsRegionIdFromCode(code: string): string {
+  if (!code || code === "any") return "2620"
+  return code
+}
+
+function formatSearchVolume(volume: number | null | undefined): string {
+  if (volume == null || !Number.isFinite(volume)) return "—"
+  return volumeFormatter.format(volume)
+}
+
+async function fetchKeywordAdsMetrics(args: {
+  keyword: string
+  languageCode: string
+  regionCode: string
+}): Promise<{ searchVolume: number; competitionIndex: number } | null> {
+  try {
+    const response = await fetch("/api/keyword-ideas", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        mode: "seed",
+        keyword: args.keyword,
+        languageId: adsLanguageIdFromCode(args.languageCode),
+        regionId: adsRegionIdFromCode(args.regionCode),
+        pageSize: 10,
+        phase: "primary",
+      }),
+      signal: AbortSignal.timeout(25_000),
+    })
+    if (!response.ok) return null
+    const data = (await response.json().catch(() => ({}))) as {
+      results?: Array<{
+        keyword?: string
+        avgMonthlySearches?: number
+        competitionIndex?: number
+      }>
+    }
+    const needle = args.keyword.trim().toLowerCase()
+    const exact =
+      (data.results ?? []).find(
+        (row) => String(row.keyword || "").trim().toLowerCase() === needle,
+      ) ?? data.results?.[0]
+    if (!exact) return null
+    return {
+      searchVolume: Number(exact.avgMonthlySearches) || 0,
+      competitionIndex: Number(exact.competitionIndex) || 0,
+    }
+  } catch {
+    return null
+  }
+}
 
 const getDefaultDateRange = (days = 29): DateRangeValue => {
   const today = new Date()
@@ -159,11 +233,14 @@ export function ProjectKeywordTrackingTab({
   const searchParams = useSearchParams()
 
   const [newKeyword, setNewKeyword] = useState("")
-  const [newLanguage, setNewLanguage] = useState<string>("any")
-  const [newRegion, setNewRegion] = useState<string>("any")
+  const [newLanguage, setNewLanguage] = useState<string>("PT")
+  const [newRegion, setNewRegion] = useState<string>("2620")
   const [isAdding, setIsAdding] = useState(false)
   const [showPreviewAddForm, setShowPreviewAddForm] = useState(false)
   const [isSyncing, setIsSyncing] = useState(false)
+  const [pendingRankKeywordId, setPendingRankKeywordId] = useState<number | null>(
+    null,
+  )
   const [selectedKeywordId, setSelectedKeywordId] = useState<number | null>(null)
   const [isDetailsOpen, setIsDetailsOpen] = useState(false)
   const [uncontrolledDateRange, setUncontrolledDateRange] = useState<DateRangeValue>(() =>
@@ -340,6 +417,112 @@ export function ProjectKeywordTrackingTab({
     }
   }, [selectedKeywordId, selectedDate, keywordSeries])
 
+  const enrichKeywordMetrics = async (args: {
+    projectKeywordId: number
+    keyword: string
+    languageCode: string
+    regionCode: string
+  }) => {
+    const metrics = await fetchKeywordAdsMetrics({
+      keyword: args.keyword,
+      languageCode: args.languageCode,
+      regionCode: args.regionCode,
+    })
+    if (!metrics) return
+    await (supabase as any).rpc("fn_update_project_keyword_metrics", {
+      p_project_keyword_id: args.projectKeywordId,
+      p_search_volume: metrics.searchVolume,
+      p_competition_index: metrics.competitionIndex,
+    })
+  }
+
+  const syncKeywordRankings = async (args?: {
+    projectKeywordId?: number | null
+  }) => {
+    const body: Record<string, number> = { project_id: projectId }
+    if (args?.projectKeywordId) {
+      body.project_keyword_id = args.projectKeywordId
+    }
+    return functionsClient.functions.invoke("sync-project-keyword-rankings", {
+      body,
+    })
+  }
+
+  const handleAddSuggestedKeywords = async (texts: string[]) => {
+    const keywordsToAdd = texts.map((text) => text.trim()).filter(Boolean)
+    if (keywordsToAdd.length === 0) return
+
+    setIsAdding(true)
+    try {
+      const languageCode = newLanguage === "any" ? "" : newLanguage
+      const regionCode = newRegion === "any" ? "" : newRegion
+      let added = 0
+      let firstAddedId: number | null = null
+
+      for (const keyword of keywordsToAdd) {
+        const { data, error } = await (supabase as any).rpc(
+          "fn_add_project_keyword",
+          {
+            p_project_id: projectId,
+            p_keyword: keyword,
+            p_language_code: languageCode,
+            p_region_code: regionCode,
+          },
+        )
+        if (error) throw error
+        added += 1
+        const id = Number(data?.id)
+        if (Number.isFinite(id) && id > 0) {
+          if (firstAddedId == null) firstAddedId = id
+          void enrichKeywordMetrics({
+            projectKeywordId: id,
+            keyword,
+            languageCode: newLanguage,
+            regionCode: newRegion,
+          })
+        }
+      }
+
+      if (firstAddedId != null) {
+        setSelectedKeywordId(firstAddedId)
+        setPendingRankKeywordId(firstAddedId)
+      }
+
+      await refetchKeywords()
+      toast({
+        title: added === 1 ? "Keyword added" : `${added} keywords added`,
+        description: "Fetching rankings and metrics…",
+      })
+
+      const { error: fnError } = await syncKeywordRankings({
+        projectKeywordId: firstAddedId,
+      })
+      if (fnError) {
+        toast({
+          title: "Keywords added, but rankings not updated",
+          description: "Try “Check rankings now”.",
+          variant: "destructive",
+        })
+      }
+
+      await Promise.all([refetchKeywords(), refetchGlobal()])
+      await queryClient.invalidateQueries({
+        queryKey: ["project-keywords-series", projectId],
+      })
+    } catch (error: unknown) {
+      toast({
+        title: "Could not add suggestions",
+        description:
+          error instanceof Error ? error.message : "Failed to add keywords.",
+        variant: "destructive",
+      })
+      throw error
+    } finally {
+      setPendingRankKeywordId(null)
+      setIsAdding(false)
+    }
+  }
+
   const handleAddKeyword = async () => {
     if (!newKeyword.trim()) {
       toast({
@@ -351,14 +534,18 @@ export function ProjectKeywordTrackingTab({
     }
 
     setIsAdding(true)
+    const languageCode = newLanguage === "any" ? "" : newLanguage
+    const regionCode = newRegion === "any" ? "" : newRegion
+    const keywordText = newKeyword.trim()
+
     try {
       const { data, error } = await (supabase as any).rpc(
         "fn_add_project_keyword",
         {
           p_project_id: projectId,
-          p_keyword: newKeyword.trim(),
-          p_language_code: newLanguage === "any" ? "" : newLanguage,
-          p_region_code: newRegion === "any" ? "" : newRegion,
+          p_keyword: keywordText,
+          p_language_code: languageCode,
+          p_region_code: regionCode,
         },
       )
 
@@ -366,18 +553,21 @@ export function ProjectKeywordTrackingTab({
         throw error
       }
 
-      // Optimistically add to keyword list
-      if (data?.id) {
+      const addedId = Number(data?.id)
+      if (Number.isFinite(addedId) && addedId > 0) {
+        setSelectedKeywordId(addedId)
+        setPendingRankKeywordId(addedId)
         queryClient.setQueryData(
           ["project-keywords", projectId],
           (old: KeywordRow[] | undefined) => {
-            if (!old) return old
             const newRow: KeywordRow = {
-              project_keyword_id: data.id as number,
+              project_keyword_id: addedId,
               project_id: projectId,
-              keyword: data.keyword,
-              language_code: data.language_code,
-              region_code: data.region_code,
+              keyword: data.keyword ?? keywordText,
+              language_code: (data.language_code ?? languageCode) || null,
+              region_code: (data.region_code ?? regionCode) || null,
+              search_volume: null,
+              competition_index: null,
               is_active: true,
               created_at: data.created_at,
               updated_at: data.updated_at,
@@ -387,6 +577,8 @@ export function ProjectKeywordTrackingTab({
               found_domain: null,
               top_results: null,
             }
+            if (!old) return [newRow]
+            if (old.some((row) => row.project_keyword_id === addedId)) return old
             return [...old, newRow]
           },
         )
@@ -394,21 +586,24 @@ export function ProjectKeywordTrackingTab({
 
       toast({
         title: "Keyword added",
-        description: "Checking rankings for this project…",
+        description: "Checking rankings and metrics…",
       })
 
       setNewKeyword("")
       setShowPreviewAddForm(false)
 
-      if (data?.id) {
-        setSelectedKeywordId(data.id as number)
+      if (Number.isFinite(addedId) && addedId > 0) {
+        await enrichKeywordMetrics({
+          projectKeywordId: addedId,
+          keyword: keywordText,
+          languageCode: newLanguage,
+          regionCode: newRegion,
+        })
       }
 
-      // Immediately trigger rankings sync for this project via Supabase functions API
-      const { error: fnError } = await functionsClient.functions.invoke(
-        "sync-project-keyword-rankings",
-        { body: { project_id: projectId } },
-      )
+      const { error: fnError } = await syncKeywordRankings({
+        projectKeywordId: Number.isFinite(addedId) ? addedId : null,
+      })
 
       if (fnError) {
         console.error("Keyword rankings sync after add failed:", fnError)
@@ -421,15 +616,14 @@ export function ProjectKeywordTrackingTab({
         return
       }
 
-      await Promise.all([
-        refetchKeywords(),
-        refetchGlobal(),
-        selectedKeywordId ? refetchKeywordSeries() : Promise.resolve(),
-      ])
+      await Promise.all([refetchKeywords(), refetchGlobal()])
+      await queryClient.invalidateQueries({
+        queryKey: ["project-keywords-series", projectId],
+      })
 
       toast({
         title: "Keyword added and rankings updated",
-        description: "Latest rankings have been fetched for this project.",
+        description: "Latest rankings and metrics are ready.",
       })
     } catch (error: any) {
       toast({
@@ -438,17 +632,42 @@ export function ProjectKeywordTrackingTab({
         variant: "destructive",
       })
     } finally {
+      setPendingRankKeywordId(null)
       setIsAdding(false)
     }
+  }
+
+  const handleRemoveKeyword = async (projectKeywordId: number) => {
+    const { error } = await (supabase as any).rpc(
+      "fn_deactivate_project_keyword",
+      { p_project_keyword_id: projectKeywordId },
+    )
+    if (error) throw error
+
+    queryClient.setQueryData(
+      ["project-keywords", projectId],
+      (old: KeywordRow[] | undefined) =>
+        old
+          ? old.filter((row) => row.project_keyword_id !== projectKeywordId)
+          : old,
+    )
+    if (selectedKeywordId === projectKeywordId) {
+      setSelectedKeywordId(null)
+      setIsDetailsOpen(false)
+    }
+    await Promise.all([
+      refetchKeywords(),
+      refetchGlobal(),
+      queryClient.invalidateQueries({
+        queryKey: ["project-keywords-series", projectId],
+      }),
+    ])
   }
 
   const handleSyncRankings = async () => {
     setIsSyncing(true)
     try {
-      const { error: fnError } = await functionsClient.functions.invoke(
-        "sync-project-keyword-rankings",
-        { body: { project_id: projectId } },
-      )
+      const { error: fnError } = await syncKeywordRankings()
 
       if (fnError) {
         console.error("Keyword rankings sync failed:", fnError)
@@ -482,6 +701,15 @@ export function ProjectKeywordTrackingTab({
     }
   }
 
+  const latestGlobalPoint = useMemo(() => {
+    if (!globalSeries?.length) return null
+    for (let i = globalSeries.length - 1; i >= 0; i -= 1) {
+      const point = globalSeries[i]
+      if (point?.avg_rank != null) return point
+    }
+    return globalSeries[globalSeries.length - 1] ?? null
+  }, [globalSeries])
+
   const hasKeywords = !!keywords && keywords.length > 0
   const hasGlobalSeries = !!globalSeries && globalSeries.length > 0
   const hasKeywordSeries = !!keywordSeries && keywordSeries.length > 0
@@ -490,13 +718,51 @@ export function ProjectKeywordTrackingTab({
     ? keywords!.find((row) => row.project_keyword_id === selectedKeywordId) || null
     : null
 
-  // Preview: auto-select first keyword so chart + SERP stay in-page.
-  useEffect(() => {
-    if (!isPreview || !hasKeywords || selectedKeywordId != null) return
-    setSelectedKeywordId(keywords![0].project_keyword_id)
-  }, [hasKeywords, isPreview, keywords, selectedKeywordId])
+  // Preview defaults to the global average chart (like AI Visibility).
 
-  // Full tab: auto-open details pane when landing on ?keywordId=XYZ
+  const metricsBackfillAttemptedRef = useRef<Set<number>>(new Set())
+
+  // Backfill SV/KD for older tracked keywords that were added before metrics storage.
+  useEffect(() => {
+    if (!keywords?.length) return
+    const missing = keywords.filter(
+      (row) =>
+        (row.search_volume == null || row.competition_index == null)
+        && !metricsBackfillAttemptedRef.current.has(row.project_keyword_id),
+    )
+    if (missing.length === 0) return
+
+    let cancelled = false
+    void (async () => {
+      let updated = false
+      for (const row of missing.slice(0, 8)) {
+        if (cancelled) break
+        metricsBackfillAttemptedRef.current.add(row.project_keyword_id)
+        const metrics = await fetchKeywordAdsMetrics({
+          keyword: row.keyword,
+          languageCode: row.language_code || "any",
+          regionCode: row.region_code || "any",
+        })
+        if (!metrics) continue
+        const { error } = await (supabase as any).rpc(
+          "fn_update_project_keyword_metrics",
+          {
+            p_project_keyword_id: row.project_keyword_id,
+            p_search_volume: metrics.searchVolume,
+            p_competition_index: metrics.competitionIndex,
+          },
+        )
+        if (!error) updated = true
+      }
+      if (!cancelled && updated) {
+        await refetchKeywords()
+      }
+    })()
+
+    return () => {
+      cancelled = true
+    }
+  }, [keywords, refetchKeywords, supabase])
   useEffect(() => {
     if (!isClient || !hasKeywords || isPreview) return
 
@@ -513,6 +779,16 @@ export function ProjectKeywordTrackingTab({
     setIsDetailsOpen(true)
   }, [isClient, hasKeywords, isPreview, keywords, searchParams])
 
+  const handleCloseDetails = () => {
+    setIsDetailsOpen(false)
+    const params = new URLSearchParams(searchParams.toString())
+    params.delete("keywordId")
+    const query = params.toString()
+    router.replace(query ? `${pathname}?${query}` : pathname, {
+      scroll: false,
+    })
+  }
+
   const detailsPane =
     selectedKeywordRow && isDetailsOpen && isClient
       ? createPortal(
@@ -521,16 +797,7 @@ export function ProjectKeywordTrackingTab({
             <div className="flex h-14 items-center justify-between border-b px-4">
               <h2 className="text-sm font-semibold truncate">Keyword details</h2>
               <button
-                onClick={() => {
-                  setIsDetailsOpen(false)
-                  const params = new URLSearchParams(searchParams.toString())
-                  params.delete("keywordId")
-                  const query = params.toString()
-                  router.replace(
-                    query ? `${pathname}?${query}` : pathname,
-                    { scroll: false },
-                  )
-                }}
+                onClick={handleCloseDetails}
                 className="ml-2 rounded-full p-1 hover:bg-accent"
               >
                 <span className="sr-only">Close</span>
@@ -566,24 +833,31 @@ export function ProjectKeywordTrackingTab({
                     {mapRegionName(selectedKeywordRow.region_code)}
                   </span>
                 </div>
+                <div className="flex items-center justify-between gap-3">
+                  <span className="text-xs font-medium text-gray-500">SV</span>
+                  <span className="text-right text-xs tabular-nums text-gray-900">
+                    {formatSearchVolume(selectedKeywordRow.search_volume)}
+                  </span>
+                </div>
+                <div className="flex items-center justify-between gap-3">
+                  <span className="text-xs font-medium text-gray-500">KD</span>
+                  <span className="text-right text-xs text-gray-900">
+                    {selectedKeywordRow.competition_index != null ? (
+                      <KeywordDifficultyBadge
+                        competitionIndex={selectedKeywordRow.competition_index}
+                      />
+                    ) : (
+                      "—"
+                    )}
+                  </span>
+                </div>
               </div>
 
               <div className="flex items-center justify-end gap-2">
                 <RemoveKeywordTrackingButton
-                  projectId={projectId}
                   selectedKeywordId={selectedKeywordId}
-                  supabase={supabase}
-                  queryClient={queryClient}
-                  onClosePane={() => {
-                    setIsDetailsOpen(false)
-                    const params = new URLSearchParams(searchParams.toString())
-                    params.delete("keywordId")
-                    const query = params.toString()
-                    router.replace(
-                      query ? `${pathname}?${query}` : pathname,
-                      { scroll: false },
-                    )
-                  }}
+                  onRemove={handleRemoveKeyword}
+                  onClosePane={handleCloseDetails}
                 />
               </div>
 
@@ -592,10 +866,13 @@ export function ProjectKeywordTrackingTab({
                   Ranking history
                 </h4>
                 <div className="h-64">
-                  {isLoadingKeywordSeries ? (
+                  {isLoadingKeywordSeries
+                    || pendingRankKeywordId === selectedKeywordId ? (
                     <div className="flex h-full items-center justify-center text-sm text-gray-500">
                       <Loader2 className="mr-2 h-5 w-5 animate-spin" />
-                      Loading keyword rankings…
+                      {pendingRankKeywordId === selectedKeywordId
+                        ? "Checking rankings…"
+                        : "Loading keyword rankings…"}
                     </div>
                   ) : keywordSeriesError ? (
                     <div className="flex h-full items-center gap-2 rounded-md border border-red-200 bg-red-50 px-3 py-2 text-xs text-red-700">
@@ -766,16 +1043,6 @@ export function ProjectKeywordTrackingTab({
         )
       : null
 
-  const handleCloseDetails = () => {
-    setIsDetailsOpen(false)
-    const params = new URLSearchParams(searchParams.toString())
-    params.delete("keywordId")
-    const query = params.toString()
-    router.replace(query ? `${pathname}?${query}` : pathname, {
-      scroll: false,
-    })
-  }
-
   const globalRankingsCard = (
     <Card
       className={
@@ -785,13 +1052,33 @@ export function ProjectKeywordTrackingTab({
       }
     >
       {isPreview ? null : (
-        <div className="mb-3 min-w-0">
-          <h4 className="text-sm font-semibold text-gray-900">
-            Global rankings
-          </h4>
-          <p className="text-[11px] text-gray-500">
-            Best and average rank across all tracked keywords.
-          </p>
+        <div className="mb-3 flex min-w-0 flex-wrap items-start justify-between gap-3">
+          <div className="min-w-0">
+            <h4 className="text-sm font-semibold text-gray-900">
+              Global rankings
+            </h4>
+            <p className="text-[11px] text-gray-500">
+              Best and average rank across all tracked keywords.
+            </p>
+          </div>
+          <div className="shrink-0 text-right">
+            <div className="text-[11px] font-medium uppercase tracking-wide text-gray-400">
+              Avg rank
+            </div>
+            <div className="text-xl font-semibold tabular-nums text-gray-900">
+              {latestGlobalPoint?.avg_rank != null
+                ? `#${Math.round(latestGlobalPoint.avg_rank)}`
+                : "—"}
+            </div>
+            <div className="text-[11px] text-gray-500">
+              {latestGlobalPoint
+                ? `${latestGlobalPoint.keywords_ranked}/${latestGlobalPoint.keywords_tracked} ranked`
+                : "No ranking data yet"}
+              {latestGlobalPoint?.best_rank != null
+                ? ` · best #${Math.round(latestGlobalPoint.best_rank)}`
+                : ""}
+            </div>
+          </div>
         </div>
       )}
       <div className="h-64 min-w-0">
@@ -959,43 +1246,27 @@ export function ProjectKeywordTrackingTab({
     if (!hasKeywords) {
       return (
         <div className="min-w-0 space-y-3">
+          <ProjectTrackSuggestions
+            projectId={projectId}
+            kind="keywords"
+            existingTexts={[]}
+            onAdd={handleAddSuggestedKeywords}
+            regionId={adsRegionIdFromCode(newRegion)}
+            languageId={adsLanguageIdFromCode(newLanguage)}
+          />
           {showPreviewAddForm ? (
-            <div className="space-y-3 rounded-lg border border-dashed border-gray-200 p-3">
-              <div className="space-y-1">
-                <Label htmlFor="overview-new-keyword" className="text-xs">
-                  Keyword
-                </Label>
-                <Input
-                  id="overview-new-keyword"
-                  placeholder="e.g. best seo agency lisbon"
-                  value={newKeyword}
-                  onChange={(e) => setNewKeyword(e.target.value)}
-                  className="h-8 text-xs"
-                  autoFocus
-                />
-              </div>
-              <div className="flex flex-wrap items-center gap-2">
-                <Button type="button" size="sm" onClick={handleAddKeyword} disabled={isAdding}>
-                  {isAdding ? (
-                    <>
-                      <Loader2 className="mr-2 h-4 w-4 animate-spin" />
-                      Adding…
-                    </>
-                  ) : (
-                    <>Add keyword</>
-                  )}
-                </Button>
-                <Button
-                  type="button"
-                  size="sm"
-                  variant="ghost"
-                  onClick={() => setShowPreviewAddForm(false)}
-                  disabled={isAdding}
-                >
-                  Cancel
-                </Button>
-              </div>
-            </div>
+            <KeywordAddFields
+              keyword={newKeyword}
+              onKeywordChange={setNewKeyword}
+              language={newLanguage}
+              onLanguageChange={setNewLanguage}
+              region={newRegion}
+              onRegionChange={setNewRegion}
+              isAdding={isAdding}
+              onAdd={handleAddKeyword}
+              onCancel={() => setShowPreviewAddForm(false)}
+              keywordInputId="overview-new-keyword"
+            />
           ) : (
             <AddDashedButton
               label="Add keyword"
@@ -1009,16 +1280,49 @@ export function ProjectKeywordTrackingTab({
 
     return (
       <div className="min-w-0 space-y-3">
+        <div className="flex flex-wrap items-end justify-between gap-3">
+          <div>
+            <div className="text-[11px] font-medium uppercase tracking-wide text-gray-400">
+              {showKeywordChart ? "Keyword rank" : "Avg rank"}
+            </div>
+            <div className="text-2xl font-semibold tabular-nums text-gray-900">
+              {showKeywordChart
+                ? selectedKeywordRow?.rank != null
+                  ? `#${selectedKeywordRow.rank}`
+                  : pendingRankKeywordId === selectedKeywordId
+                    ? "…"
+                    : "—"
+                : latestGlobalPoint?.avg_rank != null
+                  ? `#${Math.round(latestGlobalPoint.avg_rank)}`
+                  : "—"}
+            </div>
+            <div className="mt-0.5 text-[11px] text-gray-500">
+              {showKeywordChart
+                ? selectedKeywordRow
+                  ? `SV ${formatSearchVolume(selectedKeywordRow.search_volume)}${
+                      selectedKeywordRow.competition_index != null
+                        ? ` · KD ${selectedKeywordRow.competition_index}`
+                        : ""
+                    }`
+                  : "Select a keyword"
+                : latestGlobalPoint
+                  ? `${latestGlobalPoint.keywords_ranked}/${latestGlobalPoint.keywords_tracked} ranked`
+                  : "Across all tracked keywords"}
+            </div>
+          </div>
+        </div>
         <ChartPreviewHoverActions
           enabled={chartAvailable}
           actions={<ChartPreviewDateRangeButton value={dateRange} onChange={setDateRange} />}
         >
           <div className="h-64 min-w-0">
             {showKeywordChart ? (
-              isLoadingKeywordSeries ? (
+              isLoadingKeywordSeries || pendingRankKeywordId === selectedKeywordId ? (
                 <div className="flex h-full items-center justify-center text-sm text-gray-500">
                   <Loader2 className="mr-2 h-5 w-5 animate-spin" />
-                  Loading keyword rankings…
+                  {pendingRankKeywordId === selectedKeywordId
+                    ? "Checking rankings…"
+                    : "Loading keyword rankings…"}
                 </div>
               ) : keywordSeriesError ? (
                 <div className="flex h-full items-center gap-2 text-xs text-red-700">
@@ -1092,77 +1396,118 @@ export function ProjectKeywordTrackingTab({
         <div className="space-y-2">
           <div className="text-[11px] font-medium text-gray-500">Keywords</div>
           <div className="flex flex-wrap gap-1.5">
+            <button
+              type="button"
+              onClick={() => {
+                setSelectedKeywordId(null)
+                setIsDetailsOpen(false)
+              }}
+              className={cn(
+                "rounded-md border px-2.5 py-1.5 text-left text-xs transition-colors",
+                selectedKeywordId == null
+                  ? "border-gray-900 bg-gray-900 text-white"
+                  : "border-gray-200 bg-white text-gray-700 hover:border-gray-300 hover:bg-gray-50",
+              )}
+            >
+              Avg rank
+            </button>
             {keywords!.map((row) => {
               const isSelected = row.project_keyword_id === selectedKeywordId
               return (
-                <button
+                <div
                   key={row.project_keyword_id}
-                  type="button"
-                  onClick={() => {
-                    setSelectedKeywordId(row.project_keyword_id)
-                    setIsDetailsOpen(false)
-                  }}
                   className={cn(
-                    "max-w-full rounded-md border px-2.5 py-1.5 text-left text-xs transition-colors",
+                    "inline-flex max-w-full items-stretch overflow-hidden rounded-md border text-xs transition-colors",
                     isSelected
                       ? "border-gray-900 bg-gray-900 text-white"
-                      : "border-gray-200 bg-white text-gray-700 hover:border-gray-300 hover:bg-gray-50",
+                      : "border-gray-200 bg-white text-gray-700",
                   )}
                 >
-                  <span className="line-clamp-2">
-                    {row.keyword}
-                    <span className={cn("ml-1", isSelected ? "text-gray-300" : "text-gray-400")}>
-                      {row.rank != null ? `#${row.rank}` : "—"}
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setSelectedKeywordId(row.project_keyword_id)
+                      setIsDetailsOpen(false)
+                    }}
+                    className={cn(
+                      "max-w-full px-2.5 py-1.5 text-left",
+                      !isSelected && "hover:bg-gray-50",
+                    )}
+                  >
+                    <span className="line-clamp-2">
+                      {row.keyword}
+                      <span className={cn("ml-1", isSelected ? "text-gray-300" : "text-gray-400")}>
+                        {row.rank != null ? `#${row.rank}` : "—"}
+                        {row.search_volume != null
+                          ? ` · ${formatSearchVolume(row.search_volume)}`
+                          : ""}
+                      </span>
                     </span>
-                  </span>
-                </button>
+                  </button>
+                  <button
+                    type="button"
+                    aria-label={`Remove ${row.keyword}`}
+                    className={cn(
+                      "border-l px-1.5",
+                      isSelected
+                        ? "border-white/20 text-gray-300 hover:text-white"
+                        : "border-gray-200 text-gray-400 hover:bg-gray-50 hover:text-gray-700",
+                    )}
+                    onClick={(event) => {
+                      event.stopPropagation()
+                      void handleRemoveKeyword(row.project_keyword_id)
+                        .then(() => {
+                          toast({ title: "Keyword tracking stopped" })
+                        })
+                        .catch((error: unknown) => {
+                          toast({
+                            title: "Could not remove keyword",
+                            description:
+                              error instanceof Error
+                                ? error.message
+                                : "Failed to stop tracking.",
+                            variant: "destructive",
+                          })
+                        })
+                    }}
+                  >
+                    <X className="h-3 w-3" />
+                  </button>
+                </div>
               )
             })}
           </div>
-          {showPreviewAddForm ? (
-            <div className="space-y-3 rounded-lg border border-dashed border-gray-200 p-3">
-              <div className="space-y-1">
-                <Label htmlFor="overview-add-keyword" className="text-xs">
-                  Keyword
-                </Label>
-                <Input
-                  id="overview-add-keyword"
-                  placeholder="e.g. best seo agency lisbon"
-                  value={newKeyword}
-                  onChange={(e) => setNewKeyword(e.target.value)}
-                  className="h-8 text-xs"
-                  autoFocus
-                />
-              </div>
-              <div className="flex flex-wrap items-center gap-2">
-                <Button type="button" size="sm" onClick={handleAddKeyword} disabled={isAdding}>
-                  {isAdding ? (
-                    <>
-                      <Loader2 className="mr-2 h-4 w-4 animate-spin" />
-                      Adding…
-                    </>
-                  ) : (
-                    <>Add keyword</>
-                  )}
-                </Button>
-                <Button
-                  type="button"
-                  size="sm"
-                  variant="ghost"
-                  onClick={() => setShowPreviewAddForm(false)}
-                  disabled={isAdding}
-                >
-                  Cancel
-                </Button>
-              </div>
-            </div>
-          ) : (
-            <AddDashedButton
-              label="Add keyword"
-              className="mt-1"
-              onClick={() => setShowPreviewAddForm(true)}
+          <div className="flex flex-wrap items-center gap-2">
+            <ProjectTrackSuggestions
+              projectId={projectId}
+              kind="keywords"
+              existingTexts={(keywords ?? []).map((row) => row.keyword)}
+              onAdd={handleAddSuggestedKeywords}
+              regionId={adsRegionIdFromCode(newRegion)}
+              languageId={adsLanguageIdFromCode(newLanguage)}
             />
-          )}
+            {showPreviewAddForm ? null : (
+              <AddDashedButton
+                label="Add keyword"
+                className="mt-0"
+                onClick={() => setShowPreviewAddForm(true)}
+              />
+            )}
+          </div>
+          {showPreviewAddForm ? (
+            <KeywordAddFields
+              keyword={newKeyword}
+              onKeywordChange={setNewKeyword}
+              language={newLanguage}
+              onLanguageChange={setNewLanguage}
+              region={newRegion}
+              onRegionChange={setNewRegion}
+              isAdding={isAdding}
+              onAdd={handleAddKeyword}
+              onCancel={() => setShowPreviewAddForm(false)}
+              keywordInputId="overview-add-keyword"
+            />
+          ) : null}
         </div>
 
         {serpSnapshotBlock}
@@ -1197,67 +1542,31 @@ export function ProjectKeywordTrackingTab({
         </Button>
       </div>
 
-      <div className="mb-4 grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
-        <div className="space-y-1 sm:col-span-2 lg:col-span-1">
-          <Label htmlFor="new-keyword" className="text-xs">
-            Keyword
-          </Label>
-          <Input
-            id="new-keyword"
-            placeholder="e.g. best seo agency lisbon"
-            value={newKeyword}
-            onChange={(e) => setNewKeyword(e.target.value)}
-            className="h-8 text-xs"
-          />
-        </div>
-        <div className="space-y-1">
-          <Label htmlFor="new-language" className="text-xs">
-            Language
-          </Label>
-          <Select value={newLanguage} onValueChange={setNewLanguage}>
-            <SelectTrigger id="new-language" className="h-8 text-xs">
-              <SelectValue placeholder="Any" />
-            </SelectTrigger>
-            <SelectContent>
-              {LANGUAGE_OPTIONS.map((opt) => (
-                <SelectItem key={opt.code} value={opt.code}>
-                  {opt.label}
-                </SelectItem>
-              ))}
-            </SelectContent>
-          </Select>
-        </div>
-        <div className="space-y-1">
-          <Label htmlFor="new-region" className="text-xs">
-            Region
-          </Label>
-          <Select value={newRegion} onValueChange={setNewRegion}>
-            <SelectTrigger id="new-region" className="h-8 text-xs">
-              <SelectValue placeholder="Any" />
-            </SelectTrigger>
-            <SelectContent>
-              {regions.map((region) => (
-                <SelectItem key={region.id || "any"} value={region.id || "any"}>
-                  {region.name}
-                </SelectItem>
-              ))}
-            </SelectContent>
-          </Select>
-        </div>
+      <div className="mb-4">
+        <KeywordAddFields
+          keyword={newKeyword}
+          onKeywordChange={setNewKeyword}
+          language={newLanguage}
+          onLanguageChange={setNewLanguage}
+          region={newRegion}
+          onRegionChange={setNewRegion}
+          isAdding={isAdding}
+          onAdd={handleAddKeyword}
+          keywordInputId="new-keyword"
+          showCancel={false}
+        />
       </div>
       <div className="mb-4 flex flex-wrap items-center gap-2">
-        <Button type="button" size="sm" onClick={handleAddKeyword} disabled={isAdding}>
-          {isAdding ? (
-            <>
-              <Loader2 className="mr-2 h-4 w-4 animate-spin" />
-              Adding…
-            </>
-          ) : (
-            <>Add keyword</>
-          )}
-        </Button>
+        <ProjectTrackSuggestions
+          projectId={projectId}
+          kind="keywords"
+          existingTexts={(keywords ?? []).map((row) => row.keyword)}
+          onAdd={handleAddSuggestedKeywords}
+          regionId={adsRegionIdFromCode(newRegion)}
+          languageId={adsLanguageIdFromCode(newLanguage)}
+        />
         <p className="text-[11px] text-gray-500">
-          New keywords will be included the next time you check rankings.
+          Rankings and SV/KD are fetched right after you add a keyword.
         </p>
       </div>
 
@@ -1280,40 +1589,77 @@ export function ProjectKeywordTrackingTab({
           {keywords!.map((row) => {
             const isSelected = row.project_keyword_id === selectedKeywordId
             return (
-              <button
+              <div
                 key={row.project_keyword_id}
-                type="button"
                 className={cn(
-                  "flex w-full flex-col gap-1 px-3 py-2.5 text-left transition-colors hover:bg-gray-50 sm:flex-row sm:items-center sm:justify-between",
+                  "flex w-full flex-col gap-1 px-3 py-2.5 sm:flex-row sm:items-center sm:justify-between",
                   isSelected && "bg-gray-50",
                 )}
-                onClick={() => {
-                  const id = row.project_keyword_id
-                  setSelectedKeywordId(id)
-                  if (!isManage) {
-                    setIsDetailsOpen(true)
-                    const params = new URLSearchParams(searchParams.toString())
-                    params.set("keywordId", String(id))
-                    const query = params.toString()
-                    router.replace(query ? `${pathname}?${query}` : pathname, {
-                      scroll: false,
-                    })
-                  }
-                }}
               >
-                <div className="min-w-0">
+                <button
+                  type="button"
+                  className="min-w-0 flex-1 text-left transition-colors hover:opacity-80"
+                  onClick={() => {
+                    const id = row.project_keyword_id
+                    setSelectedKeywordId(id)
+                    if (!isManage) {
+                      setIsDetailsOpen(true)
+                      const params = new URLSearchParams(searchParams.toString())
+                      params.set("keywordId", String(id))
+                      const query = params.toString()
+                      router.replace(query ? `${pathname}?${query}` : pathname, {
+                        scroll: false,
+                      })
+                    }
+                  }}
+                >
                   <div className="line-clamp-2 text-xs text-gray-900">{row.keyword}</div>
-                  <div className="mt-0.5 text-[11px] text-gray-500">
-                    {mapLanguageName(row.language_code)} · {mapRegionName(row.region_code)}
-                    {row.check_date
-                      ? ` · ${format(new Date(row.check_date), "MMM d, yyyy")}`
-                      : ""}
+                  <div className="mt-0.5 flex flex-wrap items-center gap-x-2 gap-y-1 text-[11px] text-gray-500">
+                    <span>
+                      {mapLanguageName(row.language_code)} · {mapRegionName(row.region_code)}
+                      {row.check_date
+                        ? ` · ${format(new Date(row.check_date), "MMM d, yyyy")}`
+                        : ""}
+                    </span>
+                    <span className="tabular-nums">
+                      SV {formatSearchVolume(row.search_volume)}
+                    </span>
+                    {row.competition_index != null ? (
+                      <KeywordDifficultyBadge competitionIndex={row.competition_index} />
+                    ) : (
+                      <span>KD —</span>
+                    )}
                   </div>
+                </button>
+                <div className="flex shrink-0 items-center gap-2">
+                  <div className="text-xs text-gray-700">
+                    {row.rank != null ? `#${row.rank}` : "Not ranked"}
+                  </div>
+                  <button
+                    type="button"
+                    aria-label={`Remove ${row.keyword}`}
+                    className="rounded p-1 text-gray-400 hover:bg-gray-100 hover:text-gray-700"
+                    onClick={() => {
+                      void handleRemoveKeyword(row.project_keyword_id)
+                        .then(() => {
+                          toast({ title: "Keyword tracking stopped" })
+                        })
+                        .catch((error: unknown) => {
+                          toast({
+                            title: "Could not remove keyword",
+                            description:
+                              error instanceof Error
+                                ? error.message
+                                : "Failed to stop tracking.",
+                            variant: "destructive",
+                          })
+                        })
+                    }}
+                  >
+                    <X className="h-3.5 w-3.5" />
+                  </button>
                 </div>
-                <div className="shrink-0 text-xs text-gray-700">
-                  {row.rank != null ? `#${row.rank}` : "Not ranked"}
-                </div>
-              </button>
+              </div>
             )
           })}
         </div>
@@ -1354,19 +1700,120 @@ export function ProjectKeywordTrackingTab({
   )
 }
 
+interface KeywordAddFieldsProps {
+  keyword: string
+  onKeywordChange: (value: string) => void
+  language: string
+  onLanguageChange: (value: string) => void
+  region: string
+  onRegionChange: (value: string) => void
+  isAdding: boolean
+  onAdd: () => void
+  onCancel?: () => void
+  keywordInputId: string
+  showCancel?: boolean
+}
+
+function KeywordAddFields({
+  keyword,
+  onKeywordChange,
+  language,
+  onLanguageChange,
+  region,
+  onRegionChange,
+  isAdding,
+  onAdd,
+  onCancel,
+  keywordInputId,
+  showCancel = true,
+}: KeywordAddFieldsProps) {
+  return (
+    <div className="space-y-3 rounded-lg border border-dashed border-gray-200 p-3">
+      <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
+        <div className="space-y-1 sm:col-span-2 lg:col-span-1">
+          <Label htmlFor={keywordInputId} className="text-xs">
+            Keyword
+          </Label>
+          <Input
+            id={keywordInputId}
+            placeholder="e.g. best seo agency lisbon"
+            value={keyword}
+            onChange={(e) => onKeywordChange(e.target.value)}
+            className="h-8 text-xs"
+            autoFocus
+          />
+        </div>
+        <div className="space-y-1">
+          <Label htmlFor={`${keywordInputId}-language`} className="text-xs">
+            Language
+          </Label>
+          <Select value={language} onValueChange={onLanguageChange}>
+            <SelectTrigger id={`${keywordInputId}-language`} className="h-8 text-xs">
+              <SelectValue placeholder="Language" />
+            </SelectTrigger>
+            <SelectContent>
+              {LANGUAGE_OPTIONS.map((opt) => (
+                <SelectItem key={opt.code} value={opt.code}>
+                  {opt.label}
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+        </div>
+        <div className="space-y-1">
+          <Label htmlFor={`${keywordInputId}-region`} className="text-xs">
+            Region
+          </Label>
+          <Select value={region} onValueChange={onRegionChange}>
+            <SelectTrigger id={`${keywordInputId}-region`} className="h-8 text-xs">
+              <SelectValue placeholder="Region" />
+            </SelectTrigger>
+            <SelectContent>
+              {regions.map((item) => (
+                <SelectItem key={item.id || "any"} value={item.id || "any"}>
+                  {item.name}
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+        </div>
+      </div>
+      <div className="flex flex-wrap items-center gap-2">
+        <Button type="button" size="sm" onClick={onAdd} disabled={isAdding}>
+          {isAdding ? (
+            <>
+              <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+              Adding…
+            </>
+          ) : (
+            <>Add keyword</>
+          )}
+        </Button>
+        {showCancel && onCancel ? (
+          <Button
+            type="button"
+            size="sm"
+            variant="ghost"
+            onClick={onCancel}
+            disabled={isAdding}
+          >
+            Cancel
+          </Button>
+        ) : null}
+      </div>
+    </div>
+  )
+}
+
 interface RemoveKeywordTrackingButtonProps {
-  projectId: number
   selectedKeywordId: number | null
-  supabase: any
-  queryClient: any
+  onRemove: (projectKeywordId: number) => Promise<void>
   onClosePane: () => void
 }
 
 function RemoveKeywordTrackingButton({
-  projectId,
   selectedKeywordId,
-  supabase,
-  queryClient,
+  onRemove,
   onClosePane,
 }: RemoveKeywordTrackingButtonProps) {
   const [open, setOpen] = useState(false)
@@ -1376,35 +1823,12 @@ function RemoveKeywordTrackingButton({
     if (!selectedKeywordId) return
     setIsRemoving(true)
     try {
-      const { error: deactivateError } = await supabase
-        .from("project_keywords")
-        .update({
-          is_active: false,
-          updated_at: new Date().toISOString(),
-        })
-        .eq("id", selectedKeywordId)
-
-      if (deactivateError) {
-        throw deactivateError
-      }
-
-      // Optimistically remove the keyword from the local list
-      queryClient.setQueryData(
-        ["project-keywords", projectId],
-        (old: KeywordRow[] | undefined) =>
-          old
-            ? old.filter(
-                (row) => row.project_keyword_id !== selectedKeywordId,
-              )
-            : old,
-      )
-
+      await onRemove(selectedKeywordId)
       toast({
         title: "Keyword tracking stopped",
         description:
           "We will keep historical data, but no new checks will run for this keyword.",
       })
-
       setOpen(false)
       onClosePane()
     } catch (error: any) {

@@ -154,6 +154,60 @@ describe("message reconciliation", () => {
     )
   })
 
+  it("does not prune optimistic user against an older same-text history row", () => {
+    const server: AiMessage[] = [
+      {
+        id: "u-old",
+        thread_id: "t1",
+        role: "user",
+        content: "hello again",
+        created_at: "2026-01-01T00:00:00Z",
+      },
+    ]
+    const pending: AiMessage[] = [
+      {
+        id: "temp-new",
+        client_id: "temp-new",
+        thread_id: "t1",
+        role: "user",
+        content: "hello again",
+        status: "pending",
+        created_at: "2026-01-01T01:00:00Z",
+      },
+    ]
+
+    expect(prunePendingMessagesAgainstServer(server, pending)).toHaveLength(1)
+    const renderable = buildRenderableMessages(server, pending)
+    expect(renderable.map((m) => m.id)).toEqual(["u-old", "temp-new"])
+  })
+
+  it("keeps client_id on persisted user rows during handoff", () => {
+    const server: AiMessage[] = [
+      {
+        id: "u1",
+        thread_id: "t1",
+        role: "user",
+        content: "stable key",
+        created_at: "2026-01-01T00:00:05Z",
+      },
+    ]
+    const pending: AiMessage[] = [
+      {
+        id: "temp-stable",
+        client_id: "temp-stable",
+        thread_id: "t1",
+        role: "user",
+        content: "stable key",
+        status: "pending",
+        created_at: "2026-01-01T00:00:00Z",
+      },
+    ]
+    const renderable = buildRenderableMessages(server, pending)
+    expect(renderable).toHaveLength(1)
+    expect(renderable[0].id).toBe("u1")
+    expect(renderable[0].client_id).toBe("temp-stable")
+  })
+
   it("keeps optimistic mention metadata in state until the persisted row has tags", () => {
     const internalContent = "@Task / Channel / FAQ please update"
     const mentionTag = {

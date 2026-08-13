@@ -11,7 +11,12 @@ import {
 import { emptyKeywordIdea, mergeKeywordIdeas } from '../../lib/keyword-ideas-merge';
 import { fetchRelatedKeywordIdeas } from '../../lib/dataforseo-related-keywords';
 import {
+  fetchCategoryKeywordIdeas,
+  isKeywordExpansionSparse,
+} from '../../lib/dataforseo-keyword-ideas';
+import {
   buildGoogleAdsKeywordSeed,
+  expandKeywordSeedVariants,
   resolveKeywordResearchMode,
 } from '../../lib/keyword-research-input';
 
@@ -361,7 +366,10 @@ export async function POST(request: NextRequest) {
           pageSize: effectivePageSize,
         });
 
-        if (!googleAdsData || typeof googleAdsData !== 'object' || !Array.isArray(googleAdsData.results)) {
+        // Google Ads often returns HTTP 200 with `{}` (no `results`) for seeds with
+        // no ideas — common for some healthcare terms under account policy limits.
+        // Treat missing results as an empty list; do not surface a fake 500.
+        if (!googleAdsData || typeof googleAdsData !== 'object') {
           return NextResponse.json(
             {
               error: {
@@ -373,8 +381,17 @@ export async function POST(request: NextRequest) {
           );
         }
 
-        const adsIdeas = googleAdsData.results.map((item, index) => mapGoogleAdsIdea(item, index));
-        const results = mergeKeywordIdeas(
+        const adsRows = Array.isArray(googleAdsData.results) ? googleAdsData.results : [];
+        if (!Array.isArray(googleAdsData.results)) {
+          console.warn('Google Ads returned no results array for seed; treating as empty', {
+            keyword: trimmedKeyword || null,
+            mode,
+            keys: Object.keys(googleAdsData),
+          });
+        }
+
+        const adsIdeas = adsRows.map((item, index) => mapGoogleAdsIdea(item, index));
+        let results = mergeKeywordIdeas(
           trimmedKeyword,
           adsIdeas,
           [],
@@ -382,6 +399,38 @@ export async function POST(request: NextRequest) {
           effectivePageSize,
           [],
         );
+
+        // When the typed seed still has 0 volume (common for hyphen/diacritic
+        // spellings), pull historical metrics for planner-friendly variants.
+        const seedRow = results[0];
+        const seedNeedsMetrics =
+          !!trimmedKeyword
+          && (!seedRow
+            || (
+              seedRow.avgMonthlySearches <= 0
+              && seedRow.competitionIndex <= 0
+              && seedRow.monthlySearchVolumes.length === 0
+            ));
+        if (seedNeedsMetrics) {
+          const historicalIdeas = await fetchKeywordHistoricalMetrics({
+            accessToken,
+            customerId,
+            developerToken,
+            keywords: expandKeywordSeedVariants(trimmedKeyword),
+            regionId,
+            languageId,
+          });
+          if (historicalIdeas.length > 0) {
+            results = mergeKeywordIdeas(
+              trimmedKeyword,
+              adsIdeas,
+              [],
+              historicalIdeas,
+              effectivePageSize,
+              [],
+            );
+          }
+        }
 
         const responseData: KeywordIdeasResponse = {
           elapsedMs: Date.now() - startTime,
@@ -473,35 +522,88 @@ export async function POST(request: NextRequest) {
         { status: 500 }
       );
     }
-    
+
+    // Empty `{}` is a valid Google Ads success when Keyword Planner has no ideas
+    // for the seed (seen with some PT healthcare queries on this account).
+    const adsRows = Array.isArray(googleAdsData.results) ? googleAdsData.results : [];
     if (!Array.isArray(googleAdsData.results)) {
-      console.error('Invalid Google Ads response: results is not an array', googleAdsData);
-      return NextResponse.json(
-        { 
-          error: { 
-            code: 500, 
-            message: "Invalid response from Google Ads API",
-            details: `Expected results to be an array, got ${typeof googleAdsData.results}`
-          } 
-        },
-        { status: 500 }
-      );
+      console.warn('Google Ads returned no results array for seed; treating as empty', {
+        keyword: trimmedKeyword || null,
+        mode,
+        keys: Object.keys(googleAdsData),
+      });
     }
 
-    const adsIdeas = googleAdsData.results.map((item, index) => mapGoogleAdsIdea(item, index));
+    const adsIdeas = adsRows.map((item, index) => mapGoogleAdsIdea(item, index));
 
-    const autocompleteSuggestions =
+    let autocompleteSuggestions =
       autocompleteSettled.status === 'fulfilled' ? autocompleteSettled.value : [];
 
     if (autocompleteSettled.status === 'rejected') {
       console.warn('Google Autocomplete failed:', autocompleteSettled.reason);
     }
 
-    const relatedIdeas =
+    let relatedIdeas =
       relatedSettled.status === 'fulfilled' ? relatedSettled.value : [];
 
     if (relatedSettled.status === 'rejected') {
       console.warn('DataForSEO related keywords failed:', relatedSettled.reason);
+    }
+
+    // When Ads has no useful volume ideas (common for niche PT seeds), escalate to
+    // DataForSEO category ideas + alphabet autocomplete + deeper related searches.
+    // This is the Mangools-style expansion path for zero-volume seeds.
+    if (
+      isKeywordExpansionSparse({
+        seedKeyword: trimmedKeyword,
+        adsIdeas,
+        relatedIdeas,
+        autocompleteSuggestions,
+      })
+    ) {
+      const expandLimit = Math.max(AUTOCOMPLETE_FETCH_LIMIT, pageSize);
+      const [categorySettled, autoExpandedSettled, relatedDeepSettled] =
+        await Promise.allSettled([
+          fetchCategoryKeywordIdeas({
+            keyword: trimmedKeyword,
+            languageId,
+            regionId,
+            limit: expandLimit,
+          }),
+          fetchGoogleAutocompleteSuggestions({
+            keyword: (keyword || contentSeedKeyword || trimmedKeyword).trim(),
+            languageId,
+            regionId,
+            limit: expandLimit,
+            expandAlphabet: true,
+          }),
+          fetchRelatedKeywordIdeas({
+            keyword: trimmedKeyword,
+            languageId,
+            regionId,
+            depth: 3,
+            limit: expandLimit,
+            replaceWithCoreKeyword: true,
+          }),
+        ]);
+
+      if (categorySettled.status === 'fulfilled' && categorySettled.value.length > 0) {
+        relatedIdeas = [...relatedIdeas, ...categorySettled.value];
+      } else if (categorySettled.status === 'rejected') {
+        console.warn('DataForSEO category keyword ideas failed:', categorySettled.reason);
+      }
+
+      if (autoExpandedSettled.status === 'fulfilled') {
+        autocompleteSuggestions = autoExpandedSettled.value;
+      } else if (autoExpandedSettled.status === 'rejected') {
+        console.warn('Google Autocomplete (alphabet) failed:', autoExpandedSettled.reason);
+      }
+
+      if (relatedDeepSettled.status === 'fulfilled' && relatedDeepSettled.value.length > 0) {
+        relatedIdeas = [...relatedIdeas, ...relatedDeepSettled.value];
+      } else if (relatedDeepSettled.status === 'rejected') {
+        console.warn('DataForSEO deep related keywords failed:', relatedDeepSettled.reason);
+      }
     }
 
     const knownMetricKeys = new Set([
@@ -511,14 +613,22 @@ export async function POST(request: NextRequest) {
     const missingFromAds = autocompleteSuggestions.filter(
       (suggestion) => !knownMetricKeys.has(normalizeKeywordKey(suggestion)),
     );
+    // Always include seed orthographic variants — Ads ideas can omit the exact
+    // typed form even when historical metrics have volume for "pre diabetes".
+    const seedMetricKeywords = expandKeywordSeedVariants(trimmedKeyword).filter(
+      (variant) => !knownMetricKeys.has(normalizeKeywordKey(variant)),
+    );
+    const historicalKeywords = [
+      ...new Set([...seedMetricKeywords, ...missingFromAds]),
+    ].slice(0, 50);
 
     const historicalIdeas =
-      missingFromAds.length > 0
+      historicalKeywords.length > 0
         ? await fetchKeywordHistoricalMetrics({
             accessToken,
             customerId,
             developerToken,
-            keywords: missingFromAds,
+            keywords: historicalKeywords,
             regionId,
             languageId,
           })

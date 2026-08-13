@@ -12,6 +12,7 @@ import {
 } from "@/lib/competitive-content"
 import { assertOwnedFlagsImmutable } from "@/lib/project-competitive-content"
 import type { ContentCompetitiveSummary } from "@/lib/project-competitive-content-summary"
+import { getProjectWebsiteUrl } from "@/lib/services/project-brand-social"
 import {
   createProjectCompetitor,
   discoverCompetitorSocialProfilesFromWebsite,
@@ -118,6 +119,60 @@ export type ProjectCompetitiveArticle = {
   ranking_synced_at: string | null
   created_at: string
   updated_at: string
+}
+
+export type ArticleKeywordMetric = {
+  keyword: string
+  keyword_type: string
+  search_volume: number | null
+  competition: number | null
+  ranking_position: number | null
+  clicks: number | null
+  impressions: number | null
+}
+
+export type ArticleImpactSort =
+  | "recent"
+  | "updated_oldest"
+  | "updated_newest"
+  | "impact"
+  | "gsc_clicks"
+  | "gsc_impressions"
+  | "ga_views"
+  | "ga_sessions"
+
+export type ProjectCompetitiveArticleImpact = {
+  id: number
+  project_id: number
+  website_id: number
+  content_source_id: number | null
+  entity_type: "owned" | "competitor"
+  competitor_id: number | null
+  entity_id: string
+  entity_name: string | null
+  is_owned: boolean
+  url: string
+  canonical_url: string
+  title: string | null
+  description: string | null
+  language_code: string | null
+  published_at: string | null
+  modified_at: string | null
+  image_url: string | null
+  primary_keyword: string | null
+  content_source_type: ContentSourceType | null
+  first_seen_at: string
+  last_seen_at: string
+  updated_at: string
+  keywords: ArticleKeywordMetric[]
+  gsc_clicks: number | null
+  gsc_impressions: number | null
+  gsc_ctr: number | null
+  gsc_position: number | null
+  ga_sessions: number | null
+  ga_users: number | null
+  ga_pageviews: number | null
+  impact_score: number | null
 }
 
 export type KeywordGapRow = {
@@ -264,6 +319,74 @@ export async function ensureOwnedWebsiteFromProjectUrl(args: {
 }
 
 /**
+ * Owned-side twin of `monitorCompetitorWebsiteByUrl`: register the project's own
+ * website, confirm the editorial sections we detect (falling back to the root
+ * URL) and start the article sync, so our own articles show up next to
+ * competitor articles without any extra setup step.
+ */
+export async function monitorOwnedWebsiteFromProject(args: {
+  projectId: number
+  projectUrl?: string | null
+}): Promise<{
+  websiteId: number
+  sourceIds: number[]
+  discover: CompetitiveContentSyncResult
+  sync: CompetitiveContentSyncResult
+} | null> {
+  const projectUrl =
+    args.projectUrl ?? (await getProjectWebsiteUrl(args.projectId))
+  const website = await ensureOwnedWebsiteFromProjectUrl({
+    projectId: args.projectId,
+    projectUrl,
+  })
+  if (!website) return null
+
+  const discover = await discoverEditorialSources({
+    projectId: args.projectId,
+    websiteId: website.id,
+  })
+
+  const sources = await listProjectCompetitiveSources(args.projectId)
+  const websiteSources = sources.filter((source) => source.website_id === website.id)
+  const sourceIds: number[] = []
+
+  for (const source of websiteSources) {
+    if (source.status === "suggested" || source.status === "ignored") {
+      await updateContentSource(source.id, { status: "confirmed" })
+    }
+    sourceIds.push(source.id)
+  }
+
+  if (sourceIds.length === 0) {
+    const manual = await createManualContentSource({
+      projectId: args.projectId,
+      websiteId: website.id,
+      entityType: "owned",
+      sourceUrl: website.root_url,
+      sourceType: "blog",
+    })
+    sourceIds.push(manual.id)
+  }
+
+  const sync = await syncCompetitiveContent({
+    projectId: args.projectId,
+    websiteId: website.id,
+    runType: "article_sync",
+  })
+
+  // Keywords are a separate job; without this pass the Content tab stays empty.
+  await syncCompetitiveContent({
+    projectId: args.projectId,
+    websiteId: website.id,
+    runType: "keyword_extraction",
+  }).catch((error) => {
+    console.warn("Owned website keyword extraction failed", error)
+  })
+
+  return { websiteId: website.id, sourceIds, discover, sync }
+}
+
+/**
  * One-click competitor content monitoring: create/find competitor from URL,
  * attach website, discover+confirm editorial sources (or fall back to root URL),
  * then kick off article sync.
@@ -382,12 +505,14 @@ export async function addCompetitorFromUrl(args: {
 }): Promise<{
   competitorId: number
   socialProfilesCreated: number
+  socialSyncStarted: boolean
   socialError: string | null
   content: Awaited<ReturnType<typeof monitorCompetitorWebsiteByUrl>>
 }> {
   const content = await monitorCompetitorWebsiteByUrl(args)
 
   let socialProfilesCreated = 0
+  let socialSyncStarted = false
   let socialError: string | null = null
   try {
     const social = await discoverCompetitorSocialProfilesFromWebsite({
@@ -396,6 +521,8 @@ export async function addCompetitorFromUrl(args: {
       websiteUrl: args.websiteUrl,
     })
     socialProfilesCreated = social.created
+    socialSyncStarted = social.sync.started
+    socialError = social.sync.error
   } catch (error) {
     socialError = error instanceof Error ? error.message : "Social discovery failed"
   }
@@ -403,6 +530,7 @@ export async function addCompetitorFromUrl(args: {
   return {
     competitorId: content.competitorId,
     socialProfilesCreated,
+    socialSyncStarted,
     socialError,
     content,
   }
@@ -625,6 +753,109 @@ export async function listProjectCompetitiveArticles(args: {
 
   if (error) throw error
   return (data ?? []) as ProjectCompetitiveArticle[]
+}
+
+function mapArticleImpactRow(row: Record<string, unknown>): ProjectCompetitiveArticleImpact {
+  const parsedKeywords =
+    typeof row.keywords === "string"
+      ? (() => {
+          try {
+            return JSON.parse(row.keywords)
+          } catch {
+            return []
+          }
+        })()
+      : row.keywords
+  const rawKeywords = Array.isArray(parsedKeywords) ? parsedKeywords : []
+  const keywords: ArticleKeywordMetric[] = rawKeywords
+    .map((item) => {
+      const record = item as Record<string, unknown>
+      const keyword = typeof record.keyword === "string" ? record.keyword.trim() : ""
+      if (!keyword) return null
+      return {
+        keyword,
+        keyword_type: String(record.keyword_type ?? ""),
+        search_volume:
+          record.search_volume == null ? null : Number(record.search_volume),
+        competition:
+          record.competition == null ? null : Number(record.competition),
+        ranking_position:
+          record.ranking_position == null ? null : Number(record.ranking_position),
+        clicks: record.clicks == null ? null : Number(record.clicks),
+        impressions:
+          record.impressions == null ? null : Number(record.impressions),
+      }
+    })
+    .filter((item): item is ArticleKeywordMetric => Boolean(item))
+
+  return {
+    id: Number(row.id),
+    project_id: Number(row.project_id),
+    website_id: Number(row.website_id),
+    content_source_id:
+      row.content_source_id == null ? null : Number(row.content_source_id),
+    entity_type: row.entity_type === "competitor" ? "competitor" : "owned",
+    competitor_id: row.competitor_id == null ? null : Number(row.competitor_id),
+    entity_id: String(row.entity_id ?? ""),
+    entity_name: (row.entity_name as string | null) ?? null,
+    is_owned: Boolean(row.is_owned),
+    url: String(row.url ?? ""),
+    canonical_url: String(row.canonical_url ?? row.url ?? ""),
+    title: (row.title as string | null) ?? null,
+    description: (row.description as string | null) ?? null,
+    language_code: (row.language_code as string | null) ?? null,
+    published_at: (row.published_at as string | null) ?? null,
+    modified_at: (row.modified_at as string | null) ?? null,
+    image_url: (row.image_url as string | null) ?? null,
+    primary_keyword: (row.primary_keyword as string | null) ?? null,
+    content_source_type: (row.content_source_type as ContentSourceType | null) ?? null,
+    first_seen_at: String(row.first_seen_at ?? ""),
+    last_seen_at: String(row.last_seen_at ?? ""),
+    updated_at: String(row.updated_at ?? ""),
+    keywords,
+    gsc_clicks: row.gsc_clicks == null ? null : Number(row.gsc_clicks),
+    gsc_impressions:
+      row.gsc_impressions == null ? null : Number(row.gsc_impressions),
+    gsc_ctr: row.gsc_ctr == null ? null : Number(row.gsc_ctr),
+    gsc_position: row.gsc_position == null ? null : Number(row.gsc_position),
+    ga_sessions: row.ga_sessions == null ? null : Number(row.ga_sessions),
+    ga_users: row.ga_users == null ? null : Number(row.ga_users),
+    ga_pageviews: row.ga_pageviews == null ? null : Number(row.ga_pageviews),
+    impact_score: row.impact_score == null ? null : Number(row.impact_score),
+  }
+}
+
+export async function listProjectCompetitiveArticlesImpact(args: {
+  projectId: number
+  dateFrom?: string | null
+  dateTo?: string | null
+  metricDateFrom?: string | null
+  metricDateTo?: string | null
+  entityIds?: string[] | null
+  sourceTypes?: string[] | null
+  sort?: ArticleImpactSort
+  limit?: number
+  offset?: number
+}): Promise<ProjectCompetitiveArticleImpact[]> {
+  const supabase = createClientComponentClient()
+  const { data, error } = await supabase.rpc(
+    "fn_list_project_competitive_articles_impact",
+    {
+      p_project_id: args.projectId,
+      p_date_from: args.dateFrom ?? null,
+      p_date_to: args.dateTo ?? null,
+      p_metric_date_from: args.metricDateFrom ?? null,
+      p_metric_date_to: args.metricDateTo ?? null,
+      p_entity_ids: args.entityIds ?? null,
+      p_source_types: args.sourceTypes ?? null,
+      p_sort: args.sort ?? "recent",
+      p_limit: args.limit ?? 100,
+      p_offset: args.offset ?? 0,
+    },
+  )
+
+  if (error) throw error
+  return ((data ?? []) as Record<string, unknown>[]).map(mapArticleImpactRow)
 }
 
 export async function getProjectCompetitiveContentSummary(args: {

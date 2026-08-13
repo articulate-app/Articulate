@@ -40,6 +40,7 @@ export function GoogleConnectPanel({
   const [gscPropertyUrl, setGscPropertyUrl] = useState<string>("")
   const [gaPropertyId, setGaPropertyId] = useState<string>("")
   const [showPicker, setShowPicker] = useState(false)
+  const [isReturningFromOAuth, setIsReturningFromOAuth] = useState(false)
   const [isSyncingAnalytics, setIsSyncingAnalytics] = useState(false)
   const [analyticsSync, setAnalyticsSync] = useState<GoogleAnalyticsSyncResult | null>(
     null,
@@ -67,6 +68,7 @@ export function GoogleConnectPanel({
     const flag = params.get("google_connect")
     const pid = Number(params.get("project_id"))
     if (flag === "1" && (!pid || pid === projectId)) {
+      setIsReturningFromOAuth(true)
       setShowPicker(true)
       void refetchStatus()
       params.delete("google_connect")
@@ -74,7 +76,6 @@ export function GoogleConnectPanel({
       params.delete("google_connect_error")
       const next = `${window.location.pathname}${params.toString() ? `?${params}` : ""}`
       window.history.replaceState({}, "", next)
-      toast({ title: "Google connected", description: "Select Search Console and/or Analytics properties." })
     } else if (flag === "error") {
       const message = params.get("google_connect_error") || "Google connect failed"
       toast({ title: "Google connect failed", description: message, variant: "destructive" })
@@ -85,6 +86,25 @@ export function GoogleConnectPanel({
       window.history.replaceState({}, "", next)
     }
   }, [projectId, refetchStatus])
+
+  useEffect(() => {
+    if (!isReturningFromOAuth) return
+    if (statusLoading) return
+    if (!status?.connected) return
+    // Wait until properties actually load — a disabled query reports
+    // isLoading=false and would clear the skeleton too early.
+    if (!propertiesQuery.isFetched) return
+    setIsReturningFromOAuth(false)
+    toast({
+      title: "Google connected",
+      description: "Select Search Console and/or Analytics properties.",
+    })
+  }, [
+    isReturningFromOAuth,
+    statusLoading,
+    propertiesQuery.isFetched,
+    status?.connected,
+  ])
 
   const connectHref = useMemo(() => {
     const params = new URLSearchParams({
@@ -165,11 +185,37 @@ export function GoogleConnectPanel({
     }
   }
 
-  if (statusLoading) {
+  const isConnecting =
+    isReturningFromOAuth
+    || (showPicker
+      && Boolean(status?.connected)
+      && !propertiesQuery.isFetched)
+
+  if (statusLoading && !isReturningFromOAuth) {
     return (
       <div className="flex items-center gap-2 text-xs text-gray-500">
         <Loader2 className="h-3.5 w-3.5 animate-spin" />
         Checking Google connection…
+      </div>
+    )
+  }
+
+  if (isConnecting) {
+    return (
+      <div className="space-y-3 rounded-md border border-gray-200 bg-gray-50/80 p-4">
+        <div className="flex items-center gap-2 text-sm text-gray-700">
+          <Loader2 className="h-4 w-4 animate-spin text-gray-500" />
+          Connecting Google account…
+        </div>
+        <div className="space-y-2">
+          <div className="h-3 w-40 animate-pulse rounded bg-gray-200" />
+          <div className="h-9 w-full animate-pulse rounded-md bg-gray-200" />
+          <div className="h-3 w-48 animate-pulse rounded bg-gray-200" />
+          <div className="h-9 w-full animate-pulse rounded-md bg-gray-200" />
+        </div>
+        <p className="text-xs text-gray-500">
+          Loading the Search Console and Analytics properties you can access.
+        </p>
       </div>
     )
   }

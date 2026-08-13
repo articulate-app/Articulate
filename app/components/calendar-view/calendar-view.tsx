@@ -133,6 +133,7 @@ export function CalendarView({
   const [expandedWeekLimit, setExpandedWeekLimit] = useState<Record<string, number>>({})
   const [monthPickerOpen, setMonthPickerOpen] = useState(false)
   const [dateFieldOpen, setDateFieldOpen] = useState(false)
+  const [isCalendarHovered, setIsCalendarHovered] = useState(false)
   const [viewMode, setViewMode] = useState<'month' | 'week'>(
     params.get('calendar_mode') === 'week' ? 'week' : 'month',
   )
@@ -1042,12 +1043,22 @@ export function CalendarView({
       inlineOptionalEl,
     )
 
+  const hoverControlPill =
+    'inline-flex h-8 items-center gap-1 rounded-full border border-gray-200/90 bg-white/95 px-3.5 text-xs font-medium text-gray-700 shadow-sm backdrop-blur-sm transition hover:bg-white'
+  const showHoverControls = isCalendarHovered || dateFieldOpen
+
   return (
     <section className="w-full h-full min-h-0 flex flex-col overflow-hidden">
       {!hideToolbar && headerBar}
       {toolbarPortaled}
       {inlineOptionalPortaled}
-      <div className="flex-1 min-h-0">
+      <div
+        className="relative flex-1 min-h-0"
+        onMouseEnter={() => setIsCalendarHovered(true)}
+        onMouseLeave={() => {
+          if (!dateFieldOpen) setIsCalendarHovered(false)
+        }}
+      >
         <VirtualizedWeekGridCalendar
           ref={virtualCalendarRef}
           tasks={filteredTasks}
@@ -1069,6 +1080,56 @@ export function CalendarView({
           getColorClass={getColorClass}
           getInlineStyle={getInlineStyle}
         />
+        <div
+          className={cn(
+            'absolute inset-x-0 bottom-3 z-30 flex justify-center transition-opacity duration-150',
+            showHoverControls ? 'pointer-events-auto opacity-100' : 'pointer-events-none opacity-0',
+          )}
+        >
+          <div className="inline-flex items-center gap-1.5 rounded-full border border-gray-200/80 bg-white/95 p-1 shadow-md backdrop-blur-md">
+            <button
+              type="button"
+              className={hoverControlPill}
+              onClick={() => virtualCalendarRef.current?.scrollToToday()}
+            >
+              Today
+            </button>
+            <DropdownMenu
+              open={dateFieldOpen}
+              onOpenChange={(open) => {
+                setDateFieldOpen(open)
+                if (open) setIsCalendarHovered(true)
+              }}
+            >
+              <DropdownMenuTrigger asChild>
+                <button type="button" className={hoverControlPill}>
+                  Date: {dateField === 'delivery_date' ? 'Delivery' : 'Publication'}
+                  <ChevronDown size={14} className="opacity-60" />
+                </button>
+              </DropdownMenuTrigger>
+              <DropdownMenuContent align="center" side="top" sideOffset={8}>
+                <DropdownMenuItem
+                  onClick={() => {
+                    const next = writeParam(new URLSearchParams(params.toString()), 'calendar_date_field', 'delivery')
+                    shallowReplaceSearchParams(pathname, next)
+                    setDateFieldOpen(false)
+                  }}
+                >
+                  Delivery Date
+                </DropdownMenuItem>
+                <DropdownMenuItem
+                  onClick={() => {
+                    const next = writeParam(new URLSearchParams(params.toString()), 'calendar_date_field', 'publication')
+                    shallowReplaceSearchParams(pathname, next)
+                    setDateFieldOpen(false)
+                  }}
+                >
+                  Publication Date
+                </DropdownMenuItem>
+              </DropdownMenuContent>
+            </DropdownMenu>
+          </div>
+        </div>
       </div>
 
       {!isLoading && (!filteredTasks || filteredTasks.length === 0) && (

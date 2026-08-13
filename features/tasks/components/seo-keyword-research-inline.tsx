@@ -1,10 +1,12 @@
 "use client"
 
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react"
-import { Loader2, Search } from "lucide-react"
+import { Check, Loader2, Plus, Search } from "lucide-react"
 import { Button } from "../../../app/components/ui/button"
 import { Input } from "../../../app/components/ui/input"
+import { TopResultsSection } from "../../../app/components/TopResultsSection"
 import { regions, languages } from "../../../app/lib/geoLanguageMaps"
+import { useTopResults } from "../../../app/hooks/useTopResults"
 import {
   useKeywordPlanner,
   type KeywordIdea,
@@ -24,6 +26,18 @@ type SeoKeywordResearchInlineProps = {
 function formatMetricValue(value: number | null | undefined): string {
   if (typeof value !== "number" || !Number.isFinite(value)) return "—"
   return value.toLocaleString()
+}
+
+function regionNameFromId(regionId: string): string {
+  if (!regionId) return ""
+  const name = regions.find((region) => region.id === regionId)?.name ?? ""
+  return name.trim().toLowerCase() === "any" ? "" : name
+}
+
+function languageNameFromId(languageId: string): string {
+  if (!languageId) return ""
+  const name = languages.find((language) => language.id === languageId)?.name ?? ""
+  return name.trim().toLowerCase() === "any" ? "" : name
 }
 
 export function SeoKeywordResearchInline({
@@ -46,6 +60,7 @@ export function SeoKeywordResearchInline({
     languageId: initialLanguageId,
   })
   const [hasSearched, setHasSearched] = useState(false)
+  const [previewKeyword, setPreviewKeyword] = useState<string | null>(null)
   const [addingKeyword, setAddingKeyword] = useState<string | null>(null)
 
   const {
@@ -58,6 +73,14 @@ export function SeoKeywordResearchInline({
     enabled: hasSearched && searchFilters.keyword.trim().length > 0,
     pageSize: 40,
   })
+
+  const {
+    fetchTopResults,
+    getTopResults,
+    isLoading: isTopResultsLoading,
+    getError: getTopResultsError,
+    retryTopResults,
+  } = useTopResults()
 
   useEffect(() => {
     if (!autoFocus) return
@@ -83,6 +106,7 @@ export function SeoKeywordResearchInline({
         searchFilters.languageId === nextFilters.languageId
       setSearchFilters(nextFilters)
       setHasSearched(true)
+      setPreviewKeyword(null)
       if (isSameSearch) {
         void triggerSearch()
       }
@@ -96,11 +120,18 @@ export function SeoKeywordResearchInline({
     return rows.filter((row) => !existingKeywords.has(row.keyword.trim().toLowerCase()))
   }, [data?.results, existingKeywords])
 
-  const handleSelect = useCallback(
-    async (idea: KeywordIdea) => {
-      setAddingKeyword(idea.keyword)
+  const topResultsLanguage = languageNameFromId(formFilters.languageId)
+  const topResultsRegion = regionNameFromId(formFilters.regionId)
+
+  const handlePreview = useCallback((idea: KeywordIdea) => {
+    setPreviewKeyword((prev) => (prev === idea.keyword ? null : idea.keyword))
+  }, [])
+
+  const handleConfirmAdd = useCallback(
+    async (keyword: string) => {
+      setAddingKeyword(keyword)
       try {
-        await onSelectKeyword(idea.keyword)
+        await onSelectKeyword(keyword)
       } finally {
         setAddingKeyword(null)
       }
@@ -176,32 +207,110 @@ export function SeoKeywordResearchInline({
       ) : null}
 
       {results.length > 0 ? (
-        <div className="max-h-56 overflow-y-auto border-t border-gray-100 py-1">
+        <div className="max-h-72 overflow-y-auto border-t border-gray-100 py-1">
           {results.map((idea) => {
+            const isPreview = previewKeyword === idea.keyword
             const isAdding = addingKeyword === idea.keyword
+            const topResultsData = isPreview
+              ? getTopResults(idea.keyword, topResultsLanguage, topResultsRegion)
+              : undefined
+            const topResultsError = isPreview
+              ? getTopResultsError(idea.keyword, topResultsLanguage, topResultsRegion)
+              : undefined
+            const isTopLoading = isPreview
+              ? isTopResultsLoading(idea.keyword, topResultsLanguage, topResultsRegion)
+              : false
+
             return (
-              <button
-                key={idea.keyword}
-                type="button"
-                className="flex w-full items-center gap-2 px-3 py-1.5 text-left text-sm text-gray-700 transition-colors hover:bg-gray-50 disabled:opacity-50"
-                disabled={disabled || isAdding}
-                onMouseDown={(event) => event.preventDefault()}
-                onClick={() => void handleSelect(idea)}
-              >
-                <span className="min-w-0 flex-1 whitespace-normal break-words leading-5">
-                  {idea.keyword}
-                </span>
-                <span className="inline-flex shrink-0 items-center gap-1 text-xs text-gray-500">
-                  <KeywordMetricStat metric="volume">
-                    {formatMetricValue(idea.avgMonthlySearches)}
-                  </KeywordMetricStat>
-                  <KeywordMetricSeparator />
-                  <KeywordMetricStat metric="difficulty">
-                    {formatMetricValue(idea.competitionIndex)}
-                  </KeywordMetricStat>
-                </span>
-                {isAdding ? <Loader2 className="h-3.5 w-3.5 shrink-0 animate-spin text-gray-400" /> : null}
-              </button>
+              <div key={idea.keyword} className={isPreview ? "bg-gray-50/80" : undefined}>
+                <div className="flex w-full items-center gap-1 px-2 py-1.5">
+                  <button
+                    type="button"
+                    className="flex min-w-0 flex-1 items-center gap-2 rounded px-1 py-0.5 text-left text-sm text-gray-700 transition-colors hover:bg-gray-50 disabled:opacity-50"
+                    disabled={disabled || isAdding}
+                    onMouseDown={(event) => event.preventDefault()}
+                    onClick={() => handlePreview(idea)}
+                  >
+                    <span className="min-w-0 flex-1 whitespace-normal break-words leading-5">
+                      {idea.keyword}
+                    </span>
+                    <span className="inline-flex shrink-0 items-center gap-1 text-xs text-gray-500">
+                      <KeywordMetricStat metric="volume">
+                        {formatMetricValue(idea.avgMonthlySearches)}
+                      </KeywordMetricStat>
+                      <KeywordMetricSeparator />
+                      <KeywordMetricStat metric="difficulty">
+                        {formatMetricValue(idea.competitionIndex)}
+                      </KeywordMetricStat>
+                    </span>
+                  </button>
+                  <button
+                    type="button"
+                    className="inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-md text-gray-500 hover:bg-gray-100 hover:text-gray-900 disabled:opacity-50"
+                    title={`Add ${idea.keyword}`}
+                    aria-label={`Add ${idea.keyword}`}
+                    disabled={disabled || isAdding}
+                    onMouseDown={(event) => event.preventDefault()}
+                    onClick={() => void handleConfirmAdd(idea.keyword)}
+                  >
+                    {isAdding ? (
+                      <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                    ) : (
+                      <Plus className="h-3.5 w-3.5" />
+                    )}
+                  </button>
+                </div>
+                {isPreview ? (
+                  <div className="space-y-2 border-t border-gray-100 px-3 pb-3 pt-2">
+                    <p className="text-[11px] text-gray-500">
+                      Review top results for this language/region, then add.
+                    </p>
+                    <TopResultsSection
+                      keyword={idea.keyword}
+                      languageId={topResultsLanguage}
+                      regionId={topResultsRegion}
+                      results={topResultsData?.results}
+                      isLoading={isTopLoading}
+                      error={topResultsError}
+                      onRetry={() =>
+                        retryTopResults(idea.keyword, topResultsLanguage, topResultsRegion)
+                      }
+                      onFetch={() => {
+                        if (
+                          !getTopResults(idea.keyword, topResultsLanguage, topResultsRegion)
+                          && !isTopResultsLoading(idea.keyword, topResultsLanguage, topResultsRegion)
+                        ) {
+                          void fetchTopResults(
+                            idea.keyword,
+                            topResultsLanguage,
+                            topResultsRegion,
+                          )
+                        }
+                      }}
+                    />
+                    <Button
+                      type="button"
+                      size="sm"
+                      className="h-7 w-full text-xs"
+                      disabled={disabled || isAdding}
+                      onMouseDown={(event) => event.preventDefault()}
+                      onClick={() => void handleConfirmAdd(idea.keyword)}
+                    >
+                      {isAdding ? (
+                        <>
+                          <Loader2 className="mr-1.5 h-3.5 w-3.5 animate-spin" />
+                          Adding…
+                        </>
+                      ) : (
+                        <>
+                          <Check className="mr-1.5 h-3.5 w-3.5" />
+                          Add keyword
+                        </>
+                      )}
+                    </Button>
+                  </div>
+                ) : null}
+              </div>
             )
           })}
         </div>

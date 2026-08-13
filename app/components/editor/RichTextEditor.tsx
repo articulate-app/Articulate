@@ -1003,18 +1003,47 @@ export const RichTextEditor: React.FC<RichTextEditorProps> = ({
     if (!editor) return;
     const current = editor.getHTML();
     const next = value ?? "";
-    if (current === next) return;
     const forceKey = forceContentKey ?? null;
     const shouldForce =
       forceKey != null
       && forceKey !== ""
       && forceKey !== lastForcedContentKeyRef.current;
+
+    if (current === next) {
+      // Still consume the force key so a later identical bump does not re-enter.
+      if (shouldForce) lastForcedContentKeyRef.current = forceKey;
+      return;
+    }
+
     // While the user is actively editing, TipTap owns document state — unless an
     // AI/version bump explicitly forces a sync via forceContentKey.
     if (editor.isFocused && !shouldForce) return;
+
     if (shouldForce) lastForcedContentKeyRef.current = forceKey;
+
+    // Preserve caret when a forced sync lands while focused (e.g. soft rebase).
+    const selection = editor.state.selection;
+    const { from, to } = selection;
     editor.commands.setContent(next, false);
+    if (editor.isFocused) {
+      const maxPos = editor.state.doc.content.size;
+      const nextFrom = Math.min(from, maxPos);
+      const nextTo = Math.min(to, maxPos);
+      try {
+        editor.commands.setTextSelection({ from: nextFrom, to: nextTo });
+      } catch {
+        // Selection restore is best-effort across structural HTML changes.
+      }
+    }
   }, [editor, value, forceContentKey]);
+
+  React.useEffect(() => {
+    if (!editor) return;
+    const shouldEdit = !readOnly;
+    if (editor.isEditable !== shouldEdit) {
+      editor.setEditable(shouldEdit);
+    }
+  }, [editor, readOnly]);
 
   return (
     <div
@@ -1084,7 +1113,12 @@ export const RichTextEditor: React.FC<RichTextEditorProps> = ({
       <EditorContent
         editor={editor}
         className={cn(
-          flatSurface ? "h-auto shrink-0 overflow-visible" : "min-h-0 flex-1 overflow-y-auto",
+          // autoGrow parents use `h-auto` — keep intrinsic height. Fixed-height parents
+          // (e.g. task briefing) pass `h-full` and need the body to scroll so the
+          // compact toolbar is not flex-shrunk into a collapsed strip.
+          flatSurface && !(typeof className === "string" && className.includes("h-full"))
+            ? "h-auto shrink-0 overflow-visible"
+            : "min-h-0 flex-1 overflow-y-auto",
         )}
         data-output-editor="true"
         onPointerDownCapture={interceptAttachmentControlsCapture}

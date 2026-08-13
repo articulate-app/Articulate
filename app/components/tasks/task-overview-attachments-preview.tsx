@@ -12,14 +12,12 @@ const PREVIEW_ATTACHMENT_LIMIT = 4
 type TaskOverviewAttachmentsPreviewProps = {
   taskId: number | string
   bootstrapAttachments: unknown[]
-  onViewAll: () => void
   active?: boolean
 }
 
 export function TaskOverviewAttachmentsPreview({
   taskId,
   bootstrapAttachments,
-  onViewAll,
   active = true,
 }: TaskOverviewAttachmentsPreviewProps) {
   const { ref, isInViewport } = useInViewport({ enabled: active })
@@ -65,7 +63,6 @@ export function TaskOverviewAttachmentsPreview({
       />
       <TaskOverviewPreviewSection
         title="Attachments"
-        onViewAll={onViewAll}
         active={shouldLoad}
         isLoading={shouldLoad && attachmentsUpload.isUploading && totalCount === 0}
         isEmpty={isEmpty}

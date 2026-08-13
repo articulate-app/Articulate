@@ -3,6 +3,10 @@
 import { useCallback, useMemo, useState } from "react"
 import { createClientComponentClient } from "@supabase/auth-helpers-nextjs"
 import { invokeEdgeFunctionFetch } from "../../../app/lib/edge-functions"
+import {
+  parseMonthlySearchVolumes,
+  type KeywordMonthlySearchVolume,
+} from "../../../app/lib/keyword-ideas-metrics"
 
 const SUPABASE_FUNCTIONS_BASE = `${process.env.NEXT_PUBLIC_SUPABASE_URL}/functions/v1`
 
@@ -10,6 +14,7 @@ type KeywordMetricRow = {
   keywordKey: string
   volume: number | null
   competition: number | null
+  monthlySearchVolumes: KeywordMonthlySearchVolume[]
   isLoading: boolean
 }
 
@@ -18,6 +23,7 @@ type KeywordMetricApiRow = {
   text?: unknown
   avgMonthlySearches?: unknown
   competitionIndex?: unknown
+  monthlySearchVolumes?: unknown
 }
 
 type KeywordMetricDbRow = {
@@ -164,6 +170,7 @@ export function useKeywordIdeasMetrics(args: {
           keywordKey: key,
           volume: null,
           competition: null,
+          monthlySearchVolumes: [],
           isLoading: false,
         }
       })
@@ -209,6 +216,7 @@ export function useKeywordIdeasMetrics(args: {
               keywordKey: key,
               volume: null,
               competition: null,
+              monthlySearchVolumes: [],
               isLoading: true,
             },
           ]
@@ -256,6 +264,9 @@ export function useKeywordIdeasMetrics(args: {
 
         const volume = toNumber(matchedRow?.avgMonthlySearches ?? null)
         const competition = toNumber(matchedRow?.competitionIndex ?? null)
+        const monthlySearchVolumes = parseMonthlySearchVolumes(
+          matchedRow?.monthlySearchVolumes,
+        )
 
         setKeywordMetrics((prev) =>
           prev.map((item) =>
@@ -264,6 +275,7 @@ export function useKeywordIdeasMetrics(args: {
                   ...item,
                   volume,
                   competition,
+                  monthlySearchVolumes,
                   isLoading: false,
                 }
               : item,

@@ -1,6 +1,6 @@
 "use client"
 
-import { Calendar, ChevronDown, LayoutGrid, List } from "lucide-react"
+import { ChevronDown, LayoutGrid, List, Calendar } from "lucide-react"
 import { cn } from "@/lib/utils"
 import {
   DropdownMenu,
@@ -25,6 +25,7 @@ export function SplitPaneViewDropdown({
   pillButton,
   prefixLabel,
   className,
+  iconOnly = false,
 }: {
   value: MainViewMode
   primaryView: MainViewMode
@@ -33,23 +34,33 @@ export function SplitPaneViewDropdown({
   /** e.g. "Bottom" or "Right" for desktop split panes. Omit on mobile. */
   prefixLabel?: string | null
   className?: string
+  /** Compact icon trigger (no “List” / “Kanban” label). */
+  iconOnly?: boolean
 }) {
   const options = getSplitViewOptions(primaryView)
-  const ViewIcon = VIEW_ICONS[value]
   const label = getSplitViewLabel(value)
 
   return (
     <DropdownMenu>
-      <IconTooltip label="Change split view">
+      <IconTooltip label={prefixLabel ? `${prefixLabel}: ${label}` : `View: ${label}`}>
         <DropdownMenuTrigger asChild>
           <button
             type="button"
-            className={cn(pillButton, "shrink-0 gap-1.5", className)}
-            aria-label="Split pane view"
+            className={cn(
+              iconOnly
+                ? "inline-flex h-7 w-7 shrink-0 items-center justify-center rounded text-gray-600 hover:bg-gray-100 hover:text-gray-900"
+                : cn(pillButton, "shrink-0 gap-1.5"),
+              className,
+            )}
+            aria-label={prefixLabel ? `${prefixLabel} view: ${label}` : `Split pane view: ${label}`}
           >
-            <ViewIcon className="h-4 w-4" />
-            <span>{prefixLabel ? `${prefixLabel}: ${label}` : label}</span>
-            <ChevronDown className="h-4 w-4 opacity-70" />
+            <LayoutGrid className={iconOnly ? "h-3.5 w-3.5" : "h-4 w-4"} />
+            {iconOnly ? null : (
+              <>
+                <span>{prefixLabel ? `${prefixLabel}: ${label}` : label}</span>
+                <ChevronDown className="h-4 w-4 opacity-70" />
+              </>
+            )}
           </button>
         </DropdownMenuTrigger>
       </IconTooltip>

@@ -86,6 +86,44 @@ async function extractDocxText(bytes: Uint8Array): Promise<string> {
   }
 }
 
+async function extractSpreadsheetText(bytes: Uint8Array): Promise<string> {
+  const xlsxMod = await import("npm:xlsx@0.18.5");
+  const XLSX = (xlsxMod as { default?: typeof xlsxMod } & Record<string, unknown>).default ?? xlsxMod;
+  const read = (XLSX as {
+    read?: (data: Uint8Array | ArrayBuffer, opts: Record<string, unknown>) => {
+      SheetNames?: string[]
+      Sheets?: Record<string, unknown>
+    }
+  }).read;
+  const sheetToCsv = (XLSX as {
+    utils?: { sheet_to_csv?: (sheet: unknown) => string }
+  }).utils?.sheet_to_csv;
+  if (typeof read !== "function" || typeof sheetToCsv !== "function") {
+    throw new Error("xlsx_parse_unavailable");
+  }
+  // Prefer a standalone ArrayBuffer — Deno/npm interop can choke on SharedArrayBuffer views.
+  const arrayBuffer = toStandaloneArrayBuffer(bytes);
+  let workbook: { SheetNames?: string[]; Sheets?: Record<string, unknown> };
+  try {
+    workbook = read(new Uint8Array(arrayBuffer), { type: "array", cellDates: true });
+  } catch {
+    workbook = read(arrayBuffer, { type: "array", cellDates: true });
+  }
+  const names = Array.isArray(workbook.SheetNames) ? workbook.SheetNames : [];
+  const sheets = workbook.Sheets ?? {};
+  const parts: string[] = [];
+  for (const name of names) {
+    const sheet = sheets[name];
+    if (!sheet) continue;
+    const csv = String(sheetToCsv(sheet) ?? "").trim();
+    if (!csv) continue;
+    parts.push(names.length > 1 ? `## ${name}\n${csv}` : csv);
+  }
+  const text = parts.join("\n\n").trim();
+  if (!text) throw new Error("xlsx_empty_workbook");
+  return text;
+}
+
 async function describeImage(bytes: Uint8Array, mimeType: string, fileName: string) {
   const response = await fetch("https://api.openai.com/v1/chat/completions", {
     method: "POST",
@@ -147,7 +185,199 @@ function storageObject(filePath: string, fallbackBucket: string) {
   return { bucket, objectPath };
 }
 
-async function extractAttachment(serviceDb: any, attachment: any) {
+type ExtractedPdfImage = {
+  attachment_id: string
+  file_path: string
+  file_name: string
+  page: number
+  width: number
+  height: number
+  mime_type: string
+}
+
+function expandChannelsToRgba(
+  data: Uint8Array,
+  width: number,
+  height: number,
+  channels: number,
+): Uint8Array {
+  const pixelCount = width * height
+  if (channels === 4 && data.length >= pixelCount * 4) return data
+  const rgba = new Uint8Array(pixelCount * 4)
+  if (channels === 1) {
+    for (let i = 0; i < pixelCount; i += 1) {
+      const v = data[i] ?? 0
+      const o = i * 4
+      rgba[o] = v
+      rgba[o + 1] = v
+      rgba[o + 2] = v
+      rgba[o + 3] = 255
+    }
+    return rgba
+  }
+  if (channels === 3) {
+    for (let i = 0; i < pixelCount; i += 1) {
+      const s = i * 3
+      const o = i * 4
+      rgba[o] = data[s] ?? 0
+      rgba[o + 1] = data[s + 1] ?? 0
+      rgba[o + 2] = data[s + 2] ?? 0
+      rgba[o + 3] = 255
+    }
+    return rgba
+  }
+  // Unknown channel layout — pad what we can.
+  for (let i = 0; i < pixelCount; i += 1) {
+    const s = i * Math.max(1, channels)
+    const o = i * 4
+    rgba[o] = data[s] ?? 0
+    rgba[o + 1] = data[s + Math.min(1, channels - 1)] ?? rgba[o]
+    rgba[o + 2] = data[s + Math.min(2, channels - 1)] ?? rgba[o]
+    rgba[o + 3] = channels >= 4 ? (data[s + 3] ?? 255) : 255
+  }
+  return rgba
+}
+
+async function encodeRawImagePng(args: {
+  data: Uint8Array
+  width: number
+  height: number
+  channels: number
+}): Promise<Uint8Array> {
+  const { encode } = await import("npm:fast-png@6.2.0")
+  const rgba = expandChannelsToRgba(args.data, args.width, args.height, args.channels)
+  const encoded = encode({
+    width: args.width,
+    height: args.height,
+    data: rgba,
+    depth: 8,
+    channels: 4,
+  })
+  return encoded instanceof Uint8Array ? encoded : new Uint8Array(encoded)
+}
+
+async function extractAndStorePdfImages(args: {
+  serviceDb: any
+  sourceId: string
+  pdf: any
+  pageCount: number
+  maxImages?: number
+  maxPages?: number
+}): Promise<ExtractedPdfImage[]> {
+  const { extractImages } = await import("npm:unpdf@1.8.0")
+  const maxImages = args.maxImages ?? 24
+  const maxPages = Math.min(args.pageCount || 1, args.maxPages ?? 20)
+  const stored: ExtractedPdfImage[] = []
+  const seen = new Set<string>()
+
+  for (let page = 1; page <= maxPages && stored.length < maxImages; page += 1) {
+    let images: any[] = []
+    try {
+      images = await extractImages(args.pdf, page)
+    } catch (error) {
+      console.warn("pdf extractImages failed", { page, error: String(error) })
+      continue
+    }
+    if (!Array.isArray(images) || images.length === 0) continue
+
+    for (let index = 0; index < images.length && stored.length < maxImages; index += 1) {
+      const img = images[index]
+      const width = Number(img?.width) || 0
+      const height = Number(img?.height) || 0
+      const channels = Number(img?.channels) || 0
+      const raw = img?.data
+      if (!width || !height || !channels || !(raw instanceof Uint8Array || ArrayBuffer.isView(raw))) {
+        continue
+      }
+      // Skip tiny icons / logos that pollute newsletters.
+      if (width < 64 || height < 64) continue
+      const data = raw instanceof Uint8Array ? raw : new Uint8Array(raw.buffer)
+      const dedupeKey = `${page}:${img?.key ?? index}:${width}x${height}:${data.length}`
+      if (seen.has(dedupeKey)) continue
+      seen.add(dedupeKey)
+
+      let pngBytes: Uint8Array
+      try {
+        pngBytes = await encodeRawImagePng({ data, width, height, channels })
+      } catch (error) {
+        console.warn("pdf image png encode failed", { page, index, error: String(error) })
+        continue
+      }
+
+      const fileName = `pdf-p${page}-img${index + 1}.png`
+      const filePath = `sources/${args.sourceId}/extracted/${crypto.randomUUID()}/${fileName}`
+      const { error: uploadError } = await args.serviceDb.storage
+        .from("attachments")
+        .upload(filePath, new Blob([pngBytes], { type: "image/png" }), {
+          contentType: "image/png",
+          upsert: false,
+        })
+      if (uploadError) {
+        console.warn("pdf image upload failed", { filePath, error: uploadError.message })
+        continue
+      }
+
+      const payload: Record<string, unknown> = {
+        table_name: "sources",
+        record_id: args.sourceId,
+        file_name: fileName,
+        file_path: filePath,
+        mime_type: "image/png",
+        size: pngBytes.length,
+        media_type: "image",
+        metadata: {
+          extracted_from_pdf: true,
+          source_id: args.sourceId,
+          page,
+          index: index + 1,
+          width,
+          height,
+        },
+      }
+      let { data: row, error: insertError } = await args.serviceDb
+        .from("attachments")
+        .insert(payload)
+        .select("id,file_path,file_name,mime_type")
+        .single()
+      if (insertError) {
+        const minimal = {
+          table_name: payload.table_name,
+          record_id: payload.record_id,
+          file_name: payload.file_name,
+          file_path: payload.file_path,
+          mime_type: payload.mime_type,
+          size: payload.size,
+          metadata: payload.metadata,
+        }
+        const retry = await args.serviceDb
+          .from("attachments")
+          .insert(minimal)
+          .select("id,file_path,file_name,mime_type")
+          .single()
+        row = retry.data
+        insertError = retry.error
+      }
+      if (insertError || !row?.id) {
+        console.warn("pdf image attachment insert failed", insertError?.message)
+        continue
+      }
+
+      stored.push({
+        attachment_id: String(row.id),
+        file_path: String(row.file_path ?? filePath),
+        file_name: String(row.file_name ?? fileName),
+        page,
+        width,
+        height,
+        mime_type: "image/png",
+      })
+    }
+  }
+
+  return stored
+}
+
+async function extractAttachment(serviceDb: any, attachment: any, sourceId?: string | null) {
   const filePath = String(attachment?.file_path ?? "");
   const fileName = String(attachment?.file_name ?? attachment?.name ?? "source-file");
   const mimeType = String(attachment?.mime_type ?? "").toLowerCase();
@@ -167,15 +397,52 @@ async function extractAttachment(serviceDb: any, attachment: any) {
     return { content_text: new TextDecoder().decode(bytes), content_type: mimeType || "text/plain" };
   }
   if (mimeType.includes("pdf") || /\.pdf$/i.test(fileName)) {
-    const { getDocument } = await import("pdfjs-dist/build/pdf.mjs");
-    const pdf = await getDocument({ data: bytes }).promise;
-    let text = "";
-    for (let pageNumber = 1; pageNumber <= pdf.numPages; pageNumber++) {
-      const page = await pdf.getPage(pageNumber);
-      const content = await page.getTextContent();
-      text += content.items.map((item: any) => item.str).join(" ") + "\n";
+    // Deno rejects bare npm package paths; use npm: specifier (same pattern as mammoth).
+    // unpdf ships a serverless PDF.js build that works in edge/Deno without workers.
+    const { extractText, getDocumentProxy } = await import("npm:unpdf@1.8.0");
+    const pdf = await getDocumentProxy(bytes);
+    const extracted = await extractText(pdf, { mergePages: true });
+    const text = typeof extracted?.text === "string"
+      ? extracted.text
+      : Array.isArray(extracted?.text)
+        ? extracted.text.join("\n")
+        : "";
+    const pageCount =
+      typeof extracted?.totalPages === "number"
+        ? extracted.totalPages
+        : typeof pdf?.numPages === "number"
+          ? pdf.numPages
+          : null;
+    let extractedImages: ExtractedPdfImage[] = []
+    if (sourceId) {
+      try {
+        extractedImages = await extractAndStorePdfImages({
+          serviceDb,
+          sourceId,
+          pdf,
+          pageCount: Number(pageCount) || 1,
+        })
+      } catch (error) {
+        console.warn("pdf image extraction skipped", { sourceId, error: String(error) })
+      }
     }
-    return { content_text: text.trim(), content_type: mimeType || "application/pdf", page_count: pdf.numPages };
+    const imageManifest = extractedImages.length
+      ? [
+          "",
+          "## Extracted images from this PDF",
+          "Use these hosted image URLs (from source metadata.extracted_images[].url) as <img src> in HTML email deliverables:",
+          ...extractedImages.map(
+            (img, i) =>
+              `- image_${i + 1}: attachment_id=${img.attachment_id} page=${img.page} ${img.width}x${img.height} file=${img.file_name}`,
+          ),
+        ].join("\n")
+      : ""
+    return {
+      content_text: `${String(text ?? "").trim()}${imageManifest}`.trim(),
+      content_type: mimeType || "application/pdf",
+      page_count: pageCount,
+      extracted_images: extractedImages,
+    };
   }
   if (mimeType.includes("word") || /\.docx$/i.test(fileName)) {
     const content_text = await extractDocxText(bytes);
@@ -183,6 +450,36 @@ async function extractAttachment(serviceDb: any, attachment: any) {
       content_text,
       content_type: mimeType || "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
     };
+  }
+  const isSpreadsheet =
+    mimeType.includes("spreadsheetml")
+    || mimeType === "application/vnd.ms-excel"
+    || mimeType.includes("ms-excel")
+    || /\.xlsx$/i.test(fileName)
+    || /\.xls$/i.test(fileName)
+    || (mimeType === "application/octet-stream" && (/\.xlsx$/i.test(fileName) || /\.xls$/i.test(fileName)));
+  if (isSpreadsheet) {
+    try {
+      const content_text = await extractSpreadsheetText(bytes);
+      return {
+        content_text,
+        content_type:
+          mimeType && mimeType !== "application/octet-stream"
+            ? mimeType
+            : (/\.xls$/i.test(fileName)
+              ? "application/vnd.ms-excel"
+              : "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"),
+      };
+    } catch (error) {
+      console.warn("spreadsheet extraction failed", {
+        fileName,
+        mimeType,
+        error: error instanceof Error ? error.message : String(error),
+      });
+      throw new Error(
+        `spreadsheet_extract_failed:${error instanceof Error ? error.message : String(error)}`,
+      );
+    }
   }
   if (mimeType.startsWith("image/") || /\.(png|jpe?g|webp|gif)$/i.test(fileName)) {
     return {
@@ -233,7 +530,7 @@ Deno.serve(async (request) => {
       if (attachmentError || !attachment) {
         throw new Error(attachmentError?.message ?? "source_attachment_not_found");
       }
-      imported = await extractAttachment(serviceDb, attachment);
+      imported = await extractAttachment(serviceDb, attachment, sourceId);
     } else {
       return json({
         ok: true,
@@ -243,11 +540,19 @@ Deno.serve(async (request) => {
       });
     }
 
+    const extractedImages = Array.isArray(imported.extracted_images)
+      ? imported.extracted_images
+      : []
+    const nextContentJson = {
+      ...(source.content_json && typeof source.content_json === "object" ? source.content_json : {}),
+      ...(extractedImages.length ? { extracted_images: extractedImages } : {}),
+    }
     const nextSnapshot = {
       ...source,
       status: "ready",
       source_url: imported.source_url ?? source.source_url ?? null,
       content_text: imported.content_text ?? source.content_text ?? null,
+      content_json: Object.keys(nextContentJson).length ? nextContentJson : source.content_json ?? null,
       metadata: {
         ...(source.metadata ?? {}),
         imported_at: new Date().toISOString(),
@@ -255,6 +560,8 @@ Deno.serve(async (request) => {
         page_count: imported.page_count ?? null,
         binary_only: imported.binary_only === true,
         visual_source: imported.visual_source === true,
+        extracted_image_count: extractedImages.length,
+        extracted_images: extractedImages,
       },
     };
     const { data: saved, error: saveError } = await userDb.rpc("ai_save_source_version_v1", {

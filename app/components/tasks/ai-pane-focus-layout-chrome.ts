@@ -18,6 +18,7 @@ export function getAiPaneFocusLayoutChrome({
       && (showDetailsPanel || showAiPanel),
     showSecondaryDivider:
       !isAiFocusModeEnabled && showDetailsPanel && showAiPanel,
-    showAiPanelLeftBorder: !isAiFocusModeEnabled && !isTaskDetailsAiSplitMode,
+    // Dividers use border-r on the preceding pane so scrollbars stay flush; no border-l on AI.
+    showAiPanelLeftBorder: false,
   }
 }

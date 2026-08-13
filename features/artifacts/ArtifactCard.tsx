@@ -3,22 +3,22 @@
 import React, { useMemo, useState } from "react"
 import {
   AlertCircle,
-  Check,
+  Download,
   GripVertical,
-  Link2,
   Loader2,
   Maximize2,
   MessageSquarePlus,
 } from "lucide-react"
-import { useQueryClient } from "@tanstack/react-query"
 import { cn } from "../../app/lib/utils"
 import type { TaskArtifact, SelectedArtifactContext } from "../../app/lib/artifacts/artifact-types"
 import {
   extractArtifactAssets,
   extractArtifactBlocks,
 } from "../../app/lib/artifacts/artifact-types"
+import { toast } from "../../app/components/ui/use-toast"
 import { artifactContentToPreviewHtml } from "./artifact-preview-html"
-import { attachArtifactToTask } from "../../app/lib/services/artifacts"
+import { isHtmlEmailArtifact } from "./artifact-html-document"
+import { ArtifactHtmlDocumentView } from "./artifact-html-document-view"
 import type { AiBuildArtifactPreviewEntry } from "../../app/store/ai-build-artifact-preview-store"
 import { ComponentOutputReadonlyBody } from "../tasks/components/ComponentOutputReadonlyBody"
 import { AI_CHAT_PREVIEW_BODY_WRAPPER_CLASS } from "../tasks/components/component-output-body-shared"
@@ -39,6 +39,7 @@ import {
   ArtifactMediaAnnotateDialog,
   artifactHasAnnotatableMedia,
 } from "./artifact-media-annotate-dialog"
+import { exportArtifactAsDocx } from "./artifact-docx-export"
 
 function phaseLabel(phase: AiBuildArtifactPreviewEntry["phase"] | "ready"): string {
   switch (phase) {
@@ -95,12 +96,8 @@ export type ArtifactCardProps = {
   artifact: TaskArtifact
   livePreview?: AiBuildArtifactPreviewEntry | null
   className?: string
-  /** Show Attach to task when the artifact lives only on an AI thread. */
+  /** Allow dragging chat-only artifacts onto an open task/project to attach. */
   allowAttachToTask?: boolean
-  defaultTaskId?: number | null
-  defaultChannelId?: number | null
-  defaultLanguageId?: number | null
-  onAttached?: (artifact: TaskArtifact) => void
   onComment?: (artifact: TaskArtifact) => void
   compact?: boolean
   /** AI chat live preview: cap body height and scroll (component-edit style). */
@@ -111,31 +108,21 @@ export type ArtifactCardProps = {
 
 /**
  * Artifact card for chat or task workspace.
- * Chat artifacts (task_id null, ai_thread_id set) offer Attach to task — no duplication / version reset.
+ * Chat-only artifacts can be drag-attached onto an open task/project.
  */
 export function ArtifactCard({
   artifact,
   livePreview = null,
   className,
   allowAttachToTask = false,
-  defaultTaskId = null,
-  defaultChannelId = null,
-  defaultLanguageId = null,
-  onAttached,
   onComment,
   compact = false,
   chatPreview = false,
   onOpen,
 }: ArtifactCardProps) {
-  const queryClient = useQueryClient()
-  const [isAttaching, setIsAttaching] = useState(false)
-  const [attachError, setAttachError] = useState<string | null>(null)
-  const [taskIdInput, setTaskIdInput] = useState(
-    defaultTaskId != null ? String(defaultTaskId) : "",
-  )
-  const [showAttachForm, setShowAttachForm] = useState(false)
   const [showDiff, setShowDiff] = useState(true)
   const [annotateOpen, setAnnotateOpen] = useState(false)
+  const [isDownloading, setIsDownloading] = useState(false)
 
   const phase = livePreview?.phase ?? "ready"
   const isLive = !!livePreview && phase !== "saved" && phase !== "failed"
@@ -239,6 +226,7 @@ export function ArtifactCard({
   )
 
   const prefersTipTapBody = useMemo(() => {
+    if (isHtmlEmailArtifact(displayArtifact)) return false
     const blocks = extractArtifactBlocks(displayArtifact.content_json)
     const assets = extractArtifactAssets(displayArtifact.asset_data)
     if (assets.length > 0) return false
@@ -259,7 +247,7 @@ export function ArtifactCard({
     }
     if (blocks.length > 0) return true
     return Boolean(displayArtifact.content_text?.trim())
-  }, [displayArtifact.content_json, displayArtifact.asset_data, displayArtifact.content_text])
+  }, [displayArtifact])
 
   const hasAnnotatableMedia = useMemo(
     () => artifactHasAnnotatableMedia(displayArtifact),
@@ -274,29 +262,26 @@ export function ArtifactCard({
     onOpen?.()
   }
 
-  const handleAttach = async () => {
-    const taskId = Number(taskIdInput)
-    if (!Number.isFinite(taskId) || taskId <= 0) {
-      setAttachError("Enter a valid task id")
-      return
-    }
-    setIsAttaching(true)
-    setAttachError(null)
+  const handleDownloadWord = async () => {
+    if (isLive || isDownloading) return
+    setIsDownloading(true)
     try {
-      const result = await attachArtifactToTask({
-        artifactId: displayArtifact.id,
-        taskId,
-        channelId: defaultChannelId,
-        languageId: defaultLanguageId,
+      await exportArtifactAsDocx({
+        artifact: {
+          id: displayArtifact.id,
+          title: displayArtifact.title,
+          content_json: displayArtifact.content_json,
+          content_text: displayArtifact.content_text,
+        },
       })
-      onAttached?.(result.artifact)
-      await queryClient.invalidateQueries({ queryKey: ["task-artifacts"] })
-      await queryClient.invalidateQueries({ queryKey: ["ai-thread-artifacts"] })
-      setShowAttachForm(false)
     } catch (error) {
-      setAttachError(error instanceof Error ? error.message : "Failed to attach artifact")
+      toast({
+        title: "Download failed",
+        description: error instanceof Error ? error.message : "Could not export Word file",
+        variant: "destructive",
+      })
     } finally {
-      setIsAttaching(false)
+      setIsDownloading(false)
     }
   }
 
@@ -326,9 +311,22 @@ export function ArtifactCard({
           </span>
         ) : null}
         <div className="min-w-0 flex-1">
-          <div className="truncate text-sm font-medium text-gray-900">
-            {displayArtifact.title?.trim() || "Artifact"}
-          </div>
+          {onOpen ? (
+            <button
+              type="button"
+              onClick={(event) => {
+                event.stopPropagation()
+                onOpen()
+              }}
+              className="block w-full truncate text-left text-sm font-medium text-gray-900 hover:underline"
+            >
+              {displayArtifact.title?.trim() || "Artifact"}
+            </button>
+          ) : (
+            <div className="truncate text-sm font-medium text-gray-900">
+              {displayArtifact.title?.trim() || "Artifact"}
+            </div>
+          )}
           <p className="text-[11px] text-gray-500">
             {displayArtifact.artifact_type ? `${displayArtifact.artifact_type}` : "Artifact"}
             {typeof displayArtifact.metadata?.channel_name === "string"
@@ -345,6 +343,23 @@ export function ArtifactCard({
         </div>
         <div className="flex shrink-0 flex-col items-end gap-1">
           <div className="flex items-center gap-1">
+            <button
+              type="button"
+              onClick={(event) => {
+                event.stopPropagation()
+                void handleDownloadWord()
+              }}
+              disabled={isLive || isDownloading}
+              className="inline-flex h-7 w-7 items-center justify-center rounded-md text-gray-500 transition-colors hover:bg-gray-100 hover:text-gray-800 disabled:opacity-50"
+              aria-label="Download Word"
+              title="Download Word"
+            >
+              {isDownloading ? (
+                <Loader2 className="h-3.5 w-3.5 animate-spin" />
+              ) : (
+                <Download className="h-3.5 w-3.5" />
+              )}
+            </button>
             {onOpen || hasAnnotatableMedia ? (
               <button
                 type="button"
@@ -371,21 +386,18 @@ export function ArtifactCard({
               />
             ) : null}
           </div>
-          {phase === "failed" || isLive || phase === "saved" ? (
+          {phase === "failed" || isLive ? (
             <span
               className={cn(
                 "inline-flex items-center gap-1 rounded px-1.5 py-0.5 text-[10px] font-medium",
                 phase === "failed"
                   ? "bg-destructive/10 text-destructive"
-                  : phase === "saved"
-                    ? "bg-emerald-50 text-emerald-800"
-                    : "bg-gray-50 text-gray-600",
+                  : "bg-gray-50 text-gray-600",
               )}
               title={phaseLabel(phase)}
               aria-label={phaseLabel(phase)}
             >
               {isLive ? <Loader2 className="h-3 w-3 animate-spin" aria-hidden /> : null}
-              {phase === "saved" ? <Check className="h-3 w-3" aria-hidden /> : null}
               {phase === "failed" ? (
                 <>
                   <AlertCircle className="h-3 w-3" aria-hidden />
@@ -404,7 +416,12 @@ export function ArtifactCard({
       ) : null}
 
       {!compact ? (
-        <div className="border-t border-gray-100 px-3 py-3">
+        <div
+          className={cn(
+            "border-t border-gray-100 px-3 py-3",
+            chatPreview && "max-h-40 overflow-x-hidden overflow-y-auto",
+          )}
+        >
           {chatPreview ? (
             showDiff && canShowDiff ? (
               <ArtifactRichDiffBody
@@ -414,6 +431,12 @@ export function ArtifactCard({
                 afterContentJson={displayArtifact.content_json}
                 changedOnly
                 compact
+              />
+            ) : isHtmlEmailArtifact(displayArtifact) ? (
+              <ArtifactHtmlDocumentView
+                html={richHtml}
+                readOnly
+                variant="preview"
               />
             ) : prefersTipTapBody ? (
               <ComponentOutputReadonlyBody
@@ -559,62 +582,16 @@ export function ArtifactCard({
         </p>
       ) : null}
 
-      {(onComment || (allowAttachToTask && isChatOnly)) ? (
+      {onComment ? (
         <div className="flex flex-wrap items-center gap-1.5 border-t border-gray-100 px-3 py-2">
-          {onComment ? (
-            <button
-              type="button"
-              onClick={() => onComment(displayArtifact)}
-              className="inline-flex items-center gap-1 rounded px-2 py-1 text-[11px] font-medium text-gray-700 hover:bg-gray-50"
-            >
-              <MessageSquarePlus className="h-3 w-3" aria-hidden />
-              Comment
-            </button>
-          ) : null}
-          {allowAttachToTask && isChatOnly ? (
-            <button
-              type="button"
-              onClick={() => setShowAttachForm((prev) => !prev)}
-              className="inline-flex items-center gap-1 rounded px-2 py-1 text-[11px] font-medium text-gray-700 hover:bg-gray-50"
-            >
-              <Link2 className="h-3 w-3" aria-hidden />
-              Attach to task
-            </button>
-          ) : null}
-        </div>
-      ) : null}
-
-      {showAttachForm ? (
-        <div className="space-y-2 border-t border-gray-100 bg-gray-50 px-3 py-2">
-          <label className="block text-[11px] font-medium text-gray-700">
-            Task id
-            <input
-              type="number"
-              value={taskIdInput}
-              onChange={(event) => setTaskIdInput(event.target.value)}
-              className="mt-1 w-full rounded border border-gray-200 bg-white px-2 py-1 text-sm"
-              placeholder="e.g. 1234"
-            />
-          </label>
-          {attachError ? <p className="text-[11px] text-red-600">{attachError}</p> : null}
-          <div className="flex gap-2">
-            <button
-              type="button"
-              disabled={isAttaching}
-              onClick={() => void handleAttach()}
-              className="inline-flex items-center gap-1 rounded bg-gray-900 px-2.5 py-1 text-[11px] font-medium text-white disabled:opacity-50"
-            >
-              {isAttaching ? <Loader2 className="h-3 w-3 animate-spin" /> : null}
-              Attach
-            </button>
-            <button
-              type="button"
-              onClick={() => setShowAttachForm(false)}
-              className="rounded px-2.5 py-1 text-[11px] text-gray-600 hover:bg-white"
-            >
-              Cancel
-            </button>
-          </div>
+          <button
+            type="button"
+            onClick={() => onComment(displayArtifact)}
+            className="inline-flex items-center gap-1 rounded px-2 py-1 text-[11px] font-medium text-gray-700 hover:bg-gray-50"
+          >
+            <MessageSquarePlus className="h-3 w-3" aria-hidden />
+            Comment
+          </button>
         </div>
       ) : null}
       <ArtifactMediaAnnotateDialog

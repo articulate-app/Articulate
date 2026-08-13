@@ -13,6 +13,8 @@ export async function middleware(req: NextRequest) {
     '/auth/update-password',
     '/auth/callback',
     '/api/auth',
+    // Public verification key for local Browser Helper JWT validation (no secrets).
+    '/api/browser-helper/jwks',
   ];
 
   // Allow public paths to continue without authentication check

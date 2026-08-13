@@ -1,5 +1,9 @@
 import type { KeywordMonthlySearchVolume } from "./keyword-ideas-metrics"
 import { normalizeKeywordKey } from "./google-autocomplete"
+import {
+  keywordOrthographicKey,
+  keywordSeedVariantAffinity,
+} from "./keyword-research-input"
 
 export type KeywordIdeaRow = {
   keyword: string
@@ -15,6 +19,14 @@ export function emptyKeywordIdea(keyword: string): KeywordIdeaRow {
     competitionIndex: 0,
     monthlySearchVolumes: [],
   }
+}
+
+function ideaHasMetrics(idea: KeywordIdeaRow): boolean {
+  return (
+    idea.avgMonthlySearches > 0
+    || idea.competitionIndex > 0
+    || idea.monthlySearchVolumes.length > 0
+  )
 }
 
 /**
@@ -43,14 +55,8 @@ export function mergeKeywordIdeas(
       return
     }
 
-    const existingHasMetrics =
-      existing.avgMonthlySearches > 0 ||
-      existing.competitionIndex > 0 ||
-      existing.monthlySearchVolumes.length > 0
-    const incomingHasMetrics =
-      idea.avgMonthlySearches > 0 ||
-      idea.competitionIndex > 0 ||
-      idea.monthlySearchVolumes.length > 0
+    const existingHasMetrics = ideaHasMetrics(existing)
+    const incomingHasMetrics = ideaHasMetrics(idea)
 
     if (!existingHasMetrics && incomingHasMetrics) {
       byKey.set(key, {
@@ -86,9 +92,47 @@ export function mergeKeywordIdeas(
     upsert(emptyKeywordIdea(suggestion.trim().replace(/\s+/g, " ")))
   }
 
-  const seedIdea = seedKey ? byKey.get(seedKey) : undefined
+  // Planner may index "pre diabetes" while the user typed "pré-diabetes".
+  // Keep the typed seed label, but inherit metrics from the closest variant
+  // (hyphen/space first; avoid preferring a concatenated form with a different volume).
+  let seedIdea = seedKey ? byKey.get(seedKey) : undefined
+  if (seedIdea && !ideaHasMetrics(seedIdea)) {
+    let bestMatch: KeywordIdeaRow | null = null
+    let bestAffinity = 0
+    for (const idea of byKey.values()) {
+      if (normalizeKeywordKey(idea.keyword) === seedKey) continue
+      if (!ideaHasMetrics(idea)) continue
+      const affinity = keywordSeedVariantAffinity(seedIdea.keyword, idea.keyword)
+      if (affinity <= 0) continue
+      if (
+        !bestMatch
+        || affinity > bestAffinity
+        || (
+          affinity === bestAffinity
+          && idea.avgMonthlySearches > bestMatch.avgMonthlySearches
+        )
+      ) {
+        bestMatch = idea
+        bestAffinity = affinity
+      }
+    }
+    if (bestMatch) {
+      seedIdea = {
+        ...bestMatch,
+        keyword: seedIdea.keyword,
+      }
+      byKey.set(seedKey, seedIdea)
+    }
+  }
+
   if (seedIdea) {
     byKey.delete(seedKey)
+    const seedOrtho = keywordOrthographicKey(seedIdea.keyword)
+    for (const [key, idea] of [...byKey.entries()]) {
+      if (keywordOrthographicKey(idea.keyword) === seedOrtho) {
+        byKey.delete(key)
+      }
+    }
   }
 
   const rest = [...byKey.values()].sort((a, b) => {

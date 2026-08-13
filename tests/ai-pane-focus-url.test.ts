@@ -2,7 +2,9 @@ import { describe, expect, it } from "vitest"
 import {
   applyCreatedTaskSelectionUrlParams,
   buildAiPaneFocusParams,
+  buildMiddlePaneFocusParams,
   isAiPaneFocusMode,
+  isMiddlePaneFocusMode,
   isTaskAiPaneOpen,
   isTaskDetailsAiSplitMode,
   isTaskDetailsOnlyFocusMode,
@@ -69,6 +71,41 @@ describe("ai pane focus url helpers", () => {
     expect(next.get("focus")).toBeNull()
     expect(next.get("rightView")).toBe("ai")
     expect(next.get("taskAiOpen")).toBe("true")
+  })
+
+  it("expands middle pane without rewriting rightView / AI state", () => {
+    const current = new URLSearchParams(
+      "layout=middle,right&rightView=ai&taskAiOpen=true&aiThreadId=thread-a&centerUserId=60&rightUserId=60",
+    )
+    const next = buildMiddlePaneFocusParams(current, true)
+
+    expect(next.get("focus")).toBe("middle")
+    expect(next.get("rightView")).toBe("ai")
+    expect(next.get("taskAiOpen")).toBe("true")
+    expect(next.get("aiThreadId")).toBe("thread-a")
+    expect(next.get("centerUserId")).toBe("60")
+    expect(next.get("rightUserId")).toBe("60")
+    expect(isMiddlePaneFocusMode(next)).toBe(true)
+    expect(isTaskDetailsOnlyFocusMode(next)).toBe(false)
+  })
+
+  it("collapses middle pane focus without touching right pane params", () => {
+    const current = new URLSearchParams(
+      "layout=middle,right&focus=middle&rightView=ai&taskAiOpen=true&aiThreadId=thread-a",
+    )
+    const next = buildMiddlePaneFocusParams(current, false)
+
+    expect(next.get("focus")).toBeNull()
+    expect(next.get("rightView")).toBe("ai")
+    expect(next.get("taskAiOpen")).toBe("true")
+    expect(isMiddlePaneFocusMode(next)).toBe(false)
+  })
+
+  it("treats legacy focus=right&rightView=details as middle focus", () => {
+    const params = new URLSearchParams(
+      "layout=right&focus=right&rightView=details&id=13131&taskTab=content",
+    )
+    expect(isMiddlePaneFocusMode(params)).toBe(true)
   })
 
   it("moves rightThreadId into centerThreadId when opening ai", () => {

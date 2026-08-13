@@ -28,6 +28,7 @@ import {
   formatChartIntervalLabel,
   type ChartInterval,
 } from "./competition-chart-intervals"
+import { CompetitionPeriodSelect } from "./competition-period-select"
 
 const ENTITY_COLORS = [
   "#2563eb",
@@ -42,12 +43,19 @@ const ENTITY_COLORS = [
 export type CompetitionTimeseriesMetric =
   | "posts"
   | "interactions"
+  | "impressions"
   | "followers"
 
 const METRIC_LABELS: Record<CompetitionTimeseriesMetric, string> = {
   posts: "Posts",
   interactions: "Interactions",
+  impressions: "Impressions",
   followers: "Followers",
+}
+
+type DateRangeValue = {
+  from?: Date
+  to?: Date
 }
 
 type CompetitionTimeseriesChartProps = {
@@ -59,6 +67,9 @@ type CompetitionTimeseriesChartProps = {
   defaultMetric?: CompetitionTimeseriesMetric
   defaultInterval?: ChartInterval
   showLegend?: boolean
+  /** Chart-local period control (dashed "over …" picker). */
+  dateRange?: DateRangeValue
+  onDateRangeChange?: (value: DateRangeValue) => void
 }
 
 export function CompetitionTimeseriesChart({
@@ -69,6 +80,8 @@ export function CompetitionTimeseriesChart({
   defaultMetric = "interactions",
   defaultInterval = "week",
   showLegend = true,
+  dateRange,
+  onDateRangeChange,
 }: CompetitionTimeseriesChartProps) {
   const [metric, setMetric] = useState<CompetitionTimeseriesMetric>(defaultMetric)
   const [interval, setInterval] = useState<ChartInterval>(defaultInterval)
@@ -101,7 +114,12 @@ export function CompetitionTimeseriesChart({
       points: summary.post_timeseries.map((point) => ({
         date: String(point.date),
         entity_id: point.entity_id,
-        value: metric === "posts" ? point.posts_count : point.interactions_total,
+        value:
+          metric === "posts"
+            ? point.posts_count
+            : metric === "impressions"
+              ? point.views_total
+              : point.interactions_total,
       })),
       entityMeta,
       interval,
@@ -128,12 +146,16 @@ export function CompetitionTimeseriesChart({
       ? "Insufficient follower snapshot data."
       : metric === "interactions"
         ? "No interaction metrics available."
-        : "No posts in this period."
+        : metric === "impressions"
+          ? "No impression metrics available for these networks."
+          : "No posts in this period."
+
+  const showPeriodControl = Boolean(dateRange && onDateRangeChange)
 
   const body = (
     <>
       <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
-        <h3 className="flex items-center gap-1.5 text-sm font-medium text-gray-900">
+        <h3 className="flex flex-wrap items-center gap-x-1.5 gap-y-1 text-sm font-medium text-gray-900">
           <Select
             value={metric}
             onValueChange={(value) => setMetric(value as CompetitionTimeseriesMetric)}
@@ -146,7 +168,7 @@ export function CompetitionTimeseriesChart({
               className="group h-auto w-auto gap-1 rounded-sm border-0 bg-transparent p-0 text-sm font-medium text-gray-900 ring-offset-0 focus:ring-0 focus:ring-offset-0 focus-visible:ring-2 focus-visible:ring-gray-300 [&>span]:line-clamp-none"
             >
               <span className="underline decoration-gray-400 decoration-dashed underline-offset-4 transition-colors group-hover:decoration-gray-700">
-                <SelectValue />
+                {METRIC_LABELS[metric]}
               </span>
               <ChevronDown className="h-3.5 w-3.5 shrink-0 text-gray-400 transition-colors group-hover:text-gray-600" />
             </SelectTrigger>
@@ -160,7 +182,18 @@ export function CompetitionTimeseriesChart({
               )}
             </SelectContent>
           </Select>
-          <span>over time</span>
+          {showPeriodControl ? (
+            <>
+              <span className="text-gray-500">over</span>
+              <CompetitionPeriodSelect
+                variant="dashed"
+                value={dateRange!}
+                onChange={onDateRangeChange!}
+              />
+            </>
+          ) : (
+            <span className="text-gray-500">over time</span>
+          )}
         </h3>
         <div className="flex flex-wrap items-center gap-2">
           <Label htmlFor="competition-ts-interval" className="sr-only">
@@ -181,7 +214,7 @@ export function CompetitionTimeseriesChart({
           </Select>
         </div>
       </div>
-      <div className={cn(compact ? "h-64" : "h-[24rem] md:h-[30rem] xl:h-[34rem]")}>
+      <div className={cn(compact ? "h-64" : "h-72 md:h-80")}>
         {chartData.length === 0 ? (
           <div className="flex h-full items-center justify-center text-sm text-gray-500">
             {emptyLabel}

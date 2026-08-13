@@ -13,9 +13,11 @@ import {
   Target,
   Users,
   X,
+  Eye,
   Globe2,
   Palette,
   Swords,
+  Upload,
 } from "lucide-react"
 
 import { cn } from "@/lib/utils"
@@ -48,9 +50,12 @@ import { BillingTab } from "./BillingTab"
 import { LibraryTab } from "../project-briefings/LibraryTab"
 import { ProjectTeamSettingsPanel } from "./project-team-settings-panel"
 import { ProjectWebsiteIndexSection } from "./project-website-index-section"
-import { ProjectBrandKitSection } from "./project-brand-kit-section"
+import { ProjectBrandKitSection, type ProjectBrandKitSaveControls } from "./project-brand-kit-section"
 import { ProjectCompetitorsTab } from "./ProjectCompetitorsTab"
 import { ProjectOverviewWatchers } from "./project-overview-watchers"
+import { ProjectGoogleIntegrationsSection } from "./project-google-integrations-section"
+import { ProjectBrandSocialSettings } from "./project-brand-social-settings"
+import { ProjectPublishingDestinationsSettings } from "./project-publishing-destinations-settings"
 import {
   PROJECT_SITE_INDEX_STATUS_QUERY_KEY,
   fetchProjectSiteIndexStatus,
@@ -65,19 +70,23 @@ export type ProjectSettingsCategory =
   | "planning"
   | "billing"
   | "website-index"
+  | "publishing"
   | "competitors"
+  | "watchers"
   | "team"
   | "components"
 
 const CATEGORIES: { id: ProjectSettingsCategory; label: string; icon: typeof Target }[] = [
   { id: "details", label: "Details", icon: Target },
-  { id: "brand", label: "Brand", icon: Palette },
+  { id: "brand", label: "Brand kit", icon: Palette },
   { id: "configuration", label: "Configuration", icon: Settings2 },
   { id: "status", label: "Status", icon: FileText },
   { id: "planning", label: "AI planning", icon: Sparkles },
   { id: "billing", label: "Billing", icon: CreditCard },
   { id: "website-index", label: "Website index", icon: Globe2 },
+  { id: "publishing", label: "Publishing", icon: Upload },
   { id: "competitors", label: "Competition", icon: Swords },
+  { id: "watchers", label: "Watchers", icon: Eye },
   { id: "team", label: "Team", icon: Users },
   { id: "components", label: "Components", icon: Layers },
 ]
@@ -99,6 +108,8 @@ interface ProjectSettingsPanelProps {
   onClose?: () => void
   projectId: number
   initialCategory?: ProjectSettingsCategory
+  /** When opening Brand kit, scroll/highlight this design template. */
+  initialTemplateId?: string | null
 }
 
 function normalizeDetailValue(field: DetailField, value: unknown): string | null {
@@ -126,6 +137,7 @@ export function ProjectSettingsPanel({
   onClose,
   projectId,
   initialCategory = "details",
+  initialTemplateId = null,
 }: ProjectSettingsPanelProps) {
   const queryClient = useQueryClient()
   const logoInputRef = useRef<HTMLInputElement | null>(null)
@@ -135,6 +147,7 @@ export function ProjectSettingsPanel({
   const [isLogoUploading, setIsLogoUploading] = useState(false)
   const [showDiscardDialog, setShowDiscardDialog] = useState(false)
   const pendingCloseActionRef = useRef<(() => void) | null>(null)
+  const [brandSaveControls, setBrandSaveControls] = useState<ProjectBrandKitSaveControls | null>(null)
 
   useEffect(() => {
     if (open) setActiveCategory(initialCategory)
@@ -393,7 +406,9 @@ export function ProjectSettingsPanel({
 
   const activeLabel = CATEGORIES.find((c) => c.id === activeCategory)?.label ?? "Settings"
   const logoUrl = useMemo(() => getImageUrl(formData.logo ?? null), [formData.logo])
-  const showFooter = activeCategory === "details"
+  const showDetailsFooter = activeCategory === "details"
+  const showBrandFooter = activeCategory === "brand" && brandSaveControls != null
+  const showFooter = showDetailsFooter || showBrandFooter
 
   const renderDetails = () => {
     if (isLoading) {
@@ -531,6 +546,18 @@ export function ProjectSettingsPanel({
             />
           </div>
         </div>
+
+        <div className="space-y-3 border-t border-gray-100 pt-5">
+          <div>
+            <h3 className="text-sm font-medium text-gray-900">Google integrations</h3>
+            <p className="mt-0.5 text-xs text-gray-500">
+              Analytics and Search Console for this project.
+            </p>
+          </div>
+          <ProjectGoogleIntegrationsSection projectId={projectId} compact />
+        </div>
+
+        <ProjectBrandSocialSettings projectId={projectId} />
       </div>
     )
   }
@@ -557,6 +584,8 @@ export function ProjectSettingsPanel({
         projectId={projectId}
         projectUrl={formData.project_url ?? data.project_url ?? null}
         canEdit
+        focusTemplateId={initialTemplateId}
+        onSaveControlsChange={setBrandSaveControls}
         onOpenDetails={() => setActiveCategory("details")}
         onApplied={(kit) => {
           const primary = kit.effective.colors.primary
@@ -593,20 +622,19 @@ export function ProjectSettingsPanel({
             canEdit
           />
         )
+      case "publishing":
+        return <ProjectPublishingDestinationsSettings projectId={projectId} />
       case "competitors":
         return <ProjectCompetitorsTab projectId={projectId} variant="manage" />
+      case "watchers":
+        return <ProjectOverviewWatchers projectId={projectId} />
       case "team":
         return (
-          <div className="space-y-8">
-            <ProjectOverviewWatchers projectId={projectId} />
-            <div className="border-t border-gray-100 pt-6">
-              <ProjectTeamSettingsPanel
-                teamId={data?.team_id ?? null}
-                teamName={data?.team_name ?? null}
-                isLoading={isLoading}
-              />
-            </div>
-          </div>
+          <ProjectTeamSettingsPanel
+            teamId={data?.team_id ?? null}
+            teamName={data?.team_name ?? null}
+            isLoading={isLoading}
+          />
         )
       case "components":
         return (
@@ -699,13 +727,31 @@ export function ProjectSettingsPanel({
 
               {showFooter && !isLoading && data ? (
                 <div className="flex items-center justify-end gap-3 border-t border-gray-100 px-6 py-3">
-                  <Button
-                    size="sm"
-                    onClick={() => void handleSave()}
-                    disabled={isSaving || !isDirty || !String(formData.name ?? "").trim()}
-                  >
-                    {isSaving ? "Saving..." : "Save changes"}
-                  </Button>
+                  {showBrandFooter && brandSaveControls ? (
+                    <Button
+                      size="sm"
+                      onClick={() => brandSaveControls.save()}
+                      disabled={
+                        !brandSaveControls.canEdit
+                        || !brandSaveControls.isDirty
+                        || brandSaveControls.isSaving
+                      }
+                      className="gap-2"
+                    >
+                      {brandSaveControls.isSaving ? (
+                        <Loader2 className="h-4 w-4 animate-spin" />
+                      ) : null}
+                      Save brand adjustments
+                    </Button>
+                  ) : (
+                    <Button
+                      size="sm"
+                      onClick={() => void handleSave()}
+                      disabled={isSaving || !isDirty || !String(formData.name ?? "").trim()}
+                    >
+                      {isSaving ? "Saving..." : "Save changes"}
+                    </Button>
+                  )}
                 </div>
               ) : null}
             </div>

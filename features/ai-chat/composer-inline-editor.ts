@@ -1,4 +1,5 @@
 import { getMentionChipClassName } from "./mention-chip-styles"
+import { ARTIFACT_FILE_CHIP_CLASS, artifactDocumentGlyphHtml } from "./artifact-context-chip-html"
 
 export type AiTagType =
   | "project"
@@ -398,6 +399,44 @@ export function createTagChip(tag: AiContextTag): HTMLSpanElement {
   if (tag.contextSource) outer.setAttribute("data-tag-context-source", tag.contextSource)
 
   outer.contentEditable = "false"
+  if (tag.type === "artifact") {
+    const title = (tag.artifactTitle ?? tag.label).trim() || "Artifact"
+    outer.className = `${ARTIFACT_FILE_CHIP_CLASS} align-middle`
+    outer.title = chipTooltipText(tag)
+
+    const iconHost = document.createElement("span")
+    iconHost.innerHTML = artifactDocumentGlyphHtml()
+    const icon = iconHost.firstElementChild
+    if (icon) outer.appendChild(icon)
+
+    const textCol = document.createElement("span")
+    textCol.className = "min-w-0 flex-1 py-0.5"
+
+    const titleEl = document.createElement("span")
+    titleEl.className = "block truncate text-[13px] font-medium leading-tight text-gray-900"
+    titleEl.textContent = title
+
+    const subtitleEl = document.createElement("span")
+    subtitleEl.className = "mt-0.5 block truncate text-[12px] font-normal leading-tight text-gray-500"
+    subtitleEl.textContent = "Artifact"
+
+    textCol.appendChild(titleEl)
+    textCol.appendChild(subtitleEl)
+    outer.appendChild(textCol)
+
+    const removeBtn = document.createElement("button")
+    removeBtn.type = "button"
+    removeBtn.setAttribute("data-ai-tag-remove", "1")
+    removeBtn.setAttribute("aria-label", "Remove tag")
+    removeBtn.className =
+      "ml-1 inline-flex h-6 w-6 shrink-0 items-center justify-center rounded-full text-gray-400 hover:bg-gray-100 hover:text-gray-700"
+    removeBtn.textContent = "×"
+    removeBtn.contentEditable = "false"
+    removeBtn.tabIndex = -1
+    outer.appendChild(removeBtn)
+    return outer
+  }
+
   outer.className = getMentionChipClassName(tag)
   outer.title = chipTooltipText(tag)
 

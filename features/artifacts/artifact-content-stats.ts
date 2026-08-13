@@ -1,14 +1,11 @@
 import type { ArtifactContentJson } from "../../app/lib/artifacts/artifact-types"
 import { extractPlainText } from "../tasks/utils/keyword-density"
 
-/** Plain text used for word/char counts and keyword density. */
-export function artifactPlainText(args: {
+/** Prefer structured HTML blocks, then content_text (HTML or plain). */
+export function artifactHtmlSource(args: {
   contentText?: string | null
   contentJson?: ArtifactContentJson | null
 }): string {
-  if (typeof args.contentText === "string" && args.contentText.trim()) {
-    return /</.test(args.contentText) ? extractPlainText(args.contentText) : args.contentText
-  }
   const blocks = Array.isArray(args.contentJson?.blocks) ? args.contentJson!.blocks! : []
   if (blocks.length > 0) {
     const html = blocks
@@ -19,9 +16,46 @@ export function artifactPlainText(args: {
       })
       .filter(Boolean)
       .join("\n")
-    return extractPlainText(html)
+    if (html.trim()) return html
+  }
+  if (typeof args.contentText === "string" && args.contentText.trim()) {
+    return args.contentText
   }
   return ""
+}
+
+/**
+ * Plain text with each anchor's href appended so URL presence maps work even when
+ * the visible label is not the URL itself.
+ */
+export function artifactPlainTextWithHrefs(args: {
+  contentText?: string | null
+  contentJson?: ArtifactContentJson | null
+}): string {
+  const html = artifactHtmlSource(args)
+  if (!html.trim()) return artifactPlainText(args)
+  if (typeof DOMParser === "undefined") {
+    return extractPlainText(html)
+  }
+  const doc = new DOMParser().parseFromString(html, "text/html")
+  for (const anchor of Array.from(doc.querySelectorAll("a[href]"))) {
+    const href = String(anchor.getAttribute("href") ?? "").trim()
+    if (!href) continue
+    anchor.appendChild(doc.createTextNode(` ${href}`))
+  }
+  return (doc.body.textContent ?? "").replace(/\s+/g, " ").trim()
+}
+
+/** Plain text used for word/char counts and keyword density. */
+export function artifactPlainText(args: {
+  contentText?: string | null
+  contentJson?: ArtifactContentJson | null
+}): string {
+  if (typeof args.contentText === "string" && args.contentText.trim()) {
+    return /</.test(args.contentText) ? extractPlainText(args.contentText) : args.contentText
+  }
+  const html = artifactHtmlSource(args)
+  return html ? extractPlainText(html) : ""
 }
 
 export function countWords(text: string): number {

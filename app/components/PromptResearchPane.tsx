@@ -40,9 +40,13 @@ interface PromptResearchPaneProps {
   initialPrompt?: string | null
   embedded?: boolean
   hideSharedControls?: boolean
+  /** Hide the Get AI results CTA (parent ResearchPane owns the shared CTA). */
+  hideSubmitButton?: boolean
   sharedQuery?: string
   onSharedQueryChange?: (query: string) => void
   sharedRegionId?: string
+  /** Increment to force a search from the parent shared query field. */
+  autoSearchKey?: number
 }
 
 const LANGUAGE_LABELS: Record<string, string> = {
@@ -72,9 +76,11 @@ export function PromptResearchPane({
   initialPrompt = null,
   embedded = false,
   hideSharedControls = false,
+  hideSubmitButton = false,
   sharedQuery,
   onSharedQueryChange,
   sharedRegionId,
+  autoSearchKey = 0,
 }: PromptResearchPaneProps) {
   const searchParams = useSearchParams()
   const derivedLanguageCode = languageCodeFromRegionId(sharedRegionId)
@@ -202,6 +208,33 @@ export function PromptResearchPane({
     [canSearch, filters.languageCode, filters.prompt, logSearch, triggerSearch],
   )
 
+  const beginSearch = useCallback(
+    (searchedRaw: string) => {
+      const searched = searchedRaw.trim()
+      if (!searched) return
+      setFilters((prev) =>
+        prev.prompt === searched ? prev : { ...prev, prompt: searched },
+      )
+      setHasSearched(true)
+      setLastSearchedPrompt(searched)
+      setIsPromptHistoryOpen(false)
+      void logSearch(searched, filters.languageCode)
+      triggerSearch(searched)
+    },
+    [filters.languageCode, logSearch, triggerSearch],
+  )
+
+  const lastAutoSearchKeyRef = useRef(0)
+  useEffect(() => {
+    if (!autoSearchKey || autoSearchKey === lastAutoSearchKeyRef.current) return
+    lastAutoSearchKeyRef.current = autoSearchKey
+    const searched = (
+      typeof sharedQuery === "string" ? sharedQuery : filters.prompt
+    ).trim()
+    if (!searched) return
+    beginSearch(searched)
+  }, [autoSearchKey, beginSearch, filters.prompt, sharedQuery])
+
   const handleCopy = useCallback(async (key: string, value: string) => {
     try {
       await navigator.clipboard.writeText(value)
@@ -281,6 +314,7 @@ export function PromptResearchPane({
       ) : null}
 
       <div className={cn(embedded ? "px-4 pb-6" : "min-h-0 flex-1 overflow-y-auto px-4 pb-6", hideSharedControls ? "pt-0" : "pt-3")}>
+        {hideSharedControls && hideSubmitButton ? null : (
         <form onSubmit={handleSubmit} className="space-y-2">
           {!hideSharedControls ? (
           <div ref={promptFieldRef} className="relative min-w-0">
@@ -330,6 +364,7 @@ export function PromptResearchPane({
             ) : null}
           </div>
           ) : null}
+          {!hideSubmitButton ? (
           <div className={cn(hideSharedControls ? "mt-4" : "mt-0")}>
             <Button
               type="submit"
@@ -350,7 +385,9 @@ export function PromptResearchPane({
               )}
             </Button>
           </div>
+          ) : null}
         </form>
+        )}
 
         {error ? (
           <div className="mt-4 rounded-md border border-red-200 bg-red-50 p-3">

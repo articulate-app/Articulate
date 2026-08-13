@@ -27,6 +27,7 @@ import {
   normalizeHexColor,
   type BrandKitEffective,
   type PartialBrandKitEffective,
+  type ProjectApprovedImageBank,
   type ProjectBrandKit,
   type ProjectDesignTemplate,
   type ProjectDesignTemplateAsset,
@@ -47,6 +48,14 @@ import { getImageUrl } from "@/lib/public-media"
 import { preserveTaskDetailsFocusWhenOpeningAi } from "@/components/tasks/ai-pane-focus-url"
 import { shallowReplaceSearchParams } from "@/lib/tasks-shallow-nav"
 import { cn } from "@/lib/utils"
+import { ProjectApprovedImageBanksEditor } from "./project-approved-image-banks-editor"
+
+export type ProjectBrandKitSaveControls = {
+  isDirty: boolean
+  isSaving: boolean
+  canEdit: boolean
+  save: () => void
+}
 
 type ProjectBrandKitSectionProps = {
   projectId: number
@@ -54,6 +63,10 @@ type ProjectBrandKitSectionProps = {
   canEdit?: boolean
   onApplied?: (kit: ProjectBrandKit) => void
   onOpenDetails?: () => void
+  /** Scroll to and highlight this template when Brand kit opens. */
+  focusTemplateId?: string | null
+  /** Keep Save brand adjustments pinned in the parent dialog footer. */
+  onSaveControlsChange?: (controls: ProjectBrandKitSaveControls | null) => void
 }
 
 type ColorKey = keyof BrandKitEffective["colors"]
@@ -310,6 +323,7 @@ function DesignTemplateCard({
   template,
   canEdit,
   disabled,
+  isHighlighted,
   onRemove,
   onAddFiles,
   onRename,
@@ -319,6 +333,7 @@ function DesignTemplateCard({
   template: ProjectDesignTemplate
   canEdit: boolean
   disabled?: boolean
+  isHighlighted?: boolean
   onRemove: () => void
   onAddFiles: (files: FileList | File[]) => void
   onRename: (title: string) => Promise<void> | void
@@ -364,7 +379,13 @@ function DesignTemplateCard({
 
   return (
     <div
-      className="group overflow-hidden rounded-lg border border-gray-200 bg-white shadow-sm"
+      id={`brand-template-${template.id}`}
+      className={cn(
+        "group overflow-hidden rounded-lg border bg-white shadow-sm",
+        isHighlighted
+          ? "border-sky-400 ring-2 ring-sky-200"
+          : "border-gray-200",
+      )}
     >
       <div
         className={cn(
@@ -636,6 +657,8 @@ export function ProjectBrandKitSection({
   canEdit = true,
   onApplied,
   onOpenDetails,
+  focusTemplateId = null,
+  onSaveControlsChange,
 }: ProjectBrandKitSectionProps) {
   const queryClient = useQueryClient()
   const fileInputRef = useRef<HTMLInputElement | null>(null)
@@ -647,6 +670,7 @@ export function ProjectBrandKitSection({
   const [isDropActive, setIsDropActive] = useState(false)
   const [draft, setDraft] = useState<BrandKitEffective>(emptyBrandKitEffective())
   const [designDescription, setDesignDescription] = useState("")
+  const [approvedImageBanks, setApprovedImageBanks] = useState<ProjectApprovedImageBank[]>([])
   const [exampleLink, setExampleLink] = useState("")
   const [exampleLinkTitle, setExampleLinkTitle] = useState("")
 
@@ -659,8 +683,23 @@ export function ProjectBrandKitSection({
     if (brandKit) {
       setDraft(brandKit.effective)
       setDesignDescription(brandKit.design_description ?? "")
+      setApprovedImageBanks(brandKit.approved_image_banks ?? [])
     }
   }, [brandKit])
+
+  useEffect(() => {
+    const id = focusTemplateId?.trim()
+    if (!id || !brandKit) return
+    const exists = (brandKit.design_templates ?? []).some((entry) => entry.id === id)
+    if (!exists) return
+    const frame = window.requestAnimationFrame(() => {
+      document.getElementById(`brand-template-${id}`)?.scrollIntoView({
+        behavior: "smooth",
+        block: "center",
+      })
+    })
+    return () => window.cancelAnimationFrame(frame)
+  }, [brandKit, focusTemplateId])
 
   const source = brandKit?.source ?? null
   const resolvedUrl = (projectUrl ?? brandKit?.source_url ?? "").trim()
@@ -671,14 +710,17 @@ export function ProjectBrandKitSection({
     const tokensDirty = JSON.stringify(draft) !== JSON.stringify(brandKit.effective)
     const designDirty =
       (designDescription.trim() || null) !== (brandKit.design_description ?? null)
-    return tokensDirty || designDirty
-  }, [brandKit, draft, designDescription])
+    const banksDirty =
+      JSON.stringify(approvedImageBanks) !== JSON.stringify(brandKit.approved_image_banks ?? [])
+    return tokensDirty || designDirty || banksDirty
+  }, [approvedImageBanks, brandKit, draft, designDescription])
 
   const hasSource = Boolean(source)
 
   const syncKit = (next: ProjectBrandKit) => {
     setDraft(next.effective)
     setDesignDescription(next.design_description ?? "")
+    setApprovedImageBanks(next.approved_image_banks ?? [])
     queryClient.setQueryData([PROJECT_BRAND_KIT_QUERY_KEY, projectId], next)
     queryClient.invalidateQueries({ queryKey: ["project-overview", projectId] })
     onApplied?.(next)
@@ -743,6 +785,7 @@ export function ProjectBrandKitSection({
         projectId,
         brandKit: tokensSaved.data,
         designDescription,
+        approvedImageBanks,
       })
       if (designSaved.error) throw designSaved.error
 
@@ -750,7 +793,7 @@ export function ProjectBrandKitSection({
 
       toast({
         title: "Brand saved",
-        description: "Design direction and brand kit adjustments were saved.",
+        description: "Design direction, image banks, and brand kit adjustments were saved.",
       })
     } catch (err) {
       toast({
@@ -762,6 +805,22 @@ export function ProjectBrandKitSection({
       setIsSaving(false)
     }
   }
+
+  const handleSaveRef = useRef(handleSave)
+  handleSaveRef.current = handleSave
+
+  useEffect(() => {
+    if (!onSaveControlsChange) return
+    onSaveControlsChange({
+      isDirty,
+      isSaving,
+      canEdit,
+      save: () => {
+        void handleSaveRef.current()
+      },
+    })
+    return () => onSaveControlsChange(null)
+  }, [canEdit, isDirty, isSaving, onSaveControlsChange])
 
   const handleAddLink = async () => {
     if (!canEdit || !brandKit) return
@@ -951,7 +1010,7 @@ export function ProjectBrandKitSection({
         <div className="min-w-0 space-y-1">
           <p className="text-xs text-gray-500">
             Extract the visual identity from the project website URL, describe how creatives
-            should look, and save layout templates for the AI to follow.
+            should look, choose approved image banks, and save layout templates for the AI to follow.
           </p>
           {resolvedUrl ? (
             <p className="break-all text-xs text-gray-600 sm:truncate sm:break-normal">
@@ -1032,6 +1091,15 @@ export function ProjectBrandKitSection({
         />
       </div>
 
+      <div className="space-y-3 border-t border-gray-100 pt-5">
+        <ProjectApprovedImageBanksEditor
+          banks={approvedImageBanks}
+          canEdit={canEdit}
+          disabled={isSaving}
+          onChange={setApprovedImageBanks}
+        />
+      </div>
+
       <div
         className="relative space-y-3 border-t border-gray-100 pt-5"
         onDragOver={(event) => {
@@ -1097,6 +1165,7 @@ export function ProjectBrandKitSection({
                   template={template}
                   canEdit={canEdit}
                   disabled={isUploadingTemplate}
+                  isHighlighted={focusTemplateId === template.id}
                   onRemove={() => void handleRemoveTemplate(template.id)}
                   onAddFiles={(files) => void handleUploadFiles(files, template.id)}
                   onRename={(title) => handleRenameTemplate(template.id, title)}
@@ -1453,18 +1522,20 @@ export function ProjectBrandKitSection({
         </div>
       </div>
 
-      <div className="flex flex-col gap-3 border-t border-gray-100 pt-4 sm:flex-row sm:items-center sm:justify-end">
-        <Button
-          type="button"
-          size="sm"
-          disabled={!canEdit || !isDirty || isSaving}
-          onClick={() => void handleSave()}
-          className="w-full shrink-0 gap-2 sm:w-auto"
-        >
-          {isSaving ? <Loader2 className="h-4 w-4 animate-spin" /> : null}
-          Save brand adjustments
-        </Button>
-      </div>
+      {!onSaveControlsChange ? (
+        <div className="flex flex-col gap-3 border-t border-gray-100 pt-4 sm:flex-row sm:items-center sm:justify-end">
+          <Button
+            type="button"
+            size="sm"
+            disabled={!canEdit || !isDirty || isSaving}
+            onClick={() => void handleSave()}
+            className="w-full shrink-0 gap-2 sm:w-auto"
+          >
+            {isSaving ? <Loader2 className="h-4 w-4 animate-spin" /> : null}
+            Save brand adjustments
+          </Button>
+        </div>
+      ) : null}
     </div>
   )
 }

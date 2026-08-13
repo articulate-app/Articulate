@@ -32,6 +32,34 @@ export function isTaskDetailsOnlyFocusMode(searchParams: URLSearchParams): boole
   return isTaskDetailsFocusContext(searchParams) && (searchParams.get("rightView") || "details") === "details"
 }
 
+/**
+ * Middle (details) pane fills the workspace.
+ * Prefer `focus=middle` so expanding does not rewrite `rightView` / destroy the right tool pane.
+ * Legacy: `focus=right` + `rightView=details` (pre–multi-pane entity host).
+ */
+export function isMiddlePaneFocusMode(searchParams: URLSearchParams): boolean {
+  if (searchParams.get("focus") === "middle") return true
+  return isTaskDetailsOnlyFocusMode(searchParams)
+}
+
+/** Toggle middle-pane focus without mutating right-pane tool/entity params. */
+export function buildMiddlePaneFocusParams(
+  current: URLSearchParams,
+  shouldFocus: boolean,
+): URLSearchParams {
+  const next = new URLSearchParams(current.toString())
+  if (shouldFocus) {
+    next.set("focus", "middle")
+    // Ensure the middle column exists in layout; never clobber rightView / taskAiOpen.
+    const layout = new Set((next.get("layout") || "left,middle").split(",").filter(Boolean))
+    layout.add("middle")
+    next.set("layout", Array.from(layout).join(","))
+    return next
+  }
+  next.delete("focus")
+  return next
+}
+
 /** Focused task details + AI split — hide task list, show details left and AI right. */
 export function isTaskDetailsAiSplitMode(searchParams: URLSearchParams): boolean {
   return (
@@ -46,8 +74,12 @@ export function hasTaskSelectionInUrl(searchParams: URLSearchParams): boolean {
   return Boolean(id && id.trim().length > 0)
 }
 
-/** Task AI pane is open in the right column (`rightView=ai` + `taskAiOpen=true`). */
+/**
+ * AI chat is open as an active workspace view (right or middle).
+ * Prefer this over assuming AI only lives in the right column.
+ */
 export function isTaskAiPaneOpen(searchParams: URLSearchParams): boolean {
+  if (searchParams.get("centerView") === "ai") return true
   return searchParams.get("rightView") === "ai" && searchParams.get("taskAiOpen") === "true"
 }
 

@@ -60,6 +60,8 @@ interface KeywordPlannerPaneProps {
   hideSharedControls?: boolean
   /** Hide the local Lists button (ResearchPane hosts the shared Lists control). */
   hideListsButton?: boolean
+  /** Hide the Get ideas submit control (parent ResearchPane owns the shared CTA). */
+  hideSubmitButton?: boolean
   sharedQuery?: string
   sharedRegionId?: string
   sharedLanguageId?: string
@@ -146,6 +148,7 @@ export function KeywordPlannerPane({
   embedded = false,
   hideSharedControls = false,
   hideListsButton = false,
+  hideSubmitButton = false,
   sharedQuery,
   sharedRegionId,
   sharedLanguageId,
@@ -203,7 +206,6 @@ export function KeywordPlannerPane({
     error,
     triggerSearch,
     canSearch,
-    hasResults,
     isEnriching,
   } = useKeywordPlanner(filters, {
     enabled: false,
@@ -400,6 +402,17 @@ export function KeywordPlannerPane({
     )
   }, [lastSearchedKeyword, pendingSearchTerm, sortedResults])
 
+  const relatedResults = useMemo(() => {
+    const seed = (lastSearchedKeyword || pendingSearchTerm || "").trim()
+    if (!seed) return sortedResults
+    const seedKey = normalizeKeywordKey(seed)
+    return sortedResults.filter(
+      (row) => normalizeKeywordKey(row.keyword) !== seedKey,
+    )
+  }, [lastSearchedKeyword, pendingSearchTerm, sortedResults])
+
+  const hasRelatedResults = relatedResults.length > 0
+
   const historySuggestions = useMemo(() => {
     const query = filters.keyword.trim().toLowerCase()
     const seen = new Set<string>()
@@ -519,6 +532,7 @@ export function KeywordPlannerPane({
 
       <div className={embedded ? "w-full" : "min-h-0 flex-1 overflow-auto"}>
         <section className={cn("px-4 pb-4", hideSharedControls ? "pt-0" : "pt-4")}>
+          {hideSharedControls && hideSubmitButton ? null : (
           <form
             onSubmit={handleSubmit}
             className="grid grid-cols-[max-content_minmax(0,1fr)] items-start gap-x-6 gap-y-2"
@@ -657,6 +671,7 @@ export function KeywordPlannerPane({
               </>
             ) : null}
 
+            {!hideSubmitButton ? (
             <div className={cn("col-span-2", hideSharedControls ? "pt-2" : "pt-1")}>
               <Button
                 type="submit"
@@ -677,7 +692,9 @@ export function KeywordPlannerPane({
                 )}
               </Button>
             </div>
+            ) : null}
           </form>
+          )}
 
           {error ? (
             <div className="mt-4 rounded-md border border-red-200 bg-red-50 p-3">
@@ -719,7 +736,7 @@ export function KeywordPlannerPane({
             </div>
           ) : null}
 
-          {isLoading || hasResults || searchedKeyword ? (
+          {isLoading || hasRelatedResults || searchedKeyword ? (
             <div className="mt-4 space-y-4">
               {isEnriching ? (
                 <div className="flex items-center gap-1.5 text-[11px] text-gray-400">
@@ -738,7 +755,7 @@ export function KeywordPlannerPane({
                 </div>
               ) : null}
 
-              {isLoading && !hasResults ? (
+              {isLoading && !hasRelatedResults ? (
                 <div className="space-y-1">
                   {[...Array(6)].map((_, i) => (
                     <div key={i} className="h-11 animate-pulse rounded-md bg-gray-100" />
@@ -746,20 +763,20 @@ export function KeywordPlannerPane({
                 </div>
               ) : null}
 
-              {hasResults ? (
+              {hasRelatedResults ? (
               <div>
                 <div className="mb-2 text-xs font-medium uppercase tracking-wide text-gray-400">
                   Related keywords
                 </div>
                 <ul className="border-t border-gray-100">
-                  {sortedResults.map((result) => renderKeywordRow(result))}
+                  {relatedResults.map((result) => renderKeywordRow(result))}
                 </ul>
               </div>
               ) : null}
             </div>
           ) : null}
 
-          {!isLoading && !error && !hasResults && lastSearchedKeyword ? (
+          {!isLoading && !isEnriching && !error && !hasRelatedResults && lastSearchedKeyword ? (
             <div className="mt-8 text-center">
               <Search className="mx-auto mb-2 h-7 w-7 text-gray-400" />
               <p className="text-sm text-gray-500">

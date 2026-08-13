@@ -1,5 +1,8 @@
 import { describe, expect, it } from "vitest"
-import { dedupeCrossNetworkPosts } from "../app/lib/project-social-feed"
+import {
+  dedupeCrossNetworkPosts,
+  sortPostsByMetric,
+} from "../app/lib/project-social-feed"
 import type { ProjectSocialPost } from "../app/lib/services/project-brand-social"
 
 function post(partial: Partial<ProjectSocialPost> & Pick<ProjectSocialPost, "id" | "network">): ProjectSocialPost {
@@ -78,5 +81,35 @@ describe("dedupeCrossNetworkPosts", () => {
       post({ id: 2, network: "facebook", text_content: "Hello B" }),
     ])
     expect(result).toHaveLength(2)
+  })
+})
+
+describe("sortPostsByMetric", () => {
+  const posts = [
+    post({ id: 1, network: "instagram", reactions_count: 5, comments_count: 1, shares_count: 0, views_count: 900 }),
+    post({ id: 2, network: "facebook", reactions_count: 50, comments_count: 0, shares_count: 0, views_count: null }),
+    post({ id: 3, network: "linkedin", reactions_count: 10, comments_count: 30, shares_count: 5, views_count: 100 }),
+  ]
+
+  it("ranks by total interactions by default metric", () => {
+    expect(sortPostsByMetric(posts, "interactions").map((row) => row.id)).toEqual([
+      2, 3, 1,
+    ])
+  })
+
+  it("ranks by a single engagement metric", () => {
+    expect(sortPostsByMetric(posts, "comments").map((row) => row.id)).toEqual([
+      3, 1, 2,
+    ])
+  })
+
+  it("pushes posts without the metric to the end", () => {
+    expect(sortPostsByMetric(posts, "views").map((row) => row.id)).toEqual([1, 3, 2])
+  })
+
+  it("does not mutate the input array", () => {
+    const input = [...posts]
+    sortPostsByMetric(input, "reactions")
+    expect(input.map((row) => row.id)).toEqual([1, 2, 3])
   })
 })

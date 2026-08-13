@@ -30,10 +30,122 @@ describe("formatAssistantContentForDisplay", () => {
     expect(html).toContain('<a href="https://example.com"')
   })
 
+  it("linkifies bare app://ai-build URLs into clickable entity chips", () => {
+    const buildId = "f07777e0-f36a-49ca-b069-2b4d3fe100d6"
+    const html = formatAssistantContentForDisplay(
+      `Podes acompanhar aqui: app://ai-build/${buildId}`,
+      { appLinkLabels: { [`app://ai-build/${buildId}`]: "Cork material" } },
+    )
+    expect(html).toContain(`href="app://ai-build/${buildId}"`)
+    expect(html).toContain("ai-msg-entity-chip")
+    expect(html).toContain("Cork material")
+    expect(html).not.toMatch(new RegExp(`>\\s*app://ai-build/${buildId}\\s*<`))
+  })
+
+  it("keeps existing markdown artifact links clickable as chips", () => {
+    const artifactId = "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee"
+    const html = formatAssistantContentForDisplay(
+      `Open [Water-resistant guide](app://artifact/${artifactId})`,
+    )
+    expect(html).toContain(`href="app://artifact/${artifactId}"`)
+    expect(html).toContain("ai-msg-entity-chip")
+    expect(html).toContain("Water-resistant guide")
+  })
+
+  it("renders artifact markdown links without list bullets", () => {
+    const artifactId = "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee"
+    const html = formatAssistantContentForDisplay(
+      `- [Water-resistant guide](app://artifact/${artifactId})`,
+    )
+    expect(html).toContain(`href="app://artifact/${artifactId}"`)
+    expect(html).toContain("ai-msg-entity-chip")
+    expect(html).toContain("Water-resistant guide")
+    expect(html).not.toContain("<ul>")
+    expect(html).not.toContain("<li>")
+  })
+
+  it("collapses bulleted title + link pairs without keeping a bullet", () => {
+    const artifactId = "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee"
+    const title = "Granulated cork guide"
+    const html = formatAssistantContentForDisplay(
+      `- ${title}\n- [${title}](app://artifact/${artifactId})`,
+    )
+    expect(html).toContain(`href="app://artifact/${artifactId}"`)
+    expect(html).toContain("ai-msg-entity-chip")
+    expect(html).not.toContain("<ul>")
+    expect(html).not.toContain("<li>")
+    const occurrences = html.split(title).length - 1
+    expect(occurrences).toBe(1)
+  })
+
+  it("collapses duplicate title + markdown link into one chip", () => {
+    const artifactId = "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee"
+    const title = "Granulated cork: what is it, applications and how to choose it"
+    const html = formatAssistantContentForDisplay(
+      `${title}\n[${title}](app://artifact/${artifactId})`,
+    )
+    expect(html).toContain(`href="app://artifact/${artifactId}"`)
+    expect(html).toContain("ai-msg-entity-chip")
+    // Title should appear once inside the chip, not as a separate plain line + chip.
+    const occurrences = html.split(title).length - 1
+    expect(occurrences).toBe(1)
+  })
+
+  it("flattens multiline markdown artifact link labels into one chip", () => {
+    const artifactId = "ca81d6ef-c2e6-4376-8b76-f422d6d0af7b"
+    const html = formatAssistantContentForDisplay(
+      `Claro — pedi a atualização da introdução no documento existente para ficar mais direta e em apenas um parágrafo, sem mexer no resto do ficheiro.\n\n[Somengil\n\nCapacity management\n\nrevisão assinalada v3 PT-PT](app://artifact/${artifactId})`,
+    )
+    expect(html).toContain(`href="app://artifact/${artifactId}"`)
+    expect(html).toContain("ai-msg-entity-chip")
+    expect(html).toContain("Somengil Capacity management revisão assinalada v3 PT-PT")
+    expect(html).not.toContain("[Somengil")
+    expect(html).not.toContain("](app://")
+  })
+
+  it("recovers multiline artifact links already split into HTML paragraphs", () => {
+    const artifactId = "ca81d6ef-c2e6-4376-8b76-f422d6d0af7b"
+    const html = formatAssistantContentForDisplay(
+      `<p>[Somengil</p><p>Capacity management</p><p>revisão assinalada v3 PT-PT](app://artifact/${artifactId})</p>`,
+    )
+    expect(html).toContain("ai-msg-entity-chip")
+    expect(html).toContain(`href="app://artifact/${artifactId}"`)
+    expect(html).not.toContain("[Somengil")
+  })
+
   it("renders bold markdown as strong tags", () => {
     const html = formatAssistantContentForDisplay("**Conclusão**")
     expect(html).toContain("<strong>Conclusão</strong>")
     expect(html).not.toContain("**Conclusão**")
+  })
+
+  it("collapses newlines inside quoted template names", () => {
+    const html = formatAssistantContentForDisplay(
+      'A minha recomendação: avançar com esta proposta como newsletter em inglês, seguindo o template “EN\n\nJuly 2026”, com 4 artigos e tom B2B sóbrio.',
+    )
+    expect(html).toContain("“EN July 2026”")
+    expect(html).not.toMatch(/“EN<\/p>/)
+    expect(html.match(/<p>/g)?.length ?? 0).toBe(1)
+  })
+
+  it("flattens multiline bold structure into inline strong text", () => {
+    const html = formatAssistantContentForDisplay(
+      'Propunha manter a lógica da newsletter de julho — **um tema editorial agregador\n\nintro curta\n\n4 blocos de artigos com CTA “Read on”** — mas dar a agosto um ângulo mais operacional.',
+    )
+    expect(html).toContain("<strong>")
+    expect(html).toContain("um tema editorial agregador, intro curta, 4 blocos de artigos com CTA “Read on”")
+    expect(html).not.toContain("**")
+    expect(html).not.toContain("<ul>")
+  })
+
+  it("flattens short bullet lists after bold used as inline structure", () => {
+    const html = formatAssistantContentForDisplay(
+      'Propunha manter a lógica da newsletter de julho — **um tema editorial agregador**\n- intro curta\n- 4 blocos de artigos com CTA “Read on” — mas dar a agosto um ângulo mais operacional.',
+    )
+    expect(html).toContain("<strong>um tema editorial agregador</strong>")
+    expect(html).toContain("intro curta, 4 blocos de artigos com CTA “Read on”")
+    expect(html).not.toContain("<ul>")
+    expect(html).not.toContain("<li>")
   })
 
   it("renders numbered lists", () => {

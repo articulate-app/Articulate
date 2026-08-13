@@ -74,6 +74,73 @@ export function replaceArtifactUrl(args: {
   return { contentText, contentJson, replaced }
 }
 
+/**
+ * Remove all occurrences of `url` from artifact text/json.
+ * Unwraps matching HTML anchors to keep visible anchor text when present.
+ */
+export function removeArtifactUrl(args: {
+  url: string
+  contentText: string | null | undefined
+  contentJson: ArtifactContentJson | null | undefined
+}): { contentText: string | null; contentJson: ArtifactContentJson | null; removed: number } {
+  const target = args.url.trim()
+  if (!target) {
+    return {
+      contentText: args.contentText ?? null,
+      contentJson: args.contentJson ?? null,
+      removed: 0,
+    }
+  }
+
+  const ordered = urlVariants(target)
+  let removed = 0
+
+  const removeOnce = (value: string): string => {
+    let next = value
+    for (const variant of ordered) {
+      if (!variant) continue
+      const escaped = escapeRegExp(variant)
+      // Unwrap <a href="…variant…">label</a> → label
+      const anchorRegex = new RegExp(
+        `<a\\b[^>]*href=["'][^"']*${escaped}[^"']*["'][^>]*>([\\s\\S]*?)<\\/a>`,
+        "gi",
+      )
+      next = next.replace(anchorRegex, (_match, label: string) => {
+        removed += 1
+        return label
+      })
+      // Strip remaining bare URL occurrences
+      if (next.toLowerCase().includes(variant.toLowerCase())) {
+        const bareRegex = new RegExp(escaped, "gi")
+        const matches = next.match(bareRegex)
+        if (matches?.length) {
+          removed += matches.length
+          next = next.replace(bareRegex, "")
+        }
+      }
+    }
+    return next.replace(/[ \t]{2,}/g, " ").replace(/\n{3,}/g, "\n\n")
+  }
+
+  const contentText =
+    typeof args.contentText === "string" ? removeOnce(args.contentText) : null
+
+  let contentJson = args.contentJson ?? null
+  if (contentJson && Array.isArray(contentJson.blocks)) {
+    contentJson = {
+      ...contentJson,
+      blocks: contentJson.blocks.map((block) => {
+        const next = { ...block }
+        if (typeof next.html === "string") next.html = removeOnce(next.html)
+        if (typeof next.text === "string") next.text = removeOnce(next.text)
+        return next
+      }),
+    }
+  }
+
+  return { contentText, contentJson, removed }
+}
+
 export type LinkUsageSnippet = {
   id: string
   excerpt: string

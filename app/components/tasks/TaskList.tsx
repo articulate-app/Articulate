@@ -29,7 +29,7 @@ import { UnifiedGroupedTaskList } from './unified-grouped-task-list'
 import { CompactEditableRowContent } from './compact-task-row'
 import { useTaskGrouping } from '../../store/task-grouping'
 import type { GroupByField } from '../../store/task-grouping'
-import { TaskTableHeader, CompactTaskTableHeader, getColumnLabel, stopDnd } from './task-table-header'
+import { TaskTableHeader, getColumnLabel, stopDnd } from './task-table-header'
 import {
   DndContext,
   DragOverlay,
@@ -46,6 +46,7 @@ import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { toast } from '../ui/use-toast'
 import { removeItemFromStore } from '../../../hooks/use-infinite-query'
 import { removeTaskFromAllStores, removeTaskIdFromTasksQueryArrays } from './task-cache-utils'
+import { enqueueTaskDelete, enqueueTaskDeletes } from '../../lib/task-write-queue'
 import { useTasksListLegendStore } from '../../store/tasks-list-legend'
 import { useTaskRealtime } from '../../../hooks/use-task-realtime'
 import { updateTaskInCaches } from './task-cache-utils';
@@ -1147,7 +1148,7 @@ export function TaskList({ onTaskSelect, expandMainTaskId, selectedTaskId, editF
     setIsBulkDeleteDialogOpen(true)
   }
 
-  const handleConfirmBulkDelete = async () => {
+  const handleConfirmBulkDelete = () => {
     if (selectedTasks.size === 0) return
 
     const taskIds = Array.from(selectedTasks)
@@ -1156,28 +1157,34 @@ export function TaskList({ onTaskSelect, expandMainTaskId, selectedTaskId, editF
     setSelectedTasks(new Set())
     setIsBulkDeleteDialogOpen(false)
 
-    try {
-      const supabase = createClientComponentClient()
-      const { error } = await supabase.from('tasks').delete().in('id', taskIds)
-      if (error) throw error
-
-      toast({
-        title: 'Tasks deleted',
-        description: `Successfully deleted ${taskIds.length} task${taskIds.length !== 1 ? 's' : ''}.`,
-      })
-    } catch (err: any) {
-      queryClient.invalidateQueries({
-        predicate: (query) => Array.isArray(query.queryKey) && query.queryKey[0] === 'tasks',
-      })
-      queryClient.invalidateQueries({ queryKey: ['subtasks'] })
-      toast({
-        title: 'Failed to delete tasks',
-        description: err?.message || 'An error occurred while deleting the tasks.',
-        variant: 'destructive',
-      })
-    } finally {
-      setIsBulkDeleting(false)
-    }
+    const supabase = createClientComponentClient()
+    enqueueTaskDeletes(
+      taskIds.map((taskId) => ({ taskId, supabase })),
+      {
+        onBatchComplete: ({ ok, failed }) => {
+          setIsBulkDeleting(false)
+          if (failed > 0) {
+            queryClient.invalidateQueries({
+              predicate: (query) => Array.isArray(query.queryKey) && query.queryKey[0] === 'tasks',
+            })
+            queryClient.invalidateQueries({ queryKey: ['subtasks'] })
+            toast({
+              title: failed === taskIds.length ? 'Failed to delete tasks' : 'Some tasks failed to delete',
+              description:
+                failed === taskIds.length
+                  ? 'An error occurred while deleting the tasks.'
+                  : `Deleted ${ok}, failed ${failed}.`,
+              variant: 'destructive',
+            })
+            return
+          }
+          toast({
+            title: 'Tasks deleted',
+            description: `Successfully deleted ${ok} task${ok !== 1 ? 's' : ''}.`,
+          })
+        },
+      },
+    )
   }
 
   // --- Filtered Options Helpers (same logic as TaskDetails) ---
@@ -2157,13 +2164,24 @@ export function TaskList({ onTaskSelect, expandMainTaskId, selectedTaskId, editF
         if (isEditing) {
           const measuredW = getMeasuredWidth(taskId, 'title')
           return (
-            <div className={cn('flex min-w-0 items-center', isCompactTitle && 'gap-1')} data-active-editor data-inline-editor style={measuredW ? { minWidth: measuredW, maxWidth: measuredW } : undefined}>
+            <div
+              className={cn('flex min-w-0 items-center', isCompactTitle && 'w-full max-w-full gap-1')}
+              data-active-editor
+              data-inline-editor
+            >
               {!isCompactTitle && (
                 <div className="flex h-5 w-5 shrink-0 items-center justify-center">
                   {subtaskChevron ?? <span className="block h-5 w-5" aria-hidden />}
                 </div>
               )}
-              <div className={cn('min-w-0 flex-1 overflow-visible', titleContentIndent)}>
+              <div
+                className={cn(
+                  'min-w-0 overflow-visible',
+                  isCompactTitle ? 'w-fit max-w-full' : 'flex-1',
+                  titleContentIndent,
+                )}
+                style={measuredW ? { width: measuredW, minWidth: measuredW, maxWidth: measuredW } : undefined}
+              >
                 <input
                   type="text"
                   value={editingValue}
@@ -2193,7 +2211,6 @@ export function TaskList({ onTaskSelect, expandMainTaskId, selectedTaskId, editF
               'flex min-w-0 items-center',
               isCompactTitle && 'w-full max-w-full gap-1 overflow-hidden',
             )}
-            ref={(el) => measureCellWidth(taskId, 'title', el)}
           >
             {!isCompactTitle && (
               <div className="flex h-5 w-5 shrink-0 items-center justify-center">
@@ -2202,15 +2219,19 @@ export function TaskList({ onTaskSelect, expandMainTaskId, selectedTaskId, editF
             )}
             <div
               className={cn(
-                'flex min-w-0 flex-1 items-center gap-2',
-                isCompactTitle && 'overflow-hidden',
+                'flex min-w-0 items-center gap-2',
+                isCompactTitle ? 'min-w-0 flex-1 overflow-hidden' : 'flex-1',
                 titleContentIndent,
               )}
             >
               <span
                 data-editable-cell
+                ref={(el) => measureCellWidth(taskId, 'title', el)}
                 className={cn(
-                  'min-w-0 flex-1 truncate text-sm leading-none select-text',
+                  'truncate text-sm leading-none select-text',
+                  // Compact: shrink-wrap the title (like expanded) so hover/edit chrome
+                  // matches text width instead of stretching across the whole column.
+                  isCompactTitle ? 'inline-block w-fit max-w-full' : 'min-w-0 flex-1',
                   'cursor-text rounded border border-transparent px-1 py-0 transition-colors hover:border-gray-300 hover:bg-white',
                   isHoverActive(taskId, 'title') && 'bg-white border border-gray-300',
                   // Compact rows distinguish AI suggestions by subtly muting the title (no icon) instead.
@@ -3749,24 +3770,24 @@ export function TaskList({ onTaskSelect, expandMainTaskId, selectedTaskId, editF
   }, [expandMainTaskId, expandedMainTasks])
 
   // --- Optimistic Task Deletion Handler ---
-  const handleOptimisticDelete = async (taskId: number) => {
+  const handleOptimisticDelete = (taskId: number) => {
     // Remove the task from all InfiniteList caches immediately
     removeTaskFromAllStores(taskId)
     removeTaskIdFromTasksQueryArrays(queryClient, taskId)
-    try {
-      const supabase = createClientComponentClient();
-      const { error } = await supabase.from('tasks').delete().eq('id', taskId);
-      if (error) throw error;
-    } catch (err: any) {
-      // Rollback: refetch tasks
-      queryClient.invalidateQueries({ queryKey: ['tasks'] });
-      toast({
-        title: 'Failed to delete task',
-        description: err?.message || 'An error occurred while deleting the task.',
-        variant: 'destructive',
-      });
-    }
-  };
+    const supabase = createClientComponentClient()
+    enqueueTaskDelete({
+      taskId,
+      supabase,
+      onError: (err) => {
+        queryClient.invalidateQueries({ queryKey: ['tasks'] })
+        toast({
+          title: 'Failed to delete task',
+          description: (err as Error)?.message || 'An error occurred while deleting the task.',
+          variant: 'destructive',
+        })
+      },
+    })
+  }
 
   // Add local state for instant row highlight
   const [localSelectedId, setLocalSelectedId] = useState<string | number | null>(selectedTaskId ?? null);
@@ -3811,7 +3832,7 @@ export function TaskList({ onTaskSelect, expandMainTaskId, selectedTaskId, editF
         <div
           ref={scrollContainerRef}
           className={cn(
-            'relative min-h-0 min-w-0 flex-1 overflow-y-auto [scrollbar-gutter:stable]',
+            'relative min-h-0 min-w-0 flex-1 overflow-y-auto',
             isCompact ? 'overflow-x-hidden' : 'overflow-x-auto',
           )}
           data-task-scroll-container
@@ -3835,9 +3856,7 @@ export function TaskList({ onTaskSelect, expandMainTaskId, selectedTaskId, editF
                 )}
                 style={{ tableLayout: 'fixed', background: 'transparent' }}
               >
-                {isCompact ? (
-                  <CompactTaskTableHeader dateField={compactDateField} />
-                ) : (
+                {isCompact ? null : (
                   <TaskTableHeader table={groupedTable} columns={orderedTaskColumns} gridTemplateColumns={gridTemplateColumns} onColumnOrderChange={handleColumnOrderChange} overColId={overColId} isColumnDragging={isColumnDragging} onResizeHandleDoubleClick={handleResizeHandleDoubleClick} defaultWidthsRef={defaultWidthsRef} />
                 )}
             <tbody>
@@ -3892,7 +3911,7 @@ export function TaskList({ onTaskSelect, expandMainTaskId, selectedTaskId, editF
         <div
           ref={desktopScrollRef}
           data-task-scroll-container
-          className="relative min-h-0 min-w-0 flex-1 overflow-x-hidden overflow-y-auto [scrollbar-gutter:stable]"
+          className="relative min-h-0 min-w-0 flex-1 overflow-x-hidden overflow-y-auto"
           style={{ width: '100%', padding: 0, margin: 0 }}
           onScroll={markScrolling}
           onWheel={markScrolling}
@@ -3913,9 +3932,7 @@ export function TaskList({ onTaskSelect, expandMainTaskId, selectedTaskId, editF
                 )}
                 style={{ tableLayout: 'fixed', background: 'transparent' }}
               >
-                {isCompact ? (
-                  <CompactTaskTableHeader dateField={compactDateField} />
-                ) : (
+                {isCompact ? null : (
                   <TaskTableHeader table={groupedTable} columns={orderedTaskColumns} gridTemplateColumns={gridTemplateColumns} onColumnOrderChange={handleColumnOrderChange} overColId={overColId} isColumnDragging={isColumnDragging} onResizeHandleDoubleClick={handleResizeHandleDoubleClick} defaultWidthsRef={defaultWidthsRef} />
                 )}
             <tbody>

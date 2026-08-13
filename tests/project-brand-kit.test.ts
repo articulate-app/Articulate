@@ -182,10 +182,21 @@ describe("project-brand-kit", () => {
           created_at: "2026-08-03T00:00:00.000Z",
         },
       ],
+      approvedImageBanks: [
+        {
+          id: "bank-1",
+          provider: "istock",
+          label: "iStock",
+          url: "https://www.istockphoto.com/",
+          notes: "Editorial only",
+          enabled: true,
+        },
+      ],
     })
 
     expect(withDesign.status).toBe("ready")
     expect(withDesign.design_description).toContain("magazine")
+    expect(withDesign.approved_image_banks).toHaveLength(1)
 
     const reExtracted = applyExtractedBrandSource({
       previous: withDesign,
@@ -199,6 +210,7 @@ describe("project-brand-kit", () => {
     expect(reExtracted.design_description).toContain("magazine")
     expect(reExtracted.design_templates).toHaveLength(1)
     expect(reExtracted.design_templates[0].assets).toHaveLength(1)
+    expect(reExtracted.approved_image_banks).toHaveLength(1)
 
     const payload = brandKitForAiFromProject({ brand_kit: reExtracted })
     const brief = formatBrandKitForMediaPrompt(payload, "JCDecaux")
@@ -207,6 +219,10 @@ describe("project-brand-kit", () => {
     expect(brief).toContain("Brand layout templates")
     expect(brief).toContain("Hero post")
     expect(brief).toContain("https://cdn.example.com/hero.png")
+    expect(brief).toContain("Approved image banks")
+    expect(brief).toContain("iStock")
+    expect(brief).toContain("Editorial only")
+    expect(payload?.approved_image_banks?.[0]?.provider).toBe("istock")
   })
 
   it("migrates legacy design_examples into design_templates", () => {

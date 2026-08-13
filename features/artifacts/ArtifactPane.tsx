@@ -5,19 +5,46 @@ import { useQuery, useQueryClient } from "@tanstack/react-query"
 import {
   AlertTriangle,
   Check,
+  ChevronRight,
   Download,
   GitCompare,
   History,
   Link2,
   Loader2,
-  Save,
+  MoreHorizontal,
+  Search,
   Trash2,
+  Upload,
   X,
 } from "lucide-react"
 import { usePathname } from "next/navigation"
 import { createClientComponentClient } from "@supabase/auth-helpers-nextjs"
-import { Popover, PopoverContent, PopoverTrigger } from "../../app/components/ui/popover"
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuSeparator,
+  DropdownMenuSub,
+  DropdownMenuSubContent,
+  DropdownMenuSubTrigger,
+  DropdownMenuTrigger,
+} from "../../app/components/ui/dropdown-menu"
+import { Button } from "../../app/components/ui/button"
+import { IconTooltip } from "../../app/components/ui/icon-tooltip"
 import { toast } from "../../app/components/ui/use-toast"
+import { TASK_DETAILS_HEADER_ROW_CLASS } from "../../app/components/tasks/pane-header-tokens"
+import {
+  artifactPlainText,
+  countWords,
+  formatCharCountLabel,
+  formatWordCountLabel,
+} from "./artifact-content-stats"
+import {
+  Dialog,
+  DialogContent,
+  DialogHeader,
+  DialogTitle,
+} from "../../app/components/ui/dialog"
 import {
   AlertDialog,
   AlertDialogAction,
@@ -64,27 +91,29 @@ import { buildCenterPaneSelectionSearchParams } from "../../app/lib/center-pane-
 import { shallowReplaceSearchParams } from "../../app/lib/tasks-shallow-nav"
 import { SelectionAskAiMenu } from "../ai-chat/SelectionAskAiMenu"
 import { computeRangeTextParts } from "../ai-chat/ai-chat-text-selection"
-import {
-  artifactDiffPlainFromContent,
-  extractPrimaryArtifactHtml,
-} from "../../app/lib/artifact-selection-patch"
+import { extractPrimaryArtifactHtml } from "../../app/lib/artifact-selection-patch"
 import { ArtifactDocumentEditor } from "./artifact-document-editor"
-import { ArtifactCommentsDock } from "./artifact-comments-dock"
+import { ArtifactCommentsDock, type ArtifactCommentPendingSelection } from "./artifact-comments-dock"
 import { ArtifactFindReplacePopover } from "./artifact-find-replace-popover"
 import { ArtifactSeoDock } from "./artifact-seo-dock"
 import { ArtifactVersionHistoryList } from "./artifact-version-history-popover"
 import { ArtifactRichDiffBody } from "./artifact-rich-diff-body"
 import {
-  buildComponentPreviewDiff,
-  computeDiffCharStats,
-  hasRenderableDiff,
-} from "../tasks/utils/component-content-diff"
+  progressiveLiveAfterHtml,
+  resolveArtifactChangeSides,
+} from "./resolve-artifact-change-diff"
+import {
+  buildHtmlEmailContentJson,
+  isHtmlEmailArtifact,
+} from "./artifact-html-document"
+import { isArtifactLiveEditLocked } from "./artifact-live-edit-lock"
 import { exportArtifactAsDocx } from "./artifact-docx-export"
 import {
   openArtifactSelectionInAiPane,
 } from "./open-artifact-selection-in-ai-pane"
 import { computeArtifactContentHash } from "./artifact-selection"
 import { artifactHasAnnotatableMedia } from "./artifact-media-annotate-dialog"
+import { ArtifactPublishMenu } from "./artifact-publish-menu"
 import debounce from "lodash.debounce"
 
 export type ArtifactPaneProps = {
@@ -132,9 +161,15 @@ export function ArtifactPane({
     if (typeof window === "undefined") return false
     return getArtifactHistoryOpenFromParams(new URLSearchParams(window.location.search))
   })
-  const [showDownloadMenu, setShowDownloadMenu] = useState(false)
+  /** Submenu open state so we fetch versions before the panel mounts. */
+  const [versionsSubOpen, setVersionsSubOpen] = useState(false)
+  const [showFindReplace, setShowFindReplace] = useState(false)
+  const [showPublishMenu, setShowPublishMenu] = useState(false)
   /** Show previous→current changes in the document body (not a separate top panel). */
   const [showChanges, setShowChanges] = useState(false)
+  /** Highlighted artifact text waiting to be attached to a new comment thread. */
+  const [pendingCommentSelection, setPendingCommentSelection] =
+    useState<ArtifactCommentPendingSelection | null>(null)
   const [linkCopied, setLinkCopied] = useState(false)
   const linkCopiedTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const draftTitleRef = useRef(draftTitle)
@@ -142,6 +177,8 @@ export function ArtifactPane({
   const draftContentTextRef = useRef(draftContentText)
   /** Ignore TipTap onChange while applying server/AI content so stale editor HTML cannot overwrite the draft. */
   const applyingServerContentRef = useRef(false)
+  /** True only after a real user edit — server/AI content loads must not count as a dirty draft. */
+  const userDirtyRef = useRef(false)
   const [editorForceNonce, setEditorForceNonce] = useState(0)
   draftTitleRef.current = draftTitle
   draftContentJsonRef.current = draftContentJson
@@ -173,13 +210,16 @@ export function ArtifactPane({
   const versionsQuery = useQuery({
     queryKey: ["artifact-versions", artifactId],
     queryFn: () => listArtifactVersions({ artifactId, limit: 50 }),
-    enabled: !!artifactId && showVersions,
+    enabled: !!artifactId && (showVersions || versionsSubOpen),
     staleTime: 30_000,
   })
 
   const livePreviews = useAiBuildArtifactPreviewStore((s) => s.previews)
   const pruneConsumedSavedPreviews = useAiBuildArtifactPreviewStore(
     (s) => s.pruneConsumedSavedPreviews,
+  )
+  const ensureBeforeBaseline = useAiBuildArtifactPreviewStore(
+    (s) => s.ensureBeforeBaseline,
   )
   const livePreview = useMemo(() => {
     let best: (typeof livePreviews)[string] | null = null
@@ -204,18 +244,26 @@ export function ArtifactPane({
     return best
   }, [artifactId, livePreviews])
 
-  const isLiveAi =
-    !!livePreview
-    && livePreview.phase !== "saved"
-    && livePreview.phase !== "failed"
-
   const snapshot = artifactQuery.data?.snapshot ?? null
+
+  const isLiveAi = isArtifactLiveEditLocked(livePreview)
 
   useEffect(() => {
     const version = snapshot?.current_version
     if (version == null || version <= 0) return
     pruneConsumedSavedPreviews(artifactId, version)
   }, [artifactId, pruneConsumedSavedPreviews, snapshot?.current_version])
+
+  useEffect(() => {
+    if (!livePreview || !snapshot) return
+    if (livePreview.phase === "saved" || livePreview.phase === "failed") return
+    if (livePreview.beforeContentJson) return
+    ensureBeforeBaseline({
+      artifactId,
+      contentJson: snapshot.content_json,
+      contentText: snapshot.content_text,
+    })
+  }, [artifactId, ensureBeforeBaseline, livePreview, snapshot])
   const viewedVersionNumber =
     version
     ?? snapshot?.current_version
@@ -234,8 +282,44 @@ export function ArtifactPane({
   })
   const displayArtifact = useMemo<TaskArtifact | null>(() => {
     if (!snapshot) return null
-    // Only overlay in-progress AI preview onto the open editor. Once saved,
-    // trust the queried snapshot so we don't stick on a stale preview version.
+    const progressiveHtml = livePreview ? progressiveLiveAfterHtml(livePreview) : null
+    // Stream heartbeats only carry section_html — overlay that so the open pane
+    // matches the chat preview card in real time.
+    if (isLiveAi && livePreview && progressiveHtml) {
+      const preferHtmlEmail =
+        isHtmlEmailArtifact(snapshot)
+        || /<!doctype\s+html|<html\b|role\s*=\s*["']presentation["']/i.test(progressiveHtml)
+      return {
+        ...snapshot,
+        title: livePreview.title ?? snapshot.title,
+        content_text: progressiveHtml,
+        content_json: preferHtmlEmail
+          ? buildHtmlEmailContentJson(progressiveHtml, snapshot.content_json)
+          : {
+              ...(typeof snapshot.content_json === "object" && snapshot.content_json
+                ? snapshot.content_json
+                : { version: 1 }),
+              blocks: [
+                {
+                  id: "body",
+                  type: "rich_text",
+                  html: progressiveHtml,
+                  text: progressiveHtml.replace(/<[^>]+>/g, " ").replace(/\s+/g, " ").trim().slice(0, 20000),
+                },
+              ],
+            },
+        asset_data: livePreview.assetData ?? snapshot.asset_data,
+        current_version: livePreview.currentVersion ?? snapshot.current_version,
+        project_id: snapshot.project_id,
+        task_id: livePreview.taskId ?? snapshot.task_id,
+        channel_id: livePreview.channelId ?? snapshot.channel_id,
+        language_id: livePreview.languageId ?? snapshot.language_id,
+        ai_thread_id: livePreview.aiThreadId ?? snapshot.ai_thread_id,
+        artifact_type: livePreview.artifactType ?? snapshot.artifact_type,
+        artifact_role: livePreview.artifactRole ?? snapshot.artifact_role,
+      }
+    }
+    // Authoritative non-streaming preview overlay (full content_json arrived).
     const useLiveContent =
       !!livePreview
       && isLiveAi
@@ -280,7 +364,7 @@ export function ArtifactPane({
       const projectId = displayArtifact?.project_id ?? null
       const [taskRes, projectRes] = await Promise.all([
         taskId != null
-          ? supabase.from("tasks").select("id, title").eq("id", taskId).maybeSingle()
+          ? supabase.from("tasks").select("id, title, project_id_int").eq("id", taskId).maybeSingle()
           : Promise.resolve({ data: null, error: null }),
         projectId != null
           ? supabase.from("projects").select("id, name").eq("id", projectId).maybeSingle()
@@ -288,6 +372,8 @@ export function ArtifactPane({
       ])
       return {
         taskTitle: typeof taskRes.data?.title === "string" ? taskRes.data.title.trim() : null,
+        taskProjectId:
+          typeof taskRes.data?.project_id_int === "number" ? taskRes.data.project_id_int : null,
         projectName: typeof projectRes.data?.name === "string" ? projectRes.data.name.trim() : null,
       }
     },
@@ -327,16 +413,76 @@ export function ArtifactPane({
     enabled: !!artifactId,
   })
 
+  const lastSyncedArtifactKeyRef = useRef<string | null>(null)
+
   useEffect(() => {
     if (!displayArtifact) return
-    applyingServerContentRef.current = true
-    setDraftTitle(displayArtifact.title ?? "")
-    setDraftContentJson(displayArtifact.content_json)
-    setDraftContentText(displayArtifact.content_text)
+    const serverVersion = displayArtifact.current_version ?? 0
+    const liveKey =
+      isLiveAi && livePreview
+        ? `:live:${livePreview.sequence}:${livePreview.updatedAt}`
+        : ""
+    const syncKey = `${displayArtifact.id}:${serverVersion}${liveKey}`
     const title = displayArtifact.title?.trim()
     if (title) {
       updateTitle(buildCenterPaneTabKey("artifact", artifactId), title)
     }
+
+    // Same artifact+version (and same live frame): ignore query identity churn.
+    if (lastSyncedArtifactKeyRef.current === syncKey) {
+      return
+    }
+
+    const previousKey = lastSyncedArtifactKeyRef.current
+    lastSyncedArtifactKeyRef.current = syncKey
+
+    // Live AI frames always win — force the editor onto the streaming body.
+    if (isLiveAi) {
+      applyingServerContentRef.current = true
+      userDirtyRef.current = false
+      setDraftTitle(displayArtifact.title ?? "")
+      setDraftContentJson(displayArtifact.content_json)
+      setDraftContentText(displayArtifact.content_text)
+      setEditorForceNonce((n) => n + 1)
+      const clear = window.setTimeout(() => {
+        applyingServerContentRef.current = false
+      }, 50)
+      return () => window.clearTimeout(clear)
+    }
+
+    const draftMatchesServer =
+      (draftContentTextRef.current ?? null) === (displayArtifact.content_text ?? null)
+      && JSON.stringify(draftContentJsonRef.current)
+        === JSON.stringify(displayArtifact.content_json)
+      && (draftTitleRef.current.trim() || displayArtifact.title) === (displayArtifact.title ?? "")
+
+    // Version bump after our own autosave with no further local edits — soft sync.
+    const isFirstSync = previousKey == null || !previousKey.startsWith(`${displayArtifact.id}:`)
+    if (!isFirstSync && draftMatchesServer) {
+      userDirtyRef.current = false
+      setDraftTitle(displayArtifact.title ?? "")
+      setDraftContentJson(displayArtifact.content_json)
+      setDraftContentText(displayArtifact.content_text)
+      return
+    }
+
+    // Keep local content ONLY when the user actually typed since the last server
+    // sync. Server/AI loads must not count as a dirty draft — that was pinning
+    // the editor to the old version after AI builds saved a new one.
+    const previousId = previousKey?.slice(0, previousKey.indexOf(":")) ?? null
+    const isSameArtifact = previousId === displayArtifact.id
+    if (isSameArtifact && userDirtyRef.current && !draftMatchesServer && !version) {
+      // Rebase silently — TipTap already owns the document; avoid force remount.
+      setDraftTitle((prev) => prev || (displayArtifact.title ?? ""))
+      return
+    }
+
+    applyingServerContentRef.current = true
+    userDirtyRef.current = false
+    setDraftTitle(displayArtifact.title ?? "")
+    setDraftContentJson(displayArtifact.content_json)
+    setDraftContentText(displayArtifact.content_text)
+    setEditorForceNonce((n) => n + 1)
     const clear = window.setTimeout(() => {
       applyingServerContentRef.current = false
     }, 50)
@@ -348,16 +494,20 @@ export function ArtifactPane({
     displayArtifact?.title,
     displayArtifact?.content_json,
     displayArtifact?.content_text,
+    isLiveAi,
+    livePreview?.sequence,
+    livePreview?.updatedAt,
     updateTitle,
+    version,
   ])
 
-  /** TipTap remount/force key from authoritative snapshot (not local draft keystrokes). */
+  /** TipTap force key: content fingerprint only (version bumps must not reset the caret). */
   const editorForceContentKey = useMemo(() => {
     if (!displayArtifact) return `${artifactId}:0`
     const html = extractPrimaryArtifactHtml(displayArtifact.content_json) ?? ""
     const text = displayArtifact.content_text ?? ""
     const fingerprint = computeArtifactContentHash(html || text)
-    return `${displayArtifact.id}:${displayArtifact.current_version ?? 0}:${fingerprint}:${editorForceNonce}`
+    return `${displayArtifact.id}:${fingerprint}:${editorForceNonce}`
   }, [artifactId, displayArtifact, editorForceNonce])
 
   const assets = useMemo(
@@ -505,7 +655,6 @@ export function ArtifactPane({
 
   const handleDownload = async (format: ArtifactExportFormat, attachmentId?: string | null) => {
     setDownloadError(null)
-    setShowDownloadMenu(false)
     try {
       if (format === "docx") {
         if (!displayArtifact) throw new Error("Artifact not loaded")
@@ -580,10 +729,6 @@ export function ArtifactPane({
         projectId: artifact?.project_id ?? null,
         channelId: artifact?.channel_id ?? null,
       })
-      toast({
-        title: "Sent to AI chat",
-        description: "Selection attached in the composer — add a note and send.",
-      })
     },
     [],
   )
@@ -615,7 +760,13 @@ export function ArtifactPane({
 
   const isLivePreview = isLiveAi
   const bodyScrollRef = useRef<HTMLDivElement | null>(null)
-  const liveContentKey = `${livePreview?.sequence ?? 0}:${(livePreview?.contentText ?? displayArtifact?.content_text ?? "").length}`
+  const liveContentKey = `${livePreview?.sequence ?? 0}:${(
+    livePreview?.sectionHtml
+    ?? livePreview?.streamSnippet
+    ?? livePreview?.contentText
+    ?? displayArtifact?.content_text
+    ?? ""
+  ).length}`
   useFollowGrowingContent({
     containerRef: bodyScrollRef,
     contentKey: liveContentKey,
@@ -624,25 +775,45 @@ export function ArtifactPane({
 
   const changeDiff = useMemo(() => {
     if (!displayArtifact) return null
-    // Live AI: section-scoped before/after from the worker, shown in the body.
+    // Live AI: only scope to a section when BOTH before+after section HTML exist.
+    // Otherwise compare full before baseline → progressive after (same as chat).
     if (isLiveAi && livePreview) {
       const beforeHtml = livePreview.sectionBeforeHtml?.trim() || null
       const afterHtml =
         livePreview.sectionHtml?.trim()
         || livePreview.streamSnippet?.trim()
         || null
+      const useSectionScope = Boolean(beforeHtml) && Boolean(afterHtml)
+      const useProgressiveAfter =
+        !useSectionScope && Boolean(afterHtml) && livePreview.streaming === true
       return {
-        beforeText: beforeHtml || livePreview.beforeContentText,
-        beforeContentJson: beforeHtml ? null : livePreview.beforeContentJson,
-        afterText:
-          afterHtml
-          || livePreview.diffContentText
-          || livePreview.contentText
-          || displayArtifact.content_text,
-        afterContentJson: afterHtml ? null : (livePreview.contentJson ?? displayArtifact.content_json),
-        label: livePreview.targetSectionHeading
-          ? `AI edit · ${livePreview.targetSectionHeading}`
-          : "AI edit in progress",
+        beforeText: useSectionScope ? beforeHtml : livePreview.beforeContentText,
+        beforeContentJson: useSectionScope ? null : livePreview.beforeContentJson,
+        afterText: useSectionScope || useProgressiveAfter
+          ? afterHtml
+          : (
+            afterHtml
+            || livePreview.diffContentText
+            || livePreview.contentText
+            || displayArtifact.content_text
+          ),
+        // Never pass frozen baseline contentJson as "after" while streaming —
+        // resolveArtifactDiffHtml would prefer it over progressive HTML.
+        afterContentJson: useSectionScope || useProgressiveAfter
+          ? null
+          : (livePreview.contentJson ?? displayArtifact.content_json),
+        beforeHtml: useSectionScope ? beforeHtml : null,
+        afterHtml: useSectionScope || useProgressiveAfter ? afterHtml : null,
+        // Prefer the frozen pre-edit JSON from the worker/store over the live
+        // row (which may already equal "after" once the version is saved).
+        baselineContentJson:
+          livePreview.beforeContentJson
+          ?? snapshot?.content_json
+          ?? displayArtifact.content_json,
+        baselineContentText:
+          livePreview.beforeContentText
+          ?? snapshot?.content_text
+          ?? displayArtifact.content_text,
       }
     }
     // Settled view: always compare previous version → viewed version from DB.
@@ -653,7 +824,10 @@ export function ArtifactPane({
       beforeContentJson: previous.content_json,
       afterText: draftContentText ?? displayArtifact.content_text,
       afterContentJson: draftContentJson ?? displayArtifact.content_json,
-      label: "Recent changes",
+      beforeHtml: null as string | null,
+      afterHtml: null as string | null,
+      baselineContentJson: previous.content_json,
+      baselineContentText: previous.content_text,
     }
   }, [
     displayArtifact,
@@ -663,56 +837,74 @@ export function ArtifactPane({
     livePreview,
     previousVersionNumber,
     previousVersionQuery.data?.snapshot,
+    snapshot?.content_json,
+    snapshot?.content_text,
     viewedVersionNumber,
   ])
 
-  const changeDiffLines = useMemo(() => {
-    if (!changeDiff) return []
-    const beforePlain = artifactDiffPlainFromContent(
-      changeDiff.beforeText,
-      changeDiff.beforeContentJson,
-    )
-    const afterPlain = artifactDiffPlainFromContent(
-      changeDiff.afterText,
-      changeDiff.afterContentJson,
-    )
-    if (!beforePlain || !afterPlain || beforePlain === afterPlain) return []
-    return buildComponentPreviewDiff({
-      operation: "replace",
-      beforeText: beforePlain,
-      afterText: afterPlain,
+  const changeSides = useMemo(() => {
+    if (!changeDiff) return null
+    return resolveArtifactChangeSides({
+      beforeText: changeDiff.beforeText,
+      beforeContentJson: changeDiff.beforeContentJson,
+      afterText: changeDiff.afterText,
+      afterContentJson: changeDiff.afterContentJson,
+      beforeHtml: changeDiff.beforeHtml,
+      afterHtml: changeDiff.afterHtml,
+      baselineContentJson: changeDiff.baselineContentJson,
+      baselineContentText: changeDiff.baselineContentText,
     })
   }, [changeDiff])
 
-  const hasChangeDiff = hasRenderableDiff(changeDiffLines)
+  const hasChangeDiff = Boolean(changeSides?.hasChanges)
+  const changeDiffStats = changeSides?.stats ?? null
 
-  const changeDiffStats = useMemo(() => {
-    if (!changeDiff || !hasChangeDiff) return null
-    const beforePlain = artifactDiffPlainFromContent(
-      changeDiff.beforeText,
-      changeDiff.beforeContentJson,
-    )
-    const afterPlain = artifactDiffPlainFromContent(
-      changeDiff.afterText,
-      changeDiff.afterContentJson,
-    )
-    if (!beforePlain || !afterPlain) return null
-    return computeDiffCharStats(beforePlain, afterPlain)
-  }, [changeDiff, hasChangeDiff])
-
-  // Show recent changes in the document body by default when a prior version differs.
-  // Media creatives stay on the interactive document so annotate/click-point remains available.
+  // Reset the changes view only on a hard context switch (other artifact or
+  // explicit version viewer) — not on every re-render or when AI settles.
   useEffect(() => {
-    if (!displayArtifact) {
-      setShowChanges(false)
+    setShowChanges(false)
+  }, [artifactId, version])
+
+  // During live AI, default to track-changes. When the run settles, KEEP the
+  // diff on-screen so the user sees what changed without hunting for the
+  // counters; the toggle (or applying a suggestion) exits it.
+  const hasDisplayArtifact = Boolean(displayArtifact)
+  const hasAnnotatableMedia = Boolean(
+    displayArtifact && artifactHasAnnotatableMedia(displayArtifact),
+  )
+  useEffect(() => {
+    if (!hasDisplayArtifact) {
+      setShowChanges((prev) => (prev ? false : prev))
       return
     }
-    if (artifactHasAnnotatableMedia(displayArtifact)) {
-      setShowChanges(false)
+    if (hasAnnotatableMedia) {
+      setShowChanges((prev) => (prev ? false : prev))
       return
     }
-    setShowChanges(hasChangeDiff)
-  }, [hasChangeDiff, artifactId, version, displayArtifact])
+    if (isLiveAi && hasChangeDiff) {
+      setShowChanges((prev) => (prev ? prev : true))
+      return
+    }
+    if (!hasChangeDiff) {
+      setShowChanges((prev) => (prev ? false : prev))
+    }
+  }, [hasChangeDiff, artifactId, version, hasDisplayArtifact, hasAnnotatableMedia, isLiveAi])
+
+  const contentStats = useMemo(() => {
+    const plain = artifactPlainText({
+      contentText: draftContentText ?? displayArtifact?.content_text ?? null,
+      contentJson: draftContentJson ?? displayArtifact?.content_json ?? null,
+    })
+    return {
+      words: countWords(plain),
+      chars: plain.length,
+    }
+  }, [
+    displayArtifact?.content_json,
+    displayArtifact?.content_text,
+    draftContentJson,
+    draftContentText,
+  ])
 
   if (artifactQuery.isLoading) {
     return (
@@ -744,284 +936,315 @@ export function ArtifactPane({
     )
   }
 
-  const channelName =
-    typeof displayArtifact.metadata?.channel_name === "string"
-      ? displayArtifact.metadata.channel_name
-      : null
-  const languageName =
-    typeof displayArtifact.metadata?.language_name === "string"
-      ? displayArtifact.metadata.language_name
-      : null
-
   return (
     <div className={cn("flex h-full min-h-0 flex-col bg-white", className)}>
-      <div className="shrink-0 border-b border-gray-200 px-4 py-3">
-        <div className="flex flex-wrap items-start justify-between gap-3">
-          <div className="min-w-0 flex-1 space-y-1">
-            <input
-              value={draftTitle}
-              onChange={(event) => {
-                setDraftTitle(event.target.value)
-                scheduleAutosave()
-              }}
-              className="w-full border-0 bg-transparent text-lg font-semibold text-gray-900 outline-none focus-visible:ring-0"
-              placeholder="Untitled artifact"
-            />
-            <div className="flex flex-wrap items-center gap-2 text-xs text-gray-500">
-              {displayArtifact.updated_at ? (
-                <button
-                  type="button"
-                  className="underline decoration-gray-300 underline-offset-2 hover:text-gray-800"
-                  onClick={() => setShowVersions(true)}
-                  title="Open version history"
-                >
-                  Edited {getActivityRelativeTimeLabel(displayArtifact.updated_at)}
-                </button>
-              ) : null}
-              {displayArtifact.task_id != null ? (
-                <button
-                  type="button"
-                  className="max-w-[14rem] truncate rounded-full border border-gray-200 bg-white px-2 py-0.5 text-[11px] text-gray-700 hover:bg-gray-50 hover:underline"
-                  title="Open task in center pane"
-                  onClick={() => openBoundTask(displayArtifact.task_id!)}
-                >
-                  Task · {bindingQuery.data?.taskTitle || `#${displayArtifact.task_id}`}
-                </button>
-              ) : null}
-              {displayArtifact.project_id != null ? (
-                <button
-                  type="button"
-                  className="max-w-[12rem] truncate rounded-full border border-gray-200 bg-white px-2 py-0.5 text-[11px] text-gray-700 hover:bg-gray-50 hover:underline"
-                  title="Open project in center pane"
-                  onClick={() => openBoundProject(displayArtifact.project_id!)}
-                >
-                  Project · {bindingQuery.data?.projectName || `#${displayArtifact.project_id}`}
-                </button>
-              ) : null}
-              {isLivePreview ? (
-                <span className="rounded bg-amber-50 px-1.5 py-0.5 text-amber-800">Live preview</span>
-              ) : null}
-              {channelName || displayArtifact.channel_id != null ? (
-                <span>Channel {channelName || `#${displayArtifact.channel_id}`}</span>
-              ) : null}
-              {languageName || displayArtifact.language_id != null ? (
-                <span>Language {languageName || `#${displayArtifact.language_id}`}</span>
-              ) : null}
-            </div>
-            {(displayArtifact.source_artifact_id || displayArtifact.derivation_type) && (
-              <p className="text-[11px] text-gray-500">
-                {displayArtifact.derivation_type
-                  ? `Derived (${displayArtifact.derivation_type})`
-                  : "Derived"}
-                {displayArtifact.source_artifact_id
-                  ? ` from ${displayArtifact.source_artifact_id.slice(0, 8)}…`
-                  : ""}
-              </p>
-            )}
-          </div>
-          <div className="flex flex-wrap items-center gap-1">
-            <button
+      <div className={cn(TASK_DETAILS_HEADER_ROW_CLASS, "sticky top-0 z-10 shrink-0")}>
+        <input
+          value={draftTitle}
+          onChange={(event) => {
+            setDraftTitle(event.target.value)
+            scheduleAutosave()
+          }}
+          className="min-w-0 flex-1 border-0 bg-transparent text-[13px] font-medium text-gray-800 outline-none focus-visible:ring-0"
+          placeholder="Untitled artifact"
+          style={{ cursor: "text" }}
+        />
+        <div className="flex shrink-0 items-center gap-0.5">
+          {isLivePreview ? (
+            <span className="mr-1 shrink-0 rounded bg-amber-50 px-1.5 py-0.5 text-[11px] text-amber-800">
+              Live preview
+            </span>
+          ) : null}
+          <ArtifactFindReplacePopover
+            contentJson={draftContentJson ?? displayArtifact.content_json}
+            contentText={draftContentText ?? displayArtifact.content_text}
+            disabled={isLivePreview}
+            open={showFindReplace}
+            onOpenChange={setShowFindReplace}
+            onApply={({ contentJson, contentText }) => {
+              if (isLivePreview) return
+              setShowChanges(false)
+              applyingServerContentRef.current = true
+              userDirtyRef.current = true
+              setDraftContentJson(contentJson)
+              setDraftContentText(contentText)
+              setEditorForceNonce((n) => n + 1)
+              scheduleAutosave()
+              window.setTimeout(() => {
+                applyingServerContentRef.current = false
+              }, 50)
+            }}
+          />
+          <IconTooltip label="Download Word">
+            <Button
               type="button"
-              onClick={() => void handleSave()}
-              disabled={isLivePreview || isSaving}
-              className="inline-flex h-8 items-center gap-1.5 rounded-md px-2.5 text-xs font-medium text-gray-700 hover:bg-gray-50 hover:text-gray-900 disabled:opacity-50"
-              title="Save"
+              variant="ghost"
+              size="sm"
+              className="h-7 w-7 p-0"
+              aria-label="Download Word"
+              disabled={isLivePreview}
+              onClick={() => void handleDownload("docx")}
             >
-              {isSaving ? (
-                <Loader2 className="h-3.5 w-3.5 animate-spin" aria-hidden />
-              ) : (
-                <Save className="h-3.5 w-3.5" aria-hidden />
-              )}
-              <span>{isSaving ? "Saving…" : "Save"}</span>
-            </button>
-            {hasChangeDiff ? (
-              <button
-                type="button"
-                onClick={() => setShowChanges((value) => !value)}
-                className={cn(
-                  "inline-flex h-8 items-center gap-1.5 rounded-md px-2 text-xs font-medium",
-                  showChanges
-                    ? "bg-amber-50 text-amber-900 hover:bg-amber-100"
-                    : "text-gray-600 hover:bg-gray-50 hover:text-gray-900",
+              <Download className="h-4 w-4" />
+            </Button>
+          </IconTooltip>
+          <DropdownMenu>
+            <DropdownMenuTrigger asChild>
+              <Button variant="ghost" size="sm" className="h-7 w-7 p-0" aria-label="More actions">
+                <MoreHorizontal className="h-4 w-4" />
+              </Button>
+            </DropdownMenuTrigger>
+            <DropdownMenuContent align="end" className="min-w-[220px]">
+              {hasChangeDiff ? (
+                <DropdownMenuItem
+                  onSelect={() => setShowChanges((value) => !value)}
+                  className="gap-2"
+                >
+                  <GitCompare className="h-4 w-4" />
+                  {showChanges ? "Show document" : "Show changes"}
+                  {changeDiffStats ? (
+                    <span className="ml-auto inline-flex items-center gap-1 text-[11px] font-normal">
+                      {changeDiffStats.added > 0 ? (
+                        <span className="text-emerald-700">+{changeDiffStats.added}</span>
+                      ) : null}
+                      {changeDiffStats.removed > 0 ? (
+                        <span className="text-red-700">−{changeDiffStats.removed}</span>
+                      ) : null}
+                    </span>
+                  ) : null}
+                </DropdownMenuItem>
+              ) : null}
+              <DropdownMenuItem
+                disabled={isLivePreview}
+                onSelect={() => setShowFindReplace(true)}
+                className="gap-2"
+              >
+                <Search className="h-4 w-4" />
+                Find and replace
+              </DropdownMenuItem>
+              <DropdownMenuItem
+                onSelect={() => {
+                  void handleCopyShareLink()
+                }}
+                className="gap-2"
+              >
+                {linkCopied ? (
+                  <Check className="h-4 w-4 text-emerald-600" />
+                ) : (
+                  <Link2 className="h-4 w-4" />
                 )}
-                aria-pressed={showChanges}
-                title={showChanges ? "Show document" : "Show changes in document"}
-              >
-                <GitCompare className="h-3.5 w-3.5" aria-hidden />
-                <span>{showChanges ? "Document" : "Changes"}</span>
-                {changeDiffStats ? (
-                  <span className="inline-flex items-center gap-1 font-normal">
-                    {changeDiffStats.added > 0 ? (
-                      <span className="text-emerald-700">+{changeDiffStats.added}</span>
-                    ) : null}
-                    {changeDiffStats.removed > 0 ? (
-                      <span className="text-red-700">−{changeDiffStats.removed}</span>
-                    ) : null}
-                  </span>
-                ) : null}
-              </button>
-            ) : null}
-            <ArtifactFindReplacePopover
-              contentJson={draftContentJson ?? displayArtifact.content_json}
-              contentText={draftContentText ?? displayArtifact.content_text}
-              disabled={isLivePreview || showChanges}
-              onApply={({ contentJson, contentText }) => {
-                if (isLivePreview) return
-                applyingServerContentRef.current = true
-                setDraftContentJson(contentJson)
-                setDraftContentText(contentText)
-                setEditorForceNonce((n) => n + 1)
-                scheduleAutosave()
-                window.setTimeout(() => {
-                  applyingServerContentRef.current = false
-                }, 50)
-              }}
-            />
-            <button
-              type="button"
-              onClick={() => void handleCopyShareLink()}
-              className="inline-flex h-8 w-8 items-center justify-center rounded-md text-gray-600 hover:bg-gray-50 hover:text-gray-900"
-              aria-label={linkCopied ? "Link copied" : "Copy share link"}
-              title={linkCopied ? "Copied!" : "Copy share link"}
-            >
-              {linkCopied ? <Check className="h-3.5 w-3.5 text-emerald-600" /> : <Link2 className="h-3.5 w-3.5" />}
-            </button>
-            <Popover open={showVersions} onOpenChange={setShowVersions}>
-              <PopoverTrigger asChild>
-                <button
-                  type="button"
-                  className="inline-flex h-8 w-8 items-center justify-center rounded-md text-gray-600 hover:bg-gray-50 hover:text-gray-900"
-                  aria-label="Version history"
-                  title="Version history"
-                >
-                  <History className="h-3.5 w-3.5" />
-                </button>
-              </PopoverTrigger>
-              <PopoverContent align="end" className="z-[120] w-[min(92vw,22rem)] p-2">
-                <ArtifactVersionHistoryList
-                  isLoading={versionsQuery.isLoading}
-                  versions={versionsQuery.data?.versions ?? []}
-                  onView={(versionNumber) => {
-                    setVersionInUrl(versionNumber)
-                    setShowVersions(false)
-                  }}
-                  onRestore={(versionNumber) => {
-                    void restoreArtifactVersion({
-                      artifactId,
-                      versionNumber,
-                    }).then(async () => {
-                      await queryClient.invalidateQueries({ queryKey: ["artifact", artifactId] })
-                      await queryClient.invalidateQueries({
-                        queryKey: ["artifact-versions", artifactId],
-                      })
-                      setVersionInUrl(null)
-                      setShowVersions(false)
-                    })
-                  }}
-                />
-              </PopoverContent>
-            </Popover>
-            <Popover open={showDownloadMenu} onOpenChange={setShowDownloadMenu}>
-              <PopoverTrigger asChild>
-                <button
-                  type="button"
-                  className="inline-flex h-8 w-8 items-center justify-center rounded-md text-gray-600 hover:bg-gray-50 hover:text-gray-900"
-                  aria-label="Download"
-                  title="Download"
-                >
-                  <Download className="h-3.5 w-3.5" />
-                </button>
-              </PopoverTrigger>
-              <PopoverContent align="end" className="z-[120] w-44 p-1">
-                {DOWNLOAD_FORMATS.map((entry) => (
-                  <button
-                    key={entry.format}
-                    type="button"
-                    className="block w-full rounded-sm px-3 py-1.5 text-left text-xs text-gray-700 hover:bg-gray-50"
-                    onClick={() => {
-                      if (entry.format === "original" && assets.length > 1) {
-                        setDownloadError(
-                          "This artifact has multiple assets — use Download next to each asset.",
-                        )
-                        setShowDownloadMenu(false)
-                        return
-                      }
-                      void handleDownload(
-                        entry.format,
-                        entry.format === "original" ? assets[0]?.attachment_id : null,
-                      )
+                {linkCopied ? "Link copied" : "Copy share link"}
+              </DropdownMenuItem>
+              <DropdownMenuSub open={versionsSubOpen} onOpenChange={setVersionsSubOpen}>
+                <DropdownMenuSubTrigger className="gap-2">
+                  <History className="h-4 w-4 shrink-0" />
+                  <span className="flex-1 text-left">Version history</span>
+                  <ChevronRight className="ml-auto h-4 w-4 shrink-0 opacity-60" />
+                </DropdownMenuSubTrigger>
+                <DropdownMenuSubContent className="w-[min(92vw,22rem)] p-2" sideOffset={6}>
+                  <div className="mb-2 space-y-0.5 border-b border-gray-100 px-1 pb-2">
+                    <p className="text-xs font-medium text-gray-900">Version history</p>
+                    <p className="text-[11px] text-gray-500">
+                      {displayArtifact.updated_at
+                        ? `Edited ${getActivityRelativeTimeLabel(displayArtifact.updated_at)}`
+                        : "No edit time"}
+                      {" · "}
+                      {formatWordCountLabel(contentStats.words)}
+                      {" · "}
+                      {formatCharCountLabel(contentStats.chars)}
+                    </p>
+                  </div>
+                  <ArtifactVersionHistoryList
+                    isLoading={versionsQuery.isLoading}
+                    versions={versionsQuery.data?.versions ?? []}
+                    onView={(versionNumber) => {
+                      setVersionInUrl(versionNumber)
+                      setVersionsSubOpen(false)
                     }}
-                  >
-                    {entry.label}
-                  </button>
-                ))}
-              </PopoverContent>
-            </Popover>
+                    onRestore={(versionNumber) => {
+                      void restoreArtifactVersion({
+                        artifactId,
+                        versionNumber,
+                      }).then(async () => {
+                        await queryClient.invalidateQueries({ queryKey: ["artifact", artifactId] })
+                        await queryClient.invalidateQueries({
+                          queryKey: ["artifact-versions", artifactId],
+                        })
+                        setVersionInUrl(null)
+                        setVersionsSubOpen(false)
+                      })
+                    }}
+                  />
+                </DropdownMenuSubContent>
+              </DropdownMenuSub>
+              <DropdownMenuItem
+                disabled={isLivePreview}
+                onSelect={() => setShowPublishMenu(true)}
+                className="gap-2"
+              >
+                <Upload className="h-4 w-4" />
+                Publish
+              </DropdownMenuItem>
+              <DropdownMenuSub>
+                <DropdownMenuSubTrigger className="gap-2">
+                  <Download className="h-4 w-4 shrink-0" />
+                  <span className="flex-1 text-left">Download as…</span>
+                  <ChevronRight className="ml-auto h-4 w-4 shrink-0 opacity-60" />
+                </DropdownMenuSubTrigger>
+                <DropdownMenuSubContent className="min-w-[160px]">
+                  {DOWNLOAD_FORMATS.map((entry) => (
+                    <DropdownMenuItem
+                      key={entry.format}
+                      onSelect={() => {
+                        if (entry.format === "original" && assets.length > 1) {
+                          setDownloadError(
+                            "This artifact has multiple assets — use Download next to each asset.",
+                          )
+                          return
+                        }
+                        void handleDownload(
+                          entry.format,
+                          entry.format === "original" ? assets[0]?.attachment_id : null,
+                        )
+                      }}
+                    >
+                      {entry.label}
+                    </DropdownMenuItem>
+                  ))}
+                </DropdownMenuSubContent>
+              </DropdownMenuSub>
+              {displayArtifact.task_id != null || displayArtifact.project_id != null ? (
+                <>
+                  <DropdownMenuSeparator />
+                  {displayArtifact.task_id != null ? (
+                    <DropdownMenuItem
+                      onSelect={() => openBoundTask(displayArtifact.task_id!)}
+                    >
+                      Open task
+                      {bindingQuery.data?.taskTitle
+                        ? ` · ${bindingQuery.data.taskTitle}`
+                        : ""}
+                    </DropdownMenuItem>
+                  ) : null}
+                  {displayArtifact.project_id != null ? (
+                    <DropdownMenuItem
+                      onSelect={() => openBoundProject(displayArtifact.project_id!)}
+                    >
+                      Open project
+                      {bindingQuery.data?.projectName
+                        ? ` · ${bindingQuery.data.projectName}`
+                        : ""}
+                    </DropdownMenuItem>
+                  ) : null}
+                </>
+              ) : null}
+              <DropdownMenuSeparator />
+              <DropdownMenuItem
+                disabled={isLivePreview || isDeleting}
+                className="gap-2 text-red-600 focus:text-red-700"
+                onSelect={() => setShowDeleteConfirm(true)}
+              >
+                <Trash2 className="h-4 w-4" />
+                Delete
+              </DropdownMenuItem>
+            </DropdownMenuContent>
+          </DropdownMenu>
+        </div>
+      </div>
+
+      <Dialog open={showVersions} onOpenChange={setShowVersions}>
+        <DialogContent className="max-w-sm p-4">
+          <DialogHeader>
+            <DialogTitle className="text-sm">Version history</DialogTitle>
+          </DialogHeader>
+          <p className="mb-2 text-[11px] text-gray-500">
+            {displayArtifact.updated_at
+              ? `Edited ${getActivityRelativeTimeLabel(displayArtifact.updated_at)}`
+              : "No edit time"}
+            {" · "}
+            {formatWordCountLabel(contentStats.words)}
+            {" · "}
+            {formatCharCountLabel(contentStats.chars)}
+          </p>
+          <ArtifactVersionHistoryList
+            isLoading={versionsQuery.isLoading}
+            versions={versionsQuery.data?.versions ?? []}
+            onView={(versionNumber) => {
+              setVersionInUrl(versionNumber)
+              setShowVersions(false)
+            }}
+            onRestore={(versionNumber) => {
+              void restoreArtifactVersion({
+                artifactId,
+                versionNumber,
+              }).then(async () => {
+                await queryClient.invalidateQueries({ queryKey: ["artifact", artifactId] })
+                await queryClient.invalidateQueries({
+                  queryKey: ["artifact-versions", artifactId],
+                })
+                setVersionInUrl(null)
+                setShowVersions(false)
+              })
+            }}
+          />
+        </DialogContent>
+      </Dialog>
+
+      {/* Controlled publish popover opened from the … menu */}
+      <ArtifactPublishMenu
+        artifactId={artifactId}
+        projectId={typeof snapshot?.project_id === "number" ? snapshot.project_id : null}
+        disabled={isLivePreview}
+        pathname={pathname || "/"}
+        hideTrigger
+        open={showPublishMenu}
+        onOpenChange={setShowPublishMenu}
+      />
+
+      {conflictMessage ? (
+        <div className="mx-3 mt-2 flex items-start gap-2 rounded-md border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-900">
+          <AlertTriangle className="mt-0.5 h-3.5 w-3.5 shrink-0" />
+          <div className="space-y-1">
+            <p>{conflictMessage}</p>
             <button
               type="button"
-              onClick={() => setShowDeleteConfirm(true)}
-              disabled={isLivePreview || isDeleting}
-              className="inline-flex h-8 w-8 items-center justify-center rounded-md text-gray-600 hover:bg-red-50 hover:text-red-700 disabled:opacity-50"
-              aria-label="Delete"
-              title="Delete"
+              className="underline"
+              onClick={() => {
+                setConflictMessage(null)
+                void queryClient.invalidateQueries({ queryKey: ["artifact", artifactId] })
+                setVersionInUrl(null)
+              }}
             >
-              <Trash2 className="h-3.5 w-3.5" />
+              Reload current version
             </button>
-            {onClose ? (
-              <button
-                type="button"
-                onClick={onClose}
-                className="inline-flex h-8 w-8 items-center justify-center rounded-md text-gray-500 hover:bg-gray-50 hover:text-gray-800"
-                aria-label="Close"
-              >
-                <X className="h-4 w-4" />
-              </button>
-            ) : null}
           </div>
         </div>
-        {conflictMessage ? (
-          <div className="mt-3 flex items-start gap-2 rounded-md border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-900">
-            <AlertTriangle className="mt-0.5 h-3.5 w-3.5 shrink-0" />
-            <div className="space-y-1">
-              <p>{conflictMessage}</p>
-              <button
-                type="button"
-                className="underline"
-                onClick={() => {
-                  setConflictMessage(null)
-                  void queryClient.invalidateQueries({ queryKey: ["artifact", artifactId] })
-                  setVersionInUrl(null)
-                }}
-              >
-                Reload current version
-              </button>
-            </div>
-          </div>
-        ) : null}
-        {downloadError ? (
-          <p className="mt-2 text-xs text-red-600">{downloadError}</p>
-        ) : null}
-      </div>
+      ) : null}
+      {downloadError ? (
+        <p className="mx-3 mt-2 text-xs text-red-600">{downloadError}</p>
+      ) : null}
 
       <div ref={bodyScrollRef} className="min-h-0 flex-1 overflow-auto">
         <div className="mx-auto flex max-w-3xl flex-col">
-          {showChanges && hasChangeDiff && changeDiff ? (
+          {showChanges && hasChangeDiff && changeSides && !livePreview?.streaming ? (
             <ArtifactRichDiffBody
-              beforeText={changeDiff.beforeText}
-              beforeContentJson={changeDiff.beforeContentJson}
-              afterText={changeDiff.afterText}
-              afterContentJson={changeDiff.afterContentJson}
-              label={changeDiff.label || "Recent changes"}
-              addedChars={changeDiffStats?.added ?? 0}
-              removedChars={changeDiffStats?.removed ?? 0}
+              beforeHtml={changeSides.beforeHtml}
+              afterHtml={changeSides.afterHtml}
+              prebuiltHtml={changeSides.trackChangesHtml}
             />
           ) : (
             <ArtifactDocumentEditor
               artifact={{
                 ...displayArtifact,
                 title: draftTitle,
-                content_json: draftContentJson ?? displayArtifact.content_json,
-                content_text: draftContentText ?? displayArtifact.content_text,
+                // While AI streams, prefer the progressive overlay — drafts stay
+                // on the pre-edit baseline and would otherwise hide the live body.
+                content_json: isLivePreview
+                  ? displayArtifact.content_json
+                  : (draftContentJson ?? displayArtifact.content_json),
+                content_text: isLivePreview
+                  ? displayArtifact.content_text
+                  : (draftContentText ?? displayArtifact.content_text),
               }}
               forceContentKey={editorForceContentKey}
               readOnly={isLivePreview}
@@ -1087,11 +1310,13 @@ export function ArtifactPane({
               }}
               onContentJsonChange={(contentJson) => {
                 if (isLivePreview || applyingServerContentRef.current) return
+                userDirtyRef.current = true
                 setDraftContentJson(contentJson)
                 scheduleAutosave()
               }}
               onContentTextChange={(contentText) => {
                 if (isLivePreview || applyingServerContentRef.current) return
+                userDirtyRef.current = true
                 setDraftContentText(contentText)
                 scheduleAutosave()
               }}
@@ -1118,27 +1343,35 @@ export function ArtifactPane({
               ))}
             </div>
           ) : null}
+
+          {!showChanges ? (
+            <ArtifactSeoDock
+              variant="inline"
+              artifactId={displayArtifact.id}
+              artifactVersion={displayArtifact.current_version ?? 0}
+              artifactTitle={draftTitle || displayArtifact.title}
+              taskId={displayArtifact.task_id}
+              projectId={displayArtifact.project_id}
+              channelId={displayArtifact.channel_id}
+              contentText={draftContentText ?? displayArtifact.content_text}
+              contentJson={draftContentJson ?? displayArtifact.content_json}
+              readOnly={isLivePreview}
+              onContentChange={({ contentText, contentJson }) => {
+                if (isLivePreview) return
+                if (!applyingServerContentRef.current) userDirtyRef.current = true
+                setDraftContentText(contentText)
+                setDraftContentJson(contentJson)
+                scheduleAutosave()
+              }}
+            />
+          ) : null}
         </div>
       </div>
 
-      <ArtifactCommentsDock artifact={displayArtifact} />
-
-      <ArtifactSeoDock
-        artifactId={displayArtifact.id}
-        artifactVersion={displayArtifact.current_version ?? 0}
-        artifactTitle={draftTitle || displayArtifact.title}
-        taskId={displayArtifact.task_id}
-        projectId={displayArtifact.project_id}
-        channelId={displayArtifact.channel_id}
-        contentText={draftContentText ?? displayArtifact.content_text}
-        contentJson={draftContentJson ?? displayArtifact.content_json}
-        readOnly={isLivePreview}
-        onContentChange={({ contentText, contentJson }) => {
-          if (isLivePreview) return
-          setDraftContentText(contentText)
-          setDraftContentJson(contentJson)
-          scheduleAutosave()
-        }}
+      <ArtifactCommentsDock
+        artifact={displayArtifact}
+        pendingSelection={pendingCommentSelection}
+        onClearPendingSelection={() => setPendingCommentSelection(null)}
       />
 
       <SelectionAskAiMenu
@@ -1146,6 +1379,16 @@ export function ArtifactPane({
         resolve={resolveArtifactTextSelection}
         onAsk={(context) => {
           attachArtifactSelection(context, displayArtifact)
+        }}
+        onComment={(context) => {
+          setPendingCommentSelection({
+            quote: context.selected_text ?? "",
+            selectionStart: context.selection_start ?? null,
+            selectionEnd: context.selection_end ?? null,
+            contextBefore: context.selection_before ?? null,
+            contextAfter: context.selection_after ?? null,
+            versionNumber: context.artifact_version_number ?? null,
+          })
         }}
       />
 
@@ -1177,6 +1420,7 @@ export function ArtifactPane({
           </AlertDialogFooter>
         </AlertDialogContent>
       </AlertDialog>
+
     </div>
   )
 }

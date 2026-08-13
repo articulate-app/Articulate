@@ -91,6 +91,49 @@ export type ProjectDesignTemplate = {
   created_at: string
 }
 
+/** Known stock / photography libraries teams often approve for creatives. */
+export type ProjectApprovedImageBankProvider =
+  | "istock"
+  | "shutterstock"
+  | "adobe_stock"
+  | "getty"
+  | "unsplash"
+  | "pexels"
+  | "custom"
+
+export type ProjectApprovedImageBank = {
+  id: string
+  provider: ProjectApprovedImageBankProvider
+  /** Display name (defaults from provider when empty). */
+  label: string
+  /** Catalog / account / collection URL when useful for the AI or team. */
+  url: string | null
+  /** License constraints, preferred collections, search tips, etc. */
+  notes: string | null
+  enabled: boolean
+}
+
+export const APPROVED_IMAGE_BANK_PRESETS: Array<{
+  provider: Exclude<ProjectApprovedImageBankProvider, "custom">
+  label: string
+  url: string
+}> = [
+  { provider: "istock", label: "iStock", url: "https://www.istockphoto.com/" },
+  { provider: "shutterstock", label: "Shutterstock", url: "https://www.shutterstock.com/" },
+  { provider: "adobe_stock", label: "Adobe Stock", url: "https://stock.adobe.com/" },
+  { provider: "getty", label: "Getty Images", url: "https://www.gettyimages.com/" },
+  { provider: "unsplash", label: "Unsplash", url: "https://unsplash.com/" },
+  { provider: "pexels", label: "Pexels", url: "https://www.pexels.com/" },
+]
+
+export function defaultLabelForImageBankProvider(
+  provider: ProjectApprovedImageBankProvider,
+): string {
+  const preset = APPROVED_IMAGE_BANK_PRESETS.find((entry) => entry.provider === provider)
+  if (preset) return preset.label
+  return "Custom library"
+}
+
 /** @deprecated Flat single-asset shape — migrated into ProjectDesignTemplate on parse. */
 export type ProjectDesignExample = {
   id: string
@@ -115,6 +158,8 @@ export type ProjectBrandKit = {
   design_description: string | null
   /** Layout templates (multi-asset) for AI visual reference. */
   design_templates: ProjectDesignTemplate[]
+  /** Stock / image libraries the team may source photography from. */
+  approved_image_banks: ProjectApprovedImageBank[]
   effective: BrandKitEffective
   overrides: PartialBrandKitEffective
   source: BrandKitEffective | null
@@ -187,6 +232,7 @@ export function emptyProjectBrandKit(): ProjectBrandKit {
     last_run_id: null,
     design_description: null,
     design_templates: [],
+    approved_image_banks: [],
     effective: emptyBrandKitEffective(),
     overrides: {},
     source: null,
@@ -519,6 +565,90 @@ export function resolveDesignTemplates(record: Record<string, unknown>): Project
   return normalizeDesignTemplates(record.design_examples ?? record.designExamples)
 }
 
+const IMAGE_BANK_PROVIDERS = new Set<ProjectApprovedImageBankProvider>([
+  "istock",
+  "shutterstock",
+  "adobe_stock",
+  "getty",
+  "unsplash",
+  "pexels",
+  "custom",
+])
+
+function normalizeImageBankProvider(value: unknown): ProjectApprovedImageBankProvider {
+  const raw = toTrimmedString(value)?.toLowerCase().replace(/[\s-]+/g, "_")
+  if (raw && IMAGE_BANK_PROVIDERS.has(raw as ProjectApprovedImageBankProvider)) {
+    return raw as ProjectApprovedImageBankProvider
+  }
+  // Soft aliases from free-text labels.
+  if (raw?.includes("istock")) return "istock"
+  if (raw?.includes("shutter")) return "shutterstock"
+  if (raw?.includes("adobe")) return "adobe_stock"
+  if (raw?.includes("getty")) return "getty"
+  if (raw?.includes("unsplash")) return "unsplash"
+  if (raw?.includes("pexels")) return "pexels"
+  return "custom"
+}
+
+export function normalizeApprovedImageBank(raw: unknown): ProjectApprovedImageBank | null {
+  const record = asRecord(raw)
+  if (!record) return null
+  const id = toTrimmedString(record.id) || cryptoRandomId()
+  const provider = normalizeImageBankProvider(record.provider ?? record.name ?? record.label)
+  const label =
+    toTrimmedString(record.label ?? record.name ?? record.title)
+    || defaultLabelForImageBankProvider(provider)
+  const url = toTrimmedString(record.url ?? record.href)
+  const notes = toTrimmedString(record.notes ?? record.description)
+  const enabled =
+    typeof record.enabled === "boolean"
+      ? record.enabled
+      : record.enabled == null
+        ? true
+        : Boolean(record.enabled)
+  return { id, provider, label, url, notes, enabled }
+}
+
+export function normalizeApprovedImageBanks(raw: unknown): ProjectApprovedImageBank[] {
+  if (!Array.isArray(raw)) return []
+  const out: ProjectApprovedImageBank[] = []
+  const seen = new Set<string>()
+  for (const entry of raw) {
+    const normalized = normalizeApprovedImageBank(entry)
+    if (!normalized) continue
+    const key = `${normalized.provider}:${normalized.label.toLowerCase()}`
+    if (seen.has(key)) continue
+    seen.add(key)
+    out.push(normalized)
+  }
+  return out
+}
+
+function cryptoRandomId(): string {
+  if (typeof crypto !== "undefined" && typeof crypto.randomUUID === "function") {
+    return crypto.randomUUID()
+  }
+  return `bank_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 10)}`
+}
+
+export function createApprovedImageBank(args: {
+  provider: ProjectApprovedImageBankProvider
+  label?: string | null
+  url?: string | null
+  notes?: string | null
+  enabled?: boolean
+}): ProjectApprovedImageBank {
+  const preset = APPROVED_IMAGE_BANK_PRESETS.find((entry) => entry.provider === args.provider)
+  return {
+    id: cryptoRandomId(),
+    provider: args.provider,
+    label: toTrimmedString(args.label) || preset?.label || defaultLabelForImageBankProvider(args.provider),
+    url: toTrimmedString(args.url) || preset?.url || null,
+    notes: toTrimmedString(args.notes),
+    enabled: args.enabled ?? true,
+  }
+}
+
 function effectiveHasVisualTokens(effective: BrandKitEffective): boolean {
   const colors = Object.values(effective.colors).some(Boolean)
   const fonts = Object.values(effective.fonts).some(Boolean)
@@ -537,6 +667,7 @@ function effectiveHasVisualTokens(effective: BrandKitEffective): boolean {
 export function isProjectBrandKitVacant(kit: ProjectBrandKit): boolean {
   if (kit.design_description?.trim()) return false
   if (kit.design_templates.length > 0) return false
+  if (kit.approved_image_banks.some((bank) => bank.enabled)) return false
   if (kit.source) return false
   return !effectiveHasVisualTokens(kit.effective)
 }
@@ -547,10 +678,13 @@ function resolveBrandKitStatus(args: {
   overrides: PartialBrandKitEffective
   designDescription: string | null
   designTemplates: ProjectDesignTemplate[]
+  approvedImageBanks?: ProjectApprovedImageBank[]
 }): ProjectBrandKitStatus {
   const hasOverrides = hasOverrideKeys(args.overrides)
   const hasDesign =
-    Boolean(args.designDescription?.trim()) || args.designTemplates.length > 0
+    Boolean(args.designDescription?.trim())
+    || args.designTemplates.length > 0
+    || (args.approvedImageBanks ?? []).some((bank) => bank.enabled)
 
   if (args.source) return hasOverrides ? "stale" : "ready"
   if (hasDesign || effectiveHasVisualTokens(args.source ?? emptyBrandKitEffective())) {
@@ -583,6 +717,9 @@ export function parseProjectBrandKit(raw: unknown): ProjectBrandKit {
 
   const designDescription = toTrimmedString(record.design_description ?? record.designDescription)
   const designTemplates = resolveDesignTemplates(record)
+  const approvedImageBanks = normalizeApprovedImageBanks(
+    record.approved_image_banks ?? record.approvedImageBanks,
+  )
   const statusRaw = toTrimmedString(record.status)
   const status = resolveBrandKitStatus({
     statusRaw,
@@ -590,6 +727,7 @@ export function parseProjectBrandKit(raw: unknown): ProjectBrandKit {
     overrides,
     designDescription,
     designTemplates,
+    approvedImageBanks,
   })
 
   // Manual token edits without extract still count as ready.
@@ -604,6 +742,7 @@ export function parseProjectBrandKit(raw: unknown): ProjectBrandKit {
     last_run_id: toTrimmedString(record.last_run_id),
     design_description: designDescription,
     design_templates: designTemplates,
+    approved_image_banks: approvedImageBanks,
     effective: effectiveRaw,
     overrides,
     source,
@@ -633,6 +772,7 @@ export function applyExtractedBrandSource(args: {
     last_run_id: args.runId,
     design_description: previous.design_description,
     design_templates: previous.design_templates,
+    approved_image_banks: previous.approved_image_banks,
     source: args.source,
     overrides,
     effective: mergeBrandKitEffective(args.source, overrides),
@@ -663,6 +803,7 @@ export function applyBrandKitDesignFields(args: {
   previous: ProjectBrandKit
   designDescription?: string | null
   designTemplates?: ProjectDesignTemplate[]
+  approvedImageBanks?: ProjectApprovedImageBank[]
 }): ProjectBrandKit {
   const designDescription =
     args.designDescription !== undefined
@@ -672,12 +813,17 @@ export function applyBrandKitDesignFields(args: {
     args.designTemplates !== undefined
       ? normalizeDesignTemplates(args.designTemplates)
       : args.previous.design_templates
+  const approvedImageBanks =
+    args.approvedImageBanks !== undefined
+      ? normalizeApprovedImageBanks(args.approvedImageBanks)
+      : args.previous.approved_image_banks
 
   const next: ProjectBrandKit = {
     ...args.previous,
     schema_version: PROJECT_BRAND_KIT_SCHEMA_VERSION,
     design_description: designDescription,
     design_templates: designTemplates,
+    approved_image_banks: approvedImageBanks,
   }
   next.status = resolveBrandKitStatus({
     statusRaw: next.status,
@@ -685,6 +831,7 @@ export function applyBrandKitDesignFields(args: {
     overrides: next.overrides,
     designDescription: next.design_description,
     designTemplates: next.design_templates,
+    approvedImageBanks: next.approved_image_banks,
   })
   if (next.status === "empty" && effectiveHasVisualTokens(next.effective)) {
     next.status = "ready"
@@ -701,6 +848,7 @@ export function getEffectiveBrandKitForAi(kit: ProjectBrandKit | null | undefine
     source_url: kit?.source_url ?? null,
     design_description: kit?.design_description ?? null,
     design_templates: kit?.design_templates ?? [],
+    approved_image_banks: (kit?.approved_image_banks ?? []).filter((bank) => bank.enabled),
     ...effective,
   }
 }
@@ -793,6 +941,22 @@ function formatDesignTemplatesForPrompt(templates: ProjectDesignTemplate[]): str
   return `Brand layout templates (match composition, hierarchy, framing, and multi-panel structure — do not copy protected logos/faces verbatim):\n${lines.join("\n")}`
 }
 
+function formatApprovedImageBanksForPrompt(banks: ProjectApprovedImageBank[]): string | null {
+  const enabled = banks.filter((bank) => bank.enabled)
+  if (!enabled.length) return null
+  const lines = enabled.slice(0, 12).map((bank) => {
+    const label = bank.label.trim() || defaultLabelForImageBankProvider(bank.provider)
+    const url = bank.url?.trim()
+    const notes = bank.notes?.trim()
+    return `- ${label}${url ? ` → ${url}` : ""}${notes ? ` (${notes})` : ""}`
+  })
+  return (
+    "Approved image banks (prefer these stock libraries when choosing/sourcing photography; "
+    + "respect license notes; do not invent other stock sources unless the user asks):\n"
+    + lines.join("\n")
+  )
+}
+
 /** Compact natural-language brand brief for image/video prompts. */
 export function formatBrandKitForMediaPrompt(
   brandKit: ReturnType<typeof getEffectiveBrandKitForAi> | null | undefined,
@@ -803,6 +967,7 @@ export function formatBrandKitForMediaPrompt(
     brandKit.status === "empty"
     && !brandKit.design_description
     && !(brandKit.design_templates?.length > 0)
+    && !(brandKit.approved_image_banks?.length > 0)
   ) {
     return null
   }
@@ -839,6 +1004,8 @@ export function formatBrandKitForMediaPrompt(
   if (brandKit.logo_path) lines.push("Include/respect the project logo when it fits the creative.")
   const templatesBrief = formatDesignTemplatesForPrompt(brandKit.design_templates ?? [])
   if (templatesBrief) lines.push(templatesBrief)
+  const banksBrief = formatApprovedImageBanksForPrompt(brandKit.approved_image_banks ?? [])
+  if (banksBrief) lines.push(banksBrief)
   const visualCount = collectBrandTemplateVisualRefs(brandKit).length
   if (visualCount > 0) {
     lines.push(

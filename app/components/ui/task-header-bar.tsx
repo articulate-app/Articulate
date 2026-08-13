@@ -3,7 +3,7 @@
 import React from 'react';
 import { createPortal } from 'react-dom';
 import { cn } from "@/lib/utils";
-import { X, ChevronDown, FolderKanban, ListTodo, MessageSquare, UserRound, Menu, Bot } from 'lucide-react';
+import { X, ChevronDown, FolderKanban, ListTodo, MessageSquare, UserRound, Menu, Bot, Plus } from 'lucide-react';
 import {
   DropdownMenu,
   DropdownMenuTrigger,
@@ -114,17 +114,18 @@ export function TaskHeaderBar({
 
   return (
     <TooltipProvider delayDuration={120}>
-    {/* z-40: above sticky editor toolbars (z-30) so the global-search preview is never covered */}
-    <header className="sticky top-0 z-40 grid h-16 w-full grid-cols-[1fr_minmax(0,36rem)_1fr] items-center gap-x-3 border-b bg-white px-4 shadow-sm">
-      {/* Left: hamburger + brand (equal 1fr column keeps search visually centered). */}
-      <div className="flex min-w-0 items-center gap-2 justify-self-start">
-        <div className="flex min-w-0 items-center gap-3">
+    {/* z-40: above sticky editor toolbars (z-30) so the global-search preview is never covered.
+        auto | 1fr | auto keeps brand + create at intrinsic width so search shrinks instead of overlapping. */}
+    <header className="sticky top-0 z-40 grid h-16 w-full grid-cols-[auto_minmax(0,1fr)_auto] items-center gap-x-2 border-b bg-white px-3 shadow-sm sm:gap-x-3 sm:px-4">
+      {/* Left: hamburger + brand */}
+      <div className="flex items-center gap-2 justify-self-start">
+        <div className="flex items-center gap-2 sm:gap-3">
           {onSidebarToggle ? (
             <IconTooltip label="Toggle sidebar">
               <button
                 type="button"
                 onClick={onSidebarToggle}
-                className="inline-flex h-9 w-9 items-center justify-center rounded-md text-gray-700 hover:bg-gray-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-black focus-visible:ring-offset-1"
+                className="inline-flex h-9 w-9 shrink-0 items-center justify-center rounded-md text-gray-700 hover:bg-gray-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-black focus-visible:ring-offset-1"
                 aria-label="Toggle sidebar"
               >
                 <Menu className="h-5 w-5" />
@@ -135,7 +136,7 @@ export function TaskHeaderBar({
             Articulate
           </span>
           {onViewModeChange && (
-            <div className="hidden items-center rounded-full bg-gray-100 p-0.5 text-xs font-medium text-gray-700 md:inline-flex">
+            <div className="hidden items-center rounded-full bg-gray-100 p-0.5 text-xs font-medium text-gray-700 xl:inline-flex">
               <button
                 type="button"
                 className={`rounded-full px-3 py-1 transition-colors ${
@@ -174,8 +175,8 @@ export function TaskHeaderBar({
         </div>
       </div>
 
-      {/* Center: search */}
-      <div className="min-w-0 w-full max-w-xl justify-self-center">
+      {/* Center: search — overflow visible so the preview dropdown is not clipped */}
+      <div className="min-w-0 w-full max-w-xl justify-self-center overflow-visible">
         <GlobalSearchBox
           searchValue={searchValue}
           onSearchChange={onSearchChange}
@@ -192,16 +193,17 @@ export function TaskHeaderBar({
         />
       </div>
 
-      {/* Right: create (balances left chrome; account avatar lives in the sidebar). */}
-      <div className="flex min-w-0 items-center justify-end justify-self-end gap-2">
+      {/* Right: create (account avatar lives in the sidebar). */}
+      <div className="flex items-center justify-end justify-self-end gap-2">
         <div className="inline-flex h-9 shrink-0 items-stretch overflow-hidden rounded-full border border-gray-200 bg-white shadow-sm">
           <button
             type="button"
             onClick={() => openCreateModal("task")}
-            className="inline-flex items-center gap-1.5 px-3 text-sm font-medium text-gray-900 hover:bg-gray-50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-black"
+            className="inline-flex items-center gap-1.5 px-2.5 text-sm font-medium text-gray-900 hover:bg-gray-50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-black lg:px-3"
             aria-label="Add task"
           >
-            Add task
+            <Plus className="h-4 w-4 lg:hidden" />
+            <span className="hidden lg:inline">Add task</span>
           </button>
           <DropdownMenu>
             <DropdownMenuTrigger asChild>

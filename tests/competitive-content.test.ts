@@ -132,6 +132,33 @@ describe("competitive content URL helpers", () => {
     expect(result.primary).toBeTruthy()
     expect(result.secondary.length).toBeGreaterThan(0)
     expect(normalizeKeywordKey(result.primary!)).not.toContain("  ")
+    expect(result.primary).toMatch(/sustainable packaging|packaging trends|retail brands/i)
+  })
+
+  it("prefers title topic over filler subtitle n-grams", () => {
+    expect(
+      extractKeywordCandidatesFromContent({
+        title: "Bounce Rates: what are they and how to improve — Articulate",
+      }).primary,
+    ).toBe("bounce rates")
+
+    expect(
+      extractKeywordCandidatesFromContent({
+        title: "SEO: what it is, why it matters and 10 mistakes to avoid — Articulate",
+      }).primary,
+    ).toBe("seo")
+
+    expect(
+      extractKeywordCandidatesFromContent({
+        title: "Off-page SEO: why it matters and how to improve it — Articulate",
+      }).primary,
+    ).toBe("off-page seo")
+
+    expect(
+      extractKeywordCandidatesFromContent({
+        title: "What a great content calendar looks like (and how to build one) — Articulate",
+      }).primary,
+    ).toMatch(/content calendar/)
   })
 
   it("classifies keyword gap opportunities", () => {

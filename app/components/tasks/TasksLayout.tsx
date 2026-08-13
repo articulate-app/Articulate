@@ -4,13 +4,12 @@ import { ReactNode, useState, cloneElement, useEffect, useCallback, useRef, useM
 import { TaskDetails } from "./TaskDetails"
 import type { SuggestionDetailsModel } from "./SuggestionDetails"
 import { normalizeTask } from "./task-cache-utils"
-import { Menu, X, ChevronRight, Calendar, PanelLeft, PanelRight, Maximize2, Minimize2, ChevronDown, Search, LayoutGrid, List, Plus } from "lucide-react"
+import { Menu, X, ChevronRight, Calendar, PanelLeft, PanelRight, PanelRightOpen, Maximize2, Minimize2, ChevronDown, Search, LayoutGrid, List, Plus } from "lucide-react"
 import { cn } from "@/lib/utils"
 import type { Task } from '../../lib/types/tasks'
 import React from "react"
 import { CalendarView } from '../../components/calendar-view/calendar-view'
 import { KanbanView } from '../kanban-view/kanban-view'
-import { TaskHeaderBar } from '../../components/ui/task-header-bar'
 import { ResizablePanel } from "../ui/resizable-panel"
 import { SlidePanel } from "../ui/slide-panel"
 import { Sidebar } from "../ui/Sidebar"
@@ -25,6 +24,7 @@ import { bumpAndInvalidateHomeSidebarRecent } from '../../lib/home-sidebar-recen
 import { createClientComponentClient } from '@supabase/auth-helpers-nextjs';
 import { toast } from '../ui/use-toast';
 import { removeTaskFromAllStores } from './task-cache-utils';
+import { enqueueTaskDeletes } from '../../lib/task-write-queue';
 import { BulkActionBar, type BulkAction } from '../ui/bulk-action-bar';
 import {
   AlertDialog,
@@ -36,8 +36,11 @@ import {
   AlertDialogHeader,
   AlertDialogTitle,
 } from '../ui/alert-dialog';
-import { GroupingDropdown } from './grouping-dropdown';
-import { MultiselectToggle } from '../ui/multiselect-toggle';
+import {
+  GroupingMenuItems,
+  getListGroupByLabelFromParams,
+} from './grouping-dropdown';
+import { TasksPaneMoreMenu } from './tasks-pane-more-menu';
 import { GlobalSearchBox } from '../ui/global-search-box';
 import { PanelGroup, Panel, PanelResizeHandle, ImperativePanelHandle, ImperativePanelGroupHandle } from 'react-resizable-panels';
 import { DropdownMenu, DropdownMenuTrigger, DropdownMenuContent, DropdownMenuItem, DropdownMenuSeparator, DropdownMenuSub, DropdownMenuSubTrigger, DropdownMenuSubContent } from '../ui/dropdown-menu';
@@ -84,11 +87,32 @@ import { ResearchPane } from '../ResearchPane';
 import { ArtifactPane } from '../../../features/artifacts/ArtifactPane';
 import { SourcePane } from '../../../features/sources/SourcePane';
 import { AiPane } from '../../../features/ai-chat/AiPane';
+import { PublishingPane } from '../../../features/artifacts/publishing-pane';
+import { BrowserSessionPane } from '../../../features/artifacts/browser-session-pane';
+import {
+  buildCloseBrowserPaneParams,
+  buildOpenBrowserPaneParams,
+  isBrowserPaneOpen,
+  setPublicationRunIdInBrowserParams,
+} from "./browser-pane-url";
+import { RightPaneTabBar } from "./right-pane-tab-bar";
+import {
+  AI_RIGHT_TAB_KEY,
+  DETAILS_RIGHT_TAB_KEY,
+  findBrowserTabForPublication,
+  useRightPaneTabsStore,
+} from "../../store/right-pane-tabs";
+import {
+  buildAiRightTabKey,
+  parseAiRightTabKey,
+  useAiPaneChromeStore,
+} from "../../../features/ai-chat/ai-pane-chrome-store";
 import {
   getArtifactVersionFromParams,
   getCenterArtifactIdFromParams,
 } from '../../lib/artifact-selection-url';
 import { getCenterSourceIdFromParams } from '../../lib/source-selection-url';
+import { getCenterTemplateIdFromParams } from '../../lib/template-selection-url';
 import type { AiActiveFieldContext } from '../../../features/ai-chat/active-field-context';
 import { ProjectSEOSettings } from '../../../features/tasks/components/ProjectSEOSettings';
 import { GlobalSearchFullResultsPane } from '../search/global-search-full-results-pane';
@@ -143,19 +167,31 @@ import {
   RESEARCH_TAB_ID,
   useCenterPaneTabsStore,
   type CenterPaneTab,
+  type CenterPaneTabKind,
 } from "../../store/center-pane-tabs";
 import { CenterPaneTabBar } from "./center-pane-tab-bar";
+import { LeftPaneTabBar } from "./left-pane-tab-bar";
 import { CreateCenterPane } from "./create-center-pane";
 import { CREATE_MODAL_TITLES } from "../ui/use-header-create-flow";
 import { LeftObjectSwitcher } from "./LeftObjectSwitcher";
+import {
+  ensureLeftPaneHasDefaultListTab,
+  toLeftPaneTabStripItems,
+  useLeftPaneTabsStore,
+} from "../../store/left-pane-tabs";
 import { useResolveCenterPaneTabTitles } from "../../hooks/use-resolve-center-pane-tab-titles";
 import { useElementWidth } from "../../hooks/use-element-width";
 import {
   getEffectiveSplitOrientation,
   getPreferredSplitOrientation,
-  type TasksSplitOrientation,
 } from "../../lib/tasks-split-orientation";
-import { buildAiPaneFocusParams, isAiPaneFocusMode, isTaskDetailsAiSplitMode, isTaskDetailsFocusContext, isTaskDetailsOnlyFocusMode, preserveTaskDetailsFocusWhenOpeningAi } from "./ai-pane-focus-url";
+import {
+  applyTasksSplitViewState,
+  normalizeSecondaryView,
+  parseTasksSplitViewState,
+  type TasksSplitViewState,
+} from "../../lib/tasks-split-view-state";
+import { buildAiPaneFocusParams, buildMiddlePaneFocusParams, isAiPaneFocusMode, isMiddlePaneFocusMode, isTaskDetailsAiSplitMode, isTaskDetailsFocusContext, preserveTaskDetailsFocusWhenOpeningAi } from "./ai-pane-focus-url";
 import { clearSearchQuery, getCurrentObjectRoute, type SearchObjectRoute } from "../../lib/search-routing";
 import {
   getInitialSplitLayoutMountState,
@@ -165,6 +201,28 @@ import {
 import { getAiPaneFocusLayoutChrome } from "./ai-pane-focus-layout-chrome";
 import { buildNewAiThreadParams } from "../../lib/ai-thread-route";
 import { mergeWorkspaceUrlState } from "../../lib/workspace-url-state";
+import {
+  moveActiveWorkspaceTab,
+  moveWorkspaceTabByKey,
+  openActiveWorkspaceTabInOtherPane,
+  openWorkspaceView,
+} from "../../lib/open-workspace-view";
+import {
+  getActiveLeftWorkspaceTab,
+  getActiveMiddleWorkspaceTab,
+  getActiveRightWorkspaceTab,
+  isRightViewEntityType,
+  LEFT_PANE_VIEW_PARAM,
+} from "../../lib/workspace-pane-url";
+import { WorkspaceViewRenderer } from "../workspace/workspace-view-renderer";
+import {
+  isListWorkspaceViewType,
+  AI_WORKSPACE_TAB_ID,
+  LIST_WORKSPACE_TAB_ID,
+  type WorkspaceViewType,
+} from "../../lib/workspace-view";
+import { leftPaneObjectForListViewType, listViewToSearchObjectRoute, workspaceListViewLabel } from "../../lib/workspace-list-views";
+import { useFocusedWorkspacePaneStore } from "../../store/focused-workspace-pane";
 
 // Transform editFields data to filter options format (exported for reuse in ProjectTasksTabContent)
 export function transformEditFieldsToFilterOptions(editFields: TaskEditFields, users: any[] = []): FilterOptions {
@@ -299,138 +357,6 @@ function pickPaneOverflowSlot(
   if (pane === 'top') return top;
   if (pane === 'bottom' || pane === 'right') return bottom;
   return single;
-}
-
-type TasksSplitViewState = {
-  primaryView: MainViewMode;
-  isSplit: boolean;
-  secondaryView: MainViewMode;
-  splitOrientation: TasksSplitOrientation;
-};
-
-function isMainViewMode(value: string | null | undefined): value is MainViewMode {
-  return value === 'list' || value === 'calendar' || value === 'kanban';
-}
-
-function getDefaultSecondaryView(primaryView: MainViewMode): MainViewMode {
-  if (primaryView === 'list') return 'calendar';
-  return 'list';
-}
-
-function normalizeSecondaryView(primaryView: MainViewMode, candidate: string | null | undefined): MainViewMode {
-  const parsed = isMainViewMode(candidate) ? candidate : getDefaultSecondaryView(primaryView);
-  if (parsed === primaryView) return getDefaultSecondaryView(primaryView);
-  return parsed;
-}
-
-function parseSplitOrientation(
-  params: URLSearchParams,
-  layoutParam: string[],
-): TasksSplitOrientation {
-  const splitOrientationParam = params.get('splitOrientation');
-  if (splitOrientationParam === 'horizontal' || splitOrientationParam === 'vertical') {
-    return splitOrientationParam;
-  }
-  if (layoutParam.join(',') === 'left,right') return 'horizontal';
-  return 'vertical';
-}
-
-/**
- * Parse the new top/bottom split URL model and map old left/middle/right URLs for backwards compatibility.
- */
-function parseTasksSplitViewState(params: URLSearchParams): TasksSplitViewState {
-  const tasksView = params.get('tasksView');
-  const topView = params.get('topView');
-  const bottomView = params.get('bottomView');
-  const splitView = params.get('splitView');
-  const rightSplitView = params.get('rightSplitView');
-  const splitParam = params.get('split');
-  const layoutParam = (params.get('layout') || '').split(',').filter(Boolean);
-  const legacyMiddle = params.get('middleView');
-  const splitOrientation = parseSplitOrientation(params, layoutParam);
-
-  const hasNewModelHints =
-    isMainViewMode(tasksView) ||
-    isMainViewMode(topView) ||
-    splitParam === 'true' ||
-    layoutParam.join(',') === 'top,bottom' ||
-    layoutParam.join(',') === 'left,right' ||
-    isMainViewMode(bottomView) ||
-    isMainViewMode(splitView) ||
-    isMainViewMode(rightSplitView);
-
-  if (hasNewModelHints) {
-    const primaryView =
-      (isMainViewMode(tasksView) && tasksView) ||
-      (isMainViewMode(topView) && topView) ||
-      'list';
-    const isSplit =
-      splitParam === 'true' || layoutParam.join(',') === 'top,bottom' || layoutParam.join(',') === 'left,right';
-    const secondaryView = normalizeSecondaryView(primaryView, rightSplitView || splitView || bottomView);
-    return { primaryView, isSplit, secondaryView, splitOrientation };
-  }
-
-  // Legacy URL compatibility (left/middle/right model).
-  // Notes:
-  // - old split layout left+middle maps to top=list, bottom=middleView
-  // - old single middle maps to single calendar/kanban
-  // - old single left maps to single list
-  if (layoutParam.includes('left') && layoutParam.includes('middle')) {
-    const mappedSecondary = legacyMiddle === 'kanban' ? 'kanban' : 'calendar';
-    return { primaryView: 'list', isSplit: true, secondaryView: mappedSecondary, splitOrientation: 'vertical' };
-  }
-
-  if (layoutParam.includes('middle') && !layoutParam.includes('left')) {
-    const primaryView = legacyMiddle === 'kanban' ? 'kanban' : 'calendar';
-    return {
-      primaryView,
-      isSplit: false,
-      secondaryView: getDefaultSecondaryView(primaryView),
-      splitOrientation: 'vertical',
-    };
-  }
-
-  return { primaryView: 'list', isSplit: false, secondaryView: 'calendar', splitOrientation: 'vertical' };
-}
-
-function applyTasksSplitViewState(params: URLSearchParams, state: TasksSplitViewState): URLSearchParams {
-  const next = new URLSearchParams(params.toString());
-  next.set('tasksView', state.primaryView);
-  next.set('topView', state.primaryView);
-  next.delete('view');
-
-  if (state.isSplit) {
-    next.set('split', 'true');
-    next.set('splitView', state.secondaryView);
-    next.set('splitOrientation', state.splitOrientation);
-
-    if (state.splitOrientation === 'horizontal') {
-      next.set('layout', 'left,right');
-      next.set('leftView', state.primaryView);
-      next.set('rightSplitView', state.secondaryView);
-      next.delete('bottomView');
-    } else {
-      next.set('layout', 'top,bottom');
-      next.set('bottomView', state.secondaryView);
-      next.delete('rightSplitView');
-      next.delete('leftView');
-    }
-  } else {
-    next.delete('split');
-    next.delete('splitOrientation');
-    next.set('layout', 'right');
-    next.delete('splitView');
-    next.delete('rightSplitView');
-    next.delete('bottomView');
-    next.delete('topView');
-    next.delete('leftView');
-  }
-
-  // Old-model params are intentionally removed once user interacts with new controls.
-  next.delete('middleView');
-  next.delete('focus');
-
-  return next;
 }
 
 // Helper to map filters to badges, using label mapping from filterOptions
@@ -712,9 +638,29 @@ export function TasksLayout({
   const aiThreadIdParam = params.get("aiThreadId")
   const rightThreadIdNum = rightThreadIdParam ? Number(rightThreadIdParam) : null
   const rightMentionIdNum = rightMentionIdParam ? Number(rightMentionIdParam) : null
+  // Legacy: `rightThreadId` once meant "show this thread in the middle pane".
+  // When `rightView=thread`, the right pane owns the thread — do not mirror it in center.
+  // When middle already has a center* entity/list/tool selection, ignore stale rightThreadId
+  // (common after AI is open on the right with an old thread id left in the URL).
+  const hasMiddleCenterSelection = Boolean(
+    params.get("centerTaskId") ||
+      params.get("centerSuggestionId") ||
+      params.get("centerProjectId") ||
+      params.get("centerUserId") ||
+      params.get("centerTeamId") ||
+      params.get("centerThreadId") ||
+      params.get("centerArtifactId") ||
+      params.get("centerSourceId") ||
+      params.get("centerTemplateId") ||
+      params.get("centerView"),
+  )
   const isThreadChatRequested =
     !!rightThreadIdParam &&
-    Number.isFinite(rightThreadIdNum)
+    Number.isFinite(rightThreadIdNum) &&
+    rightViewParam !== "thread" &&
+    rightViewParam !== "ai" &&
+    rightThreadIdParam !== "new" &&
+    !hasMiddleCenterSelection
   const publicUserId = useCurrentUserStore((s) => s.publicUserId)
   const fullName = useCurrentUserStore((s) => s.fullName)
   const userMetadata = useCurrentUserStore((s) => s.userMetadata)
@@ -983,6 +929,10 @@ export function TasksLayout({
   const newLayoutAiPanelRef = useRef<ImperativePanelHandle>(null);
   const newLayoutDesktopPanelGroupRef = useRef<ImperativePanelGroupHandle | null>(null);
   const aiPaneExpandedLayoutBackupRef = useRef<number[] | null>(null);
+  const openNextPaneFromListRef = useRef<{
+    show: boolean
+    run: () => void
+  }>({ show: false, run: () => {} });
   const detailsPaneExpandedLayoutBackupRef = useRef<number[] | null>(null);
   const [isAiPaneExpandedMax, setIsAiPaneExpandedMax] = useState(false);
   const [isDetailsPaneExpandedMax, setIsDetailsPaneExpandedMax] = useState(false);
@@ -997,6 +947,16 @@ export function TasksLayout({
 
   // Mobile state management
   const isMobile = useMobileDetection();
+  // Right-pane tabs must be subscribed before any early returns (mobile / loading).
+  const rightPaneTabs = useRightPaneTabsStore((state) => state.tabs)
+  const rightPaneActiveKey = useRightPaneTabsStore((state) => state.activeKey)
+  const upsertRightPaneTab = useRightPaneTabsStore((state) => state.upsertTab)
+  const updateRightPaneTab = useRightPaneTabsStore((state) => state.updateTab)
+  const setRightPaneActiveKey = useRightPaneTabsStore((state) => state.setActiveKey)
+  const closeRightPaneTab = useRightPaneTabsStore((state) => state.closeTab)
+  const aiChromeActiveId = useAiPaneChromeStore((state) => state.activeThreadId)
+  const aiChromeTabs = useAiPaneChromeStore((state) => state.tabs)
+  const aiChromeHandlers = useAiPaneChromeStore((state) => state.handlers)
   const sidebarContext = useTasksSidebar();
   // Prefer context for sidebar (layout provides it); fallback to props from cloneElement
   const effectiveOnSidebarToggle = sidebarContext?.onSidebarToggle ?? _onSidebarToggle;
@@ -1536,34 +1496,41 @@ export function TasksLayout({
     [plannerBulkSelectedIds],
   );
 
-  const handleConfirmPlannerBulkDelete = useCallback(async () => {
+  const handleConfirmPlannerBulkDelete = useCallback(() => {
     if (plannerBulkSelectedIds.size === 0) return;
     const taskIds = Array.from(plannerBulkSelectedIds);
     setPlannerBulkDeleting(true);
     taskIds.forEach((id) => removeTaskFromAllStores(id));
     setPlannerBulkSelectedIds(new Set());
     setPlannerBulkDeleteOpen(false);
-    try {
-      const supabase = createClientComponentClient();
-      const { error } = await supabase.from('tasks').delete().in('id', taskIds);
-      if (error) throw error;
-      toast({
-        title: 'Tasks deleted',
-        description: `Successfully deleted ${taskIds.length} task${taskIds.length !== 1 ? 's' : ''}.`,
-      });
-    } catch (err: any) {
-      queryClient.invalidateQueries({
-        predicate: (query) => Array.isArray(query.queryKey) && query.queryKey[0] === 'tasks',
-      });
-      queryClient.invalidateQueries({ queryKey: ['subtasks'] });
-      toast({
-        title: 'Failed to delete tasks',
-        description: err?.message || 'An error occurred while deleting the tasks.',
-        variant: 'destructive',
-      });
-    } finally {
-      setPlannerBulkDeleting(false);
-    }
+    const supabase = createClientComponentClient();
+    enqueueTaskDeletes(
+      taskIds.map((taskId) => ({ taskId, supabase })),
+      {
+        onBatchComplete: ({ ok, failed }) => {
+          setPlannerBulkDeleting(false);
+          if (failed > 0) {
+            queryClient.invalidateQueries({
+              predicate: (query) => Array.isArray(query.queryKey) && query.queryKey[0] === 'tasks',
+            });
+            queryClient.invalidateQueries({ queryKey: ['subtasks'] });
+            toast({
+              title: failed === taskIds.length ? 'Failed to delete tasks' : 'Some tasks failed to delete',
+              description:
+                failed === taskIds.length
+                  ? 'An error occurred while deleting the tasks.'
+                  : `Deleted ${ok}, failed ${failed}.`,
+              variant: 'destructive',
+            });
+            return;
+          }
+          toast({
+            title: 'Tasks deleted',
+            description: `Successfully deleted ${ok} task${ok !== 1 ? 's' : ''}.`,
+          });
+        },
+      },
+    );
   }, [plannerBulkSelectedIds, queryClient]);
   
   // Check for list/calendar data (tasks queries)
@@ -2089,76 +2056,38 @@ export function TasksLayout({
       setIsLeftCollapsed(false);
     }
     
-    // Create URL update in one operation (UI-only state; no query contract changes).
-    const baseParams =
-      typeof window !== "undefined"
-        ? new URLSearchParams(window.location.search)
-        : new URLSearchParams(params.toString())
-    const newParams =
-      entityType === "suggestion"
-        ? new URLSearchParams(baseParams.toString())
-        : buildCenterPaneSelectionSearchParams({
-            currentSearchParams: baseParams,
-            entity: "task",
-            id: entityId,
-          });
-    if (entityType === 'suggestion') {
-      // itemKind=suggestion + centerSuggestionId is a complete, valid middle-pane selection.
-      // Clear every conflicting middle-pane (center*) detail param so the suggestion pane is the
-      // single source of truth — mirrors buildCenterPaneSelectionSearchParams used for tasks and
-      // prevents a stale user/project/team detail from fighting the suggestion selection (which
-      // previously caused a router update loop). Right-pane / AI state and list filters are kept.
-      newParams.set('layout', 'right')
-      newParams.set('itemKind', 'suggestion')
-      newParams.set('centerSuggestionId', selectedId)
-      newParams.delete('id')
-      newParams.delete('centerTaskId')
-      newParams.delete('centerProjectId')
-      newParams.delete('centerUserId')
-      newParams.delete('centerTeamId')
-      newParams.delete('centerThreadId')
-      newParams.delete('centerTab')
-      newParams.delete('rightTaskId')
-      newParams.delete('stackTeamId')
-    } else {
-      newParams.delete('itemKind')
-      newParams.delete('centerSuggestionId')
-    }
-    newParams.delete('detailType')
-    newParams.delete('detailId')
-    newParams.delete('briefingTypeId')
-    newParams.delete('tab')
-    newParams.delete('focusOutputs')
-    newParams.delete('view'); // Clean up any old view parameters
-    newParams.delete('focus');
-    
-    const nextSearch = newParams.toString()
-    const currentSearch = baseParams.toString()
-    if (nextSearch !== currentSearch) {
-      shallowReplaceSearchParams(effectivePathname, newParams, "task-row-select")
-    }
-  }, [accessToken, globalSearch, params, pathname, queryClient, resolveSelectedRowKindAndId, router, selectedTaskId, setLastSelectedTask, setSelectedTaskId, setSelectedTaskSeed]);
+    // Default: open task/suggestion in middle (established left-list UX).
+    const title =
+      (typeof task?.title === "string" && task.title.trim()) ||
+      (typeof task?.name === "string" && task.name.trim()) ||
+      null
+    openWorkspaceView(
+      {
+        type: entityType === "suggestion" ? "suggestion" : "task",
+        id: entityId,
+        taskId: entityId,
+        title,
+      },
+      {
+        pane: "middle",
+        pathname: effectivePathname,
+        source: "task-row-select",
+      },
+    )
+  }, [accessToken, globalSearch, params, pathname, queryClient, resolveSelectedRowKindAndId, router, selectedTaskId, setLastSelectedTask, setSelectedTaskId, setSelectedTaskSeed, effectivePathname]);
 
-  /** Open a project as a new center-pane tab (replaces current selection; no stacked back chevron). */
+  /** Open a project as a middle-pane tab by default (established UX; no stacked back chevron). */
   const handleOpenProjectSelect = useCallback(
     (projectId: number) => {
       if (!Number.isFinite(projectId) || projectId <= 0) return
       setSelectedTaskId(null)
       setSelectedTaskSeed(null)
-      const baseParams =
-        typeof window !== "undefined"
-          ? new URLSearchParams(window.location.search)
-          : new URLSearchParams(params.toString())
-      const next = buildCenterPaneSelectionSearchParams({
-        currentSearchParams: baseParams,
-        entity: "project",
-        id: projectId,
-      })
-      if (next.toString() !== baseParams.toString()) {
-        shallowReplaceSearchParams(effectivePathname, next, "project-row-select")
-      }
+      openWorkspaceView(
+        { type: "project", projectId, id: projectId },
+        { pane: "middle", pathname: effectivePathname, source: "project-row-select" },
+      )
     },
-    [params, setSelectedTaskId, setSelectedTaskSeed],
+    [effectivePathname, setSelectedTaskId, setSelectedTaskSeed],
   )
 
   const handleGlobalSearchTaskResultOpen = useCallback(
@@ -2352,7 +2281,7 @@ export function TasksLayout({
       typeof window !== "undefined"
         ? new URLSearchParams(window.location.search)
         : new URLSearchParams(params.toString())
-    const centerKeys = ["centerTaskId", "centerSuggestionId", "centerProjectId", "centerUserId", "centerTeamId", "centerThreadId", "centerArtifactId", "centerSourceId"] as const
+    const centerKeys = ["centerTaskId", "centerSuggestionId", "centerProjectId", "centerUserId", "centerTeamId", "centerThreadId", "centerArtifactId", "centerSourceId", "centerTemplateId"] as const
     const present = centerKeys.filter((key) => {
       const value = currentParams.get(key)
       return typeof value === "string" && value.trim().length > 0
@@ -2398,10 +2327,15 @@ export function TasksLayout({
     const centerTaskId = currentParams.get("centerTaskId")
     const rightTaskId = currentParams.get("rightTaskId")
     if (!centerTaskId && !rightTaskId) return
+    // When rightView explicitly hosts an entity (e.g. task in the right pane),
+    // do not migrate rightTaskId → centerTaskId — panes are independent.
+    if (isRightViewEntityType(currentParams.get("rightView"))) return
     const next = new URLSearchParams(currentParams.toString())
     if (centerTaskId && rightTaskId) {
+      // Both set without an entity rightView: prefer middle, drop legacy right id.
       next.delete("rightTaskId")
     } else if (!centerTaskId && rightTaskId) {
+      // Legacy right-only task deep links → middle (compat).
       next.set("centerTaskId", rightTaskId)
       next.delete("rightTaskId")
     }
@@ -2417,6 +2351,77 @@ export function TasksLayout({
   const closeCenterPaneTab = useCenterPaneTabsStore((state) => state.closeTab)
   const closeCenterPaneTabs = useCenterPaneTabsStore((state) => state.closeTabs)
   const closeAllCenterPaneTabs = useCenterPaneTabsStore((state) => state.closeAll)
+
+  const leftPaneTabs = useLeftPaneTabsStore((state) => state.tabs)
+  const leftPaneActiveKeyStore = useLeftPaneTabsStore((state) => state.activeKey)
+  const upsertLeftPaneTab = useLeftPaneTabsStore((state) => state.upsertTab)
+  const closeLeftPaneTab = useLeftPaneTabsStore((state) => state.closeTab)
+  const closeLeftPaneTabs = useLeftPaneTabsStore((state) => state.closeTabs)
+  const closeAllLeftPaneTabs = useLeftPaneTabsStore((state) => state.closeAll)
+
+  // Seed left pane from URL (`leftPaneView`; default homepage = AI) and keep tabs in sync.
+  React.useEffect(() => {
+    const live =
+      typeof window !== "undefined"
+        ? new URLSearchParams(window.location.search)
+        : new URLSearchParams(params.toString())
+    const active = getActiveLeftWorkspaceTab(live)
+    if (!active) return
+
+    const existing = useLeftPaneTabsStore
+      .getState()
+      .tabs.find((tab) => tab.key === `${active.type}:${active.id}`)
+    const needsUpsert =
+      !existing ||
+      useLeftPaneTabsStore.getState().activeKey !== `${active.type}:${active.id}` ||
+      (active.title && existing.title !== active.title)
+    if (needsUpsert) {
+      upsertLeftPaneTab({
+        kind: active.type,
+        id: active.id,
+        title: active.title,
+        activate: true,
+      })
+    }
+
+    // Persist `leftPaneView` for the active left tab (lists + AI homepage).
+    if (isListWorkspaceViewType(active.type) || active.type === "ai") {
+      const next = new URLSearchParams(live.toString())
+      let changed = false
+      if (!live.get(LEFT_PANE_VIEW_PARAM)) {
+        next.set(LEFT_PANE_VIEW_PARAM, active.type === "ai" ? "ai" : active.type)
+        changed = true
+      }
+      if (isListWorkspaceViewType(active.type)) {
+        // Prefer SearchObjectRoute values in `object=` (task/project/…) for shared routing.
+        // Templates are not a search object route — leave `object=` alone.
+        if (active.type !== "template-list") {
+          const expectedSearchObject = listViewToSearchObjectRoute(active.type)
+          if (live.get("object") !== expectedSearchObject) {
+            next.set("object", expectedSearchObject)
+            changed = true
+          }
+        }
+      }
+      if (changed && next.toString() !== live.toString()) {
+        shallowReplaceSearchParams(effectivePathname, next, "left-pane-view-migrate")
+      }
+    }
+  }, [effectivePathname, params, tasksShallowUrlEpoch, upsertLeftPaneTab])
+
+  // Keep the legacy left-object surface aligned with the active left list tab.
+  // Must run unconditionally (before mobile early-return) to keep hook order stable.
+  React.useEffect(() => {
+    const live =
+      typeof window !== "undefined"
+        ? new URLSearchParams(window.location.search)
+        : new URLSearchParams(params.toString())
+    const active = getActiveLeftWorkspaceTab(live)
+    if (!active || !isListWorkspaceViewType(active.type)) return
+    if (active.type === "template-list") return
+    const nextObject = leftPaneObjectForListViewType(active.type)
+    setLeftObjectState((current) => (current === nextObject ? current : nextObject))
+  }, [params, tasksShallowUrlEpoch])
 
   const clearCenterPaneUrlSelection = useCallback(() => {
     isClosingDetailsRef.current = true
@@ -2446,6 +2451,7 @@ export function TasksLayout({
     newParams.delete("centerView")
     newParams.delete("centerArtifactId")
     newParams.delete("centerSourceId")
+    newParams.delete("centerTemplateId")
     newParams.delete("version")
     newParams.delete(KEYWORD_RESEARCH_QUERY_PARAM)
     newParams.delete(PROMPT_RESEARCH_QUERY_PARAM)
@@ -2467,6 +2473,50 @@ export function TasksLayout({
 
   const activateCenterPaneTab = useCallback(
     (tab: CenterPaneTab) => {
+      if (
+        tab.kind === "ai" ||
+        tab.kind === "browser" ||
+        tab.kind === "task-list" ||
+        tab.kind === "project-list" ||
+        tab.kind === "mention-list" ||
+        tab.kind === "user-list" ||
+        tab.kind === "ai-thread-list" ||
+        tab.kind === "artifact-list" ||
+        tab.kind === "template-list" ||
+        tab.kind === "search-results"
+      ) {
+        const liveParams =
+          typeof window !== "undefined"
+            ? new URLSearchParams(window.location.search)
+            : new URLSearchParams(params.toString())
+        openWorkspaceView(
+          {
+            type: tab.kind as WorkspaceViewType,
+            id: tab.id,
+            title: tab.title,
+            aiThreadId: tab.kind === "ai" && tab.id !== "main" ? tab.id : undefined,
+            params:
+              tab.kind === "browser"
+                ? { browserTabId: tab.id }
+                : tab.kind === "ai" && tab.id !== "main"
+                  ? { aiThreadId: tab.id }
+                  : tab.kind === "search-results"
+                    ? {
+                        searchQuery:
+                          liveParams.get("centerSearchQuery")?.trim() || tab.title || "",
+                      }
+                    : undefined,
+          },
+          {
+            pane: "middle",
+            pathname: effectivePathname,
+            source: "center-pane-tab-activate",
+          },
+        )
+        setSelectedTaskId(null)
+        setSelectedTaskSeed(null)
+        return
+      }
       const baseParams =
         typeof window !== "undefined"
           ? new URLSearchParams(window.location.search)
@@ -2514,15 +2564,19 @@ export function TasksLayout({
         typeof window !== "undefined"
           ? new URLSearchParams(window.location.search).get("centerView")
           : params.get("centerView"),
-      centerArtifactId:
-        typeof window !== "undefined"
-          ? getCenterArtifactIdFromParams(new URLSearchParams(window.location.search))
-          : getCenterArtifactIdFromParams(params),
-      centerSourceId:
-        typeof window !== "undefined"
-          ? getCenterSourceIdFromParams(new URLSearchParams(window.location.search))
-          : getCenterSourceIdFromParams(params),
-    })
+        centerArtifactId:
+          typeof window !== "undefined"
+            ? getCenterArtifactIdFromParams(new URLSearchParams(window.location.search))
+            : getCenterArtifactIdFromParams(params),
+        centerSourceId:
+          typeof window !== "undefined"
+            ? getCenterSourceIdFromParams(new URLSearchParams(window.location.search))
+            : getCenterSourceIdFromParams(params),
+        centerTemplateId:
+          typeof window !== "undefined"
+            ? getCenterTemplateIdFromParams(new URLSearchParams(window.location.search))
+            : getCenterTemplateIdFromParams(params),
+      })
 
     if (!activeTab) {
       clearCenterPaneUrlSelection()
@@ -2536,6 +2590,58 @@ export function TasksLayout({
     }
     clearCenterPaneUrlSelection()
   }
+
+  /** Chrome X: hide the entire middle pane (not just the active tab). */
+  const handleCloseMiddlePane = useCallback(() => {
+    closeAllCenterPaneTabs()
+    isClosingDetailsRef.current = true
+    setSelectedTaskId(null)
+    setSelectedTaskSeed(null)
+    globalSearch?.closeDetailTarget()
+    const nextParams = new URLSearchParams(
+      typeof window !== "undefined" ? window.location.search : params.toString(),
+    )
+    // Clear middle selection only — leave right pane (AI / entities) intact.
+    nextParams.delete("id")
+    nextParams.delete("entity")
+    nextParams.delete("centerTaskId")
+    nextParams.delete("centerSuggestionId")
+    nextParams.delete("centerProjectId")
+    nextParams.delete("centerUserId")
+    nextParams.delete("centerTeamId")
+    nextParams.delete("centerThreadId")
+    nextParams.delete("centerMentionId")
+    nextParams.delete("centerTab")
+    nextParams.delete("centerView")
+    nextParams.delete("centerArtifactId")
+    nextParams.delete("centerSourceId")
+    nextParams.delete("centerTemplateId")
+    nextParams.delete("version")
+    nextParams.delete(KEYWORD_RESEARCH_QUERY_PARAM)
+    nextParams.delete(PROMPT_RESEARCH_QUERY_PARAM)
+    nextParams.delete(RESEARCH_QUERY_PARAM)
+    nextParams.delete(RESEARCH_TAB_PARAM)
+    nextParams.delete(CREATE_TYPE_PARAM)
+    nextParams.delete("itemKind")
+    nextParams.delete("detailType")
+    nextParams.delete("detailId")
+    nextParams.delete("tab")
+    nextParams.delete("briefingTypeId")
+    nextParams.delete("stackTeamId")
+    nextParams.delete("focus")
+    detailsPaneExpandedLayoutBackupRef.current = null
+    setIsDetailsPaneExpandedMax(false)
+    shallowReplaceSearchParams(effectivePathname, nextParams, "middle-pane-close")
+    if (onCloseDetails) onCloseDetails()
+  }, [
+    closeAllCenterPaneTabs,
+    effectivePathname,
+    globalSearch,
+    onCloseDetails,
+    params,
+    setSelectedTaskId,
+    setSelectedTaskSeed,
+  ])
 
   const handleCenterPaneTabSelect = useCallback(
     (key: string) => {
@@ -2571,6 +2677,10 @@ export function TasksLayout({
           typeof window !== "undefined"
             ? getCenterSourceIdFromParams(new URLSearchParams(window.location.search))
             : getCenterSourceIdFromParams(params),
+        centerTemplateId:
+          typeof window !== "undefined"
+            ? getCenterTemplateIdFromParams(new URLSearchParams(window.location.search))
+            : getCenterTemplateIdFromParams(params),
       })
       const closedActive = Boolean(activeTab && keys.includes(activeTab.key))
       const nextTab =
@@ -2626,6 +2736,10 @@ export function TasksLayout({
           typeof window !== "undefined"
             ? getCenterSourceIdFromParams(new URLSearchParams(window.location.search))
             : getCenterSourceIdFromParams(params),
+        centerTemplateId:
+          typeof window !== "undefined"
+            ? getCenterTemplateIdFromParams(new URLSearchParams(window.location.search))
+            : getCenterTemplateIdFromParams(params),
       })
       if (!activeTab) return
       updateCenterPaneTabTitle(activeTab.key, trimmed)
@@ -2641,52 +2755,23 @@ export function TasksLayout({
     ],
   )
 
-  // Desktop: keep open-tab set in sync with the active middle-pane entity (AI stays right-only).
+  // Desktop: keep open-tab set in sync with the active middle-pane workspace view from URL.
+  // Prefer URL over React selection state — otherwise moving a task to the right
+  // (selectedTaskId still set via rightTaskId) re-upserts the tab in the middle strip.
   useEffect(() => {
     if (isMobile) return
-    const stackTeamIdRaw =
+    const liveParams =
       typeof window !== "undefined"
-        ? new URLSearchParams(window.location.search).get("stackTeamId")
-        : params.get("stackTeamId")
-    const activeTab = resolveActiveCenterPaneTab({
-      selectedTaskId,
-      isSuggestion: isSuggestionSelected,
-      selectedTaskTitle:
-        (isSuggestionSelected
-          ? (selectedSuggestionAsTask as any)?.title
-          : (selectedTaskData as any)?.title) ?? null,
-      selectedDetailTarget: globalSearch?.selectedDetailTarget ?? null,
-      stackTeamId: stackTeamIdRaw,
-      centerView:
-        typeof window !== "undefined"
-          ? new URLSearchParams(window.location.search).get("centerView")
-          : params.get("centerView"),
-      centerArtifactId:
-        typeof window !== "undefined"
-          ? getCenterArtifactIdFromParams(new URLSearchParams(window.location.search))
-          : getCenterArtifactIdFromParams(params),
-      centerSourceId:
-        typeof window !== "undefined"
-          ? getCenterSourceIdFromParams(new URLSearchParams(window.location.search))
-          : getCenterSourceIdFromParams(params),
-    })
-    if (!activeTab) return
+        ? new URLSearchParams(window.location.search)
+        : new URLSearchParams(params.toString())
+    const active = getActiveMiddleWorkspaceTab(liveParams)
+    if (!active || active.type === "details") return
     upsertCenterPaneTab({
-      kind: activeTab.kind,
-      id: activeTab.id,
-      title: activeTab.title,
+      kind: active.type as CenterPaneTabKind,
+      id: active.id,
+      title: active.title,
     })
-  }, [
-    globalSearch?.selectedDetailTarget,
-    isMobile,
-    isSuggestionSelected,
-    params,
-    selectedSuggestionAsTask,
-    selectedTaskData,
-    selectedTaskId,
-    tasksShallowUrlEpoch,
-    upsertCenterPaneTab,
-  ])
+  }, [isMobile, params, tasksShallowUrlEpoch, upsertCenterPaneTab])
 
   // Resolve placeholder labels for inactive tabs (detail pages only mount for the active tab).
   useResolveCenterPaneTabTitles(!isMobile)
@@ -2741,8 +2826,26 @@ export function TasksLayout({
   )
   const updateTaskAiOpenInUrl = useCallback((isOpen: boolean) => {
     if (isOpen) {
-      const next = preserveTaskDetailsFocusWhenOpeningAi(new URLSearchParams(params.toString()))
-      shallowReplaceSearchParams(effectivePathname, next, "task-ai-pane-open-change")
+      // Default: AI opens in the right pane (established UX), via shared workspace API.
+      const live =
+        typeof window !== "undefined"
+          ? new URLSearchParams(window.location.search)
+          : new URLSearchParams(params.toString())
+      const existingThread = live.get("aiThreadId")
+      openWorkspaceView(
+        {
+          type: "ai",
+          aiThreadId: existingThread || undefined,
+        },
+        { pane: "right", pathname: effectivePathname, source: "task-ai-pane-open-change" },
+      )
+      // Preserve details+AI split focus when already in task-details focus context.
+      if (isTaskDetailsFocusContext(live)) {
+        const next = preserveTaskDetailsFocusWhenOpeningAi(
+          new URLSearchParams(window.location.search),
+        )
+        shallowReplaceSearchParams(effectivePathname, next, "task-ai-pane-open-focus")
+      }
       return
     }
     const newParams = new URLSearchParams(params.toString())
@@ -2758,6 +2861,9 @@ export function TasksLayout({
     newParams.delete('chatComponentId')
     if (newParams.get('rightView') === 'ai') {
       newParams.set('rightView', 'details')
+    }
+    if (newParams.get("centerView") === "ai") {
+      newParams.delete("centerView")
     }
     shallowReplaceSearchParams(effectivePathname, newParams, "task-ai-pane-open-change")
   }, [params, pathname, effectivePathname])
@@ -2804,45 +2910,54 @@ export function TasksLayout({
   const isArtifactCenterOpen = Boolean(liveCenterArtifactId)
   const liveCenterSourceId = getCenterSourceIdFromParams(liveCenterParams)
   const isSourceCenterOpen = Boolean(liveCenterSourceId)
+  const liveCenterTemplateId = getCenterTemplateIdFromParams(liveCenterParams)
+  const isTemplateCenterOpen = Boolean(liveCenterTemplateId)
 
   const openResearchCenterTab = useCallback(
     (options?: {
       query?: string | null
       tab?: ResearchTab | null
       forceOpen?: boolean
+      pane?: "middle" | "right"
     }) => {
       const query = typeof options?.query === "string" ? options.query.trim() : ""
       const tab = options?.tab === "prompts" ? "prompts" : options?.tab === "keywords" ? "keywords" : null
       const forceOpen = options?.forceOpen === true || query.length > 0 || tab != null
+      const pane = options?.pane ?? "middle"
       const baseParams =
         typeof window !== "undefined"
           ? new URLSearchParams(window.location.search)
           : new URLSearchParams(params.toString())
       const currentView = baseParams.get("centerView")
-      const isCurrentlyOpen =
+      const isCurrentlyOpenInMiddle =
         currentView === RESEARCH_CENTER_VIEW ||
         currentView === KEYWORD_RESEARCH_CENTER_VIEW ||
         currentView === PROMPT_RESEARCH_CENTER_VIEW
-      if (!forceOpen && isCurrentlyOpen) {
-        handleCenterPaneTabClose(buildCenterPaneTabKey("research", RESEARCH_TAB_ID))
+      const isCurrentlyOpenInRight = baseParams.get("rightView") === "research"
+      if (
+        !forceOpen &&
+        ((pane === "middle" && isCurrentlyOpenInMiddle) ||
+          (pane === "right" && isCurrentlyOpenInRight))
+      ) {
+        if (pane === "middle") {
+          handleCenterPaneTabClose(buildCenterPaneTabKey("research", RESEARCH_TAB_ID))
+        }
         return
       }
-      const next = buildCenterPaneTabSelectionSearchParams({
-        currentSearchParams: baseParams,
-        kind: "research",
-        id: RESEARCH_TAB_ID,
-        researchQuery: query || null,
-        researchTab: tab ?? getResearchTabFromParams(baseParams),
-      })
       setSelectedTaskId(null)
       setSelectedTaskSeed(null)
       globalSearch?.closeDetailTarget()
-      upsertCenterPaneTab({
-        kind: "research",
-        id: RESEARCH_TAB_ID,
-        title: "Research",
-      })
-      shallowReplaceSearchParams(effectivePathname, next, "research-center-open")
+      openWorkspaceView(
+        {
+          type: "research",
+          title: "Research",
+          params: {
+            researchQuery: query || null,
+            researchTab: tab ?? getResearchTabFromParams(baseParams),
+          },
+        },
+        { pane, pathname: effectivePathname, source: "research-center-open" },
+      )
     },
     [
       effectivePathname,
@@ -2851,7 +2966,6 @@ export function TasksLayout({
       params,
       setSelectedTaskId,
       setSelectedTaskSeed,
-      upsertCenterPaneTab,
     ],
   )
 
@@ -2919,7 +3033,7 @@ export function TasksLayout({
       }
       openResearchCenterTab({ query, tab: "prompts", forceOpen: true })
     }
-    // Desktop create is owned by TaskHeaderBar; mobile still needs this listener for sidebar "+".
+    // Desktop create is owned by HeaderCreatePopupHost; mobile still needs this for sidebar "+".
     const onOpenCreate = (event: Event) => {
       if (!isMobile) return
       const detail = (event as CustomEvent<OpenHeaderCreateDetail>).detail
@@ -2977,13 +3091,22 @@ export function TasksLayout({
   }, [isResearchCenterOpen, isResearchOpen, isMobile, tasksShallowUrlEpoch])
 
   // AI pane open by default unless the user explicitly closed it (`taskAiOpen=false`).
+  // Never steal focus from a first-class Browser/Publishing tab — Publish ▾ sets
+  // rightView=browser while keeping taskAiOpen=true; overwriting that caused URL thrash
+  // and cancelled remote browser provisioning mid-flight.
+  // When AI is hosted in the middle or left pane, do not also seed the right pane.
   useEffect(() => {
     const nextParams =
       typeof window !== "undefined"
         ? new URLSearchParams(window.location.search)
         : new URLSearchParams(params.toString())
     if (nextParams.get("taskAiOpen") === "false") return
-    if (nextParams.get("taskAiOpen") === "true" && nextParams.get("rightView") === "ai") return
+    if (nextParams.get("centerView") === "ai") return
+    if (nextParams.get(LEFT_PANE_VIEW_PARAM) === "ai") return
+    const rightView = nextParams.get("rightView")
+    if (nextParams.get("taskAiOpen") === "true" && (rightView === "ai" || rightView === "browser" || rightView === "publishing")) {
+      return
+    }
     const seeded = preserveTaskDetailsFocusWhenOpeningAi(nextParams)
     shallowReplaceSearchParams(effectivePathname, seeded, "ai-pane-default-open")
     setIsTaskAiPaneOpen(true)
@@ -3018,7 +3141,10 @@ export function TasksLayout({
         layout: current.layout.includes('right') ? current.layout : [...current.layout, 'right'],
         rightView: 'ai',
       }))
-      const nextParams = new URLSearchParams(params.toString())
+      // Prefer the live address bar so shallow-only params are not dropped.
+      const nextParams = new URLSearchParams(
+        typeof window !== "undefined" ? window.location.search : params.toString(),
+      )
       const nextLayout = new Set((nextParams.get('layout') || coreLayoutConfig.layout.join(',') || 'left,middle').split(',').filter(Boolean))
       nextLayout.add('right')
       nextParams.set('layout', Array.from(nextLayout).join(','))
@@ -3030,6 +3156,19 @@ export function TasksLayout({
     globalSearch.registerAiThreadOpener(openAiThreadFromSearch)
     return () => globalSearch.registerAiThreadOpener(null)
   }, [coreLayoutConfig.layout, globalSearch, params, pathname])
+
+  // Consume the one-shot search opener once the address bar reflects it, so a stale
+  // externalThreadId cannot steal selection after the user switches threads later.
+  useEffect(() => {
+    if (!searchOpenedAiThreadId) return
+    const liveThreadId =
+      typeof window !== "undefined"
+        ? new URLSearchParams(window.location.search).get("aiThreadId")
+        : params.get("aiThreadId")
+    if (liveThreadId === searchOpenedAiThreadId) {
+      setSearchOpenedAiThreadId(null)
+    }
+  }, [searchOpenedAiThreadId, params, tasksShallowUrlEpoch])
 
   const handleTaskDetailsAiDividerMouseDown = useCallback((e: React.MouseEvent<HTMLDivElement>) => {
     e.preventDefault()
@@ -3406,7 +3545,6 @@ export function TasksLayout({
           ? new URLSearchParams(window.location.search)
           : new URLSearchParams(params.toString())
       const nextParams = new URLSearchParams(baseParams.toString())
-      nextParams.set("layout", "right")
       nextParams.set("tasksView", prev.primaryView)
       nextParams.delete("split")
       nextParams.delete("splitView")
@@ -3415,6 +3553,14 @@ export function TasksLayout({
       nextParams.delete("leftView")
       nextParams.delete("topView")
       nextParams.delete("bottomView")
+      const currentLayout = (baseParams.get("layout") || "").split(",").filter(Boolean)
+      const layoutKey = currentLayout.join(",")
+      if (layoutKey === "top,bottom" || layoutKey === "left,right") {
+        const keepRight =
+          nextParams.get("taskAiOpen") === "true" ||
+          Boolean(nextParams.get("rightView") && nextParams.get("rightView") !== "details")
+        nextParams.set("layout", keepRight ? "left,middle,right" : "left,middle")
+      }
       shallowReplaceSearchParams(effectivePathname, nextParams, "task-split-exit")
       setViewMode(prev.primaryView as ViewMode)
       return {
@@ -3556,10 +3702,9 @@ export function TasksLayout({
 
   const handleExpandDetailsPane = useCallback(() => {
     const latestParams = getLatestSearchParams()
-    const nextParams = new URLSearchParams(latestParams.toString())
-    const currentlyFocused = nextParams.get("focus") === "right"
+    const currentlyFocused = isMiddlePaneFocusMode(latestParams)
+    const nextParams = buildMiddlePaneFocusParams(latestParams, !currentlyFocused)
     if (currentlyFocused) {
-      nextParams.delete("focus")
       const group = newLayoutDesktopPanelGroupRef.current
       if (group && detailsPaneExpandedLayoutBackupRef.current) {
         const restored = detailsPaneExpandedLayoutBackupRef.current
@@ -3578,17 +3723,107 @@ export function TasksLayout({
           detailsPaneExpandedLayoutBackupRef.current = [...layout]
         }
       }
-      const layout = new Set((nextParams.get("layout") || "left,middle").split(",").filter(Boolean))
-      layout.add("right")
-      nextParams.set("layout", Array.from(layout).join(","))
-      nextParams.set("rightView", "details")
-      nextParams.set("focus", "right")
       setIsDetailsPaneExpandedMax(true)
       setIsAiPaneExpandedMax(false)
       aiPaneExpandedLayoutBackupRef.current = null
+      if (group) {
+        group.setLayout([0, 100, 0])
+        setMainPanelPercent(0)
+        setDetailsPanelPercent(100)
+        setAiPanelPercent(0)
+      }
     }
-    shallowReplaceSearchParams(effectivePathname, nextParams, "task-details-focus-toggle")
-  }, [getLatestSearchParams, pathname])
+    shallowReplaceSearchParams(effectivePathname, nextParams, "middle-pane-focus-toggle")
+  }, [effectivePathname, getLatestSearchParams])
+
+  const handleExpandRightPane = useCallback(() => {
+    const latestParams = getLatestSearchParams()
+    const rightView = latestParams.get("rightView")
+    const isEntityOrBrowser =
+      isRightViewEntityType(rightView) ||
+      rightView === "browser" ||
+      rightView === "publishing"
+    // AI already has a dedicated shareable focus mode.
+    if (!isEntityOrBrowser) {
+      handleExpandAiPane()
+      return
+    }
+    const currentlyFocused =
+      latestParams.get("layout") === "right" && !isAiPaneFocusMode(latestParams)
+    const nextParams = new URLSearchParams(latestParams.toString())
+    if (currentlyFocused) {
+      nextParams.set("layout", "left,middle,right")
+      const group = newLayoutDesktopPanelGroupRef.current
+      if (group && aiPaneExpandedLayoutBackupRef.current) {
+        const restored = aiPaneExpandedLayoutBackupRef.current
+        group.setLayout(restored)
+        if (restored[0] != null) setMainPanelPercent(restored[0])
+        if (restored[1] != null) setDetailsPanelPercent(restored[1])
+        if (restored[2] != null) setAiPanelPercent(restored[2])
+      }
+      aiPaneExpandedLayoutBackupRef.current = null
+      setIsAiPaneExpandedMax(false)
+    } else {
+      nextParams.set("layout", "right")
+      nextParams.delete("focus")
+      nextParams.delete("aiFocus")
+      const group = newLayoutDesktopPanelGroupRef.current
+      if (group) {
+        const layout = group.getLayout()
+        if (layout.length >= 3 && !aiPaneExpandedLayoutBackupRef.current) {
+          aiPaneExpandedLayoutBackupRef.current = [...layout]
+        }
+        group.setLayout([0, 0, 100])
+        setMainPanelPercent(0)
+        setDetailsPanelPercent(0)
+        setAiPanelPercent(100)
+      }
+      if (detailsPaneExpandedLayoutBackupRef.current) {
+        detailsPaneExpandedLayoutBackupRef.current = null
+        setIsDetailsPaneExpandedMax(false)
+      }
+      setIsAiPaneExpandedMax(true)
+    }
+    shallowReplaceSearchParams(effectivePathname, nextParams, "right-pane-focus-toggle")
+  }, [effectivePathname, getLatestSearchParams, handleExpandAiPane])
+
+  const handleCloseRightPane = useCallback(() => {
+    const nextParams = new URLSearchParams(getLatestSearchParams().toString())
+    // Fully hide the right column — do not fall back to another entity/AI tab.
+    nextParams.set("taskAiOpen", "false")
+    nextParams.delete("aiFocus")
+    nextParams.delete("chatMode")
+    nextParams.delete("chatPreFill")
+    nextParams.delete("chatComponentId")
+    nextParams.delete("newAiThread")
+    nextParams.delete("rightView")
+    nextParams.delete("rightTaskId")
+    nextParams.delete("rightProjectId")
+    nextParams.delete("rightUserId")
+    nextParams.delete("rightTeamId")
+    nextParams.delete("rightThreadId")
+    nextParams.delete("rightMentionId")
+    nextParams.delete("rightTab")
+    nextParams.delete("rightArtifactId")
+    nextParams.delete("rightSourceId")
+    nextParams.delete("rightSuggestionId")
+    nextParams.delete("browserTabId")
+    nextParams.delete("publicationRunId")
+    const layout = new Set((nextParams.get("layout") || "left,middle").split(",").filter(Boolean))
+    layout.delete("right")
+    if (layout.size === 0) layout.add("left")
+    nextParams.set("layout", Array.from(layout).join(","))
+    setIsTaskAiPaneOpen(false)
+    setIsAiPaneExpandedMax(false)
+    aiPaneExpandedLayoutBackupRef.current = null
+    // Drop non-AI right tabs so a residual entity tab cannot reopen the pane.
+    const rightTabs = useRightPaneTabsStore.getState().tabs
+    for (const tab of rightTabs) {
+      if (tab.kind !== "ai") closeRightPaneTab(tab.key)
+    }
+    setRightPaneActiveKey(AI_RIGHT_TAB_KEY)
+    shallowReplaceSearchParams(effectivePathname, nextParams, "right-pane-close")
+  }, [closeRightPaneTab, effectivePathname, getLatestSearchParams, setRightPaneActiveKey])
 
   // Sync mobile task detail state with URL
   useEffect(() => {
@@ -3603,13 +3838,13 @@ export function TasksLayout({
 
   // Helper: pill button style
   const pillButton =
-    'inline-flex items-center gap-1 px-4 py-1 rounded-full border border-gray-300 text-gray-700 text-sm font-medium hover:bg-gray-100 transition';
+    'inline-flex h-7 items-center gap-1 rounded-full border border-gray-300 px-2.5 text-xs font-medium text-gray-700 hover:bg-gray-100 transition';
   // Helper: collapse button style
   const collapseButton =
-    'inline-flex items-center justify-center w-7 h-7 text-gray-500 hover:bg-gray-100 transition focus:outline-none focus:ring-2 focus:ring-blue-400';
+    'inline-flex items-center justify-center w-6 h-6 text-gray-500 hover:bg-gray-100 transition focus:outline-none focus:ring-2 focus:ring-blue-400';
   // Helper: expand/restore button style
   const expandButton =
-    'inline-flex items-center justify-center w-7 h-7 text-gray-500 hover:bg-gray-100 transition focus:outline-none focus:ring-2 focus:ring-blue-400 ml-auto';
+    'inline-flex items-center justify-center w-6 h-6 text-gray-500 hover:bg-gray-100 transition focus:outline-none focus:ring-2 focus:ring-blue-400 ml-auto';
 
   // CSS class helpers for pane states (disabled - using imperative resizing instead)
   function getPaneClass(pane: 'left' | 'middle' | 'right') {
@@ -3626,11 +3861,12 @@ export function TasksLayout({
       ? new URLSearchParams(window.location.search)
       : new URLSearchParams(params.toString())
   const isAiFocusModeEnabled = isAiPaneFocusMode(liveFocusParams)
-  const isTaskDetailsFocusContextEnabled = isTaskDetailsFocusContext(liveFocusParams)
-  const isDetailsFocusModeEnabled = isTaskDetailsOnlyFocusMode(liveFocusParams)
+  const isDetailsFocusModeEnabled = isMiddlePaneFocusMode(liveFocusParams)
   const isTaskDetailsAiSplitModeEnabled = isTaskDetailsAiSplitMode(liveFocusParams)
+  const isRightPaneSoloLayout =
+    liveFocusParams.get("layout") === "right" && !isAiFocusModeEnabled
   const isLeftPaneHiddenInDesktopSplit =
-    isAiFocusModeEnabled || isDetailsFocusModeEnabled || isTaskDetailsAiSplitModeEnabled
+    isAiFocusModeEnabled || isDetailsFocusModeEnabled || isTaskDetailsAiSplitModeEnabled || isRightPaneSoloLayout
   useEffect(() => {
     if (!isAiFocusModeEnabled) {
       setHasMountedSplitLayout(true)
@@ -3643,7 +3879,7 @@ export function TasksLayout({
     }
   }, [effectiveOnSidebarToggle, effectiveSidebarCollapsed, isAiFocusModeEnabled])
   useEffect(() => {
-    if (!isAiFocusModeEnabled) return
+    if (!isAiFocusModeEnabled && !isRightPaneSoloLayout) return
     const group = newLayoutDesktopPanelGroupRef.current
     if (!group) return
     const current = group.getLayout()
@@ -3653,7 +3889,7 @@ export function TasksLayout({
     setMainPanelPercent(0)
     setDetailsPanelPercent(0)
     setAiPanelPercent(100)
-  }, [isAiFocusModeEnabled])
+  }, [isAiFocusModeEnabled, isRightPaneSoloLayout])
   useEffect(() => {
     if (!isDetailsFocusModeEnabled) return
     const group = newLayoutDesktopPanelGroupRef.current
@@ -3690,7 +3926,7 @@ export function TasksLayout({
     setIsAiPaneExpandedMax(false)
   }, [isTaskDetailsAiSplitModeEnabled, detailsPanelPercent])
   useEffect(() => {
-    if (isTaskDetailsFocusContextEnabled || !isDetailsPaneExpandedMax) return
+    if (isDetailsFocusModeEnabled || !isDetailsPaneExpandedMax) return
     const group = newLayoutDesktopPanelGroupRef.current
     if (!group) {
       setIsDetailsPaneExpandedMax(false)
@@ -3706,7 +3942,25 @@ export function TasksLayout({
     }
     detailsPaneExpandedLayoutBackupRef.current = null
     setIsDetailsPaneExpandedMax(false)
-  }, [isTaskDetailsFocusContextEnabled, isDetailsPaneExpandedMax])
+  }, [isDetailsFocusModeEnabled, isDetailsPaneExpandedMax])
+
+  // Keep the right-pane tab store in sync with entity workspace views (pane-neutral).
+  // Must run before any early return so hook order stays stable across loading → ready.
+  useEffect(() => {
+    const live =
+      typeof window !== "undefined"
+        ? new URLSearchParams(window.location.search)
+        : new URLSearchParams(params.toString())
+    const active = getActiveRightWorkspaceTab(live)
+    if (!active) return
+    if (active.type === "ai" || active.type === "browser" || active.type === "details") return
+    upsertRightPaneTab({
+      kind: active.type,
+      id: active.id,
+      title: active.title,
+      activate: true,
+    })
+  }, [params, tasksShallowUrlEpoch, upsertRightPaneTab])
 
   // Guard: If not hydrated and synced, show loading spinner (but do not return early before hooks)
   let shouldShowLoading = !isHydratedAndSynced;
@@ -3756,6 +4010,7 @@ export function TasksLayout({
     view: MainViewMode,
     pane: 'single' | 'top' | 'bottom' | 'right',
     compactMode?: 'mobile-split-bottom',
+    options?: { forceTaskRoute?: boolean },
   ) => {
     const isFocused = focusedPane === (pane === 'bottom' || pane === 'right' ? 'bottom' : 'top');
     const calendarSlot = pickPaneOverflowSlot(pane, calOverflowSingle, calOverflowTop, calOverflowBottom);
@@ -3772,7 +4027,7 @@ export function TasksLayout({
       pane !== 'bottom' &&
       pane !== 'right',
     )
-    const isTasksRoute = isLeftObjectTasks
+    const isTasksRoute = options?.forceTaskRoute === true || isLeftObjectTasks
 
     return (
       <TasksPaneToolbar
@@ -3818,10 +4073,17 @@ export function TasksLayout({
         onOptionalPlacementChange={handleToolbarOptionalPlacement}
         plannerVisibility={plannerVisibility}
         setPlannerVisibility={setPlannerVisibility}
+        onOpenNextPane={
+          (pane === "single" || pane === "top") && openNextPaneFromListRef.current.show
+            ? () => openNextPaneFromListRef.current.run()
+            : undefined
+        }
+        openNextPaneLabel="Open middle pane"
+        hideObjectSwitcher
+        hidePaneChrome
       />
     );
   };
-
 
   // Mobile layout (Sidebar overlay is rendered by layout.tsx)
   if (isMobile) {
@@ -3900,6 +4162,7 @@ export function TasksLayout({
             <div className="h-full overflow-auto">
               <GlobalSearchDetailsPane
                 target={mobileObjectDetailTarget}
+                paneId="middle"
                 onClose={handleCloseDetails}
                 onOpenTask={(taskId: number) => handleTaskSelect({ id: taskId })}
                 onOpenTaskKeepingDetail={handleOpenTaskKeepingDetailContext}
@@ -3947,7 +4210,7 @@ export function TasksLayout({
                              <LeftObjectSwitcher
                                value={leftObject}
                               onChange={navigateToLeftObject}
-                               className="h-7 px-2.5 text-xs font-medium"
+                               className="h-7 px-2.5 text-xs font-normal"
                                forceCompact
                              />
                            </div>
@@ -4021,31 +4284,16 @@ export function TasksLayout({
                 {!isLeftObjectTasks ? (
                   <div className="h-full min-h-0 overflow-hidden">
                     {globalSearch ? (
-                      leftObject === "all" ? (
-                        <GlobalSearchAllTabPane
-                          sections={globalSearch.allTabSections}
-                          viewScope={effectiveObjectRoute}
-                          visibleEntityTypes={globalSearch.visibleEntityTypes}
-                          isLoading={globalSearch.isAllTabLoading}
-                          sectionCounts={globalSearch.allTabCounts}
-                          isDiscoveryMode={globalSearch.isDiscoveryMode}
-                          hasCommittedTypeFilter={globalSearch.committedSelectedTypes.length > 0}
-                          onResultSelect={globalSearch.openSearchResult}
-                          onShowMore={globalSearch.handleAllTabShowMore}
-                          onSeeMoreTasks={globalSearch.handleHomeTasksSeeMore}
-                        />
-                      ) : (
-                        <GlobalSearchFullResultsPane
-                          query={globalSearch.committedQuery}
-                          activeTab={leftObjectSearchTab}
-                          viewScope={effectiveObjectRoute}
-                          onResultSelect={globalSearch.openSearchResult}
-                          getQueryKey={globalSearch.getFullResultsQueryKey}
-                          fetchPage={globalSearch.fetchFullResultsPage}
-                        />
-                      )
+                      <GlobalSearchFullResultsPane
+                        query={globalSearch.committedQuery}
+                        activeTab={leftObjectSearchTab}
+                        viewScope={effectiveObjectRoute}
+                        onResultSelect={globalSearch.openSearchResult}
+                        getQueryKey={globalSearch.getFullResultsQueryKey}
+                        fetchPage={globalSearch.fetchFullResultsPage}
+                      />
                     ) : (
-                      <div className="flex h-full items-center justify-center px-4 text-sm text-gray-500">
+                      <div className="flex h-full items-center justify-center px-4 text-xs text-gray-500">
                         Unable to load {leftPaneObjectLabel(leftObject).toLowerCase()}.
                       </div>
                     )}
@@ -4092,7 +4340,6 @@ export function TasksLayout({
                 inline={true}
                 activeFieldContext={activeFieldContext}
                 externalThreadId={searchOpenedAiThreadId}
-                disableUrlSync={Boolean(searchOpenedAiThreadId)}
                 forceNewThread={forceNewAiThread}
                 onForceNewThreadConsumed={handleConsumeForceNewAiThread}
               />
@@ -4215,12 +4462,16 @@ export function TasksLayout({
       params.get("centerThreadId") ||
       params.get("centerArtifactId") ||
       params.get("centerSourceId") ||
+      params.get("centerTemplateId") ||
       params.get("centerView") === RESEARCH_CENTER_VIEW ||
       params.get("centerView") === KEYWORD_RESEARCH_CENTER_VIEW ||
       params.get("centerView") === PROMPT_RESEARCH_CENTER_VIEW ||
       params.get("centerView") === CREATE_CENTER_VIEW ||
+      params.get("centerView") === "task-list" ||
+      params.get("centerView") === "tasks" ||
       isArtifactCenterOpen ||
       isSourceCenterOpen ||
+      isTemplateCenterOpen ||
       isCreateCenterOpen ||
       (typeof window !== "undefined" &&
         (() => {
@@ -4229,13 +4480,43 @@ export function TasksLayout({
             view === RESEARCH_CENTER_VIEW ||
             view === KEYWORD_RESEARCH_CENTER_VIEW ||
             view === PROMPT_RESEARCH_CENTER_VIEW ||
-            view === CREATE_CENTER_VIEW
+            view === CREATE_CENTER_VIEW ||
+            view === "task-list" ||
+            view === "tasks"
           )
         })()),
   )
   const rightViewParamResolved = params.get("rightView")
   const taskAiOpenParamResolved = params.get("taskAiOpen")
-  const showAiPanelFromUrl = rightViewParamResolved === "ai" && taskAiOpenParamResolved === "true"
+  const liveSearchParams =
+    typeof window !== "undefined"
+      ? new URLSearchParams(window.location.search)
+      : new URLSearchParams(params.toString())
+  const showBrowserPanelFromUrl = isBrowserPaneOpen(liveSearchParams)
+  const hasOpenBrowserTabs = rightPaneTabs.some((tab) => tab.kind === "browser")
+  const activeMiddleWorkspaceTab = getActiveMiddleWorkspaceTab(liveSearchParams)
+  const activeRightWorkspaceTab = getActiveRightWorkspaceTab(liveSearchParams)
+  const activeLeftWorkspaceTab = getActiveLeftWorkspaceTab(liveSearchParams)
+  const isLeftListWorkspaceView =
+    !!activeLeftWorkspaceTab && isListWorkspaceViewType(activeLeftWorkspaceTab.type)
+  const isAiInMiddle = activeMiddleWorkspaceTab?.type === "ai"
+  const isBrowserInMiddle = activeMiddleWorkspaceTab?.type === "browser"
+  const isTaskListInMiddle = activeMiddleWorkspaceTab?.type === "task-list"
+  const isListInMiddle =
+    !!activeMiddleWorkspaceTab && isListWorkspaceViewType(activeMiddleWorkspaceTab.type)
+  const isAiInLeft = activeLeftWorkspaceTab?.type === "ai"
+  const isBrowserInLeft = activeLeftWorkspaceTab?.type === "browser"
+  const isAiInRight = activeRightWorkspaceTab?.type === "ai"
+  const isBrowserInRight =
+    activeRightWorkspaceTab?.type === "browser" || showBrowserPanelFromUrl
+  const isEntityInRight =
+    !!activeRightWorkspaceTab &&
+    activeRightWorkspaceTab.type !== "ai" &&
+    activeRightWorkspaceTab.type !== "browser" &&
+    activeRightWorkspaceTab.type !== "details"
+  const showAiPanelFromUrl =
+    (rightViewParamResolved === "ai" && taskAiOpenParamResolved === "true") ||
+    isAiInMiddle
   // Shallow URL updates do not refresh Next's useSearchParams — read live location
   // (same pattern as stackTeamId) so Preferences/Teams open without a full RSC navigation.
   void tasksShallowUrlEpoch
@@ -4263,21 +4544,59 @@ export function TasksLayout({
       isResearchCenterOpen ||
       isCreateCenterOpen ||
       isArtifactCenterOpen ||
-      isSourceCenterOpen) &&
+      isSourceCenterOpen ||
+      isTemplateCenterOpen ||
+      isAiInMiddle ||
+      isBrowserInMiddle ||
+      // Any list tab in middle (tasks, users, projects, …) must keep the pane open.
+      isListInMiddle ||
+      activeMiddleWorkspaceTab?.type === "search-results") &&
     !focusedPane;
-  // Thread details live in the middle pane; do not block the AI right pane when a thread is open.
+  // Browser / AI are first-class workspace views — may live in either pane.
+  const showBrowserPanel =
+    (isBrowserInRight || (hasOpenBrowserTabs && !isBrowserInMiddle && !isBrowserInLeft)) && !focusedPane
   const showAiPanel =
-    (isTaskAiPaneOpen || showAiPanelFromUrl || isAiFocusModeEnabled) &&
+    (isAiInRight ||
+      ((isTaskAiPaneOpen || showAiPanelFromUrl || isAiFocusModeEnabled) &&
+        !isAiInMiddle &&
+        !isAiInLeft)) &&
     !focusedPane &&
-    !isDetailsFocusModeEnabled;
+    !isDetailsFocusModeEnabled
+  const showPublishingPanel = showBrowserPanel
+  const showRightToolPanel =
+    showBrowserPanel || showAiPanel || isEntityInRight
+  // Progressive open-next: left opens middle; middle opens right; all three → no icon.
+  openNextPaneFromListRef.current = {
+    show: !showDetailsPanel,
+    run: () => {
+      openWorkspaceView(
+        { type: "task-list", title: "Tasks" },
+        { pane: "middle", source: "left-open-middle-pane" },
+      )
+    },
+  }
+  const activeRightPaneKind: WorkspaceViewType = (() => {
+    if (activeRightWorkspaceTab?.type) return activeRightWorkspaceTab.type
+    if (rightPaneActiveKey === DETAILS_RIGHT_TAB_KEY) return "details"
+    if (rightPaneActiveKey?.startsWith("ai:") && showAiPanel) return "ai"
+    if (rightPaneActiveKey?.startsWith("browser:") && showBrowserPanel) return "browser"
+    if (showBrowserPanelFromUrl && showBrowserPanel) return "browser"
+    if (showAiPanel) return "ai"
+    if (showBrowserPanel) return "browser"
+    return "ai"
+  })()
   const aiPaneFocusChrome = getAiPaneFocusLayoutChrome({
     isAiFocusModeEnabled: isAiFocusModeEnabled || isDetailsFocusModeEnabled,
     isTaskDetailsAiSplitMode: isTaskDetailsAiSplitModeEnabled,
     showDetailsPanel,
-    showAiPanel,
+    showAiPanel: showRightToolPanel,
   })
 
-  const renderPaneContent = (view: MainViewMode, pane: 'single' | 'top' | 'bottom' | 'right') => {
+  const renderPaneContent = (
+    view: MainViewMode,
+    pane: 'single' | 'top' | 'bottom' | 'right',
+    options?: { forceTasks?: boolean },
+  ) => {
     const { badges, onClearAll } = getBadgeHelpers();
     const filterRow = (
       <FilterBadges badges={badges} onClearAll={onClearAll} className="mt-1 mb-2 shrink-0 px-4" />
@@ -4292,24 +4611,26 @@ export function TasksLayout({
     const inlineOpt = pickPaneOverflowSlot(pane, inlineOptSingle, inlineOptTop, inlineOptBottom);
     const paneKey = `${view}-${pane}`;
     const tasksToolbarOptionalPlacement = toolbarPlacementByPane[paneKey] ?? 'inline';
+    const showTasksList = options?.forceTasks === true || isLeftObjectTasks
 
     if (view === 'list') {
       const renderLeftPaneObjectList = () => {
         console.log("[left-pane] rendering", leftObject);
+        if (showTasksList) {
+          return (
+            <MemoizedTaskList
+              onTaskSelect={handleTaskSelect}
+              selectedTaskId={selectedTaskId !== undefined && selectedTaskId !== null ? String(selectedTaskId) : undefined}
+              editFields={memoizedEditFields}
+              isMultiselectMode={isMultiselectMode}
+              onToggleMultiselect={handleToggleMultiselect}
+            />
+          );
+        }
         switch (leftObject) {
-          case "tasks":
-            return (
-              <MemoizedTaskList
-                onTaskSelect={handleTaskSelect}
-                selectedTaskId={selectedTaskId !== undefined && selectedTaskId !== null ? String(selectedTaskId) : undefined}
-                editFields={memoizedEditFields}
-                isMultiselectMode={isMultiselectMode}
-                onToggleMultiselect={handleToggleMultiselect}
-              />
-            );
           case "projects":
-          case "mentions":
           case "users":
+          case "mentions":
           case "ai_chats":
           case "artifacts":
             return globalSearch ? (
@@ -4322,7 +4643,7 @@ export function TasksLayout({
                 fetchPage={globalSearch.fetchFullResultsPage}
               />
             ) : (
-              <div className="flex h-full items-center justify-center px-4 text-sm text-gray-500">
+              <div className="flex h-full items-center justify-center px-4 text-xs text-gray-500">
                 Unable to load {leftPaneObjectLabel(leftObject).toLowerCase()}.
               </div>
             );
@@ -4340,7 +4661,7 @@ export function TasksLayout({
       };
       return (
         <div className="flex h-full min-h-0 min-w-0 flex-col overflow-hidden">
-          {isLeftObjectTasks ? filterRow : null}
+          {showTasksList ? filterRow : null}
           {searchChipRow}
           <div className="min-h-0 min-w-0 flex-1 overflow-hidden">
             {renderLeftPaneObjectList()}
@@ -4472,6 +4793,36 @@ export function TasksLayout({
       )
     }
 
+    // Mentions / projects / users / ai chats / artifacts: always show the object list.
+    // Never fall through to tasksView calendar/kanban (that was swapping the left pane on mention open).
+    if (!isLeftObjectTasks) {
+      // Prefer the inline draft so filtering is instant while typing (no URL/RPC round-trip).
+      const objectListQuery = isInlineSearchOpen ? inlineSearchValue : ""
+      return (
+        <div className="flex h-full min-h-0 flex-col">
+          {renderPaneToolbar("list", "single")}
+          <div className="flex min-h-0 flex-1 flex-col overflow-hidden">
+            <div className="min-h-0 flex-1 overflow-hidden">
+              {globalSearch ? (
+                <GlobalSearchFullResultsPane
+                  query={objectListQuery}
+                  activeTab={leftObjectSearchTab}
+                  viewScope={effectiveObjectRoute}
+                  onResultSelect={globalSearch.openSearchResult}
+                  getQueryKey={globalSearch.getFullResultsQueryKey}
+                  fetchPage={globalSearch.fetchFullResultsPage}
+                />
+              ) : (
+                <div className="flex h-full items-center justify-center px-4 text-xs text-gray-500">
+                  Unable to load {leftPaneObjectLabel(leftObject).toLowerCase()}.
+                </div>
+              )}
+            </div>
+          </div>
+        </div>
+      )
+    }
+
     return (
       <div ref={splitLayoutContainerRef} className="flex h-full min-h-0 flex-col">
         {plannerBulkChrome}
@@ -4521,6 +4872,61 @@ export function TasksLayout({
     );
   };
 
+  /** Same tasks UI as the left pane (toolbar + list/kanban/calendar), ignoring leftObject. */
+  const renderTasksListSurface = () => {
+    const toolbar = (view: MainViewMode, pane: "top" | "bottom" | "single" | "right") =>
+      renderPaneToolbar(view, pane, undefined, { forceTaskRoute: true })
+    const content = (view: MainViewMode, pane: "top" | "bottom" | "single" | "right") =>
+      renderPaneContent(view, pane, { forceTasks: true })
+    return (
+      <div className="flex h-full min-h-0 flex-col">
+        {plannerBulkChrome}
+        <PanelGroup
+          key={`tasks-list-${splitOrientation}`}
+          direction={splitOrientation === "horizontal" ? "horizontal" : "vertical"}
+          className="min-h-0 flex-1"
+          autoSaveId={null}
+        >
+          <Panel defaultSize={55} minSize={20} className="min-h-0">
+            <div className="flex h-full min-h-0 flex-col">
+              {toolbar(topView, "top")}
+              <div className="min-h-0 flex-1 overflow-hidden">{content(topView, "top")}</div>
+            </div>
+          </Panel>
+          {isSplitEnabled && secondaryPaneView ? (
+            <>
+              <PanelResizeHandle
+                className={cn(
+                  "relative bg-transparent transition-colors",
+                  splitOrientation === "horizontal"
+                    ? "w-3 -mx-1.5 cursor-col-resize"
+                    : "h-3 -my-1.5 cursor-row-resize",
+                )}
+              >
+                {splitOrientation === "horizontal" ? (
+                  <div className="pointer-events-none absolute inset-y-0 left-1/2 w-px -translate-x-1/2 bg-gray-200" />
+                ) : (
+                  <div className="pointer-events-none absolute inset-x-0 top-1/2 h-px -translate-y-1/2 bg-gray-200" />
+                )}
+              </PanelResizeHandle>
+              <Panel defaultSize={45} minSize={20} className="min-h-0">
+                <div className="flex h-full min-h-0 flex-col">
+                  {toolbar(secondaryPaneView, secondaryPane)}
+                  <div
+                    key={`tasks-${secondaryPane}-${secondaryPaneView}`}
+                    className="min-h-0 flex-1 overflow-hidden"
+                  >
+                    {content(secondaryPaneView, secondaryPane)}
+                  </div>
+                </div>
+              </Panel>
+            </>
+          ) : null}
+        </PanelGroup>
+      </div>
+    )
+  }
+
   const selectedDetailTarget = globalSearch?.selectedDetailTarget
   // Read stackTeamId from the live URL so the stacked team reacts to shallow history updates
   // (history.replaceState does not refresh Next's useSearchParams). tasksShallowUrlEpoch bumps on
@@ -4537,42 +4943,270 @@ export function TasksLayout({
   const taskDetailStackBack =
     isUserDetailStack && selectedTaskId ? handleDetailStackBackFromTask : undefined
 
+  // AI + browser content are pane-neutral — defined before either pane so both can mount them.
+  const aiPane = (
+    <AiPane
+      isOpen={true}
+      onClose={() => handleTaskAiPaneOpenChange(false)}
+      onExpand={handleExpandAiPane}
+      isExpanded={isAiFocusModeEnabled}
+      initialScope={aiPaneContext.scope}
+      taskId={aiPaneContext.taskId}
+      projectId={aiPaneContext.scope === "project" ? aiPaneContext.projectId : undefined}
+      inline={true}
+      // One AI tab strip only: peer pane chrome owns thread tabs whenever AI is hosted.
+      hideOuterTabStrip={isAiInMiddle || isAiInLeft || Boolean(showAiPanel && !isAiInMiddle && !isAiInLeft)}
+      activeFieldContext={activeFieldContext}
+      externalThreadId={searchOpenedAiThreadId}
+      forceNewThread={forceNewAiThread}
+      onForceNewThreadConsumed={handleConsumeForceNewAiThread}
+      isActiveWorkspaceView={isAiInMiddle || isAiInLeft || isAiInRight || showAiPanelFromUrl}
+    />
+  )
+
+  const livePublicationRunId =
+    typeof window !== "undefined"
+      ? new URLSearchParams(window.location.search).get("publicationRunId")
+      : params.get("publicationRunId")
+  const liveBrowserTabId =
+    typeof window !== "undefined"
+      ? new URLSearchParams(window.location.search).get("browserTabId")
+      : params.get("browserTabId")
+  const publishingArtifactId =
+    liveCenterArtifactId ||
+    (typeof window !== "undefined"
+      ? new URLSearchParams(window.location.search).get("centerArtifactId")
+      : params.get("centerArtifactId"))
+
+  const activeBrowserTab =
+    rightPaneTabs.find((tab) => tab.key === `browser:${liveBrowserTabId}`) ||
+    rightPaneTabs.find((tab) => tab.key === rightPaneActiveKey && tab.kind === "browser") ||
+    findBrowserTabForPublication(rightPaneTabs, { publicationRunId: livePublicationRunId }) ||
+    rightPaneTabs.find((tab) => tab.kind === "browser") ||
+    null
+
+  const handleBrowserSessionFromPublish = (session: {
+    destinationId: string
+    destinationName: string
+    liveViewUrl: string | null
+    sessionId?: string | null
+    publicationRunId?: string | null
+    connectMessage?: string | null
+    phase?: string | null
+    artifactId?: string | null
+  }) => {
+    const artifactId = session.artifactId ?? publishingArtifactId
+    const existing = findBrowserTabForPublication(rightPaneTabs, {
+      publicationRunId: session.publicationRunId,
+      destinationId: session.destinationId,
+      artifactId,
+    })
+    const id =
+      existing?.key.replace(/^browser:/, "") ||
+      liveBrowserTabId ||
+      (artifactId && session.destinationId
+        ? `pub-${artifactId.slice(0, 8)}-${session.destinationId.slice(0, 8)}`
+        : artifactId
+          ? `pub-artifact-${artifactId}`
+          : `pub-dest-${session.destinationId}`)
+    if (artifactId) {
+      for (const tab of rightPaneTabs) {
+        if (
+          tab.kind === "browser" &&
+          tab.key !== `browser:${id}` &&
+          tab.browser?.artifactId === artifactId &&
+          !tab.browser?.publicationRunId
+        ) {
+          closeRightPaneTab(tab.key)
+        }
+      }
+    }
+    const key = upsertRightPaneTab({
+      kind: "browser",
+      id,
+      title: session.destinationName || existing?.title || "Browser",
+      browser: {
+        destinationId: session.destinationId,
+        destinationName: session.destinationName,
+        liveViewUrl: session.liveViewUrl,
+        sessionId: session.sessionId ?? null,
+        publicationRunId: session.publicationRunId ?? null,
+        connectMessage: session.connectMessage ?? null,
+        phase: session.phase ?? null,
+        artifactId,
+        intentionallyStopped: false,
+      },
+      activate: true,
+    })
+    const next = buildOpenBrowserPaneParams(new URLSearchParams(window.location.search), {
+      browserTabId: key.replace(/^browser:/, ""),
+      publicationRunId: session.publicationRunId ?? livePublicationRunId,
+      artifactId,
+      keepAiOpen: true,
+    })
+    shallowReplaceSearchParams(effectivePathname, next, "browser-session-sync")
+  }
+
+  const browserContent = (() => {
+    const browser = activeBrowserTab?.browser
+    const phase = browser?.phase ?? null
+    if (phase === "add_destination") {
+      return (
+        <PublishingPane
+          artifactId={browser?.artifactId ?? publishingArtifactId}
+          publicationRunId={browser?.publicationRunId ?? livePublicationRunId}
+          initialStep="create"
+          onPublicationRunIdChange={(runId) => {
+            const next = setPublicationRunIdInBrowserParams(
+              new URLSearchParams(window.location.search),
+              runId,
+              activeBrowserTab?.key.replace(/^browser:/, "") ?? liveBrowserTabId,
+            )
+            shallowReplaceSearchParams(effectivePathname, next, "publishing-run-id")
+          }}
+          onBrowserSession={handleBrowserSessionFromPublish}
+          onClose={() => {
+            if (activeBrowserTab) closeRightPaneTab(activeBrowserTab.key)
+            const next = buildCloseBrowserPaneParams(new URLSearchParams(window.location.search))
+            shallowReplaceSearchParams(effectivePathname, next, "browser-close")
+          }}
+        />
+      )
+    }
+    if (!activeBrowserTab) return null
+    return (
+      <BrowserSessionPane
+        title={activeBrowserTab.title}
+        tabId={activeBrowserTab.key.replace(/^browser:/, "")}
+        browser={browser ?? {}}
+        onBrowserChange={(patch) => updateRightPaneTab(activeBrowserTab.key, { browser: patch })}
+        onClose={() => {
+          const associations = activeBrowserTab.browser
+          if (
+            associations?.provider === "browser_use_local" ||
+            associations?.bridgeSessionId
+          ) {
+            void import("../../lib/open-browser-session").then(({ stopOpenedBrowserSession }) =>
+              stopOpenedBrowserSession({
+                provider: associations.provider,
+                bridgeSessionId: associations.bridgeSessionId ?? associations.sessionId,
+                browserId: associations.browserId,
+              }),
+            )
+          }
+          const nextKey = closeRightPaneTab(activeBrowserTab.key)
+          const next = buildCloseBrowserPaneParams(new URLSearchParams(window.location.search))
+          if (nextKey?.startsWith("browser:")) {
+            next.set("rightView", "browser")
+            next.set("browserTabId", nextKey.replace(/^browser:/, ""))
+          }
+          shallowReplaceSearchParams(effectivePathname, next, "browser-tab-close")
+        }}
+      />
+    )
+  })()
+
+  const middlePaneStripTabs = (() => {
+    const nonAiCenter = toPaneTabStripItems(
+      centerPaneTabs.filter((tab) => tab.kind !== "ai"),
+    )
+    if (!isAiInMiddle) return nonAiCenter
+    // When AI is hosted in middle, surface AiPane thread tabs on the outer strip
+    // (same pattern as the right pane) — never nest AiPane's own strip underneath.
+    const aiItems = aiChromeTabs.map((tab) => ({
+      key: buildAiRightTabKey(tab.id),
+      label: tab.title?.trim() || "New chat",
+    }))
+    return [...nonAiCenter, ...aiItems]
+  })()
+  const middlePaneActiveKey = (() => {
+    if (isAiInMiddle && aiChromeActiveId) return buildAiRightTabKey(aiChromeActiveId)
+    // Prefer URL-resolved workspace tab so list views (user-list, project-list, …) stay active.
+    if (activeMiddleWorkspaceTab?.key) return activeMiddleWorkspaceTab.key
+    return (
+      resolveActiveCenterPaneTab({
+        selectedTaskId,
+        isSuggestion: isSuggestionSelected,
+        selectedTaskTitle:
+          (isSuggestionSelected
+            ? (selectedSuggestionAsTask as any)?.title
+            : (selectedTaskData as any)?.title) ?? null,
+        selectedDetailTarget: selectedDetailTarget ?? null,
+        stackTeamId: stackTeamIdRaw,
+        centerView:
+          typeof window !== "undefined"
+            ? new URLSearchParams(window.location.search).get("centerView")
+            : params.get("centerView"),
+        centerArtifactId: liveCenterArtifactId,
+        centerSourceId: liveCenterSourceId,
+        centerTemplateId: liveCenterTemplateId,
+        aiThreadId:
+          typeof window !== "undefined"
+            ? new URLSearchParams(window.location.search).get("aiThreadId")
+            : params.get("aiThreadId"),
+        browserTabId:
+          typeof window !== "undefined"
+            ? new URLSearchParams(window.location.search).get("browserTabId")
+            : params.get("browserTabId"),
+      })?.key ?? null
+    )
+  })()
+
   const detailsPane = (
     <div className="flex h-full min-h-0 flex-col overflow-hidden">
-      {!isDetailsFocusModeEnabled && !isDetailsPaneExpandedMax ? (
-        <CenterPaneTabBar
-          tabs={toPaneTabStripItems(centerPaneTabs)}
-          activeKey={
-            resolveActiveCenterPaneTab({
-              selectedTaskId,
-              isSuggestion: isSuggestionSelected,
-              selectedTaskTitle:
-                (isSuggestionSelected
-                  ? (selectedSuggestionAsTask as any)?.title
-                  : (selectedTaskData as any)?.title) ?? null,
-              selectedDetailTarget: selectedDetailTarget ?? null,
-              stackTeamId: stackTeamIdRaw,
-              centerView:
-                typeof window !== "undefined"
-                  ? new URLSearchParams(window.location.search).get("centerView")
-                  : params.get("centerView"),
-              centerArtifactId: liveCenterArtifactId,
-              centerSourceId: liveCenterSourceId,
-            })?.key ?? null
+      <CenterPaneTabBar
+        tabs={middlePaneStripTabs}
+        activeKey={middlePaneActiveKey}
+        onSelect={(key) => {
+          if (key.startsWith("ai:")) {
+            aiChromeHandlers?.selectThread(key.slice(3))
+            return
           }
-          onSelect={handleCenterPaneTabSelect}
-          onClose={handleCenterPaneTabClose}
-          onCloseAll={handleCenterPaneCloseAllTabs}
-          searchValue={globalSearch?.committedQuery ?? ""}
-          onSearchChange={globalSearch?.setDraftQuery}
-          onSearchCommit={(value) => globalSearch?.commitSearch({ nextQuery: value })}
-          onClearSearch={globalSearch?.clearSearch}
-          selectedTypeFilters={globalSearch?.pendingSelectedTypes ?? []}
-          onToggleTypeFilter={globalSearch?.togglePendingTypeFilter}
-          onPreviewResultSelect={globalSearch?.openSearchResult}
-          onShowAll={globalSearch?.handleShowAll}
-        />
-      ) : null}
+          handleCenterPaneTabSelect(key)
+        }}
+        onClose={(keyOrKeys) => {
+          const keys = Array.isArray(keyOrKeys) ? keyOrKeys : [keyOrKeys]
+          const aiKeys = keys.filter((key) => key.startsWith("ai:"))
+          const otherKeys = keys.filter((key) => !key.startsWith("ai:"))
+          for (const key of aiKeys) {
+            aiChromeHandlers?.closeThread(key.slice(3))
+          }
+          if (otherKeys.length === 1) handleCenterPaneTabClose(otherKeys[0]!)
+          else if (otherKeys.length > 1) handleCenterPaneTabClose(otherKeys)
+        }}
+        onCloseAll={handleCenterPaneCloseAllTabs}
+        isExpanded={isDetailsFocusModeEnabled || isDetailsPaneExpandedMax}
+        onExpand={handleExpandDetailsPane}
+        onClosePane={handleCloseMiddlePane}
+        onOpenActiveInOtherPane={() => {
+          openActiveWorkspaceTabInOtherPane("middle", {
+            pathname: effectivePathname,
+            source: "center-tab-open-other",
+          })
+        }}
+        onDropTabFromOtherPane={(tabKey, fromPane, meta) => {
+          moveWorkspaceTabByKey(fromPane, tabKey, {
+            toPane: "middle",
+            pathname: effectivePathname,
+            source: "center-tab-drop",
+            title: meta?.title,
+            beforeKey: meta?.beforeKey,
+          })
+        }}
+        onOpenRightPane={
+          !showRightToolPanel && !isMobile
+            ? () => handleTaskAiPaneOpenChange(true)
+            : undefined
+        }
+        pathname={effectivePathname}
+        searchValue={globalSearch?.committedQuery ?? ""}
+        onSearchChange={globalSearch?.setDraftQuery}
+        onSearchCommit={(value) => globalSearch?.commitSearch({ nextQuery: value })}
+        onClearSearch={globalSearch?.clearSearch}
+        selectedTypeFilters={globalSearch?.pendingSelectedTypes ?? []}
+        onToggleTypeFilter={globalSearch?.togglePendingTypeFilter}
+        onShowAll={globalSearch?.handleShowAll}
+      />
       <div className="min-h-0 flex-1 overflow-hidden">
       {(() => {
         console.log("middle pane params", {
@@ -4586,7 +5220,42 @@ export function TasksLayout({
         })
         return null
       })()}
-      {isThreadChatRequested && publicUserId && rightThreadIdNum ? (
+      {isAiInMiddle ? (
+        <WorkspaceViewRenderer
+          tab={activeMiddleWorkspaceTab}
+          paneId="middle"
+          slots={{ ai: aiPane }}
+        />
+      ) : isBrowserInMiddle ? (
+        <WorkspaceViewRenderer
+          tab={activeMiddleWorkspaceTab}
+          paneId="middle"
+          slots={{ browser: browserContent }}
+        />
+      ) : isListInMiddle || activeMiddleWorkspaceTab?.type === "search-results" ? (
+        <WorkspaceViewRenderer
+          tab={activeMiddleWorkspaceTab}
+          paneId="middle"
+          slots={{
+            taskList:
+              activeMiddleWorkspaceTab?.type === "task-list"
+                ? renderTasksListSurface()
+                : undefined,
+          }}
+        />
+      ) : activeMiddleWorkspaceTab?.type === "thread" ? (
+        <WorkspaceViewRenderer
+          tab={activeMiddleWorkspaceTab}
+          paneId="middle"
+          onCloseTab={() => {
+            if (activeMiddleWorkspaceTab) {
+              handleCenterPaneTabClose(
+                buildCenterPaneTabKey("thread", activeMiddleWorkspaceTab.id),
+              )
+            }
+          }}
+        />
+      ) : isThreadChatRequested && publicUserId && rightThreadIdNum ? (
         <CenterPaneThreadChat
           key={`${rightThreadIdNum}-${rightMentionIdParam ?? ""}`}
           threadId={rightThreadIdNum}
@@ -4623,6 +5292,19 @@ export function TasksLayout({
                 buildCenterPaneTabKey("source", liveCenterSourceId),
               )
             }
+          />
+        </div>
+      ) : isTemplateCenterOpen && liveCenterTemplateId ? (
+        <div className="h-full min-h-0 overflow-hidden">
+          <WorkspaceViewRenderer
+            tab={activeMiddleWorkspaceTab}
+            paneId="middle"
+            onCloseTab={() =>
+              handleCenterPaneTabClose(
+                buildCenterPaneTabKey("template", liveCenterTemplateId),
+              )
+            }
+            onResolvedTitle={handleCenterPaneResolvedTitle}
           />
         </div>
       ) : isResearchCenterOpen ? (
@@ -4694,10 +5376,6 @@ export function TasksLayout({
             isCollapsed={isDetailsCollapsed}
             selectedTask={isSuggestionSelected ? (selectedSuggestionAsTask as any) : selectedTaskData}
             onClose={handleCloseDetails}
-            onCollapse={handleCloseDetails}
-            isExpanded={isDetailsPaneExpandedMax}
-            onExpand={handleExpandDetailsPane}
-            onRestore={handleExpandDetailsPane}
             onTaskUpdate={(updatedFields) => {
               const sanitized = {
                 ...updatedFields,
@@ -4742,9 +5420,6 @@ export function TasksLayout({
           <TeamDetailsPage
             teamId={parsedStackTeamId}
             onStackBack={handleTeamStackBack}
-            onClose={handleCloseDetails}
-            isDetailsFocused={isDetailsFocusModeEnabled}
-            onFocusToggle={handleExpandDetailsPane}
             onResolvedTitle={handleCenterPaneResolvedTitle}
           />
         </div>
@@ -4752,9 +5427,7 @@ export function TasksLayout({
         <div className="h-full overflow-auto">
           <GlobalSearchDetailsPane
             target={selectedDetailTarget}
-            onClose={handleCloseDetails}
-            isDetailsFocused={isDetailsFocusModeEnabled}
-            onFocusToggle={handleExpandDetailsPane}
+            paneId="middle"
             onOpenTask={(taskId: number) => handleTaskSelect({ id: taskId })}
             onOpenTaskKeepingDetail={handleOpenTaskKeepingDetailContext}
             onOpenTeamKeepingDetail={handleOpenTeamKeepingDetailContext}
@@ -4768,10 +5441,6 @@ export function TasksLayout({
             isCollapsed={isDetailsCollapsed}
             selectedTask={isSuggestionSelected ? (selectedSuggestionAsTask as any) : selectedTaskData}
             onClose={handleCloseDetails}
-            onCollapse={handleCloseDetails}
-            isExpanded={isDetailsPaneExpandedMax}
-            onExpand={handleExpandDetailsPane}
-            onRestore={handleExpandDetailsPane}
             onTaskUpdate={(updatedFields) => {
               const sanitized = {
                 ...updatedFields,
@@ -4808,23 +5477,241 @@ export function TasksLayout({
     </div>
   )
 
-  const aiPane = (
-    <AiPane
-      isOpen={true}
-      onClose={() => handleTaskAiPaneOpenChange(false)}
-      onExpand={handleExpandAiPane}
-      isExpanded={isAiFocusModeEnabled}
-      initialScope={aiPaneContext.scope}
-      taskId={aiPaneContext.taskId}
-      projectId={aiPaneContext.scope === "project" ? aiPaneContext.projectId : undefined}
-      inline={true}
-      activeFieldContext={activeFieldContext}
-      externalThreadId={searchOpenedAiThreadId}
-      disableUrlSync={Boolean(searchOpenedAiThreadId)}
-      forceNewThread={forceNewAiThread}
-      onForceNewThreadConsumed={handleConsumeForceNewAiThread}
-    />
-  );
+  const handleRightPaneSelect = (key: string) => {
+    setRightPaneActiveKey(key)
+    const aiThreadId = parseAiRightTabKey(key)
+    if (aiThreadId || key === "ai:pending" || key === AI_RIGHT_TAB_KEY) {
+      openWorkspaceView(
+        {
+          type: "ai",
+          aiThreadId: aiThreadId && aiThreadId !== "pending" ? aiThreadId : undefined,
+        },
+        { pane: "right", source: "right-tab-ai" },
+      )
+      return
+    }
+    if (key === DETAILS_RIGHT_TAB_KEY) {
+      openWorkspaceView({ type: "details" }, { pane: "right", source: "right-tab-details" })
+      return
+    }
+    if (key.startsWith("browser:")) {
+      const tab = rightPaneTabs.find((item) => item.key === key)
+      openWorkspaceView(
+        {
+          type: "browser",
+          id: key.replace(/^browser:/, ""),
+          params: {
+            browserTabId: key.replace(/^browser:/, ""),
+            publicationRunId: tab?.browser?.publicationRunId ?? null,
+            keepAiOpen: true,
+          },
+        },
+        { pane: "right", source: "right-tab-browser" },
+      )
+      return
+    }
+    // Entity workspace tabs on the right (`task:123`, `project:1`, …).
+    const colon = key.indexOf(":")
+    if (colon > 0) {
+      const kind = key.slice(0, colon) as WorkspaceViewType
+      const id = key.slice(colon + 1)
+      if (
+        kind === "task" ||
+        kind === "task-list" ||
+        kind === "project-list" ||
+        kind === "mention-list" ||
+        kind === "user-list" ||
+        kind === "ai-thread-list" ||
+        kind === "artifact-list" ||
+        kind === "template-list" ||
+        kind === "suggestion" ||
+        kind === "project" ||
+        kind === "user" ||
+        kind === "team" ||
+        kind === "thread" ||
+        kind === "artifact" ||
+        kind === "source" ||
+        kind === "template" ||
+        kind === "research" ||
+        kind === "create" ||
+        kind === "search-results"
+      ) {
+        openWorkspaceView(
+          {
+            type: kind,
+            id: isListWorkspaceViewType(kind) ? undefined : id,
+            title: isListWorkspaceViewType(kind)
+              ? workspaceListViewLabel(kind)
+              : kind === "search-results"
+                ? "Search"
+                : undefined,
+          },
+          { pane: "right", source: `right-tab-${kind}` },
+        )
+      }
+    }
+  }
+
+  const hostedBrowserTabId =
+    isBrowserInMiddle && activeMiddleWorkspaceTab?.type === "browser"
+      ? activeMiddleWorkspaceTab.id
+      : isBrowserInLeft && activeLeftWorkspaceTab?.type === "browser"
+        ? activeLeftWorkspaceTab.id
+        : null
+  const browserRightPaneTabs = rightPaneTabs.filter((tab) => {
+    if (tab.kind !== "browser") return false
+    // Hide the browser tab from the right strip while it is hosted in another pane.
+    if (hostedBrowserTabId && tab.key === `browser:${hostedBrowserTabId}`) return false
+    return true
+  })
+  const entityRightPaneTabs = rightPaneTabs.filter(
+    (tab) =>
+      tab.kind !== "ai" &&
+      tab.kind !== "browser" &&
+      tab.kind !== "details",
+  )
+
+  const rightToolPane = showRightToolPanel ? (
+    <div className="flex h-full min-h-0 w-full flex-col overflow-hidden bg-white">
+      <RightPaneTabBar
+        browserTabs={browserRightPaneTabs}
+        entityTabs={entityRightPaneTabs}
+        includeAiTabs={Boolean(showAiPanel && !isAiInMiddle)}
+        activeKey={
+          isEntityInRight
+            ? // Prefer store activeKey so a tab opened via "+" highlights gray immediately.
+              (rightPaneActiveKey &&
+              entityRightPaneTabs.some((tab) => tab.key === rightPaneActiveKey)
+                ? rightPaneActiveKey
+                : activeRightWorkspaceTab?.key ?? rightPaneActiveKey)
+            : activeRightPaneKind === "browser"
+              ? activeBrowserTab?.key ?? rightPaneActiveKey
+              : activeRightPaneKind === "details"
+                ? DETAILS_RIGHT_TAB_KEY
+                : aiChromeActiveId
+                  ? buildAiRightTabKey(aiChromeActiveId)
+                  : rightPaneActiveKey?.startsWith("ai:")
+                    ? rightPaneActiveKey
+                    : null
+        }
+        onSelect={handleRightPaneSelect}
+        onClose={(key) => {
+          if (key.startsWith("ai:")) {
+            // AI tab close is handled by AiPane chrome handlers via the tab strip.
+            return
+          }
+          if (key.startsWith("browser:")) {
+            const closing = rightPaneTabs.find((tab) => tab.key === key)
+            const associations = closing?.browser
+            if (
+              associations?.provider === "browser_use_local" ||
+              associations?.bridgeSessionId
+            ) {
+              void import("../../lib/open-browser-session").then(({ stopOpenedBrowserSession }) =>
+                stopOpenedBrowserSession({
+                  provider: associations.provider,
+                  bridgeSessionId: associations.bridgeSessionId ?? associations.sessionId,
+                  browserId: associations.browserId,
+                }),
+              )
+            }
+          }
+          const nextKey = closeRightPaneTab(key)
+          if (key.startsWith("browser:")) {
+            const next = buildCloseBrowserPaneParams(new URLSearchParams(window.location.search))
+            if (nextKey?.startsWith("browser:")) {
+              next.set("rightView", "browser")
+              next.set("browserTabId", nextKey.replace(/^browser:/, ""))
+            } else {
+              next.set("rightView", "ai")
+              next.set("taskAiOpen", "true")
+            }
+            shallowReplaceSearchParams(effectivePathname, next, "right-tab-close-browser")
+            return
+          }
+          // Closing an entity tab — activate next remaining workspace tab or AI.
+          if (nextKey?.startsWith("browser:")) {
+            handleRightPaneSelect(nextKey)
+          } else if (nextKey?.startsWith("ai:") || nextKey === AI_RIGHT_TAB_KEY) {
+            handleRightPaneSelect(nextKey || AI_RIGHT_TAB_KEY)
+          } else if (nextKey) {
+            handleRightPaneSelect(nextKey)
+          } else {
+            openWorkspaceView({ type: "ai" }, { pane: "right", source: "right-tab-close-entity" })
+          }
+        }}
+        isExpanded={isAiFocusModeEnabled || isRightPaneSoloLayout || isAiPaneExpandedMax}
+        onExpand={handleExpandRightPane}
+        onClosePane={handleCloseRightPane}
+        pathname={effectivePathname}
+        searchValue={globalSearch?.committedQuery ?? ""}
+        onSearchChange={globalSearch?.setDraftQuery}
+        onSearchCommit={(value) => globalSearch?.commitSearch({ nextQuery: value })}
+        onClearSearch={globalSearch?.clearSearch}
+        selectedTypeFilters={globalSearch?.pendingSelectedTypes ?? []}
+        onToggleTypeFilter={globalSearch?.togglePendingTypeFilter}
+        onShowAll={globalSearch?.handleShowAll}
+        onOpenActiveInOtherPane={() => {
+          openActiveWorkspaceTabInOtherPane("right", {
+            pathname: effectivePathname,
+            source: "right-tab-open-other",
+          })
+        }}
+        onDropTabFromOtherPane={(tabKey, fromPane, meta) => {
+          moveWorkspaceTabByKey(fromPane, tabKey, {
+            toPane: "right",
+            pathname: effectivePathname,
+            source: "right-tab-drop",
+            title: meta?.title,
+            beforeKey: meta?.beforeKey,
+          })
+        }}
+      />
+      <div className="relative min-h-0 flex-1">
+        {isEntityInRight ? (
+          <div
+            className={cn(
+              "absolute inset-0 min-h-0 min-w-0",
+              activeRightPaneKind === "ai" || activeRightPaneKind === "browser"
+                ? "invisible pointer-events-none"
+                : "visible",
+            )}
+          >
+            <WorkspaceViewRenderer
+              tab={activeRightWorkspaceTab}
+              paneId="right"
+              slots={{
+                taskList:
+                  activeRightWorkspaceTab?.type === "task-list"
+                    ? renderTasksListSurface()
+                    : undefined,
+              }}
+              onCloseTab={() => {
+                if (activeRightWorkspaceTab) {
+                  const nextKey = closeRightPaneTab(activeRightWorkspaceTab.key)
+                  if (nextKey) handleRightPaneSelect(nextKey)
+                  else openWorkspaceView({ type: "ai" }, { pane: "right", source: "right-entity-close" })
+                }
+              }}
+            />
+          </div>
+        ) : null}
+        <div
+          className={cn(
+            "absolute inset-0",
+            activeRightPaneKind === "ai" ? "visible" : "invisible pointer-events-none",
+          )}
+        >
+          {/* Keep AI mounted while peer tabs (Research / lists / entities) are active —
+              same keep-alive pattern as Browser — so the open thread does not vanish. */}
+          {showAiPanel || isAiInRight ? aiPane : null}
+        </div>
+        {activeRightPaneKind === "browser" || isBrowserInRight ? (
+          <div className="absolute inset-0 min-h-0 min-w-0">{browserContent}</div>
+        ) : null}
+      </div>
+    </div>
+  ) : null;
 
   const useLegacyDesktopLayout = false;
   if (!useLegacyDesktopLayout) {
@@ -4832,25 +5719,171 @@ export function TasksLayout({
       isAiFocusModeEnabled,
       hasMountedSplitLayout,
     })
+    const leftPaneStripTabs = toLeftPaneTabStripItems(leftPaneTabs)
+    const leftPaneActiveKey =
+      leftPaneActiveKeyStore ??
+      (activeLeftWorkspaceTab
+        ? `${activeLeftWorkspaceTab.type}:${activeLeftWorkspaceTab.id}`
+        : leftPaneTabs[0]?.key ?? null)
+
+    const handleLeftPaneTabSelect = (key: string) => {
+      const tab = leftPaneTabs.find((entry) => entry.key === key)
+      if (!tab) return
+      openWorkspaceView(
+        {
+          type: tab.kind as WorkspaceViewType,
+          id: tab.id,
+          title: tab.title,
+          aiThreadId: tab.kind === "ai" && tab.id !== "main" ? tab.id : undefined,
+          params:
+            tab.kind === "browser"
+              ? { browserTabId: tab.id }
+              : tab.kind === "ai" && tab.id !== "main"
+                ? { aiThreadId: tab.id }
+                : undefined,
+        },
+        {
+          pane: "left",
+          pathname: effectivePathname,
+          source: "left-pane-tab-activate",
+        },
+      )
+    }
+
+    const handleLeftPaneTabClose = (keyOrKeys: string | string[]) => {
+      const keys = Array.isArray(keyOrKeys) ? keyOrKeys : [keyOrKeys]
+      let nextKey: string | null = null
+      if (keys.length === 1) nextKey = closeLeftPaneTab(keys[0]!)
+      else nextKey = closeLeftPaneTabs(keys)
+      if (nextKey) {
+        handleLeftPaneTabSelect(nextKey)
+        return
+      }
+      ensureLeftPaneHasDefaultListTab()
+      openWorkspaceView(
+        { type: "ai", title: "AI", id: AI_WORKSPACE_TAB_ID },
+        { pane: "left", pathname: effectivePathname, source: "left-pane-tab-close-fallback" },
+      )
+    }
+
+    const leftWorkspacePane = (
+      <div className="flex h-full min-h-0 flex-col overflow-hidden">
+        <LeftPaneTabBar
+          tabs={leftPaneStripTabs}
+          activeKey={leftPaneActiveKey}
+          onSelect={handleLeftPaneTabSelect}
+          onClose={handleLeftPaneTabClose}
+          onCloseAll={() => {
+            closeAllLeftPaneTabs()
+            ensureLeftPaneHasDefaultListTab()
+            openWorkspaceView(
+              { type: "ai", title: "AI", id: AI_WORKSPACE_TAB_ID },
+              { pane: "left", pathname: effectivePathname, source: "left-pane-close-all" },
+            )
+          }}
+          onOpenActiveInOtherPane={() => {
+            openActiveWorkspaceTabInOtherPane("left", {
+              pathname: effectivePathname,
+              source: "left-tab-open-other",
+            })
+          }}
+          onDropTabFromOtherPane={(tabKey, fromPane, meta) => {
+            moveWorkspaceTabByKey(fromPane, tabKey, {
+              toPane: "left",
+              pathname: effectivePathname,
+              source: "left-tab-drop",
+              title: meta?.title,
+              beforeKey: meta?.beforeKey,
+            })
+          }}
+          isExpanded={focus === "left"}
+          onExpand={() => {
+            if (focus === "left") {
+              const hasSelectedTask = !!selectedTaskId
+              handleLayoutChange({
+                layout: hasSelectedTask ? ["left", "middle", "right"] : ["left", "middle"],
+                focus: null,
+              })
+            } else {
+              handleLayoutChange({ focus: "left" })
+            }
+          }}
+          onOpenMiddlePane={
+            !showDetailsPanel
+              ? () => {
+                  openWorkspaceView(
+                    { type: "task-list", title: "Tasks" },
+                    {
+                      pane: "middle",
+                      pathname: effectivePathname,
+                      source: "left-tab-open-middle-pane",
+                    },
+                  )
+                }
+              : undefined
+          }
+          pathname={effectivePathname}
+          searchValue={globalSearch?.committedQuery ?? ""}
+          onSearchChange={globalSearch?.setDraftQuery}
+          onSearchCommit={(value) => globalSearch?.commitSearch({ nextQuery: value })}
+          onClearSearch={globalSearch?.clearSearch}
+          selectedTypeFilters={globalSearch?.pendingSelectedTypes ?? []}
+          onToggleTypeFilter={globalSearch?.togglePendingTypeFilter}
+          onShowAll={globalSearch?.handleShowAll}
+        />
+        <div className="min-h-0 flex-1 overflow-hidden">
+          {isLeftListWorkspaceView && activeLeftWorkspaceTab?.type === "task-list" ? (
+            renderTasksListSurface()
+          ) : isLeftListWorkspaceView ? (
+            // Object lists: shared list chrome (h-10 + search) + open into this pane.
+            <WorkspaceViewRenderer tab={activeLeftWorkspaceTab} paneId="left" />
+          ) : (
+            <WorkspaceViewRenderer
+              tab={activeLeftWorkspaceTab}
+              paneId="left"
+              slots={{
+                ai: isAiInLeft ? aiPane : undefined,
+                browser: isBrowserInLeft ? browserContent : undefined,
+              }}
+              onCloseTab={() => {
+                if (leftPaneActiveKey) handleLeftPaneTabClose(leftPaneActiveKey)
+              }}
+            />
+          )}
+        </div>
+      </div>
+    )
+
     const mainNode = (
       <TasksToolbarFitProvider byPane={toolbarFitByPane}>
-        <div className="h-full min-h-0">{renderMainSurface()}</div>
+        <div className="h-full min-h-0">{leftWorkspacePane}</div>
       </TasksToolbarFitProvider>
     );
     const desktopBody = !shouldRenderDesktopSplitLayout ? (
-      <div className={cn("h-full min-h-0", isAiFocusModeEnabled ? "" : "border-l border-gray-200")}>{aiPane}</div>
+      <div className={cn("h-full min-h-0", isAiFocusModeEnabled ? "" : "border-l border-gray-200")}>
+        {rightToolPane ?? aiPane}
+      </div>
     ) : (
       <PanelGroup ref={newLayoutDesktopPanelGroupRef} direction="horizontal" className="h-full min-h-0" autoSaveId={null}>
         <Panel
           defaultSize={isLeftPaneHiddenInDesktopSplit ? 0 : mainPanelPercent}
           minSize={isLeftPaneHiddenInDesktopSplit ? 0 : (isAiPaneExpandedMax || isDetailsPaneExpandedMax ? 12 : 25)}
           onResize={setMainPanelPercent}
+          className={cn(
+            // Border on the scrolling pane so the scrollbar sits flush against it (not inset from a sibling border-l).
+            aiPaneFocusChrome.showPrimaryDivider && "border-r border-gray-200",
+          )}
         >
           <div className={cn("h-full min-h-0", isLeftPaneHiddenInDesktopSplit ? "pointer-events-none invisible" : "visible")}>
             {mainNode}
           </div>
         </Panel>
-        <PanelResizeHandle className={cn("w-px bg-gray-200 hover:bg-gray-300 transition-colors", aiPaneFocusChrome.showPrimaryDivider ? "block" : "hidden")} />
+        <PanelResizeHandle
+          className={cn(
+            "w-px bg-transparent hover:bg-gray-300 transition-colors",
+            aiPaneFocusChrome.showPrimaryDivider ? "block" : "hidden",
+          )}
+        />
         <Panel
           defaultSize={isDetailsFocusModeEnabled ? 100 : detailsPanelPercent}
           minSize={
@@ -4864,22 +5897,43 @@ export function TasksLayout({
           }
           onResize={setDetailsPanelPercent}
           className={cn(
-            !isDetailsFocusModeEnabled && !isTaskDetailsAiSplitModeEnabled && "border-l border-gray-200",
+            (aiPaneFocusChrome.showSecondaryDivider || showPublishingPanel) && "border-r border-gray-200",
             showDetailsPanel ? "block" : "hidden",
             isAiFocusModeEnabled ? "pointer-events-none invisible" : "visible"
           )}
         >
           {showDetailsPanel ? detailsPane : <div className="h-full w-full" />}
         </Panel>
-        <PanelResizeHandle className={cn("w-px bg-gray-200 hover:bg-gray-300 transition-colors", aiPaneFocusChrome.showSecondaryDivider ? "block" : "hidden")} />
+        <PanelResizeHandle
+          className={cn(
+            "w-px bg-transparent hover:bg-gray-300 transition-colors",
+            (aiPaneFocusChrome.showSecondaryDivider || showPublishingPanel) ? "block" : "hidden",
+          )}
+        />
         <Panel
           ref={newLayoutAiPanelRef}
-          defaultSize={isAiFocusModeEnabled ? 100 : aiPanelPercent}
-          minSize={showAiPanel ? (isAiFocusModeEnabled ? 0 : (isTaskDetailsAiSplitModeEnabled ? 25 : (isAiPaneExpandedMax ? 50 : isDetailsPaneExpandedMax ? 12 : 15))) : 0}
+          defaultSize={isAiFocusModeEnabled || isRightPaneSoloLayout ? 100 : isDetailsFocusModeEnabled ? 0 : aiPanelPercent}
+          minSize={
+            showRightToolPanel
+              ? isAiFocusModeEnabled || isRightPaneSoloLayout
+                ? 0
+                : isDetailsFocusModeEnabled
+                  ? 0
+                  : isTaskDetailsAiSplitModeEnabled
+                    ? 25
+                    : isAiPaneExpandedMax
+                      ? 50
+                      : isDetailsPaneExpandedMax
+                        ? 12
+                        : 15
+              : 0
+          }
           onResize={setAiPanelPercent}
-          className={cn(aiPaneFocusChrome.showAiPanelLeftBorder ? "border-l border-gray-200" : "", showAiPanel ? "block" : "hidden")}
+          className={cn(
+            showRightToolPanel && !isDetailsFocusModeEnabled ? "block" : "hidden",
+          )}
         >
-          {showAiPanel ? aiPane : <div className="h-full w-full" />}
+          {rightToolPane ?? <div className="h-full w-full" />}
         </Panel>
       </PanelGroup>
     );
@@ -4970,162 +6024,214 @@ export function TasksLayout({
               })()
             )}
           >
-            <div className="flex items-center flex-nowrap min-h-[56px] w-full relative border-b border-gray-200 pl-4">
-              {/* Left side: horizontally scrollable pills. Keeping this separate prevents the right controls from overlapping pills. */}
-              <div
-                ref={leftToolbarScrollRef}
-                className="flex-1 min-w-0 overflow-x-auto overflow-y-hidden whitespace-nowrap scrollbar-thin scrollbar-thumb-gray-300 scrollbar-track-transparent pb-1"
-                style={{ WebkitOverflowScrolling: 'touch', padding: 0, margin: 0 }}
-              >
-                <div className="flex items-center flex-nowrap w-max">
-                  <LeftObjectSwitcher
-                    value={leftObject}
-                    onChange={navigateToLeftObject}
-                    containerWidth={leftToolbarWidth}
-                    isTaskView={isLeftObjectTasks}
-                  />
-                  {leftObject === "mentions" ? (
-                    <DropdownMenu>
-                      <DropdownMenuTrigger asChild>
-                        <button className={pillButton + ' ml-2'}>
-                          {mentionsTab === "received" ? "Received" : mentionsTab === "sent" ? "Sent" : "Unseen"}
-                          <ChevronDown className="ml-1 h-4 w-4 opacity-70" />
-                        </button>
-                      </DropdownMenuTrigger>
-                      <DropdownMenuContent align="start">
-                        <DropdownMenuItem onClick={() => handleMentionsTabChange("received")}>Received</DropdownMenuItem>
-                        <DropdownMenuItem onClick={() => handleMentionsTabChange("sent")}>Sent</DropdownMenuItem>
-                        <DropdownMenuItem onClick={() => handleMentionsTabChange("unseen")}>Unseen</DropdownMenuItem>
-                      </DropdownMenuContent>
-                    </DropdownMenu>
-                  ) : null}
-                  {isLeftObjectTasks ? (
-                    <>
-                      {/* Group by pill - add same left margin as other pills for consistent spacing */}
-                      <GroupingDropdown className={pillButton + ' ml-2 min-w-[120px]'} />
-                      <MultiselectToggle
-                        isMultiselectMode={isMultiselectMode}
-                        onToggle={handleToggleMultiselect}
-                        className={pillButton + ' ml-2'}
-                      />
-                      <FrequentFilterPills editFields={editFields as any} className={pillButton + ' ml-2'} />
-                      <FilterCascadingDropdown 
-                        editFields={editFields}
-                        filterOptions={mergedListFilterOptions}
-                        filters={filters}
-                        setFilters={setFilters}
-                        router={router}
-                        pathname={pathname}
-                        params={new URLSearchParams(params.toString())}
-                        className={pillButton + ' ml-2'}
-                      />
-                    </>
-                  ) : null}
-                  {/* Inline search input - appears when search icon is clicked */}
-                  <InlineSearchInput 
-                    isOpen={isInlineSearchOpen}
-                    value={inlineSearchValue}
-                    onChange={(value) => {
-                      setInlineSearchValue(value);
-                      // Update URL param for task list search
-                      const newParams = new URLSearchParams(params.toString());
-                      if (value) {
-                        newParams.set('q', value);
-                      } else {
-                        newParams.delete('q');
-                      }
-                      shallowReplaceUrl(`${effectivePathname}?${newParams.toString()}`);
-                    }}
-                    onClose={() => {
-                      setIsInlineSearchOpen(false);
-                      setInlineSearchValue('');
-                      // Clear search from URL
-                      const newParams = new URLSearchParams(params.toString());
-                      newParams.delete('q');
-                      shallowReplaceUrl(`${effectivePathname}?${newParams.toString()}`);
-                    }}
-                  />
-                </div>
-              </div>
-
-              {/* Right side: fixed controls (no overlap with scroll area) */}
-              {focus !== 'middle' && (() => {
-                const isLeftFocused = focus === 'left' || (layout.length === 2 && layout.includes('left') && layout.includes('right'));
-                return (
-                  <div className="flex items-center flex-shrink-0 bg-white pl-2 border-l border-gray-200">
-                    {isLeftObjectTasks ? (
-                      <FilterCascadingDropdown
-                        editFields={editFields}
-                        filterOptions={mergedListFilterOptions}
-                        filters={filters}
-                        setFilters={setFilters}
-                        router={router}
-                        pathname={pathname}
-                        params={new URLSearchParams(params.toString())}
-                        variant="icon"
-                        className="shrink-0"
-                      />
-                    ) : null}
-                    <button
-                      className={cn(expandButton, 'flex-shrink-0 ml-2')}
-                      aria-label={`Search ${leftPaneObjectLabel(leftObject).toLowerCase()}`}
-                      title={`Search ${leftPaneObjectLabel(leftObject).toLowerCase()}`}
-                      onClick={() => {
-                        setIsInlineSearchOpen(prev => !prev);
-                        if (!isInlineSearchOpen) {
-                          setInlineSearchValue('');
-                        }
-                      }}
-                      type="button"
-                    >
-                      <Search className="w-4 h-4" />
-                    </button>
-                    <button
-                      className={cn(expandButton, 'flex-shrink-0 ml-2')}
-                      aria-label={isLeftFocused ? 'Restore layout' : `Focus on ${leftPaneObjectLabel(leftObject).toLowerCase()} list`}
-                      title={isLeftFocused ? 'Restore layout' : `Focus on ${leftPaneObjectLabel(leftObject).toLowerCase()} list`}
-                      onClick={() => {
-                        if (isLeftFocused) {
-                          const currentMiddleView = params.get('middleView') || 'calendar';
-                          const hasSelectedTask = !!selectedTaskId;
-                          handleLayoutChange({ 
-                            layout: hasSelectedTask ? ['left', 'middle', 'right'] : ['left', 'middle'],
-                            leftView: 'list',
-                            middleView: currentMiddleView,
-                            rightView: 'details',
-                            focus: null 
-                          });
-                        } else {
-                          handleLayoutChange({ focus: 'left' });
-                        }
-                      }}
-                      type="button"
-                    >
-                      {isLeftFocused ? <Minimize2 className="w-5 h-5" /> : <Maximize2 className="w-5 h-5" />}
-                    </button>
-                  </div>
-                );
-              })()}
-            </div>
-            {/* Active Filter Badges Bar */}
-            {isLeftObjectTasks ? (() => {
-              const { badges, onClearAll } = getActiveFilterBadges(
-                filters,
-                setFilters,
-                router,
-                pathname,
-                new URLSearchParams(params.toString()),
-                mergedListFilterOptions
-              );
+            {/* Single chrome row: object chips + optional group-by · search / … / expand on the right */}
+            {(() => {
+              const isLeftFocused =
+                focus === "left"
+                || (layout.length === 2 && layout.includes("left") && layout.includes("right"))
+              const showChromeActions = focus !== "middle"
+              const listGroupBySummary = getListGroupByLabelFromParams(params.get("groupBy"))
+              const { badges: activeFilterBadges, onClearAll: clearActiveFilters } =
+                isLeftObjectTasks
+                  ? getActiveFilterBadges(
+                      filters,
+                      setFilters,
+                      router,
+                      pathname,
+                      new URLSearchParams(params.toString()),
+                      mergedListFilterOptions,
+                    )
+                  : { badges: [] as ReturnType<typeof getActiveFilterBadges>["badges"], onClearAll: undefined }
 
               return (
-                <FilterBadges
-                  badges={badges}
-                  onClearAll={onClearAll}
-                  className="mt-1 mb-2 shrink-0 px-4"
-                />
-              );
-            })() : null}
+                <>
+                  <div className="flex h-10 min-h-10 max-h-10 w-full shrink-0 items-center gap-1 overflow-hidden border-b border-gray-200/80 bg-white pl-2 pr-1.5">
+                    {isInlineSearchOpen ? (
+                      <InlineSearchInput
+                        isOpen
+                        fullWidth
+                        value={inlineSearchValue}
+                        onChange={(value) => {
+                          setInlineSearchValue(value)
+                          const newParams = new URLSearchParams(params.toString())
+                          if (value) newParams.set("q", value)
+                          else newParams.delete("q")
+                          shallowReplaceUrl(`${effectivePathname}?${newParams.toString()}`)
+                        }}
+                        onClose={() => {
+                          setIsInlineSearchOpen(false)
+                          setInlineSearchValue("")
+                          const newParams = new URLSearchParams(params.toString())
+                          newParams.delete("q")
+                          shallowReplaceUrl(`${effectivePathname}?${newParams.toString()}`)
+                        }}
+                        placeholder={`Search ${leftPaneObjectLabel(leftObject).toLowerCase()}...`}
+                        leading={
+                          <LeftObjectSwitcher
+                            value={leftObject}
+                            onChange={navigateToLeftObject}
+                            forceCompact
+                            isTaskView={isLeftObjectTasks}
+                            className="h-6"
+                          />
+                        }
+                      />
+                    ) : (
+                      <div
+                        ref={leftToolbarScrollRef}
+                        className="min-w-0 flex-1 overflow-x-auto overflow-y-hidden whitespace-nowrap pl-2 scrollbar-thin scrollbar-thumb-gray-300 scrollbar-track-transparent"
+                        style={{ WebkitOverflowScrolling: "touch" }}
+                      >
+                        <LeftObjectSwitcher
+                          value={leftObject}
+                          onChange={navigateToLeftObject}
+                          containerWidth={leftToolbarWidth}
+                          isTaskView={isLeftObjectTasks}
+                        />
+                      </div>
+                    )}
+
+                    {showChromeActions ? (
+                      <div className="flex shrink-0 items-center gap-0.5">
+                        {isLeftObjectTasks ? (
+                          <FilterCascadingDropdown
+                            editFields={editFields}
+                            filterOptions={mergedListFilterOptions}
+                            filters={filters}
+                            setFilters={setFilters}
+                            router={router}
+                            pathname={pathname}
+                            params={new URLSearchParams(params.toString())}
+                            variant="icon"
+                            className="shrink-0"
+                          />
+                        ) : null}
+                        {!isInlineSearchOpen ? (
+                        <button
+                          type="button"
+                          className={cn(expandButton, "ml-0 shrink-0")}
+                          aria-label={`Search ${leftPaneObjectLabel(leftObject).toLowerCase()}`}
+                          title={`Search ${leftPaneObjectLabel(leftObject).toLowerCase()}`}
+                          onClick={() => {
+                            setIsInlineSearchOpen(true)
+                            setInlineSearchValue("")
+                          }}
+                        >
+                          <Search className="h-3.5 w-3.5" />
+                        </button>
+                        ) : null}
+                        <TasksPaneMoreMenu
+                          visible
+                          ariaLabel="More list options"
+                          triggerClassName="h-7 w-7"
+                        >
+                          {leftObject === "mentions" ? (
+                            <>
+                              <DropdownMenuItem onClick={() => handleMentionsTabChange("received")}>
+                                Received
+                              </DropdownMenuItem>
+                              <DropdownMenuItem onClick={() => handleMentionsTabChange("sent")}>
+                                Sent
+                              </DropdownMenuItem>
+                              <DropdownMenuItem onClick={() => handleMentionsTabChange("unseen")}>
+                                Unseen
+                              </DropdownMenuItem>
+                              <DropdownMenuSeparator />
+                            </>
+                          ) : null}
+                          {isLeftObjectTasks ? (
+                            <>
+                              <DropdownMenuSub>
+                                <DropdownMenuSubTrigger className="gap-2">
+                                  <span className="min-w-0 truncate">Group by</span>
+                                  <span className="ml-auto max-w-[7rem] truncate text-xs text-muted-foreground">
+                                    {listGroupBySummary}
+                                  </span>
+                                </DropdownMenuSubTrigger>
+                                <DropdownMenuSubContent className="min-w-[220px]">
+                                  <GroupingMenuItems />
+                                </DropdownMenuSubContent>
+                              </DropdownMenuSub>
+                              <DropdownMenuItem
+                                className="justify-between gap-2"
+                                onSelect={(e) => {
+                                  e.preventDefault()
+                                  handleToggleMultiselect()
+                                }}
+                              >
+                                <span>Multiselect</span>
+                                <span className="text-xs text-muted-foreground">
+                                  {isMultiselectMode ? "On" : "Off"}
+                                </span>
+                              </DropdownMenuItem>
+                              <DropdownMenuSeparator />
+                              <div className="px-2 py-1.5">
+                                <FrequentFilterPills
+                                  editFields={editFields as any}
+                                  className={cn(pillButton, "shrink-0")}
+                                />
+                              </div>
+                            </>
+                          ) : null}
+                        </TasksPaneMoreMenu>
+                        <button
+                          type="button"
+                          className={cn(expandButton, "ml-0 shrink-0")}
+                          aria-label={
+                            isLeftFocused
+                              ? "Restore layout"
+                              : `Focus on ${leftPaneObjectLabel(leftObject).toLowerCase()} list`
+                          }
+                          title={
+                            isLeftFocused
+                              ? "Restore layout"
+                              : `Focus on ${leftPaneObjectLabel(leftObject).toLowerCase()} list`
+                          }
+                          onClick={() => {
+                            if (isLeftFocused) {
+                              const currentMiddleView = params.get("middleView") || "calendar"
+                              const hasSelectedTask = !!selectedTaskId
+                              handleLayoutChange({
+                                layout: hasSelectedTask ? ["left", "middle", "right"] : ["left", "middle"],
+                                leftView: "list",
+                                middleView: currentMiddleView,
+                                rightView: "details",
+                                focus: null,
+                              })
+                            } else {
+                              handleLayoutChange({ focus: "left" })
+                            }
+                          }}
+                        >
+                          {isLeftFocused ? <Minimize2 className="h-3.5 w-3.5" /> : <Maximize2 className="h-3.5 w-3.5" />}
+                        </button>
+                        {!showRightToolPanel && !showDetailsPanel && !isMobile ? (
+                          <button
+                            type="button"
+                            className={cn(expandButton, "ml-0 shrink-0")}
+                            title="Open AI pane"
+                            aria-label="Open right pane"
+                            onClick={() => handleTaskAiPaneOpenChange(true)}
+                          >
+                            <PanelRightOpen className="h-3.5 w-3.5" />
+                          </button>
+                        ) : null}
+                      </div>
+                    ) : null}
+                  </div>
+
+                  {activeFilterBadges.length > 0 ? (
+                    <div className="flex h-9 min-h-9 max-h-9 w-full shrink-0 items-center overflow-x-auto border-b border-gray-200/80 bg-white px-4">
+                      <FilterBadges
+                        badges={activeFilterBadges}
+                        onClearAll={clearActiveFilters}
+                        className="flex-nowrap gap-1.5"
+                      />
+                    </div>
+                  ) : null}
+                </>
+              )
+            })()}
             
             {/* Left list content */}
             <div className="min-h-0 min-w-0 flex-1 overflow-hidden">
@@ -5147,7 +6253,7 @@ export function TasksLayout({
                   fetchPage={globalSearch.fetchFullResultsPage}
                 />
               ) : (
-                <div className="flex h-full items-center justify-center px-4 text-sm text-gray-500">
+                <div className="flex h-full items-center justify-center px-4 text-xs text-gray-500">
                   Unable to load {leftPaneObjectLabel(leftObject).toLowerCase()}.
                 </div>
               )}
@@ -5201,6 +6307,9 @@ export function TasksLayout({
           ref={centerPanelRef}
           id="center-pane"
           order={2}
+          onPointerDownCapture={() => {
+            useFocusedWorkspacePaneStore.getState().setFocusedPane("middle")
+          }}
           defaultSize={(() => {
             // If the middle pane isn't part of the layout, it must not reserve space (prevents "blank middle pane")
             if (!isCenterPaneVisible) return 0;
@@ -5357,6 +6466,9 @@ export function TasksLayout({
           ref={rightPanelRef}
           id="right-pane"
           order={3}
+          onPointerDownCapture={() => {
+            useFocusedWorkspacePaneStore.getState().setFocusedPane("right")
+          }}
           defaultSize={focus === 'right' ? 100 : 30}
           minSize={(() => {
             // Allow complete collapse when not focused OR when layout doesn't include this pane
@@ -5391,7 +6503,6 @@ export function TasksLayout({
                 projectId={resolvedStandaloneAiProjectId ?? undefined}
                 inline={true}
                 externalThreadId={searchOpenedAiThreadId}
-                disableUrlSync={Boolean(searchOpenedAiThreadId)}
               />
             </div>
           ) : focus === 'right' && middleView === 'ai-build' ? (
@@ -5444,7 +6555,6 @@ export function TasksLayout({
                     inline={true}
                     activeFieldContext={activeFieldContext}
                     externalThreadId={searchOpenedAiThreadId}
-                    disableUrlSync={Boolean(searchOpenedAiThreadId)}
                   />
                 ) : null}
               </div>
@@ -5521,7 +6631,6 @@ export function TasksLayout({
                       inline={true}
                       activeFieldContext={activeFieldContext}
                       externalThreadId={searchOpenedAiThreadId}
-                      disableUrlSync={Boolean(searchOpenedAiThreadId)}
                     />
                   </div>
                 </>
@@ -5622,7 +6731,6 @@ export function TasksLayout({
                     inline={true}
                     activeFieldContext={activeFieldContext}
                     externalThreadId={searchOpenedAiThreadId}
-                    disableUrlSync={Boolean(searchOpenedAiThreadId)}
                   />
                 </div>
               </>

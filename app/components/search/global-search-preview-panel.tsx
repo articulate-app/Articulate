@@ -31,6 +31,19 @@ const DEFAULT_PREVIEW_TYPES = [
   "artifact",
 ] as const satisfies readonly GlobalSearchItemEntityType[]
 
+export type GlobalSearchPreviewQuickAction = {
+  key: string
+  label: string
+  icon: React.ReactNode
+  onSelect: () => void
+}
+
+export type GlobalSearchPreviewMenuSection = {
+  key: string
+  label?: string
+  actions: GlobalSearchPreviewQuickAction[]
+}
+
 export type GlobalSearchPreviewPanelProps = {
   selectedTypeFilters?: GlobalSearchItemEntityType[]
   onToggleTypeFilter?: (type: GlobalSearchItemEntityType) => void
@@ -57,12 +70,30 @@ export type GlobalSearchPreviewPanelProps = {
   inputValue?: string
   onInputValueChange?: (value: string) => void
   autoFocusInput?: boolean
+  /**
+   * When set, keyword-research lightbulb uses this instead of the global event
+   * (so the shared workspace `+` menu can open Research in a specific pane).
+   */
+  onOpenResearch?: (query: string) => void
+  /** Optional tools row (Browser / AI Chat) used by WorkspaceNewTabMenu. */
+  workspaceQuickActions?: GlobalSearchPreviewQuickAction[]
+  /** Preferred structured sections for the workspace `+` menu. */
+  workspaceMenuSections?: GlobalSearchPreviewMenuSection[]
+  /** Hide entity-type filter pills (used by the workspace `+` menu). */
+  hideTypeFilters?: boolean
+  /** Which empty-state recents blocks to show. */
+  recentsMode?: "both" | "opened" | "searches" | "none"
+  /**
+   * Compact density for the workspace `+` menu: smaller type, tighter rows,
+   * and a single shared scroll for sections + recents.
+   */
+  compact?: boolean
 }
 
 /**
- * Shared preview body used by the header search dropdown and the middle-pane "+" menu.
+ * Shared preview body used by the header search dropdown and WorkspaceNewTabMenu (`+`).
  * Keep this the single source of truth for type pills, recent searches, recently opened,
- * live preview rows, and the keyword-volumes shortcut row.
+ * live preview rows, keyword-volumes shortcut, and optional workspace quick actions.
  */
 export function GlobalSearchPreviewPanel({
   selectedTypeFilters = [],
@@ -81,6 +112,12 @@ export function GlobalSearchPreviewPanel({
   inputValue: controlledInputValue,
   onInputValueChange,
   autoFocusInput = false,
+  onOpenResearch,
+  workspaceQuickActions,
+  workspaceMenuSections,
+  hideTypeFilters = false,
+  recentsMode = "both",
+  compact = false,
 }: GlobalSearchPreviewPanelProps) {
   const filtersRailRef = React.useRef<HTMLDivElement | null>(null)
   const inputRef = React.useRef<HTMLInputElement | null>(null)
@@ -119,12 +156,17 @@ export function GlobalSearchPreviewPanel({
 
   const openKeywordResearch = React.useCallback(
     (query: string) => {
+      if (onOpenResearch) {
+        onOpenResearch(query)
+        onRequestClose?.()
+        return
+      }
       if (typeof window === "undefined") return
       const detail: OpenKeywordResearchDetail = { query: query.trim() || null }
       window.dispatchEvent(new CustomEvent(OPEN_KEYWORD_RESEARCH_EVENT, { detail }))
       onRequestClose?.()
     },
-    [onRequestClose],
+    [onOpenResearch, onRequestClose],
   )
 
   const visibleTypeFilters = React.useMemo(
@@ -141,7 +183,7 @@ export function GlobalSearchPreviewPanel({
   const historyQuery = useQuery({
     queryKey: ["global-search", "header-history", 7],
     queryFn: ({ signal }) => fetchGlobalSearchHistoryRecent(7, signal),
-    enabled: enabled && !hasQuery,
+    enabled: enabled && !hasQuery && (recentsMode === "both" || recentsMode === "searches"),
     staleTime: 0,
     refetchOnMount: "always",
   })
@@ -152,7 +194,7 @@ export function GlobalSearchPreviewPanel({
       const items = await fetchGlobalRecentlyOpened({ limit: 8, signal })
       return items.filter((item) => item.entity_type !== "team")
     },
-    enabled: enabled && !hasQuery,
+    enabled: enabled && !hasQuery && (recentsMode === "both" || recentsMode === "opened"),
     staleTime: 0,
     refetchOnMount: "always",
   })
@@ -311,12 +353,20 @@ export function GlobalSearchPreviewPanel({
   return (
     <div
       className={cn(
-        "flex max-h-[56dvh] flex-col overflow-hidden rounded-xl border border-gray-200 bg-white shadow-xl md:max-h-[32rem]",
+        "flex flex-col overflow-hidden rounded-xl border border-gray-200 bg-white shadow-xl",
+        compact
+          ? "max-h-[min(28rem,70dvh)]"
+          : "max-h-[56dvh] md:max-h-[32rem]",
         className,
       )}
     >
       {showInput ? (
-        <div className="relative shrink-0 border-b border-gray-100 px-3 py-2.5">
+        <div
+          className={cn(
+            "relative shrink-0 border-b border-gray-100",
+            compact ? "px-2 py-1.5" : "px-3 py-2.5",
+          )}
+        >
           <input
             ref={inputRef}
             type="text"
@@ -345,23 +395,37 @@ export function GlobalSearchPreviewPanel({
               }
             }}
             autoComplete="off"
-            className="w-full rounded-md border py-2 pl-9 pr-9 text-sm focus:outline-none focus:ring-2 focus:ring-gray-200"
+            className={cn(
+              "w-full rounded-md border focus:outline-none focus:ring-2 focus:ring-gray-200",
+              compact
+                ? "h-8 py-1.5 pl-8 pr-8 text-xs"
+                : "py-2 pl-9 pr-9 text-sm",
+            )}
           />
-          <Search className="pointer-events-none absolute left-5 top-1/2 h-4 w-4 -translate-y-1/2 text-gray-400" />
+          <Search
+            className={cn(
+              "pointer-events-none absolute top-1/2 -translate-y-1/2 text-gray-400",
+              compact ? "left-4 h-3.5 w-3.5" : "left-5 h-4 w-4",
+            )}
+          />
           {inputValue ? (
             <button
               type="button"
               aria-label="Clear search"
               onMouseDown={(event) => event.preventDefault()}
               onClick={handleClear}
-              className="absolute right-5 top-1/2 -translate-y-1/2 text-gray-400 hover:text-gray-600 focus:outline-none"
+              className={cn(
+                "absolute top-1/2 -translate-y-1/2 text-gray-400 hover:text-gray-600 focus:outline-none",
+                compact ? "right-4" : "right-5",
+              )}
             >
-              <X className="h-4 w-4" />
+              <X className={compact ? "h-3.5 w-3.5" : "h-4 w-4"} />
             </button>
           ) : null}
         </div>
       ) : null}
 
+      {!hideTypeFilters ? (
       <div className="flex shrink-0 items-center gap-1 border-b border-gray-100 px-2 py-2.5">
         <div
           ref={filtersRailRef}
@@ -391,7 +455,7 @@ export function GlobalSearchPreviewPanel({
           onMouseDown={(event) => event.preventDefault()}
           onClick={(event) => {
             event.stopPropagation()
-            // Same path as the old "Get search volumes…" row: open Research middle pane
+            // Same path as the old "Get search volumes…" row: open Research
             // on the keywords tab, seeded with the current draft query.
             openKeywordResearch(inputValue)
           }}
@@ -410,78 +474,239 @@ export function GlobalSearchPreviewPanel({
           <Lightbulb className="h-3.5 w-3.5" aria-hidden="true" />
         </button>
       </div>
+      ) : null}
 
-      {!hasQuery ? (
-        <div className="min-h-0 max-h-[24rem] overflow-y-auto px-2 py-2">
-          <div className="px-2 pb-1 pt-1 text-xs font-medium uppercase tracking-wide text-gray-500">
-            Recent searches
+      <div
+        className={cn(
+          "min-h-0 flex-1 overflow-y-auto",
+          compact ? "px-1.5 py-1.5" : "px-2 py-2",
+          !compact && "max-h-[24rem]",
+        )}
+      >
+        {workspaceMenuSections && workspaceMenuSections.length > 0 && !hasQuery ? (
+          <div className={cn(compact ? "pb-1" : "pb-2")}>
+            {workspaceMenuSections.map((section, sectionIndex) => (
+              <div
+                key={section.key}
+                className={cn(
+                  sectionIndex > 0 &&
+                    (compact
+                      ? "mt-1.5 border-t border-gray-100 pt-1.5"
+                      : "mt-2 border-t border-gray-100 pt-2"),
+                )}
+              >
+                {section.label ? (
+                  <div
+                    className={cn(
+                      "font-medium uppercase tracking-wide text-gray-400",
+                      compact ? "px-1.5 pb-0.5 pt-0.5 text-[10px]" : "px-2 pb-1 pt-0.5 text-[11px]",
+                    )}
+                  >
+                    {section.label}
+                  </div>
+                ) : null}
+                <div className={cn("flex flex-col", compact ? "gap-0" : "gap-0.5")}>
+                  {section.actions.map((action) => (
+                    <button
+                      key={action.key}
+                      type="button"
+                      onMouseDown={(event) => event.preventDefault()}
+                      onClick={(event) => {
+                        event.stopPropagation()
+                        action.onSelect()
+                      }}
+                      className={cn(
+                        "flex w-full items-center text-left text-gray-700 transition-colors hover:bg-gray-50",
+                        compact
+                          ? "h-7 gap-2 rounded-md px-1.5 text-xs"
+                          : "h-9 gap-2.5 rounded-lg px-2.5 text-sm",
+                      )}
+                    >
+                      <span
+                        className={cn(
+                          "flex shrink-0 items-center justify-center text-gray-600",
+                          compact
+                            ? "h-5 w-5 rounded bg-gray-100 [&_svg]:h-3 [&_svg]:w-3"
+                            : "h-7 w-7 rounded-md bg-gray-100",
+                        )}
+                      >
+                        {action.icon}
+                      </span>
+                      <span className="min-w-0 truncate font-medium">{action.label}</span>
+                    </button>
+                  ))}
+                </div>
+              </div>
+            ))}
           </div>
-          {historyQuery.isLoading ? (
-            <div className="px-3 py-6 text-sm text-gray-500">Loading recent searches...</div>
-          ) : historyQuery.data?.length === 0 ? (
-            <div className="px-3 py-6 text-sm text-gray-500">No recent searches.</div>
-          ) : (
-            (historyQuery.data ?? []).map((item) => (
+        ) : workspaceQuickActions && workspaceQuickActions.length > 0 ? (
+          <div
+            className={cn(
+              "mb-1 flex flex-wrap items-center gap-1.5 border-b border-gray-100 pb-2",
+              compact ? "px-1.5 pt-0.5" : "px-1 pt-1",
+            )}
+          >
+            {workspaceQuickActions.map((action) => (
               <button
-                key={`${item.term}:${item.created_at ?? ""}`}
+                key={action.key}
                 type="button"
                 onMouseDown={(event) => event.preventDefault()}
-                onClick={() => {
-                  onSearchCommit?.(item.term)
-                  onRequestClose?.()
+                onClick={(event) => {
+                  event.stopPropagation()
+                  action.onSelect()
                 }}
-                className="flex h-9 w-full items-center gap-3 rounded-lg px-3 text-left text-sm font-normal text-gray-700 hover:bg-gray-50"
+                className={cn(
+                  "inline-flex shrink-0 items-center gap-1.5 rounded-full bg-gray-100 font-medium text-gray-700 transition-colors hover:bg-gray-200",
+                  compact ? "h-7 px-2 py-0.5 text-[11px]" : "h-8 px-2.5 py-1 text-xs",
+                )}
               >
-                <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-gray-100 text-gray-500">
-                  <Clock className="h-3.5 w-3.5" aria-hidden="true" />
-                </span>
-                <span className="min-w-0 truncate">{item.term}</span>
+                {action.icon}
+                {action.label}
               </button>
-            ))
-          )}
-          <div className="mt-3 border-t border-gray-100 px-2 pb-1 pt-3 text-xs font-medium uppercase tracking-wide text-gray-500">
-            Recently opened
+            ))}
           </div>
-          {recentlyOpenedQuery.isLoading ? (
-            <div className="px-3 py-3 text-sm text-gray-500">Loading recently opened...</div>
-          ) : recentlyOpenedQuery.data?.length === 0 ? (
-            <div className="px-3 py-3 text-sm text-gray-500">No recently opened items.</div>
-          ) : (
-            <div>
-              {(recentlyOpenedQuery.data ?? []).map((item, index) => (
+        ) : null}
+
+        {!hasQuery ? (
+          <>
+            {recentsMode === "both" || recentsMode === "searches" ? (
+              <>
+                <div
+                  className={cn(
+                    "font-medium uppercase tracking-wide text-gray-500",
+                    compact ? "px-1.5 pb-0.5 pt-1 text-[10px]" : "px-2 pb-1 pt-1 text-xs",
+                    workspaceMenuSections?.length || workspaceQuickActions?.length
+                      ? compact
+                        ? "mt-1 border-t border-gray-100 pt-1.5"
+                        : "mt-2 border-t border-gray-100 pt-2"
+                      : null,
+                  )}
+                >
+                  Recent searches
+                </div>
+                {historyQuery.isLoading ? (
+                  <div className={cn("text-gray-500", compact ? "px-2 py-3 text-xs" : "px-3 py-6 text-sm")}>
+                    Loading recent searches...
+                  </div>
+                ) : historyQuery.data?.length === 0 ? (
+                  <div className={cn("text-gray-500", compact ? "px-2 py-3 text-xs" : "px-3 py-6 text-sm")}>
+                    No recent searches.
+                  </div>
+                ) : (
+                  (historyQuery.data ?? []).map((item) => (
+                    <button
+                      key={`${item.term}:${item.created_at ?? ""}`}
+                      type="button"
+                      onMouseDown={(event) => event.preventDefault()}
+                      onClick={() => {
+                        onSearchCommit?.(item.term)
+                        onRequestClose?.()
+                      }}
+                      className={cn(
+                        "flex w-full items-center text-left font-normal text-gray-700 hover:bg-gray-50",
+                        compact
+                          ? "h-7 gap-2 rounded-md px-1.5 text-xs"
+                          : "h-9 gap-3 rounded-lg px-3 text-sm",
+                      )}
+                    >
+                      <span
+                        className={cn(
+                          "flex shrink-0 items-center justify-center text-gray-500",
+                          compact ? "h-5 w-5 rounded bg-gray-100" : "h-8 w-8 rounded-lg bg-gray-100",
+                        )}
+                      >
+                        <Clock className={compact ? "h-3 w-3" : "h-3.5 w-3.5"} aria-hidden="true" />
+                      </span>
+                      <span className="min-w-0 truncate">{item.term}</span>
+                    </button>
+                  ))
+                )}
+              </>
+            ) : null}
+            {recentsMode === "both" || recentsMode === "opened" ? (
+              <>
+                <div
+                  className={cn(
+                    "font-medium uppercase tracking-wide text-gray-500",
+                    compact ? "px-1.5 pb-0.5 text-[10px]" : "px-2 pb-1 text-xs",
+                    recentsMode === "both" ||
+                      workspaceMenuSections?.length ||
+                      workspaceQuickActions?.length
+                      ? compact
+                        ? "mt-1.5 border-t border-gray-100 pt-1.5"
+                        : "mt-3 border-t border-gray-100 pt-3"
+                      : compact
+                        ? "pt-0.5"
+                        : "pt-1",
+                  )}
+                >
+                  {recentsMode === "opened" ? "Recents" : "Recently opened"}
+                </div>
+                {recentlyOpenedQuery.isLoading ? (
+                  <div className={cn("text-gray-500", compact ? "px-2 py-2 text-xs" : "px-3 py-3 text-sm")}>
+                    Loading recently opened...
+                  </div>
+                ) : recentlyOpenedQuery.data?.length === 0 ? (
+                  <div className={cn("text-gray-500", compact ? "px-2 py-2 text-xs" : "px-3 py-3 text-sm")}>
+                    No recently opened items.
+                  </div>
+                ) : (
+                  <div>
+                    {(recentlyOpenedQuery.data ?? [])
+                      .slice(0, recentsMode === "opened" ? 6 : 8)
+                      .map((item, index) => (
+                        <SearchResultRow
+                          key={`recently-opened:${item.entity_type}:${item.entity_id ?? index}`}
+                          item={item}
+                          onSelect={handleSelectResult}
+                          className={compact ? "h-8 px-1.5 text-xs" : "h-10 px-3"}
+                          variant="preview"
+                        />
+                      ))}
+                  </div>
+                )}
+              </>
+            ) : null}
+            {recentsMode === "none" &&
+            !(workspaceMenuSections && workspaceMenuSections.length > 0) &&
+            !(workspaceQuickActions && workspaceQuickActions.length > 0) ? (
+              <div className={cn("text-gray-500", compact ? "px-2 py-3 text-xs" : "px-3 py-6 text-sm")}>
+                Type to search.
+              </div>
+            ) : null}
+          </>
+        ) : (
+          <>
+            {isPreviewLoading && previewItems.length === 0 ? (
+              <div className={cn("text-gray-500", compact ? "px-2 py-3 text-xs" : "px-3 py-6 text-sm")}>
+                Searching...
+              </div>
+            ) : previewItems.length === 0 ? (
+              <div className={cn("text-gray-500", compact ? "px-2 py-3 text-xs" : "px-3 py-4 text-sm")}>
+                No matching tasks, projects, or people.
+              </div>
+            ) : (
+              previewItems.map((item, index) => (
                 <SearchResultRow
-                  key={`recently-opened:${item.entity_type}:${item.entity_id ?? index}`}
+                  key={getPreviewLabel(item.entity_type) + ":" + (item.entity_id ?? index)}
                   item={item}
                   onSelect={handleSelectResult}
-                  className="h-10 px-3"
+                  className={compact ? "px-1.5 py-1.5 text-xs" : "px-3 py-2"}
                   variant="preview"
                 />
-              ))}
-            </div>
-          )}
-        </div>
-      ) : (
-        <div className="min-h-0 max-h-[24rem] overflow-y-auto px-2 py-2">
-          {isPreviewLoading && previewItems.length === 0 ? (
-            <div className="px-3 py-6 text-sm text-gray-500">Searching...</div>
-          ) : previewItems.length === 0 ? (
-            <div className="px-3 py-4 text-sm text-gray-500">No matching tasks, projects, or people.</div>
-          ) : (
-            previewItems.map((item, index) => (
-              <SearchResultRow
-                key={getPreviewLabel(item.entity_type) + ":" + (item.entity_id ?? index)}
-                item={item}
-                onSelect={handleSelectResult}
-                className="px-3 py-2"
-                variant="preview"
-              />
-            ))
-          )}
-        </div>
-      )}
+              ))
+            )}
+          </>
+        )}
+      </div>
 
       {hasQuery ? (
-        <div className="shrink-0 border-t border-gray-100 px-3 py-3">
+        <div
+          className={cn(
+            "shrink-0 border-t border-gray-100",
+            compact ? "px-2 py-2" : "px-3 py-3",
+          )}
+        >
           <button
             type="button"
             onMouseDown={(event) => event.preventDefault()}
@@ -489,7 +714,10 @@ export function GlobalSearchPreviewPanel({
               onShowAll?.(inputValue)
               onRequestClose?.()
             }}
-            className="w-full rounded-lg bg-gray-900 px-3 py-2 text-sm font-medium text-white hover:bg-gray-800"
+            className={cn(
+              "w-full rounded-lg bg-gray-900 font-medium text-white hover:bg-gray-800",
+              compact ? "px-2.5 py-1.5 text-xs" : "px-3 py-2 text-sm",
+            )}
           >
             Show all search results
           </button>

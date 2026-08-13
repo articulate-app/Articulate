@@ -28,9 +28,9 @@ import {
   type UserSettingsCategory,
 } from "./user-settings-panel"
 import { createClientComponentClient } from "@supabase/auth-helpers-nextjs"
-import { shallowReplaceSearchParams } from "../../lib/tasks-shallow-nav"
 import { mergeWorkspaceUrlState } from "../../lib/workspace-url-state"
-import { buildCenterPaneSelectionSearchParams } from "../../lib/center-pane-selection-url"
+import { openWorkspaceView } from "../../lib/open-workspace-view"
+import { useWorkspaceHostPane } from "../workspace/workspace-host-pane-context"
 import { useMobileDetection } from "../../hooks/use-mobile-detection"
 import { MobileDetailHeader, type MobileDetailAction } from "../ui/mobile-detail-header"
 import { UserAvatar } from "../UserAvatar"
@@ -67,10 +67,6 @@ interface UserDetailsPageProps {
 
 type TabValue = 'overview' | 'tasks' | 'comments' | 'reviews' | 'occupation' | 'projects'
 
-function readCurrentSearchParams(fallback: { toString: () => string }): URLSearchParams {
-  if (typeof window !== "undefined") return new URLSearchParams(window.location.search)
-  return new URLSearchParams(fallback.toString())
-}
 const USER_ALLOWED_TABS: TabValue[] = ['overview', 'tasks', 'comments', 'reviews', 'occupation', 'projects']
 
 const LEGACY_SETTINGS_TAB_MAP: Record<string, UserSettingsCategory> = {
@@ -96,6 +92,7 @@ export function UserDetailsPage({
   const router = useRouter()
   const searchParams = useSearchParams()
   const pathname = usePathname()
+  const hostPane = useWorkspaceHostPane()
   const queryClient = useQueryClient()
   const publicUserId = useCurrentUserStore((s) => s.publicUserId)
   const isOwnProfile = publicUserId != null && publicUserId === userId
@@ -332,14 +329,12 @@ export function UserDetailsPage({
         onOpenProject(projectId)
         return
       }
-      const next = buildCenterPaneSelectionSearchParams({
-        currentSearchParams: readCurrentSearchParams(searchParams),
-        entity: "project",
-        id: projectId,
-      })
-      shallowReplaceSearchParams(pathname, next)
+      openWorkspaceView(
+        { type: "project", projectId, id: projectId },
+        { pane: hostPane, pathname, source: "user-details-open-project" },
+      )
     },
-    [onOpenProject, pathname, searchParams],
+    [hostPane, onOpenProject, pathname],
   )
 
   const tasksSection = (

@@ -1,5 +1,6 @@
 # dependencies
 /node_modules
+/tools/articulate-browser-bridge/node_modules
 /.pnp
 .pnp.js
 

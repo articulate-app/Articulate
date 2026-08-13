@@ -4,7 +4,6 @@ import React from "react"
 import { TaskOverviewAttachmentsPreview } from "./task-overview-attachments-preview"
 import { TaskOverviewReviewsPreview } from "./task-overview-reviews-preview"
 import { TaskOverviewUpdatesComments } from "./task-overview-updates-comments"
-import { TaskOverviewRelatedIdeas, type TaskRelatedIdeaPreviewRow } from "./task-overview-related-ideas"
 import { TaskOverviewPreviewSection } from "./task-overview-preview-section"
 import { TaskSeoAndAiSeoTab } from "../../../features/tasks/components/task-seo-and-ai-seo-tab"
 import { ArtifactWorkspace } from "../../../features/artifacts/ArtifactWorkspace"
@@ -21,18 +20,11 @@ type TaskOverviewPreviewsProps = {
   bootstrapAttachments: unknown[]
   reviewData?: ReviewData | null
   preferredChannelId: number | null
-  onNavigateTab: (
+  /** @deprecated Tabs removed from task details; kept optional for call-site compat. */
+  onNavigateTab?: (
     tab: "attachments" | "reviews" | "activity" | "comments" | "artifacts" | "seo",
   ) => void
   commentsPanelProps: TaskCommentsPanelProps
-  relatedIdeas?: TaskRelatedIdeaPreviewRow[]
-  isRelatedIdeasLoading?: boolean
-  isRelatedIdeasRefreshing?: boolean
-  ideaActionById?: Record<string, "accepted" | "dismissed" | null>
-  contentTypeLabelById?: Map<string, string>
-  onDismissRelatedIdea?: (ideaId: string) => void
-  onAcceptRelatedIdea?: (idea: TaskRelatedIdeaPreviewRow) => void
-  onRefreshRelatedIdeas?: () => void
   /** Kept optional for call-site compatibility; unused after overview artifact cards. */
   onActiveFieldChange?: (context: AiActiveFieldContext) => void
   onArtifactTextSelectForComment?: (selection: {
@@ -57,84 +49,55 @@ export function TaskOverviewPreviews({
   bootstrapAttachments,
   reviewData,
   preferredChannelId,
-  onNavigateTab,
   commentsPanelProps,
-  relatedIdeas = [],
-  isRelatedIdeasLoading = false,
-  isRelatedIdeasRefreshing = false,
-  ideaActionById,
-  contentTypeLabelById,
-  onDismissRelatedIdea,
-  onAcceptRelatedIdea,
-  onRefreshRelatedIdeas,
   onArtifactTextSelectForComment,
   seedSeo = null,
 }: TaskOverviewPreviewsProps) {
   return (
     <section className="px-4 pb-0">
-      {onDismissRelatedIdea && onAcceptRelatedIdea ? (
-        <TaskOverviewRelatedIdeas
-          ideas={relatedIdeas}
-          isLoading={isRelatedIdeasLoading}
-          isRefreshing={isRelatedIdeasRefreshing}
-          ideaActionById={ideaActionById}
-          contentTypeLabelById={contentTypeLabelById}
-          onDismiss={onDismissRelatedIdea}
-          onAccept={onAcceptRelatedIdea}
-          onRefresh={onRefreshRelatedIdeas}
-          active
-        />
-      ) : null}
-      {canLoad ? (
-        <TaskOverviewPreviewSection
-          title="SEO and AI SEO"
-          onViewAll={() => onNavigateTab("seo")}
-          active
-        >
+      <TaskOverviewPreviewSection
+        title="Artifacts"
+        active
+      >
+        <div className="min-h-0">
+          <ArtifactWorkspace
+            taskId={taskId}
+            projectId={projectId ?? null}
+            defaultChannelId={preferredChannelId}
+            defaultLanguageId={languageId ?? null}
+            layout="stack"
+            hideHeading
+            onArtifactTextSelectForComment={onArtifactTextSelectForComment}
+          />
+        </div>
+      </TaskOverviewPreviewSection>
+      <TaskOverviewPreviewSection
+        title="SEO and AI SEO"
+        active
+        isLoading={!canLoad}
+      >
+        {canLoad ? (
           <TaskSeoAndAiSeoTab
             taskId={taskId}
             embedded
             readOnly={readOnly}
             seedSeo={seedSeo}
           />
-        </TaskOverviewPreviewSection>
-      ) : null}
-      {canLoad ? (
-        <TaskOverviewPreviewSection
-          title="Artifacts"
-          onViewAll={() => onNavigateTab("artifacts")}
-          active
-        >
-          <div className="min-h-0">
-            <ArtifactWorkspace
-              taskId={taskId}
-              projectId={projectId ?? null}
-              defaultChannelId={preferredChannelId}
-              defaultLanguageId={languageId ?? null}
-              layout="stack"
-              hideHeading
-              onArtifactTextSelectForComment={onArtifactTextSelectForComment}
-            />
-          </div>
-        </TaskOverviewPreviewSection>
-      ) : null}
+        ) : null}
+      </TaskOverviewPreviewSection>
       <TaskOverviewAttachmentsPreview
         taskId={taskId}
         bootstrapAttachments={bootstrapAttachments}
-        onViewAll={() => onNavigateTab("attachments")}
         active
       />
       <TaskOverviewReviewsPreview
         taskId={taskId}
         reviewData={reviewData}
-        onViewAll={() => onNavigateTab("reviews")}
         active
       />
       <TaskOverviewUpdatesComments
         taskId={taskId}
         commentsPanelProps={commentsPanelProps}
-        onViewAllActivity={() => onNavigateTab("activity")}
-        onViewAllComments={() => onNavigateTab("comments")}
         active
       />
     </section>

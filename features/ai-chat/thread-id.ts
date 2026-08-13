@@ -8,3 +8,8 @@ export function isPersistedAiThreadId(value: unknown): value is string {
 export function toPersistedAiThreadId(value: unknown): string | null {
   return isPersistedAiThreadId(value) ? value : null
 }
+
+/** True for durable DB message ids — false for in-flight `temp-assistant-*` stream ids. */
+export function isPersistedAiMessageId(value: unknown): value is string {
+  return typeof value === "string" && UUID_V4_LIKE_REGEX.test(value)
+}

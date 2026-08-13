@@ -313,93 +313,113 @@ export async function sendConversationAiChatStream(args: SendConversationAiChatS
     const supabase = getSupabaseBrowser()
     const diagnostics = createAiChatRunDiagnosticsTracker()
     diagnostics.markRequestSent()
-    const res = await invokeEdgeFunctionFetch({
-      supabase,
-      url: `${process.env.NEXT_PUBLIC_SUPABASE_URL}/functions/v1/ai-chat`,
-      debugLabel: "ai-chat",
-      init: {
-        method: "POST",
-        signal,
-        body: JSON.stringify({
-          thread_id: threadId,
-          message: trimmed,
-          ...(trimmedDisplayMessage ? { display_message: trimmedDisplayMessage } : {}),
-          ...(resolvedUserContentJson ? { content_json: resolvedUserContentJson } : {}),
-          attachments,
-          ...(activeChannelId != null ? { active_channel_id: activeChannelId } : {}),
-          ...(channelId != null ? { channel_id: channelId } : {}),
-          ...(taskId != null ? { task_id: taskId } : {}),
-          tagged_task_ids: taggedTaskIds,
-          tagged_project_ids: taggedProjectIds,
-          tagged_user_ids: taggedUserIds,
-          ...(taggedChannelIds && taggedChannelIds.length > 0
-            ? { tagged_channel_ids: taggedChannelIds }
+    const requestBody = JSON.stringify({
+      thread_id: threadId,
+      message: trimmed,
+      ...(trimmedDisplayMessage ? { display_message: trimmedDisplayMessage } : {}),
+      ...(resolvedUserContentJson ? { content_json: resolvedUserContentJson } : {}),
+      attachments,
+      ...(activeChannelId != null ? { active_channel_id: activeChannelId } : {}),
+      ...(channelId != null ? { channel_id: channelId } : {}),
+      ...(taskId != null ? { task_id: taskId } : {}),
+      tagged_task_ids: taggedTaskIds,
+      tagged_project_ids: taggedProjectIds,
+      tagged_user_ids: taggedUserIds,
+      ...(taggedChannelIds && taggedChannelIds.length > 0
+        ? { tagged_channel_ids: taggedChannelIds }
+        : {}),
+      ...(taggedTaskChannelRefs && taggedTaskChannelRefs.length > 0
+        ? { tagged_task_channel_refs: taggedTaskChannelRefs }
+        : {}),
+      ...(writableTaggedTaskComponentRefs.length > 0
+        ? { tagged_task_component_refs: writableTaggedTaskComponentRefs }
+        : {}),
+      ...(taggedArtifactIds && taggedArtifactIds.length > 0
+        ? { tagged_artifact_ids: taggedArtifactIds }
+        : {}),
+      ...(taggedArtifactRefs && taggedArtifactRefs.length > 0
+        ? { tagged_artifact_refs: taggedArtifactRefs }
+        : {}),
+      ...(taggedSourceIds && taggedSourceIds.length > 0
+        ? { tagged_source_ids: taggedSourceIds }
+        : {}),
+      ...(taggedSourceRefs && taggedSourceRefs.length > 0
+        ? { tagged_source_refs: taggedSourceRefs }
+        : {}),
+      ...(taggedBrandTemplateIds && taggedBrandTemplateIds.length > 0
+        ? { tagged_brand_template_ids: taggedBrandTemplateIds }
+        : {}),
+      ...(taggedBrandTemplateRefs && taggedBrandTemplateRefs.length > 0
+        ? { tagged_brand_template_refs: taggedBrandTemplateRefs }
+        : {}),
+      mode,
+      ...(writableComponentId ? { component_id: writableComponentId } : {}),
+      ...(writableTaskComponentOutputId
+        ? { task_component_output_id: writableTaskComponentOutputId }
+        : {}),
+      ...(sanitizedSelectedArtifactContext
+        ? {
+            selected_context_type:
+              selectedArtifactContextType
+              ?? selectedContextType
+              ?? "artifact_document",
+          }
+        : sanitizedSelectedTextContext
+          ? { selected_context_type: selectedTextContextType }
+          : selectedContextType && selectedContextType !== "general"
+            ? { selected_context_type: selectedContextType }
             : {}),
-          ...(taggedTaskChannelRefs && taggedTaskChannelRefs.length > 0
-            ? { tagged_task_channel_refs: taggedTaskChannelRefs }
-            : {}),
-          ...(writableTaggedTaskComponentRefs.length > 0
-            ? { tagged_task_component_refs: writableTaggedTaskComponentRefs }
-            : {}),
-          ...(taggedArtifactIds && taggedArtifactIds.length > 0
-            ? { tagged_artifact_ids: taggedArtifactIds }
-            : {}),
-          ...(taggedArtifactRefs && taggedArtifactRefs.length > 0
-            ? { tagged_artifact_refs: taggedArtifactRefs }
-            : {}),
-          ...(taggedSourceIds && taggedSourceIds.length > 0
-            ? { tagged_source_ids: taggedSourceIds }
-            : {}),
-          ...(taggedSourceRefs && taggedSourceRefs.length > 0
-            ? { tagged_source_refs: taggedSourceRefs }
-            : {}),
-          ...(taggedBrandTemplateIds && taggedBrandTemplateIds.length > 0
-            ? { tagged_brand_template_ids: taggedBrandTemplateIds }
-            : {}),
-          ...(taggedBrandTemplateRefs && taggedBrandTemplateRefs.length > 0
-            ? { tagged_brand_template_refs: taggedBrandTemplateRefs }
-            : {}),
-          mode,
-          ...(writableComponentId ? { component_id: writableComponentId } : {}),
-          ...(writableTaskComponentOutputId
-            ? { task_component_output_id: writableTaskComponentOutputId }
-            : {}),
-          ...(sanitizedSelectedArtifactContext
-            ? {
-                selected_context_type:
-                  selectedArtifactContextType
-                  ?? selectedContextType
-                  ?? "artifact_document",
-              }
-            : sanitizedSelectedTextContext
-              ? { selected_context_type: selectedTextContextType }
-              : selectedContextType && selectedContextType !== "general"
-                ? { selected_context_type: selectedContextType }
-                : {}),
-          ...(selectedComponentLabel ? { selected_component_label: selectedComponentLabel } : {}),
-          context_source: sanitizedSelectedArtifactContext
-            ? "text_selection"
-            : sanitizedSelectedTextContext
-              ? "text_selection"
-              : contextSource ?? "none",
-          ...(sanitizedSelectedTextContext
-            ? { selected_text_context: sanitizedSelectedTextContext }
-            : {}),
-          ...(sanitizedSelectedArtifactContext
-            ? { selected_artifact_context: sanitizedSelectedArtifactContext }
-            : {}),
-          model_key: modelKey ?? DEFAULT_AI_CHAT_MODEL_KEY,
-          ...(ambientContext ? { ambient_context: ambientContext } : {}),
-          ...(clarificationResponse ? { clarification_response: clarificationResponse } : {}),
-          auto_run: autoRun,
-          stream,
-          ...(v2Request ? v2Request : {}),
-        }),
-      },
-      headers: {
-        "Content-Type": "application/json",
-      },
+      ...(selectedComponentLabel ? { selected_component_label: selectedComponentLabel } : {}),
+      context_source: sanitizedSelectedArtifactContext
+        ? "text_selection"
+        : sanitizedSelectedTextContext
+          ? "text_selection"
+          : contextSource ?? "none",
+      ...(sanitizedSelectedTextContext
+        ? { selected_text_context: sanitizedSelectedTextContext }
+        : {}),
+      ...(sanitizedSelectedArtifactContext
+        ? { selected_artifact_context: sanitizedSelectedArtifactContext }
+        : {}),
+      model_key: modelKey ?? DEFAULT_AI_CHAT_MODEL_KEY,
+      ...(ambientContext ? { ambient_context: ambientContext } : {}),
+      ...(clarificationResponse ? { clarification_response: clarificationResponse } : {}),
+      auto_run: autoRun,
+      stream,
+      ...(v2Request ? v2Request : {}),
     })
+
+    const postAiChat = () =>
+      invokeEdgeFunctionFetch({
+        supabase,
+        url: `${process.env.NEXT_PUBLIC_SUPABASE_URL}/functions/v1/ai-chat`,
+        debugLabel: "ai-chat",
+        init: {
+          method: "POST",
+          signal,
+          body: requestBody,
+        },
+        headers: {
+          "Content-Type": "application/json",
+        },
+      })
+
+    let res = await postAiChat()
+
+    // Stale sessions can surface as thread_not_found (RLS miss) instead of 401.
+    if (!res.ok) {
+      const firstErrText = await res.clone().text().catch(() => "")
+      const firstParsed = parseAiChatErrorPayload(firstErrText)
+      if (
+        firstParsed.code === "thread_not_found"
+        || firstParsed.code === "thread_access_denied"
+      ) {
+        const { error: refreshError } = await supabase.auth.refreshSession()
+        if (!refreshError) {
+          res = await postAiChat()
+        }
+      }
+    }
 
     if (!res.ok) {
       const errText = await res.text()

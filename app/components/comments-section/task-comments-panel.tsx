@@ -6,7 +6,7 @@ import { StickyAddCommentInput } from "./sticky-add-comment-input"
 import { ThreadParticipantsInline } from "./thread-participants-inline"
 import { Button } from "../ui/button"
 import { Dialog, DialogContent, DialogTitle, DialogFooter } from "../ui/dialog"
-import { ChevronLeft, Clock3, Plus, Reply, Trash2 } from "lucide-react"
+import { ChevronLeft, Clock3, MessageSquare, Plus, Reply, Trash2 } from "lucide-react"
 import { Popover, PopoverContent, PopoverTrigger } from "../ui/popover"
 import { UserAvatar } from "../UserAvatar"
 import { getImageUrl } from "../../lib/public-media"
@@ -647,59 +647,79 @@ export function TaskCommentsInputPart(props: TaskCommentsPanelProps) {
     || (currentUserAvatar?.startsWith("http") ? currentUserAvatar : null)
   const [localExpanded, setLocalExpanded] = React.useState(false)
   const [localFocusToken, setLocalFocusToken] = React.useState(0)
+  const [selectionQuoteVisible, setSelectionQuoteVisible] = React.useState(false)
   const isExpanded = composerExpanded ?? localExpanded
   const setExpanded = onComposerExpandedChange ?? setLocalExpanded
+  const pendingQuote = props.pendingArtifactTextQuote?.trim() || null
+  // Selection alone must not expand the composer — that shifts the avatar.
+  // A small comment icon appears first; the quote only opens on click.
   const shouldShowFullComposer =
     !minimalComposer
     || isExpanded
     || Boolean(replyTo)
     || Boolean(props.pendingOutputAnchor)
-    || Boolean(props.pendingArtifactTextQuote)
+    || (Boolean(pendingQuote) && selectionQuoteVisible)
 
   React.useEffect(() => {
-    if (replyTo || props.pendingOutputAnchor || props.pendingArtifactTextQuote) {
+    if (replyTo || props.pendingOutputAnchor) {
       setExpanded(true)
     }
-  }, [replyTo, props.pendingOutputAnchor, props.pendingArtifactTextQuote, setExpanded])
+  }, [replyTo, props.pendingOutputAnchor, setExpanded])
+
+  React.useEffect(() => {
+    if (!pendingQuote) setSelectionQuoteVisible(false)
+  }, [pendingQuote])
+
+  const openSelectionComment = () => {
+    setSelectionQuoteVisible(true)
+    setExpanded(true)
+    setLocalFocusToken((token) => token + 1)
+  }
 
   return (
-    <div
-      className={cn(
-        "z-10 flex w-full items-start gap-2 bg-white",
-        shouldShowFullComposer ? "pt-2" : "py-1.5",
-      )}
-    >
+    <div className="z-10 flex w-full items-start gap-2 bg-white py-1.5">
       <UserAvatar
         name={currentUserName || "You"}
         photoUrl={composerPhotoUrl}
         size="sm"
-        className={shouldShowFullComposer ? "mt-2" : "mt-0.5"}
+        className="mt-0.5"
       />
       <div className="min-w-0 flex-1">
         {shouldShowFullComposer ? (
           <>
-            {props.pendingArtifactTextQuote ? (
+            {pendingQuote && selectionQuoteVisible ? (
               <div className="mb-2 flex items-start justify-between gap-3 rounded-md border border-gray-200 bg-gray-50 px-3 py-1.5">
-                <div className="min-w-0">
-                  <div className="text-[11px] font-medium text-gray-600">Selected text</div>
-                  <div className="truncate text-xs text-gray-700">
-                    “{props.pendingArtifactTextQuote}”
-                  </div>
+                <div className="min-w-0 truncate text-xs text-gray-700">
+                  “{pendingQuote}”
                 </div>
                 <button
                   type="button"
                   className="shrink-0 text-xs text-gray-500 hover:text-gray-900"
-                  onClick={() => props.onClearPendingArtifactTextQuote?.()}
-                  aria-label="Clear selected text"
+                  onClick={() => {
+                    setSelectionQuoteVisible(false)
+                    props.onClearPendingArtifactTextQuote?.()
+                  }}
+                  aria-label="Clear selection"
                   title="Clear"
                 >
                   ×
                 </button>
               </div>
+            ) : pendingQuote ? (
+              <button
+                type="button"
+                onClick={openSelectionComment}
+                className="mb-2 inline-flex h-8 w-8 items-center justify-center rounded-md border border-gray-200 bg-white text-gray-600 hover:border-gray-300 hover:bg-gray-50 hover:text-gray-900"
+                aria-label="Comment on selection"
+                title="Comment on selection"
+              >
+                <MessageSquare className="h-4 w-4" aria-hidden />
+              </button>
             ) : null}
             <StickyAddCommentInput
               taskId={taskIdNum}
               onCommentAdded={() => {
+                setSelectionQuoteVisible(false)
                 props.onClearPendingArtifactTextQuote?.()
                 props.onCommentAdded?.()
               }}
@@ -720,22 +740,38 @@ export function TaskCommentsInputPart(props: TaskCommentsPanelProps) {
               embedded
               onCollapseRequest={
                 minimalComposer
-                  ? () => setExpanded(false)
+                  ? () => {
+                      setExpanded(false)
+                      setSelectionQuoteVisible(false)
+                    }
                   : undefined
               }
             />
           </>
         ) : (
-          <button
-            type="button"
-            className="flex h-9 w-full items-center rounded-md border border-gray-200 bg-white px-3 text-left text-sm text-muted-foreground hover:border-gray-300 hover:bg-gray-50"
-            onClick={() => {
-              setExpanded(true)
-              setLocalFocusToken((token) => token + 1)
-            }}
-          >
-            Add a comment...
-          </button>
+          <div className="flex h-9 items-center gap-1.5">
+            {pendingQuote ? (
+              <button
+                type="button"
+                onClick={openSelectionComment}
+                className="inline-flex h-9 w-9 shrink-0 items-center justify-center rounded-md border border-gray-200 bg-white text-gray-600 hover:border-gray-300 hover:bg-gray-50 hover:text-gray-900"
+                aria-label="Comment on selection"
+                title="Comment on selection"
+              >
+                <MessageSquare className="h-4 w-4" aria-hidden />
+              </button>
+            ) : null}
+            <button
+              type="button"
+              className="flex h-9 min-w-0 flex-1 items-center rounded-md border border-gray-200 bg-white px-3 text-left text-sm text-muted-foreground hover:border-gray-300 hover:bg-gray-50"
+              onClick={() => {
+                setExpanded(true)
+                setLocalFocusToken((token) => token + 1)
+              }}
+            >
+              Add a comment...
+            </button>
+          </div>
         )}
       </div>
     </div>

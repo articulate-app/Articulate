@@ -11,6 +11,8 @@ export type SocialPostTimeseriesPoint = {
   entity_id: string
   posts_count: number
   interactions_total: number | null
+  /** Impressions/views where the network reports them (null when unavailable). */
+  views_total: number | null
 }
 
 export type SocialFollowerTimeseriesPoint = {
@@ -124,6 +126,7 @@ export async function getProjectSocialCompetitiveSummary(args: {
     totals: {
       posts_count: asNumber(totals.posts_count) ?? 0,
       interactions_total: asNumber(totals.interactions_total),
+      views_total: asNumber(totals.views_total),
       entities_count: asNumber(totals.entities_count) ?? 0,
     },
     entities: Array.isArray(record.entities)
@@ -137,6 +140,7 @@ export async function getProjectSocialCompetitiveSummary(args: {
             entity_id: String(point.entity_id ?? ""),
             posts_count: asNumber(point.posts_count) ?? 0,
             interactions_total: asNumber(point.interactions_total),
+            views_total: asNumber(point.views_total),
           }
         })
       : [],

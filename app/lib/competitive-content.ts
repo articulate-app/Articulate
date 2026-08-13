@@ -354,6 +354,128 @@ export function articleBelongsToSource(args: {
   }
 }
 
+/** Function/stop words that never make a useful SEO primary alone. EN + PT. */
+const KEYWORD_STOPWORDS = new Set([
+  "a", "an", "the", "and", "or", "but", "for", "to", "of", "in", "on", "at", "by",
+  "with", "from", "as", "is", "are", "was", "were", "be", "been", "being", "it",
+  "its", "this", "that", "these", "those", "what", "which", "who", "whom", "how",
+  "why", "when", "where", "than", "then", "into", "over", "under", "about",
+  "after", "before", "between", "through", "during", "without", "within", "also",
+  "just", "only", "more", "most", "some", "any", "all", "each", "every", "both",
+  "few", "other", "such", "same", "own", "so", "too", "very", "can", "could",
+  "should", "would", "will", "may", "might", "must", "do", "does", "did", "doing",
+  "have", "has", "had", "having", "not", "no", "nor", "if", "else", "while",
+  "until", "once", "here", "there", "out", "up", "down", "off", "again", "their",
+  "them", "they", "we", "our", "you", "your", "he", "she", "his", "her", "him",
+  "my", "me", "vs", "via", "per", "using", "use", "used", "get", "got", "make",
+  "made", "like", "looks", "look", "great", "key", "top", "best", "new", "guide",
+  "tips", "things", "way", "ways", "right", "stand", "out", "them", "they",
+  "one", "ones", "two", "ten", "first", "last", "next", "another", "much",
+  "o", "os", "as", "um", "uma", "uns", "umas", "de", "do", "da", "dos", "das",
+  "em", "no", "na", "nos", "nas", "por", "para", "com", "sem", "sob", "sobre",
+  "entre", "ao", "aos", "que", "se", "como", "quando", "onde", "porque", "qual",
+  "quais", "mais", "menos", "muito", "já", "também", "só", "nao", "não", "é",
+  "são", "ser", "foi", "era", "está", "estão", "este", "esta", "esse", "essa",
+  "isso", "isto", "seu", "sua", "seus", "suas", "ele", "ela", "eles", "elas",
+  "você", "eu", "nós", "e", "ou", "mas", "nem", "dicas", "tipos",
+])
+
+const FILLER_PHRASE_RE =
+  /\b(how to|what is|what are|why it|why they|and how|looks like|to do|to improve|to build|to write|to stand|o que é|o que sao|por que)\b/i
+
+function stripHtmlTags(value: string): string {
+  return value.replace(/<[^>]+>/g, " ")
+}
+
+/** Drop trailing brand suffixes like " — Articulate" / " | Brand". */
+function stripBrandSuffix(title: string): string {
+  return title.replace(/\s*[—–|]\s*[\p{L}\p{N} .&-]{2,40}\s*$/u, "").trim()
+}
+
+/**
+ * Prefer the topical left side of "Topic: explanatory subtitle".
+ * Blog titles often bury the real keyword before the colon.
+ */
+function titleTopicSeed(title: string): string {
+  const cleaned = stripBrandSuffix(stripHtmlTags(title)).trim()
+  const colon = cleaned.indexOf(":")
+  if (colon > 2 && colon < cleaned.length - 5) {
+    const left = cleaned.slice(0, colon).trim()
+    const leftWords = left.split(/\s+/).filter(Boolean)
+    if (leftWords.length >= 1 && leftWords.length <= 6) return left
+  }
+  return cleaned
+}
+
+function normalizePhraseText(value: string): string {
+  return stripHtmlTags(value)
+    .toLowerCase()
+    .replace(/[^\p{L}\p{N}\s-]/gu, " ")
+    .replace(/\s+/g, " ")
+    .trim()
+}
+
+function isContentWord(word: string): boolean {
+  return word.length > 2 && !KEYWORD_STOPWORDS.has(word)
+}
+
+function isUsefulKeywordPhrase(
+  phrase: string,
+  opts?: { allowShortTopic?: boolean },
+): boolean {
+  const words = phrase.split(" ").filter(Boolean)
+  if (words.length === 0 || words.length > 5) return false
+  if (words.length === 1) {
+    const word = words[0]!
+    if (!isContentWord(word)) return false
+    // Allow short topical seeds like "seo" / "geo" when they are the title topic.
+    if (opts?.allowShortTopic) return word.length >= 3
+    return word.length >= 4
+  }
+  if (KEYWORD_STOPWORDS.has(words[0]!) || KEYWORD_STOPWORDS.has(words[words.length - 1]!)) {
+    return false
+  }
+  // Reject "matters and mistakes" style filler joins.
+  if (words.some((word) => KEYWORD_STOPWORDS.has(word))) return false
+  if (!words.some((word) => word.length >= 4 && isContentWord(word))) return false
+  if (FILLER_PHRASE_RE.test(phrase)) return false
+  return true
+}
+
+function scoreKeywordPhrase(
+  phrase: string,
+  opts: {
+    fromTopic: boolean
+    inDescription: boolean
+    inBody: boolean
+    /** Earlier in the title/topic = more likely the real keyword. */
+    earlyBonus?: number
+  },
+): number {
+  const words = phrase.split(" ").filter(Boolean)
+  let score = 0
+  if (words.length === 2) score += 5
+  else if (words.length === 3) score += 6
+  else if (words.length === 4) score += 3
+  else if (words.length === 1) score += 2
+  else score += 1
+
+  score += words.filter(isContentWord).length * 2
+  // Prefer denser/longer tokens (calendar > one).
+  score += words.reduce((sum, word) => sum + Math.min(word.length, 10), 0) * 0.15
+  if (opts.fromTopic) score += 8
+  if (opts.inDescription) score += 2
+  if (opts.inBody) score += 1
+  if (opts.earlyBonus) score += opts.earlyBonus
+  if (FILLER_PHRASE_RE.test(phrase)) score -= 8
+  return score
+}
+
+/**
+ * Infer a search-like primary keyword from article metadata.
+ * Uses the title topic (left of ":") first, drops stopword/filler n-grams,
+ * and only then falls back to description/heading phrases.
+ */
 export function extractKeywordCandidatesFromContent(args: {
   title?: string | null
   description?: string | null
@@ -362,49 +484,87 @@ export function extractKeywordCandidatesFromContent(args: {
   maxSecondary?: number
 }): { primary: string | null; secondary: string[] } {
   const maxSecondary = args.maxSecondary ?? 5
-  const bag: string[] = []
-  if (args.title?.trim()) bag.push(args.title.trim())
-  if (args.description?.trim()) bag.push(args.description.trim())
+  const topicSeed = args.title?.trim() ? titleTopicSeed(args.title) : ""
+  const topicNormalized = topicSeed ? normalizePhraseText(topicSeed) : ""
+
+  const sources: Array<{ text: string; fromTopic: boolean }> = []
+  if (topicSeed) sources.push({ text: topicSeed, fromTopic: true })
+  // Full cleaned title as a secondary source (without brand suffix).
+  if (args.title?.trim()) {
+    const full = stripBrandSuffix(stripHtmlTags(args.title.trim()))
+    if (normalizePhraseText(full) !== topicNormalized) {
+      sources.push({ text: full, fromTopic: false })
+    }
+  }
+  if (args.description?.trim()) {
+    sources.push({ text: args.description.trim(), fromTopic: false })
+  }
   for (const heading of args.headings ?? []) {
-    if (heading?.trim()) bag.push(heading.trim())
+    if (heading?.trim()) sources.push({ text: heading.trim(), fromTopic: false })
   }
 
   const phrases = new Map<string, number>()
-  for (const text of bag) {
-    const cleaned = text
-      .toLowerCase()
-      .replace(/[^\p{L}\p{N}\s-]/gu, " ")
-      .replace(/\s+/g, " ")
-      .trim()
+  const descriptionNormalized = normalizePhraseText(args.description ?? "")
+  const bodyNormalized = normalizePhraseText(args.bodyText ?? "").slice(0, 8000)
+
+  for (const source of sources) {
+    const cleaned = normalizePhraseText(source.text)
     if (!cleaned) continue
-    const words = cleaned.split(" ").filter((w) => w.length > 2)
+    const words = cleaned.split(" ").filter((word) => word.length > 2)
     if (words.length === 0) continue
-    // Prefer 2–4 word phrases from title/headings
-    for (let n = Math.min(4, words.length); n >= 2; n--) {
+
+    for (let n = Math.min(4, words.length); n >= 1; n--) {
       for (let i = 0; i <= words.length - n; i++) {
         const phrase = words.slice(i, i + n).join(" ")
-        phrases.set(phrase, (phrases.get(phrase) ?? 0) + (n === 2 ? 1 : 2))
+        const allowShortTopic =
+          source.fromTopic && phrase === topicNormalized
+        if (!isUsefulKeywordPhrase(phrase, { allowShortTopic })) continue
+        const earlyBonus = source.fromTopic
+          ? Math.max(0, 3 - i * 0.5)
+          : 0
+        const score = scoreKeywordPhrase(phrase, {
+          fromTopic: source.fromTopic,
+          inDescription: Boolean(descriptionNormalized && descriptionNormalized.includes(phrase)),
+          inBody: Boolean(bodyNormalized && bodyNormalized.includes(phrase)),
+          earlyBonus,
+        })
+        phrases.set(phrase, Math.max(phrases.get(phrase) ?? 0, score))
       }
-    }
-    if (words.length === 1) {
-      phrases.set(words[0]!, (phrases.get(words[0]!) ?? 0) + 1)
     }
   }
 
-  // Boost terms that also appear in body
-  const body = (args.bodyText ?? "").toLowerCase()
-  if (body) {
-    for (const [phrase, score] of phrases) {
-      if (body.includes(phrase)) phrases.set(phrase, score + 1)
-    }
+  // If the topic itself is a short useful phrase, prefer it strongly.
+  if (
+    topicNormalized
+    && isUsefulKeywordPhrase(topicNormalized, { allowShortTopic: true })
+  ) {
+    phrases.set(
+      topicNormalized,
+      Math.max(
+        phrases.get(topicNormalized) ?? 0,
+        scoreKeywordPhrase(topicNormalized, {
+          fromTopic: true,
+          inDescription: Boolean(descriptionNormalized?.includes(topicNormalized)),
+          inBody: Boolean(bodyNormalized?.includes(topicNormalized)),
+        }) + 4,
+      ),
+    )
   }
 
   const ranked = [...phrases.entries()]
     .sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]))
     .map(([phrase]) => phrase)
 
-  const primary = ranked[0] ?? (args.title?.trim().toLowerCase() || null)
-  const secondary = ranked.filter((p) => p !== primary).slice(0, maxSecondary)
+  let primary: string | null = ranked[0] ?? null
+  if (!primary && topicNormalized) {
+    const topicWords = topicNormalized
+      .split(" ")
+      .filter(isContentWord)
+      .slice(0, 4)
+    primary = topicWords.length > 0 ? topicWords.join(" ") : null
+  }
+
+  const secondary = ranked.filter((phrase) => phrase !== primary).slice(0, maxSecondary)
   return { primary, secondary }
 }
 

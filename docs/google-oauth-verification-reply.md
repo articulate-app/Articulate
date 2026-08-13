@@ -24,6 +24,9 @@ No write scopes are requested. This is a read-only, least-privilege integration.
 | `analytics.readonly` | `GET https://analyticsadmin.googleapis.com/v1beta/accountSummaries` | `listGoogleAnalyticsProperties` in `app/lib/google-oauth.ts` |
 | `analytics.readonly` | `POST https://analyticsdata.googleapis.com/v1beta/properties/{id}:runReport` | `fetchGoogleAnalyticsDailyReport` in `app/lib/google-analytics-data.ts`, called by `app/api/auth/google/analytics-sync/route.ts` |
 | `webmasters.readonly` | `GET https://www.googleapis.com/webmasters/v3/sites` | `listGoogleSearchConsoleSites` in `app/lib/google-oauth.ts` |
+| `webmasters.readonly` | `POST https://www.googleapis.com/webmasters/v3/sites/{siteUrl}/searchAnalytics/query` | `sync-search-console` edge function (property/query/page daily sync) |
+| `webmasters.readonly` | `GET https://www.googleapis.com/webmasters/v3/sites/{siteUrl}/sitemaps` | `sync-search-console` edge function (read-only sitemap status) |
+| `webmasters.readonly` | `POST https://searchconsole.googleapis.com/v1/urlInspection/index:inspect` | `sync-search-console` edge function (monitored-page URL Inspection queue) |
 | `email` / `profile` | `GET https://www.googleapis.com/oauth2/v2/userinfo` | `fetchGoogleAccountEmail` in `app/lib/google-oauth.ts` |
 
 ## 3. Test credentials
@@ -48,8 +51,12 @@ Hidden demo route (not linked from navigation): https://app.whyarticulate.com/in
 > Thank you for the review. Below are the two demo videos, test credentials and step-by-step navigation you requested.
 >
 > **Demo videos**
-> - Video 1 — OAuth consent screen with all requested scopes expanded: `<VIDEO_1_LINK>`
+> - Video 1 — OAuth consent screen with all requested scopes expanded (first-time grant): https://youtu.be/x5zbQmBfYNE
 > - Video 2 — In-app functionality for every requested scope: `<VIDEO_2_LINK>`
+>
+> **Note on Video 1** — This is a genuine first-time authorisation: the granular-consent checkboxes start unchecked, and both are then expanded via "See access details" before "Select all" is used. The two permissions shown are exactly the two sensitive scopes we request, both read-only: "See and download your Google Analytics data" (`https://www.googleapis.com/auth/analytics.readonly`) and "View Search Console data for your verified sites" (`https://www.googleapis.com/auth/webmasters.readonly`). The Google consent and permission screens render in English; only the initial Google account-chooser step appears in Portuguese, because the language of the Google account used for the recording is set to Portuguese (Portugal). For the reviewer's convenience: "Iniciar sessão com o Google" = "Sign in with Google", "Selecione uma conta" = "Choose an account", "Continuar para Articulate" = "Continue to Articulate".
+>
+> Video 1 timestamps: 0:00 requested scopes listed in-app · 0:05 redirect to `accounts.google.com` with our `client_id` visible in the address bar · 0:10 "Google hasn't verified this app" → Advanced → "Go to Articulate (unsafe)" · 0:14 `openid`/`email`/`profile` consent (name, profile picture, email address) · 0:18 permissions screen with both checkboxes unchecked · 0:22 Analytics permission expanded · 0:30 Search Console permission expanded · 0:34 Select all → Continue · 0:42 redirect back to Articulate · 0:46 "Connected as …" plus the live Search Console property list · 0:55 the live GA4 property list · 1:06 GA4 `runReport` result · 1:10 Disconnect.
 >
 > **Test credentials (no phone number, no credit card, no payment required)**
 > - App URL: https://app.whyarticulate.com
@@ -83,19 +90,24 @@ Hidden demo route (not linked from navigation): https://app.whyarticulate.com/in
 > Ivo Relvas
 > Articulate
 
-## 5. Video 1 — OAuth consent screen (target 60–90s)
+## 5. Video 1 — OAuth consent screen — RECORDED
 
-- [ ] Start on a clean browser profile; set zoom to ~125% so scope text is readable.
-- [ ] Show the address bar with `https://app.whyarticulate.com` and sign in with the review account.
-- [ ] Navigate to `https://app.whyarticulate.com/integrations/google-oauth-demo`; pause 2s on the "Requested scopes" box so the five scopes are readable on screen.
-- [ ] Pick a project, click **Connect Google**.
-- [ ] Keep the address bar visible as it changes to `accounts.google.com/o/oauth2/v2/auth?...` — pause so `client_id` and the `scope` parameter are legible.
-- [ ] On the account chooser, select the Google account.
-- [ ] On "Google hasn't verified this app", click **Advanced**, then **Continue** (expected until verification completes).
-- [ ] On the permissions screen, click **Show all services** / the expand chevron on every permission row so each scope description is fully expanded. Do not skip any row.
-- [ ] Scroll slowly through the fully expanded list; pause 2–3s so every scope line is readable, including "See and download your Google Analytics data" and the Search Console permission.
-- [ ] Click **Select all** (if granular consent checkboxes are shown), then **Continue**.
-- [ ] Show the redirect back to Articulate and the "Connected as <account>" state.
+Uploaded (unlisted): https://youtu.be/x5zbQmBfYNE — "articulate - first time connection", 1:12.
+
+- [x] Address bar visible for the whole recording; "Requested scopes" box on the demo page shows all five scopes.
+- [x] Project selected, **Connect Google** clicked; address bar shows `accounts.google.com/.../accountchooser?access_type=offline&client_id=657483253469-...`.
+- [x] Account chooser (rendered in Portuguese — the recording account's language) and account selection.
+- [x] "Google hasn't verified this app" → **Advanced** → **Go to Articulate (unsafe)**.
+- [x] `openid`/`email`/`profile` consent step ("Google will allow Articulate to access this info about you": name, profile picture, email address).
+- [x] Permissions screen as a **genuine first-time grant** — both granular checkboxes start unchecked, no "already has access" banner.
+- [x] Both permissions expanded via **See access details**: Analytics ("See your reporting data, including all dimensions and metrics…") and Search Console ("View Search Console data without making any changes (e.g., list sites, view crawl errors)").
+- [x] **Select all** → **Continue**.
+- [x] Redirect back to `app.whyarticulate.com/integrations/google-oauth-demo?google_connect=1&project_id=90` and "Connected as irelvas@whyarticulate.com".
+- [x] Bonus beyond the shot list: live Search Console property list, live GA4 property list, **Save properties** → GA4 `runReport` result panel (577 daily rows, 2026-05-08 → 2026-08-05, 5,274 sessions, 4,266 active users, channel groups), and **Disconnect**.
+
+Known limits: the recording has no narration or captions, and the `scope` query parameter is truncated in the address bar (the scopes are instead legible in the in-app "Requested scopes" box and on the consent screen itself).
+
+Superseded: `articulate-oauth-consent-scopes.mov` (the earlier 1:07 Portuguese take) showed "A app Articulate já tem algum acesso" — a re-consent, not a first-time grant. Do not send that one.
 
 ## 6. Video 2 — In-app functionality (target 2–4 min)
 
@@ -113,7 +125,18 @@ Hidden demo route (not linked from navigation): https://app.whyarticulate.com/in
 - [ ] Click **Disconnect** and show the connection returning to the not-connected state (token revoked/removed).
 - [ ] Optional closing frame: text overlay listing the five requested scopes and "read-only".
 
-## 7. Deployment note
+## 7. Search Console overview configuration
+
+After deploying migration `20260806120000_project_search_console_overview.sql` and the `sync-search-console` edge function:
+
+1. Ensure `GA_CLIENT_ID` / `GA_CLIENT_SECRET` (or `GSC_*`) are set for OAuth refresh.
+2. Deploy edge function `sync-search-console` with the same secrets as competitive content sync.
+3. Optional cron: call `POST /functions/v1/sync-search-console` with header `x-search-console-sync-secret` (or `x-competitive-content-sync-secret`) and body `{ "project_id": <id>, "job_type": "all", "trigger": "automatic" }`.
+4. In the project sheet: **Google integrations** → connect account → select Search Console property → backfill starts automatically.
+5. Overview shows **Organic search**; detailed views live under **SEO & search**.
+6. URL Inspection uses monitored `project_site_pages` only — never claim full-site indexed totals.
+
+## 8. Deployment note
 
 The Analytics-via-user-token path is new code in this repo:
 

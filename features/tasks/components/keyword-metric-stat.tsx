@@ -7,11 +7,11 @@ import { cn } from "../../../app/lib/utils"
 export const KEYWORD_METRIC_DEFINITIONS = {
   uses: {
     label: "Uses",
-    tooltip: "How many times this keyword appears in channel content.",
+    tooltip: "How many times this keyword appears in task artifact content.",
   },
   density: {
     label: "Share",
-    tooltip: "Keyword density — share of words in content that match this keyword.",
+    tooltip: "Keyword density — share of words in task artifacts that match this keyword.",
   },
   volume: {
     label: "SV",

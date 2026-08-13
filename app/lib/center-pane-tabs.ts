@@ -23,7 +23,7 @@ export function detailEntityTypeToCenterTabKind(
   if (entityType === "mention") return "thread"
   if (entityType === "artifact") return "artifact"
   if (entityType === "source") return "source"
-  // AI chats belong in the right pane only.
+  // AI chats use type "ai" via openWorkspaceView — not a detail entity type.
   return null
 }
 
@@ -40,6 +40,13 @@ export function resolveActiveCenterPaneTab(args: {
   /** Tab identity is source id. */
   centerSourceId?: string | null
   centerSourceTitle?: string | null
+  /** Tab identity is projectId:templateId. */
+  centerTemplateId?: string | null
+  centerTemplateTitle?: string | null
+  /** When AI is open as a middle-pane tab. */
+  aiThreadId?: string | null
+  /** When Browser is open as a middle-pane tab. */
+  browserTabId?: string | null
 }): { key: string; kind: CenterPaneTabKind; id: string; title: string } | null {
   const {
     selectedTaskId: selectedTaskIdRaw,
@@ -52,6 +59,10 @@ export function resolveActiveCenterPaneTab(args: {
     centerArtifactTitle,
     centerSourceId: centerSourceIdRaw,
     centerSourceTitle,
+    centerTemplateId: centerTemplateIdRaw,
+    centerTemplateTitle,
+    aiThreadId: aiThreadIdRaw,
+    browserTabId: browserTabIdRaw,
   } = args
   const selectedTaskId =
     selectedTaskIdRaw == null || selectedTaskIdRaw === "" ? null : String(selectedTaskIdRaw)
@@ -65,6 +76,76 @@ export function resolveActiveCenterPaneTab(args: {
     centerSourceIdRaw == null || centerSourceIdRaw === ""
       ? null
       : String(centerSourceIdRaw).trim()
+  const centerTemplateId =
+    centerTemplateIdRaw == null || centerTemplateIdRaw === ""
+      ? null
+      : String(centerTemplateIdRaw).trim()
+  const aiThreadId =
+    aiThreadIdRaw == null || aiThreadIdRaw === "" ? null : String(aiThreadIdRaw).trim()
+  const browserTabId =
+    browserTabIdRaw == null || browserTabIdRaw === "" ? null : String(browserTabIdRaw).trim()
+
+  // Pane-neutral tool views hosted in the middle pane.
+  if (centerView === "ai") {
+    const id = aiThreadId || "main"
+    return {
+      key: buildCenterPaneTabKey("ai", id),
+      kind: "ai",
+      id,
+      title: "AI",
+    }
+  }
+  if (centerView === "browser") {
+    const id = browserTabId || "main"
+    return {
+      key: buildCenterPaneTabKey("browser", id),
+      kind: "browser",
+      id,
+      title: "Browser",
+    }
+  }
+  if (centerView === "task-list" || centerView === "tasks") {
+    return {
+      key: buildCenterPaneTabKey("task-list", "main"),
+      kind: "task-list",
+      id: "main",
+      title: "Tasks",
+    }
+  }
+  if (centerView === "search-results") {
+    return {
+      key: buildCenterPaneTabKey("search-results", "main"),
+      kind: "search-results",
+      id: "main",
+      title: "Search",
+    }
+  }
+  if (
+    centerView === "project-list" ||
+    centerView === "mention-list" ||
+    centerView === "user-list" ||
+    centerView === "ai-thread-list" ||
+    centerView === "artifact-list" ||
+    centerView === "template-list"
+  ) {
+    return {
+      key: buildCenterPaneTabKey(centerView, "main"),
+      kind: centerView,
+      id: "main",
+      title:
+        centerView === "project-list"
+          ? "Projects"
+          : centerView === "mention-list"
+            ? "Inbox"
+            : centerView === "user-list"
+              ? "Users"
+              : centerView === "ai-thread-list"
+                ? "AI chats"
+                : centerView === "template-list"
+                  ? "Templates"
+                  : "Artifacts",
+    }
+  }
 
   // Artifact tabs are first-class middle-pane entities (identity = artifact id, not title).
   if (centerArtifactId) {
@@ -82,6 +163,15 @@ export function resolveActiveCenterPaneTab(args: {
       kind: "source",
       id: centerSourceId,
       title: centerSourceTitle?.trim() || `Source ${centerSourceId.slice(0, 8)}`,
+    }
+  }
+
+  if (centerTemplateId) {
+    return {
+      key: buildCenterPaneTabKey("template", centerTemplateId),
+      kind: "template",
+      id: centerTemplateId,
+      title: centerTemplateTitle?.trim() || `Template ${centerTemplateId.slice(0, 12)}`,
     }
   }
 

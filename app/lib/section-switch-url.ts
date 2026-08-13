@@ -12,7 +12,7 @@ const SECTION_TO_PATH: Record<PrimarySectionKey | "all", string> = {
 }
 
 const LEFT_OBJECT_TO_SECTION: Record<LeftPaneObject, PrimarySectionKey | "all"> = {
-  all: "all",
+  all: "tasks",
   tasks: "tasks",
   projects: "projects",
   mentions: "mentions",

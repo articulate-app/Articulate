@@ -138,7 +138,7 @@ export function FrequentFilterPills({ editFields, className, reserveSpaceWhenLoa
               {activeProjects.length > 0 
                 ? `${activeProjects.length} Project${activeProjects.length > 1 ? 's' : ''}`
                 : 'Project'}
-              <ChevronDown className="w-4 h-4 ml-1" />
+              <ChevronDown className="ml-1 h-3.5 w-3.5" />
             </button>
           </PopoverTrigger>
           <PopoverContent align="start" className="w-64 p-0" onOpenAutoFocus={(e) => e.preventDefault()}>
@@ -184,7 +184,7 @@ export function FrequentFilterPills({ editFields, className, reserveSpaceWhenLoa
       ) : showReserved ? (
         <span className={placeholderPillClass}>
           Project
-          <ChevronDown className="w-4 h-4 ml-1" />
+          <ChevronDown className="ml-1 h-3.5 w-3.5" />
         </span>
       ) : null)}
       {hasStatusOptions ? (
@@ -204,7 +204,7 @@ export function FrequentFilterPills({ editFields, className, reserveSpaceWhenLoa
               {activeStatuses.length > 0 
                 ? `${activeStatuses.length} Status${activeStatuses.length > 1 ? 'es' : ''}`
                 : 'Status'}
-              <ChevronDown className="w-4 h-4 ml-1" />
+              <ChevronDown className="ml-1 h-3.5 w-3.5" />
             </button>
           </PopoverTrigger>
           <PopoverContent align="start" className="w-64 p-0" onOpenAutoFocus={(e) => e.preventDefault()}>
@@ -250,7 +250,7 @@ export function FrequentFilterPills({ editFields, className, reserveSpaceWhenLoa
       ) : showReserved ? (
         <span className={placeholderPillClass}>
           Status
-          <ChevronDown className="w-4 h-4 ml-1" />
+          <ChevronDown className="ml-1 h-3.5 w-3.5" />
         </span>
       ) : null}
     </>

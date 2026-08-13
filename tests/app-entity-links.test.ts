@@ -13,6 +13,13 @@ describe("parseAppEntityLink", () => {
   it("parses app://task links", () => {
     expect(parseAppEntityLink("app://task/13131")).toEqual({ type: "task", id: 13131 })
   })
+
+  it("parses app://ai-build links", () => {
+    expect(parseAppEntityLink("app://ai-build/f07777e0-f36a-49ca-b069-2b4d3fe100d6")).toEqual({
+      type: "ai-build",
+      id: "f07777e0-f36a-49ca-b069-2b4d3fe100d6",
+    })
+  })
 })
 
 describe("getResolvedTaskIdFromSearchParams", () => {

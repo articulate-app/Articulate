@@ -19,9 +19,17 @@ type PersistedQueuedAiChatMessage = Omit<QueuedAiChatMessage, "messageFiles">
 type AiChatMessageQueueState = {
   byThread: Record<string, QueuedAiChatMessage[]>
   enqueue: (item: Omit<QueuedAiChatMessage, "id" | "createdAt"> & { id?: string }) => string
+  /** Re-insert at the front (used when a drained send fails). */
+  prepend: (item: QueuedAiChatMessage) => void
   remove: (threadId: string, id: string) => void
   clearThread: (threadId: string) => void
+  /** Peek without removing. */
+  peekNext: (threadId: string) => QueuedAiChatMessage | null
   shiftNext: (threadId: string) => QueuedAiChatMessage | null
+  /** Move item up (-1) or down (+1) in the queue. */
+  move: (threadId: string, id: string, delta: -1 | 1) => void
+  /** Move item to an absolute index (0-based). */
+  moveToIndex: (threadId: string, id: string, toIndex: number) => void
 }
 
 const STORAGE_KEY = "ai-chat-message-queue-v1"
@@ -98,6 +106,21 @@ export const useAiChatMessageQueueStore = create<AiChatMessageQueueState>((set, 
     return id
   },
 
+  prepend: (item) => {
+    const threadId = item.threadId
+    if (!threadId || !item.id) return
+    set((state) => {
+      const existing = state.byThread[threadId] ?? []
+      if (existing.some((row) => row.id === item.id)) return state
+      const byThread = {
+        ...state.byThread,
+        [threadId]: [item, ...existing],
+      }
+      persist(byThread)
+      return { byThread }
+    })
+  },
+
   remove: (threadId, id) => {
     set((state) => {
       const existing = state.byThread[threadId] ?? []
@@ -120,6 +143,11 @@ export const useAiChatMessageQueueStore = create<AiChatMessageQueueState>((set, 
     })
   },
 
+  peekNext: (threadId) => {
+    const existing = get().byThread[threadId] ?? []
+    return existing[0] ?? null
+  },
+
   shiftNext: (threadId) => {
     const existing = get().byThread[threadId] ?? []
     if (existing.length === 0) return null
@@ -132,6 +160,38 @@ export const useAiChatMessageQueueStore = create<AiChatMessageQueueState>((set, 
       return { byThread }
     })
     return next
+  },
+
+  move: (threadId, id, delta) => {
+    set((state) => {
+      const existing = state.byThread[threadId] ?? []
+      const fromIndex = existing.findIndex((item) => item.id === id)
+      if (fromIndex < 0) return state
+      const toIndex = fromIndex + delta
+      if (toIndex < 0 || toIndex >= existing.length) return state
+      const nextItems = [...existing]
+      const [row] = nextItems.splice(fromIndex, 1)
+      nextItems.splice(toIndex, 0, row)
+      const byThread = { ...state.byThread, [threadId]: nextItems }
+      persist(byThread)
+      return { byThread }
+    })
+  },
+
+  moveToIndex: (threadId, id, toIndex) => {
+    set((state) => {
+      const existing = state.byThread[threadId] ?? []
+      const fromIndex = existing.findIndex((item) => item.id === id)
+      if (fromIndex < 0) return state
+      const clamped = Math.max(0, Math.min(existing.length - 1, Math.floor(toIndex)))
+      if (clamped === fromIndex) return state
+      const nextItems = [...existing]
+      const [row] = nextItems.splice(fromIndex, 1)
+      nextItems.splice(clamped, 0, row)
+      const byThread = { ...state.byThread, [threadId]: nextItems }
+      persist(byThread)
+      return { byThread }
+    })
   },
 }))
 

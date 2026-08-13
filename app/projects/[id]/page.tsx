@@ -3,7 +3,8 @@
 import { BriefingsPage } from '../../components/project-briefings/BriefingsPage'
 import { useParams, useRouter } from 'next/navigation'
 import { Sidebar } from '../../components/ui/Sidebar'
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
+import { flushSync } from 'react-dom'
 import { Share2, MoreVertical, Trash2, Copy, Bot } from 'lucide-react'
 import { Button } from '../../components/ui/button'
 import { AiPane } from '../../../features/ai-chat/AiPane'
@@ -29,11 +30,21 @@ import { Input } from '../../components/ui/input'
 import { Label } from '../../components/ui/label'
 import { toast } from '../../components/ui/use-toast'
 import { deleteProject, duplicateProject } from '../../lib/services/projects'
+import {
+  invalidateAfterProjectArchive,
+  removeArchivedProjectFromCaches,
+} from '../../lib/project-archive-cache'
+import {
+  clearBodyPointerEvents,
+  scheduleBodyPointerUnlock,
+} from '../../lib/radix-body-pointer-unlock'
+import { useQueryClient } from '@tanstack/react-query'
 
 export default function ProjectPage() {
   const router = useRouter()
   const params = useParams()
   const projectId = parseInt(params.id as string, 10)
+  const queryClient = useQueryClient()
   const [isSidebarCollapsed, setIsSidebarCollapsed] = useState(true)
   const [isActionsMenuOpen, setIsActionsMenuOpen] = useState(false)
   const [showDeleteDialog, setShowDeleteDialog] = useState(false)
@@ -43,9 +54,35 @@ export default function ProjectPage() {
   const [isDuplicating, setIsDuplicating] = useState(false)
   const [isAiPaneOpen, setIsAiPaneOpen] = useState(false)
 
+  useEffect(() => {
+    setShowDeleteDialog(false)
+    setIsDeleting(false)
+    clearBodyPointerEvents()
+  }, [projectId])
+
+  useEffect(() => {
+    if (!showDeleteDialog) return
+    clearBodyPointerEvents()
+    const t0 = window.setTimeout(clearBodyPointerEvents, 0)
+    const t1 = window.setTimeout(clearBodyPointerEvents, 50)
+    return () => {
+      window.clearTimeout(t0)
+      window.clearTimeout(t1)
+    }
+  }, [showDeleteDialog])
+
   const handleDeleteProject = async () => {
-    setIsDeleting(true)
+    if (isDeleting) return
+
+    // Close dialog before navigating away so Radix can release the pointer lock.
+    flushSync(() => {
+      setShowDeleteDialog(false)
+      setIsDeleting(true)
+    })
+    scheduleBodyPointerUnlock()
+
     try {
+      removeArchivedProjectFromCaches(queryClient, projectId)
       const { error } = await deleteProject(projectId)
       
       if (error) throw error
@@ -55,17 +92,23 @@ export default function ProjectPage() {
         description: "Project deleted successfully",
       })
 
-      // Navigate to tasks page
-      router.push('/tasks')
+      void invalidateAfterProjectArchive(queryClient, projectId)
+
+      window.setTimeout(() => {
+        scheduleBodyPointerUnlock()
+        router.push('/tasks')
+        setIsDeleting(false)
+        scheduleBodyPointerUnlock()
+      }, 120)
     } catch (err: any) {
       toast({
         title: "Error",
         description: err.message || "Failed to delete project",
         variant: "destructive",
       })
-    } finally {
+      void invalidateAfterProjectArchive(queryClient, projectId)
+      clearBodyPointerEvents()
       setIsDeleting(false)
-      setShowDeleteDialog(false)
     }
   }
 
@@ -145,8 +188,10 @@ export default function ProjectPage() {
   const openDeleteDialogFromMenu = () => {
     setIsActionsMenuOpen(false)
     window.setTimeout(() => {
+      clearBodyPointerEvents()
+      setIsDeleting(false)
       setShowDeleteDialog(true)
-    }, 0)
+    }, 50)
   }
 
   const openDuplicateDialogFromMenu = () => {
@@ -212,7 +257,10 @@ export default function ProjectPage() {
                 <MoreVertical className="w-4 h-4" />
               </Button>
             </DropdownMenuTrigger>
-            <DropdownMenuContent align="end">
+            <DropdownMenuContent
+              align="end"
+              onCloseAutoFocus={(event) => event.preventDefault()}
+            >
               <DropdownMenuItem
                 onSelect={(event) => {
                   event.preventDefault()
@@ -246,15 +294,32 @@ export default function ProjectPage() {
 
         {/* Main Content */}
         <div className="flex-1 overflow-hidden">
-          <BriefingsPage 
+          <BriefingsPage
+            key={projectId}
             projectId={projectId}
           />
         </div>
       </div>
 
       {/* Delete Confirmation Dialog */}
-      <AlertDialog open={showDeleteDialog} onOpenChange={setShowDeleteDialog}>
-        <AlertDialogContent>
+      <AlertDialog
+        open={showDeleteDialog}
+        onOpenChange={(open) => {
+          if (isDeleting && !open) return
+          setShowDeleteDialog(open)
+          if (!open) scheduleBodyPointerUnlock()
+        }}
+      >
+        <AlertDialogContent
+          onOpenAutoFocus={(event) => {
+            event.preventDefault()
+            clearBodyPointerEvents()
+          }}
+          onCloseAutoFocus={(event) => {
+            event.preventDefault()
+            scheduleBodyPointerUnlock()
+          }}
+        >
           <AlertDialogHeader>
             <AlertDialogTitle>Delete Project</AlertDialogTitle>
             <AlertDialogDescription>
@@ -264,7 +329,11 @@ export default function ProjectPage() {
           <AlertDialogFooter>
             <AlertDialogCancel disabled={isDeleting}>Cancel</AlertDialogCancel>
             <AlertDialogAction
-              onClick={handleDeleteProject}
+              onClick={(event) => {
+                event.preventDefault()
+                event.stopPropagation()
+                void handleDeleteProject()
+              }}
               disabled={isDeleting}
               className="bg-red-600 hover:bg-red-700"
             >

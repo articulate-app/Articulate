@@ -1,11 +1,16 @@
 "use client"
 
 import React, { useEffect, useMemo, useState } from "react"
-import { Replace, Search } from "lucide-react"
+import { ChevronDown, Replace, Search } from "lucide-react"
 import { Popover, PopoverContent, PopoverTrigger } from "../../app/components/ui/popover"
 import { cn } from "../../app/lib/utils"
 import { extractPrimaryArtifactHtml } from "../../app/lib/artifact-selection-patch"
 import type { ArtifactContentJson } from "../../app/lib/artifacts/artifact-types"
+import {
+  applyArtifactFindHighlights,
+  clearArtifactFindHighlights,
+  cycleArtifactFindHighlight,
+} from "./artifact-find-highlight"
 import {
   countInHtmlTextNodes,
   replaceInHtmlTextNodes,
@@ -15,6 +20,10 @@ export type ArtifactFindReplacePopoverProps = {
   contentJson: ArtifactContentJson | null | undefined
   contentText: string | null | undefined
   disabled?: boolean
+  open?: boolean
+  onOpenChange?: (open: boolean) => void
+  /** Hide the default icon trigger (use with controlled `open` from a parent menu). */
+  hideTrigger?: boolean
   onApply: (next: { contentJson: ArtifactContentJson; contentText: string }) => void
 }
 
@@ -53,13 +62,19 @@ export function ArtifactFindReplacePopover({
   contentJson,
   contentText,
   disabled,
+  open: openProp,
+  onOpenChange,
+  hideTrigger = false,
   onApply,
 }: ArtifactFindReplacePopoverProps) {
-  const [open, setOpen] = useState(false)
+  const [uncontrolledOpen, setUncontrolledOpen] = useState(false)
+  const open = openProp ?? uncontrolledOpen
+  const setOpen = onOpenChange ?? setUncontrolledOpen
   const [find, setFind] = useState("")
   const [replaceWith, setReplaceWith] = useState("")
   const [caseSensitive, setCaseSensitive] = useState(false)
   const [status, setStatus] = useState<string | null>(null)
+  const [activeIndex, setActiveIndex] = useState(0)
 
   const sourceHtml = useMemo(() => {
     return (
@@ -81,8 +96,31 @@ export function ArtifactFindReplacePopover({
   )
 
   useEffect(() => {
-    if (!open) setStatus(null)
-  }, [open])
+    if (!open) {
+      setStatus(null)
+      clearArtifactFindHighlights()
+      setActiveIndex(0)
+      return
+    }
+    if (!find.trim()) {
+      clearArtifactFindHighlights()
+      setActiveIndex(0)
+      return
+    }
+    const result = applyArtifactFindHighlights(find, {
+      caseSensitive,
+      activeIndex,
+    })
+    if (result.matchCount > 0 && activeIndex >= result.matchCount) {
+      setActiveIndex(0)
+    }
+  }, [activeIndex, caseSensitive, find, open, sourceHtml])
+
+  useEffect(() => {
+    return () => {
+      clearArtifactFindHighlights()
+    }
+  }, [])
 
   const applyReplace = (all: boolean) => {
     const needle = find
@@ -110,26 +148,70 @@ export function ArtifactFindReplacePopover({
     )
   }
 
+  const goToNext = (direction: 1 | -1) => {
+    if (!find.trim()) return
+    const result = cycleArtifactFindHighlight(find, activeIndex, {
+      caseSensitive,
+      direction,
+    })
+    setActiveIndex(result.activeIndex)
+  }
+
   return (
-    <Popover open={open} onOpenChange={setOpen}>
-      <PopoverTrigger asChild>
-        <button
-          type="button"
-          disabled={disabled}
-          className="inline-flex h-8 w-8 items-center justify-center rounded-md text-gray-600 hover:bg-gray-50 hover:text-gray-900 disabled:opacity-50"
-          aria-label="Find and replace"
-          title="Find and replace"
-        >
-          <Search className="h-3.5 w-3.5" />
-        </button>
-      </PopoverTrigger>
-      <PopoverContent align="end" className="z-[120] w-[min(92vw,22rem)] space-y-2 p-3">
+    <Popover
+      open={open}
+      onOpenChange={(next) => {
+        setOpen(next)
+        if (!next) clearArtifactFindHighlights()
+      }}
+    >
+      {hideTrigger ? null : (
+        <PopoverTrigger asChild>
+          <button
+            type="button"
+            disabled={disabled}
+            className="inline-flex h-7 w-7 items-center justify-center rounded-md text-gray-600 hover:bg-gray-50 hover:text-gray-900 disabled:opacity-50"
+            aria-label="Find and replace"
+            title="Find and replace"
+          >
+            <Search className="h-4 w-4" />
+          </button>
+        </PopoverTrigger>
+      )}
+      <PopoverContent
+        align="end"
+        sideOffset={6}
+        className="z-[120] w-[min(92vw,22rem)] space-y-2 p-3"
+        onOpenAutoFocus={(event) => {
+          // Prefer focusing the Find input over the first focusable control.
+          const root = event.currentTarget
+          if (!(root instanceof HTMLElement)) return
+          const target = root.querySelector<HTMLInputElement>(
+            'input[data-artifact-find-input="true"]',
+          )
+          if (target) {
+            event.preventDefault()
+            target.focus()
+            target.select()
+          }
+        }}
+      >
         <div className="text-xs font-medium text-foreground">Find and replace</div>
         <label className="block space-y-1">
           <span className="text-[11px] text-muted-foreground">Find</span>
           <input
+            data-artifact-find-input="true"
             value={find}
-            onChange={(event) => setFind(event.target.value)}
+            onChange={(event) => {
+              setFind(event.target.value)
+              setActiveIndex(0)
+            }}
+            onKeyDown={(event) => {
+              if (event.key === "Enter") {
+                event.preventDefault()
+                goToNext(event.shiftKey ? -1 : 1)
+              }
+            }}
             className="w-full rounded-md border border-border bg-background px-2 py-1.5 text-sm outline-none focus-visible:ring-2 focus-visible:ring-ring"
             placeholder="Text to find"
             autoFocus
@@ -161,9 +243,31 @@ export function ArtifactFindReplacePopover({
         </label>
         <div className="flex items-center justify-between gap-2 pt-1">
           <span className={cn("text-[11px]", matchCount > 0 ? "text-foreground" : "text-muted-foreground")}>
-            {find.trim() ? `${matchCount} match${matchCount === 1 ? "" : "es"}` : "—"}
+            {find.trim()
+              ? matchCount > 0
+                ? `${activeIndex + 1} of ${matchCount}`
+                : "0 matches"
+              : "—"}
           </span>
           <div className="flex gap-1.5">
+            <button
+              type="button"
+              onClick={() => goToNext(-1)}
+              disabled={!find.trim() || matchCount === 0}
+              className="inline-flex items-center gap-0.5 rounded-md border border-border px-2 py-1 text-[11px] font-medium hover:bg-muted disabled:opacity-50"
+              title="Previous match"
+            >
+              <ChevronDown className="h-3 w-3 rotate-180" aria-hidden />
+            </button>
+            <button
+              type="button"
+              onClick={() => goToNext(1)}
+              disabled={!find.trim() || matchCount === 0}
+              className="inline-flex items-center gap-0.5 rounded-md border border-border px-2 py-1 text-[11px] font-medium hover:bg-muted disabled:opacity-50"
+              title="Next match"
+            >
+              <ChevronDown className="h-3 w-3" aria-hidden />
+            </button>
             <button
               type="button"
               onClick={() => applyReplace(false)}

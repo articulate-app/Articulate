@@ -1,3 +1,6 @@
+"use client"
+
+import { useState } from "react"
 import { cn } from "@/lib/utils"
 
 type UserAvatarProps = {
@@ -20,6 +23,7 @@ const SIZE_CLASSES: Record<NonNullable<UserAvatarProps["size"]>, string> = {
  * container so flex layouts never stretch or squash the image in narrow panes.
  */
 export function UserAvatar({ name, photoUrl, size = "sm", className }: UserAvatarProps) {
+  const [imageFailed, setImageFailed] = useState(false)
   const initials =
     name
       ?.split(" ")
@@ -29,14 +33,16 @@ export function UserAvatar({ name, photoUrl, size = "sm", className }: UserAvata
       .join("") || "?"
 
   const shellClass = cn("shrink-0 overflow-hidden rounded-full", SIZE_CLASSES[size], className)
+  const showPhoto = Boolean(photoUrl) && !imageFailed
 
-  if (photoUrl) {
+  if (showPhoto) {
     return (
       <div className={shellClass}>
         {/* eslint-disable-next-line @next/next/no-img-element */}
         <img
-          src={photoUrl}
+          src={photoUrl!}
           alt={name || "User"}
+          onError={() => setImageFailed(true)}
           className="h-full w-full object-cover object-center"
         />
       </div>

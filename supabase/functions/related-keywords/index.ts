@@ -5,11 +5,16 @@ import "jsr:@supabase/functions-js/edge-runtime.d.ts";
  * - DATAFORSEO_ID — DataForSEO API login
  * - DATAFORSEO_SECRET — DataForSEO API password
  *
- * Returns Google "searches related to" style keywords via DataForSEO Labs.
+ * Returns Google "searches related to" style keywords via DataForSEO Labs,
+ * optionally merged with category keyword ideas + suggestions for sparse seeds.
  */
 
 const DATAFORSEO_RELATED_URL =
   "https://api.dataforseo.com/v3/dataforseo_labs/google/related_keywords/live";
+const DATAFORSEO_KEYWORD_IDEAS_URL =
+  "https://api.dataforseo.com/v3/dataforseo_labs/google/keyword_ideas/live";
+const DATAFORSEO_KEYWORD_SUGGESTIONS_URL =
+  "https://api.dataforseo.com/v3/dataforseo_labs/google/keyword_suggestions/live";
 
 const DEFAULT_LOCATION_CODE = 2620; // Portugal
 const DEFAULT_LANGUAGE_CODE = "pt";
@@ -38,6 +43,11 @@ interface RelatedKeywordsRequest {
   languageId?: string;
   depth?: number;
   limit?: number;
+  replaceWithCoreKeyword?: boolean;
+  /** Default true. Set false when this call is only for category ideas. */
+  includeRelated?: boolean;
+  includeCategoryIdeas?: boolean;
+  includeSuggestions?: boolean;
 }
 
 interface KeywordMonthlySearchVolume {
@@ -87,7 +97,45 @@ function toBasicAuth(login: string, password: string): string {
   return `Basic ${btoa(`${login}:${password}`)}`;
 }
 
-function mapItems(items: unknown): KeywordIdea[] {
+function mapMonthly(
+  monthlyRaw: unknown,
+): KeywordMonthlySearchVolume[] {
+  const monthlySearchVolumes: KeywordMonthlySearchVolume[] = [];
+  if (!Array.isArray(monthlyRaw)) return monthlySearchVolumes;
+  for (const entry of monthlyRaw) {
+    if (!entry || typeof entry !== "object") continue;
+    const row = entry as Record<string, unknown>;
+    const year = Number(row.year);
+    const month = Number(row.month);
+    if (!Number.isFinite(year) || !Number.isFinite(month) || month < 1 || month > 12) {
+      continue;
+    }
+    monthlySearchVolumes.push({
+      year,
+      month,
+      monthlySearches: Number(row.search_volume) || 0,
+    });
+  }
+  monthlySearchVolumes.sort((a, b) => a.year - b.year || a.month - b.month);
+  return monthlySearchVolumes;
+}
+
+function competitionIndex(
+  difficulty: unknown,
+  competition: unknown,
+): number {
+  const kd = Number(difficulty);
+  if (Number.isFinite(kd)) {
+    return Math.max(0, Math.min(100, Math.round(kd)));
+  }
+  const comp = Number(competition);
+  if (Number.isFinite(comp)) {
+    return Math.max(0, Math.min(100, Math.round(comp * 100)));
+  }
+  return 0;
+}
+
+function mapRelatedItems(items: unknown): KeywordIdea[] {
   if (!Array.isArray(items)) return [];
   const rows: KeywordIdea[] = [];
 
@@ -106,46 +154,100 @@ function mapItems(items: unknown): KeywordIdea[] {
       | undefined;
 
     const volume = Number(info?.search_volume);
-    let competitionIndex = 0;
-    const difficulty = Number(props?.keyword_difficulty);
-    if (Number.isFinite(difficulty)) {
-      competitionIndex = Math.max(0, Math.min(100, Math.round(difficulty)));
-    } else {
-      const competition = Number(info?.competition);
-      if (Number.isFinite(competition)) {
-        competitionIndex = Math.max(0, Math.min(100, Math.round(competition * 100)));
-      }
-    }
-
-    const monthlyRaw = info?.monthly_searches;
-    const monthlySearchVolumes: KeywordMonthlySearchVolume[] = [];
-    if (Array.isArray(monthlyRaw)) {
-      for (const entry of monthlyRaw) {
-        if (!entry || typeof entry !== "object") continue;
-        const row = entry as Record<string, unknown>;
-        const year = Number(row.year);
-        const month = Number(row.month);
-        if (!Number.isFinite(year) || !Number.isFinite(month) || month < 1 || month > 12) {
-          continue;
-        }
-        monthlySearchVolumes.push({
-          year,
-          month,
-          monthlySearches: Number(row.search_volume) || 0,
-        });
-      }
-      monthlySearchVolumes.sort((a, b) => a.year - b.year || a.month - b.month);
-    }
-
     rows.push({
       keyword,
       avgMonthlySearches: Number.isFinite(volume) ? volume : 0,
-      competitionIndex,
-      monthlySearchVolumes,
+      competitionIndex: competitionIndex(
+        props?.keyword_difficulty,
+        info?.competition,
+      ),
+      monthlySearchVolumes: mapMonthly(info?.monthly_searches),
     });
   }
 
   return rows;
+}
+
+function mapFlatItems(items: unknown): KeywordIdea[] {
+  if (!Array.isArray(items)) return [];
+  const rows: KeywordIdea[] = [];
+
+  for (const raw of items) {
+    if (!raw || typeof raw !== "object") continue;
+    const item = raw as Record<string, unknown>;
+    const keyword = typeof item.keyword === "string" ? item.keyword.trim() : "";
+    if (!keyword) continue;
+
+    const info = item.keyword_info as Record<string, unknown> | undefined;
+    const props = item.keyword_properties as Record<string, unknown> | undefined;
+    const volume = Number(info?.search_volume);
+
+    rows.push({
+      keyword,
+      avgMonthlySearches: Number.isFinite(volume) ? volume : 0,
+      competitionIndex: competitionIndex(
+        props?.keyword_difficulty,
+        info?.competition,
+      ),
+      monthlySearchVolumes: mapMonthly(info?.monthly_searches),
+    });
+  }
+
+  return rows;
+}
+
+function mergeIdeaRows(rows: KeywordIdea[]): KeywordIdea[] {
+  const byKey = new Map<string, KeywordIdea>();
+  for (const row of rows) {
+    const key = row.keyword.trim().toLowerCase().replace(/\s+/g, " ");
+    if (!key) continue;
+    const existing = byKey.get(key);
+    if (!existing || row.avgMonthlySearches > existing.avgMonthlySearches) {
+      byKey.set(key, row);
+    }
+  }
+  return [...byKey.values()].sort(
+    (a, b) => b.avgMonthlySearches - a.avgMonthlySearches,
+  );
+}
+
+async function fetchLabs(
+  url: string,
+  body: Record<string, unknown>[],
+  auth: string,
+  mapItems: (items: unknown) => KeywordIdea[],
+): Promise<KeywordIdea[]> {
+  const response = await fetch(url, {
+    method: "POST",
+    headers: {
+      Authorization: auth,
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify(body),
+    signal: AbortSignal.timeout(20000),
+  });
+
+  if (!response.ok) {
+    const errorText = await response.text();
+    console.error("DataForSEO HTTP error:", url, response.status, errorText);
+    return [];
+  }
+
+  const payload = await response.json();
+  const statusCode = Number(payload?.status_code);
+  if (statusCode && statusCode !== 20000) {
+    console.error("DataForSEO status:", url, statusCode, payload?.status_message);
+    return [];
+  }
+
+  const task = Array.isArray(payload?.tasks) ? payload.tasks[0] : null;
+  const taskStatus = Number(task?.status_code);
+  if (taskStatus && taskStatus !== 20000) {
+    console.error("DataForSEO task status:", url, taskStatus, task?.status_message);
+    return [];
+  }
+
+  return mapItems(task?.result?.[0]?.items);
 }
 
 Deno.serve(async (req) => {
@@ -182,66 +284,86 @@ Deno.serve(async (req) => {
     const limit = Math.max(1, Math.min(1000, Number(body.limit) || 50));
     const locationCode = resolveLocationCode(body.regionId);
     const languageCode = resolveLanguageCode(body.languageId);
+    const auth = toBasicAuth(login, password);
 
-    const response = await fetch(DATAFORSEO_RELATED_URL, {
-      method: "POST",
-      headers: {
-        Authorization: toBasicAuth(login, password),
-        "Content-Type": "application/json",
-      },
-      body: JSON.stringify([
-        {
-          keyword,
-          location_code: locationCode,
-          language_code: languageCode,
-          depth,
-          limit,
-          include_seed_keyword: false,
-        },
-      ]),
-      signal: AbortSignal.timeout(15000),
-    });
+    const includeRelated = body.includeRelated !== false;
+    const includeCategoryIdeas = body.includeCategoryIdeas === true;
+    const includeSuggestions = body.includeSuggestions === true;
 
-    if (!response.ok) {
-      const errorText = await response.text();
-      console.error("DataForSEO HTTP error:", response.status, errorText);
-      return json(
-        {
-          error: {
-            code: response.status,
-            message: `DataForSEO error: ${response.status}`,
-            details: errorText,
-          },
-        },
-        response.status,
+    const jobs: Array<Promise<KeywordIdea[]>> = [];
+
+    if (includeRelated) {
+      jobs.push(
+        fetchLabs(
+          DATAFORSEO_RELATED_URL,
+          [
+            {
+              keyword,
+              location_code: locationCode,
+              language_code: languageCode,
+              depth,
+              limit,
+              include_seed_keyword: false,
+              replace_with_core_keyword: body.replaceWithCoreKeyword === true,
+            },
+          ],
+          auth,
+          mapRelatedItems,
+        ),
       );
     }
 
-    const payload = await response.json();
-    const statusCode = Number(payload?.status_code);
-    if (statusCode && statusCode !== 20000) {
-      console.error("DataForSEO status:", statusCode, payload?.status_message);
-      return json(
-        {
-          error: {
-            code: 502,
-            message: payload?.status_message || "DataForSEO request failed",
-          },
-        },
-        502,
+    if (includeCategoryIdeas) {
+      jobs.push(
+        fetchLabs(
+          DATAFORSEO_KEYWORD_IDEAS_URL,
+          [
+            {
+              keywords: [keyword],
+              location_code: locationCode,
+              language_code: languageCode,
+              closely_variants: false,
+              ignore_synonyms: false,
+              limit,
+              order_by: ["relevance,desc", "keyword_info.search_volume,desc"],
+              filters: [["keyword_info.search_volume", ">", 0]],
+            },
+          ],
+          auth,
+          mapFlatItems,
+        ),
       );
     }
 
-    const task = Array.isArray(payload?.tasks) ? payload.tasks[0] : null;
-    const taskStatus = Number(task?.status_code);
-    if (taskStatus && taskStatus !== 20000) {
-      console.error("DataForSEO task status:", taskStatus, task?.status_message);
-      // Soft-fail: research UI still works with Ads + Autocomplete alone.
-      return json({ results: [] }, 200);
+    if (includeSuggestions) {
+      jobs.push(
+        fetchLabs(
+          DATAFORSEO_KEYWORD_SUGGESTIONS_URL,
+          [
+            {
+              keyword,
+              location_code: locationCode,
+              language_code: languageCode,
+              include_seed_keyword: false,
+              exact_match: false,
+              ignore_synonyms: false,
+              limit,
+              order_by: ["keyword_info.search_volume,desc"],
+              filters: [["keyword_info.search_volume", ">", 0]],
+            },
+          ],
+          auth,
+          mapFlatItems,
+        ),
+      );
     }
 
-    const items = task?.result?.[0]?.items;
-    const results = mapItems(items);
+    if (jobs.length === 0) {
+      return json({ results: [], count: 0 }, 200);
+    }
+
+    const settled = await Promise.all(jobs);
+    const results = mergeIdeaRows(settled.flat());
 
     return json({ results, count: results.length }, 200);
   } catch (error) {

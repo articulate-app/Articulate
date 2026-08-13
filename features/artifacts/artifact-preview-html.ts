@@ -4,6 +4,7 @@ import {
   type ArtifactBlock,
   type TaskArtifact,
 } from "../../app/lib/artifacts/artifact-types"
+import { extractRawArtifactHtml, isHtmlEmailArtifact } from "./artifact-html-document"
 
 function escapeHtml(value: string): string {
   return value
@@ -79,10 +80,14 @@ function blocksToPreviewHtml(blocks: ArtifactBlock[]): string {
 /**
  * Build rich HTML for chat/center live previews: prefer content_json blocks
  * (rich_text html + table blocks), then sanitize markdown/HTML content_text.
+ * HTML email documents return raw HTML (caller should iframe, not TipTap).
  */
 export function artifactContentToPreviewHtml(
-  artifact: Pick<TaskArtifact, "content_json" | "content_text" | "title">,
+  artifact: Pick<TaskArtifact, "content_json" | "content_text" | "title" | "metadata" | "artifact_type" | "artifact_role">,
 ): string {
+  if (isHtmlEmailArtifact(artifact)) {
+    return extractRawArtifactHtml(artifact) || "<p></p>"
+  }
   const blocks = extractArtifactBlocks(artifact.content_json)
   if (blocks.length > 0) {
     const fromBlocks = blocksToPreviewHtml(blocks).trim()
@@ -93,4 +98,10 @@ export function artifactContentToPreviewHtml(
   return (
     normalizeComponentOutputToHtml(artifact.content_text ?? "", artifact.title) || "<p></p>"
   )
+}
+
+export function artifactPreviewIsHtmlEmail(
+  artifact: Pick<TaskArtifact, "content_json" | "content_text" | "title" | "metadata" | "artifact_type" | "artifact_role">,
+): boolean {
+  return isHtmlEmailArtifact(artifact)
 }

@@ -211,14 +211,41 @@ export const useAiOrchestratedBuildStore = create<AiOrchestratedBuildStoreState>
       // Never downgrade a live monitor to history (stream register wins over hydrate).
       const nextMonitor: OrchestratedBuildMonitorMode =
         prev.monitor === "live" || requestedMonitor === "live" ? "live" : "history"
+      const nextStatus =
+        startFailed && !isTerminalAiOrchestratedBuildStatus(prev.build?.status)
+          ? "failed"
+          : (prev.build?.status ?? (startFailed ? "failed" : "queued"))
+      const nextChangeSetId = changeSetId ?? prev.build?.change_set_id ?? null
+      const nextThreadId = threadId ?? prev.threadId
+      const nextTitle = title?.trim() || prev.title
+      const nextSummary = summary?.trim() || prev.summary
+      const nextIsArtifactBuild = Boolean(isArtifactBuild) || prev.isArtifactBuild
+      const nextDidInitialReconcile = prev.didInitialReconcile || Boolean(startFailed)
+      const nextError = resolvedError ?? prev.error
+      const alreadyLinked =
+        !assistantMessageId || Boolean(prev.assistantMessageIds?.[assistantMessageId])
+      const unchanged =
+        state.builds[id] != null
+        && prev.threadId === nextThreadId
+        && prev.title === nextTitle
+        && prev.summary === nextSummary
+        && prev.isArtifactBuild === nextIsArtifactBuild
+        && prev.monitor === nextMonitor
+        && prev.didInitialReconcile === nextDidInitialReconcile
+        && prev.error === nextError
+        && (prev.build?.change_set_id ?? null) === nextChangeSetId
+        && (prev.build?.status ?? null) === nextStatus
+        && alreadyLinked
+      if (unchanged) return state
+
       const next: AiOrchestratedBuildCardEntry = {
         ...prev,
-        threadId: threadId ?? prev.threadId,
-        title: title?.trim() || prev.title,
-        summary: summary?.trim() || prev.summary,
-        isArtifactBuild: Boolean(isArtifactBuild) || prev.isArtifactBuild,
+        threadId: nextThreadId,
+        title: nextTitle,
+        summary: nextSummary,
+        isArtifactBuild: nextIsArtifactBuild,
         monitor: nextMonitor,
-        didInitialReconcile: prev.didInitialReconcile || Boolean(startFailed),
+        didInitialReconcile: nextDidInitialReconcile,
         build: {
           ...(prev.build
             ?? createEmptyEntry({
@@ -227,13 +254,10 @@ export const useAiOrchestratedBuildStore = create<AiOrchestratedBuildStoreState>
               monitor: nextMonitor,
               status: startFailed ? "failed" : "queued",
             }).build!),
-          change_set_id: changeSetId ?? prev.build?.change_set_id ?? null,
-          status:
-            startFailed && !isTerminalAiOrchestratedBuildStatus(prev.build?.status)
-              ? "failed"
-              : (prev.build?.status ?? (startFailed ? "failed" : "queued")),
+          change_set_id: nextChangeSetId,
+          status: nextStatus,
         },
-        error: resolvedError ?? prev.error,
+        error: nextError,
         assistantMessageIds: { ...prev.assistantMessageIds },
         updatedAt: new Date().toISOString(),
       }

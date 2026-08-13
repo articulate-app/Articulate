@@ -3,10 +3,6 @@
 import { getGlobalSearchResultKey, type GlobalSearchDocument, type GlobalSearchSection } from "../../lib/global-search-types"
 import { SearchResultRow } from "./SearchResultRow"
 
-function RowList({ children }: { children: React.ReactNode }) {
-  return <div className="divide-y divide-gray-100">{children}</div>
-}
-
 export function GlobalSearchAllSectionCards({
   section,
   viewScope,
@@ -18,7 +14,6 @@ export function GlobalSearchAllSectionCards({
 }) {
   return (
     <div className="overflow-hidden">
-      <RowList>
       {section.items.map((item, index) => (
         <SearchResultRow
           key={`${viewScope}:${section.type}:${getGlobalSearchResultKey(item)}:${index}`}
@@ -27,7 +22,6 @@ export function GlobalSearchAllSectionCards({
           sectionType={section.type}
         />
       ))}
-      </RowList>
     </div>
   )
 }
@@ -40,7 +34,7 @@ export function GlobalSearchAiThreadList({
   onSelect: (item: GlobalSearchDocument) => void
 }) {
   return (
-    <div className="divide-y divide-gray-100">
+    <div>
       {items.map((item) => (
         <SearchResultRow
           key={`ai:${getGlobalSearchResultKey(item)}`}

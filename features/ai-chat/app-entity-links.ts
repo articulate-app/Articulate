@@ -33,6 +33,8 @@ export type AppEntityLink =
     }
   | { type: "source"; id: string }
   | { type: "ai-agent-run"; id: string }
+  /** Durable artifact build job — resolve to an artifact id before navigating. */
+  | { type: "ai-build"; id: string }
 
 function parsePositiveInt(value: string | null | undefined): number | null {
   if (value == null || value === "") return null
@@ -105,6 +107,13 @@ export function parseAppEntityLink(href: string | null | undefined): AppEntityLi
     return { type: "ai-agent-run", id }
   }
 
+  const aiBuildMatch = trimmed.match(/^app:\/\/ai-build\/([0-9a-f-]{36})$/i)
+  if (aiBuildMatch) {
+    const id = aiBuildMatch[1]
+    if (!UUID_PATTERN.test(id)) return null
+    return { type: "ai-build", id }
+  }
+
   const match = trimmed.match(/^app:\/\/(task|project|user)\/(\d+)$/i)
   if (!match) return null
   const [, typeRaw, idRaw] = match
@@ -134,6 +143,8 @@ export function getResolvedTaskIdFromSearchParams(params: URLSearchParams): numb
 }
 
 function isAiChatPaneOpen(params: URLSearchParams): boolean {
+  // AI may live in either workspace pane — thread identity is not pane-bound.
+  if (params.get("centerView") === "ai") return true
   return params.get("rightView") === "ai" && params.get("taskAiOpen") === "true"
 }
 

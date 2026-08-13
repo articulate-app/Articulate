@@ -16,6 +16,11 @@ export type DataForSeoRelatedKeywordsOptions = {
   /** DataForSEO related-search depth (0–4). Default 2 (~72 max ideas). */
   depth?: number
   limit?: number
+  /**
+   * When true, use the core keyword in the seed's synonym group for related searches.
+   * Helps zero-volume seeds that have no direct "searches related to" SERP data.
+   */
+  replaceWithCoreKeyword?: boolean
   login?: string
   password?: string
   signal?: AbortSignal
@@ -184,6 +189,7 @@ export async function fetchDataForSeoRelatedKeywords(
           depth,
           limit,
           include_seed_keyword: false,
+          replace_with_core_keyword: options.replaceWithCoreKeyword === true,
         },
       ]),
       signal: options.signal ?? AbortSignal.timeout(15000),
@@ -252,6 +258,8 @@ export async function fetchDataForSeoRelatedKeywordsViaEdge(
         regionId: options.regionId ?? undefined,
         depth: options.depth ?? 2,
         limit: options.limit ?? 50,
+        replaceWithCoreKeyword: options.replaceWithCoreKeyword === true,
+        includeRelated: true,
       }),
       signal: options.signal ?? AbortSignal.timeout(20000),
     })

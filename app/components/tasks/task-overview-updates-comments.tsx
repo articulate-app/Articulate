@@ -20,8 +20,6 @@ type OverviewFeedFilter = "all" | "updates" | "comments"
 type TaskOverviewUpdatesCommentsProps = {
   taskId: number
   commentsPanelProps: TaskCommentsPanelProps
-  onViewAllActivity: () => void
-  onViewAllComments: () => void
   active?: boolean
 }
 
@@ -34,8 +32,6 @@ const FEED_FILTER_OPTIONS: { value: OverviewFeedFilter; label: string }[] = [
 export function TaskOverviewUpdatesComments({
   taskId,
   commentsPanelProps,
-  onViewAllActivity,
-  onViewAllComments,
   active = true,
 }: TaskOverviewUpdatesCommentsProps) {
   const taskIdNum = commentsPanelProps.taskIdNum
@@ -198,8 +194,6 @@ export function TaskOverviewUpdatesComments({
     <>
       <TaskOverviewPreviewSection
         title="Activity"
-        onViewAll={feedFilter === "comments" ? onViewAllComments : onViewAllActivity}
-        viewAllLabel={feedFilter === "comments" ? "All comments" : "View all"}
         active={active}
         onVisible={handleVisible}
         belowTitle={filterPills}

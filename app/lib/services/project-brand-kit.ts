@@ -195,12 +195,14 @@ export async function saveProjectBrandKitDesign(args: {
   brandKit: ProjectBrandKit
   designDescription?: string | null
   designTemplates?: ProjectDesignTemplate[]
+  approvedImageBanks?: ProjectBrandKit["approved_image_banks"]
 }): Promise<{ data: ProjectBrandKit; error: Error | null }> {
   const supabase = createClientComponentClient()
   const nextKit = applyBrandKitDesignFields({
     previous: args.brandKit,
     designDescription: args.designDescription,
     designTemplates: args.designTemplates,
+    approvedImageBanks: args.approvedImageBanks,
   })
 
   const { error } = await supabase

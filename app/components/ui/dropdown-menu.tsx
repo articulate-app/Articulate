@@ -8,12 +8,16 @@ export const DropdownMenuSub = RadixDropdownMenu.Sub
 
 export const DropdownMenuSubTrigger = React.forwardRef<
   React.ElementRef<typeof RadixDropdownMenu.SubTrigger>,
-  React.ComponentPropsWithoutRef<typeof RadixDropdownMenu.SubTrigger>
->(({ className, ...props }, ref) => (
+  React.ComponentPropsWithoutRef<typeof RadixDropdownMenu.SubTrigger> & {
+    inset?: boolean
+  }
+>(({ className, inset, ...props }, ref) => (
   <RadixDropdownMenu.SubTrigger
     ref={ref}
     className={cn(
-      'flex cursor-pointer select-none items-center justify-between rounded-sm px-2 py-1.5 text-sm outline-none transition-colors focus:bg-accent focus:text-accent-foreground data-[state=open]:bg-accent',
+      // Use gap (not justify-between) so icon+label stay left-aligned; put ChevronRight with ml-auto in children when needed.
+      'flex cursor-pointer select-none items-center gap-2 rounded-sm px-2 py-1.5 text-sm outline-none transition-colors focus:bg-accent focus:text-accent-foreground data-[state=open]:bg-accent',
+      inset && 'pl-8',
       className
     )}
     {...props}

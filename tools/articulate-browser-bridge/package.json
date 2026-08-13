@@ -1,0 +1,24 @@
+{
+  "name": "articulate-browser-bridge",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Dev-only local browser helper for Articulate Agentic Publishing (loopback only).",
+  "type": "module",
+  "scripts": {
+    "start": "tsx src/server.ts",
+    "dev": "tsx watch src/server.ts"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "dependencies": {
+    "jose": "^6.2.8",
+    "tsx": "^4.20.3",
+    "ws": "^8.18.3"
+  },
+  "devDependencies": {
+    "@types/node": "^20.11.5",
+    "@types/ws": "^8.18.1",
+    "typescript": "^5.8.3"
+  }
+}

@@ -1,10 +1,9 @@
 "use client"
 
-import { buildCenterPaneSelectionSearchParams } from "../../app/lib/center-pane-selection-url"
-import { useCenterPaneTabsStore } from "../../app/store/center-pane-tabs"
-import { shallowReplaceSearchParams } from "../../app/lib/tasks-shallow-nav"
+import { openWorkspaceView } from "../../app/lib/open-workspace-view"
+import type { WorkspacePaneId } from "../../app/lib/workspace-view"
 
-/** Open or focus the reusable center-pane tab for an artifact (`artifact:<id>`). */
+/** Open or focus an artifact workspace tab (default: middle — established UX). */
 export function openArtifactCenterTab(args: {
   artifactId: string
   title?: string | null
@@ -12,28 +11,29 @@ export function openArtifactCenterTab(args: {
   /** Open the version history panel (restore older versions). */
   openHistory?: boolean
   pathname?: string
+  /** Target pane; defaults to middle to preserve existing UX. */
+  pane?: WorkspacePaneId
 }): void {
   const artifactId = args.artifactId.trim()
   if (!artifactId) return
-  useCenterPaneTabsStore.getState().upsertTab({
-    kind: "artifact",
-    id: artifactId,
-    title: args.title,
-  })
   const pathname =
     args.pathname ||
     (typeof window !== "undefined" ? window.location.pathname : "/")
-  const current =
-    typeof window !== "undefined"
-      ? new URLSearchParams(window.location.search)
-      : new URLSearchParams()
-  const next = buildCenterPaneSelectionSearchParams({
-    currentSearchParams: current,
-    entity: "artifact",
-    id: artifactId,
-    version: args.version ?? null,
-    openHistory: args.openHistory === true,
-  })
   const shellPath = pathname.startsWith("/artifacts") ? "/" : pathname
-  shallowReplaceSearchParams(shellPath, next, "open-artifact-center-tab")
+  openWorkspaceView(
+    {
+      type: "artifact",
+      artifactId,
+      title: args.title,
+      params: {
+        artifactVersion: args.version ?? null,
+        openArtifactHistory: args.openHistory === true,
+      },
+    },
+    {
+      pane: args.pane ?? "middle",
+      pathname: shellPath,
+      source: "open-artifact-center-tab",
+    },
+  )
 }

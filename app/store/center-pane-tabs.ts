@@ -1,9 +1,20 @@
 import { create } from "zustand"
 import { createJSONStorage, persist } from "zustand/middleware"
+import { moveItemBeforeKey } from "../lib/pane-tab-order"
 
-/** Middle-pane entities only — AI threads always open in the right pane. */
+/**
+ * Workspace views that may appear as middle-pane tabs.
+ * AI / browser are pane-neutral — they can open here or in the right pane.
+ */
 export type CenterPaneTabKind =
   | "task"
+  | "task-list"
+  | "project-list"
+  | "mention-list"
+  | "user-list"
+  | "ai-thread-list"
+  | "artifact-list"
+  | "template-list"
   | "suggestion"
   | "project"
   | "user"
@@ -11,8 +22,12 @@ export type CenterPaneTabKind =
   | "thread"
   | "artifact"
   | "source"
+  | "template"
   | "research"
   | "create"
+  | "search-results"
+  | "ai"
+  | "browser"
   /** @deprecated Prefer "research". */
   | "keyword-research"
   /** @deprecated Prefer "research". */
@@ -49,6 +64,8 @@ type CenterPaneTabsState = {
    */
   closeTabs: (keys: string[]) => CenterPaneTab | null
   closeAll: () => void
+  /** Place `key` immediately before `beforeKey` (or at end when beforeKey is null). */
+  moveTabBefore: (key: string, beforeKey: string | null) => void
 }
 
 const MAX_TABS = 16
@@ -57,14 +74,25 @@ function normalizeTitle(title: string | null | undefined, kind: CenterPaneTabKin
   const trimmed = typeof title === "string" ? title.trim() : ""
   if (trimmed) return trimmed
   if (kind === "task") return `Task ${id}`
+  if (kind === "task-list") return "Tasks"
+  if (kind === "project-list") return "Projects"
+  if (kind === "mention-list") return "Inbox"
+  if (kind === "user-list") return "Users"
+  if (kind === "ai-thread-list") return "AI chats"
+  if (kind === "artifact-list") return "Artifacts"
+  if (kind === "template-list") return "Templates"
+  if (kind === "search-results") return "Search"
   if (kind === "suggestion") return `Suggestion ${id}`
   if (kind === "project") return `Project ${id}`
   if (kind === "user") return `User ${id}`
   if (kind === "team") return `Team ${id}`
   if (kind === "artifact") return `Artifact ${id.slice(0, 8)}`
   if (kind === "source") return `Source ${id.slice(0, 8)}`
+  if (kind === "template") return `Template ${id.slice(0, 12)}`
   if (kind === "research") return "Research"
   if (kind === "create") return "Create"
+  if (kind === "ai") return "AI"
+  if (kind === "browser") return id ? `Browser ${id.slice(0, 6)}` : "Browser"
   if (kind === "keyword-research") return "Research"
   if (kind === "prompt-research") return "Research"
   return `Thread ${id}`
@@ -94,6 +122,9 @@ export function listCenterPaneTabsNeedingTitleResolution(tabs: CenterPaneTab[]):
     (tab) =>
       tab.kind !== "research" &&
       tab.kind !== "create" &&
+      tab.kind !== "ai" &&
+      tab.kind !== "browser" &&
+      tab.kind !== "task-list" &&
       tab.kind !== "keyword-research" &&
       tab.kind !== "prompt-research" &&
       tab.kind !== "thread" &&
@@ -178,6 +209,13 @@ export const useCenterPaneTabsStore = create<CenterPaneTabsState>()(
         return before ? nextTabs.find((tab) => tab.key === before.key) ?? null : nextTabs[0] ?? null
       },
       closeAll: () => set({ tabs: [] }),
+      moveTabBefore: (key, beforeKey) => {
+        set((state) => {
+          const next = moveItemBeforeKey(state.tabs, key, beforeKey)
+          if (next === state.tabs) return state
+          return { tabs: next }
+        })
+      },
     }),
     {
       name: "articulate.center-pane-tabs",

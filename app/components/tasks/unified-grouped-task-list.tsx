@@ -1412,10 +1412,13 @@ export function UnifiedGroupedTaskList<T>({
                 measureRef={rowVirtualizer.measureElement}
                 dataIndex={vRow.index}
                 dataRowType="group"
-                className="task-row group-header bg-white border-b border-gray-200 sticky top-9 z-10"
+                className={cn(
+                  "task-row group-header bg-white sticky z-10",
+                  compact ? "top-0" : "top-9 border-b border-gray-200",
+                )}
                 style={{ gridTemplateColumns }}
               >
-                <td className="task-cell task-cell-span-full task-group-label bg-white px-3 pb-1.5 pt-5">
+                <td className={cn("task-cell task-cell-span-full task-group-label bg-white px-3", compact ? "py-1.5" : "pb-1.5 pt-5")}>
                   <div className="flex w-full items-center gap-2">
                     <button
                       type="button"
@@ -1461,7 +1464,10 @@ export function UnifiedGroupedTaskList<T>({
               measureRef={rowVirtualizer.measureElement}
               dataIndex={vRow.index}
               dataRowType="group"
-              className="task-row group-header bg-white border-b border-gray-200 sticky top-9 z-10"
+              className={cn(
+                "task-row group-header bg-white sticky z-10",
+                compact ? "top-0" : "top-9 border-b border-gray-200",
+              )}
               style={{ gridTemplateColumns }}
             >
               {/* Empty cells for columns before title (e.g. select) */}
@@ -1523,7 +1529,7 @@ export function UnifiedGroupedTaskList<T>({
               measureRef={rowVirtualizer.measureElement}
               dataIndex={vRow.index}
               dataRowType="loading"
-              className="task-row border-b"
+              className={cn("task-row", !compact && "border-b")}
               style={{ gridTemplateColumns }}
             >
               <td colSpan={columns.length} className="task-cell task-cell-span-full px-3 py-3 text-sm text-muted-foreground">
@@ -1544,7 +1550,7 @@ export function UnifiedGroupedTaskList<T>({
               measureRef={rowVirtualizer.measureElement}
               dataIndex={vRow.index}
               dataRowType="empty"
-              className="task-row border-b"
+              className={cn("task-row", !compact && "border-b")}
               style={{ gridTemplateColumns }}
             >
               <td colSpan={columns.length} className="task-cell task-cell-span-full px-3 py-6 text-sm text-muted-foreground">
@@ -1563,7 +1569,7 @@ export function UnifiedGroupedTaskList<T>({
               key={key}
               data-index={vRow.index}
               ref={rowVirtualizer.measureElement}
-              className="task-row border-b"
+              className={cn("task-row", !compact && "border-b")}
               style={{ gridTemplateColumns }}
             >
               <td colSpan={columns.length} className="task-cell task-cell-span-full p-0">
@@ -1631,7 +1637,8 @@ export function UnifiedGroupedTaskList<T>({
               onClick={handleTaskRowClick}
               insertDropEdges={insertDropEdges}
               className={cn(
-                'task-row hover:bg-gray-50 cursor-pointer border-b',
+                'task-row hover:bg-gray-50 cursor-pointer',
+                !compact && 'border-b',
                 (isSelectedCompact || isCompactChecked) && 'bg-gray-100',
               )}
               style={{ gridTemplateColumns }}
@@ -1688,7 +1695,8 @@ export function UnifiedGroupedTaskList<T>({
               onClick={handleTaskRowClick}
               insertDropEdges={insertDropEdges}
               className={cn(
-                'task-row hover:bg-gray-50 cursor-pointer border-b',
+                'task-row hover:bg-gray-50 cursor-pointer',
+                !compact && 'border-b',
                 selectedTaskId &&
                   selectedEntityType === String((task as any).entity_type) &&
                   String(selectedTaskId) === String((task as any).entity_id) &&
@@ -1710,7 +1718,8 @@ export function UnifiedGroupedTaskList<T>({
                       key={colId ?? colIndex}
                       data-col={colId}
                       className={cn(
-                        'task-cell text-sm border-b align-middle',
+                        'task-cell text-sm align-middle',
+                        !compact && 'border-b',
                         colId !== 'project_statuses' && 'truncate',
                         isSpacer && 'task-spacer-cell p-0 border-transparent',
                         !isSpacer && 'px-3 py-1',
@@ -1760,7 +1769,8 @@ export function UnifiedGroupedTaskList<T>({
             onClick={handleTaskRowClick}
             insertDropEdges={insertDropEdges}
             className={cn(
-              'task-row hover:bg-gray-50 cursor-pointer border-b',
+              'task-row hover:bg-gray-50 cursor-pointer',
+              !compact && 'border-b',
               isSelected && 'bg-gray-100',
             )}
             style={{ gridTemplateColumns }}
@@ -1779,7 +1789,8 @@ export function UnifiedGroupedTaskList<T>({
                     key={cell.id}
                     data-col={cell.column.id}
                     className={cn(
-                      'task-cell text-sm border-b align-middle',
+                      'task-cell text-sm align-middle',
+                      !compact && 'border-b',
                       cell.column.id !== 'project_statuses' && 'truncate',
                       isSpacer && 'task-spacer-cell p-0 border-transparent',
                       !isSpacer && 'px-3 py-1',

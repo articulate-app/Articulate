@@ -312,16 +312,90 @@ export type DiffHunk = {
   removedChars: number
 }
 
+function hunkFromLines(hunkLines: DiffLine[]): DiffHunk {
+  const beforeParts: string[] = []
+  const afterParts: string[] = []
+  for (const line of hunkLines) {
+    if (line.type === "unchanged") {
+      beforeParts.push(line.text)
+      afterParts.push(line.text)
+    } else if (line.type === "removed") {
+      beforeParts.push(line.text)
+    } else {
+      afterParts.push(line.text)
+    }
+  }
+  const beforeText = beforeParts.join("\n").trim()
+  const afterText = afterParts.join("\n").trim()
+  const stats = computeDiffCharStats(beforeText, afterText)
+  return {
+    lines: hunkLines,
+    beforeText,
+    afterText,
+    addedChars: stats.added,
+    removedChars: stats.removed,
+  }
+}
+
+function hunkCharLength(hunk: DiffHunk): number {
+  return Math.max(hunk.beforeText.length, hunk.afterText.length)
+}
+
+/** Split an oversized hunk into smaller change clusters under `maxChars`. */
+function splitOversizedHunk(hunk: DiffHunk, maxChars: number): DiffHunk[] {
+  if (hunkCharLength(hunk) <= maxChars || hunk.lines.length <= 1) return [hunk]
+
+  const changeIndexes: number[] = []
+  for (let i = 0; i < hunk.lines.length; i += 1) {
+    if (hunk.lines[i].type !== "unchanged") changeIndexes.push(i)
+  }
+  if (changeIndexes.length <= 1) return [hunk]
+
+  const out: DiffHunk[] = []
+  let clusterStart = changeIndexes[0]
+  let prevChange = changeIndexes[0]
+  let budget = 0
+
+  const flush = (endChangeIdx: number) => {
+    const contextBefore = Math.max(0, clusterStart - 1)
+    const contextAfter = Math.min(hunk.lines.length, endChangeIdx + 2)
+    out.push(hunkFromLines(hunk.lines.slice(contextBefore, contextAfter)))
+  }
+
+  for (let i = 0; i < changeIndexes.length; i += 1) {
+    const idx = changeIndexes[i]
+    const lineChars = hunk.lines[idx].text.length
+    const wouldExceed = budget > 0 && budget + lineChars > maxChars
+    if (wouldExceed) {
+      flush(prevChange)
+      clusterStart = idx
+      budget = 0
+    }
+    budget += lineChars
+    prevChange = idx
+  }
+  flush(prevChange)
+  return out.length > 0 ? out : [hunk]
+}
+
 /**
  * Split a line diff into contiguous change regions.
  * Unchanged runs longer than `maxUnchangedGap` separate hunks.
  */
 export function splitDiffIntoHunks(
   lines: DiffLine[],
-  options?: { maxUnchangedGap?: number },
+  options?: { maxUnchangedGap?: number; maxHunkChars?: number; maxHunks?: number },
 ): DiffHunk[] {
   if (!hasRenderableDiff(lines)) return []
   const maxGap = Math.max(0, options?.maxUnchangedGap ?? 2)
+  const maxHunkChars =
+    typeof options?.maxHunkChars === "number" && options.maxHunkChars > 0
+      ? options.maxHunkChars
+      : null
+  const maxHunks =
+    typeof options?.maxHunks === "number" && options.maxHunks > 0
+      ? Math.floor(options.maxHunks)
+      : null
 
   type Range = { start: number; end: number }
   const changeIndexes: number[] = []
@@ -344,31 +418,17 @@ export function splitDiffIntoHunks(
   }
   clusters.push({ start: clusterStart, end: prevChange + 1 })
 
-  return clusters.map((cluster) => {
+  let hunks = clusters.map((cluster) => {
     const contextBefore = Math.max(0, cluster.start - 1)
     const contextAfter = Math.min(lines.length, cluster.end + 1)
-    const hunkLines = lines.slice(contextBefore, contextAfter)
-    const beforeParts: string[] = []
-    const afterParts: string[] = []
-    for (const line of hunkLines) {
-      if (line.type === "unchanged") {
-        beforeParts.push(line.text)
-        afterParts.push(line.text)
-      } else if (line.type === "removed") {
-        beforeParts.push(line.text)
-      } else {
-        afterParts.push(line.text)
-      }
-    }
-    const beforeText = beforeParts.join("\n").trim()
-    const afterText = afterParts.join("\n").trim()
-    const stats = computeDiffCharStats(beforeText, afterText)
-    return {
-      lines: hunkLines,
-      beforeText,
-      afterText,
-      addedChars: stats.added,
-      removedChars: stats.removed,
-    }
+    return hunkFromLines(lines.slice(contextBefore, contextAfter))
   })
+
+  if (maxHunkChars != null) {
+    hunks = hunks.flatMap((hunk) => splitOversizedHunk(hunk, maxHunkChars))
+  }
+  if (maxHunks != null && hunks.length > maxHunks) {
+    hunks = hunks.slice(0, maxHunks)
+  }
+  return hunks
 }

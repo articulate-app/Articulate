@@ -23,6 +23,6 @@ describe("ai-pane-focus-layout-chrome", () => {
 
     expect(chrome.showPrimaryDivider).toBe(true)
     expect(chrome.showSecondaryDivider).toBe(true)
-    expect(chrome.showAiPanelLeftBorder).toBe(true)
+    expect(chrome.showAiPanelLeftBorder).toBe(false)
   })
 })

@@ -14,6 +14,10 @@ const getPool = () => {
 // Test the database connection
 export async function testConnection() {
   try {
+    if (!process.env.DATABASE_URL?.trim()) {
+      console.error('Database connection error: DATABASE_URL is not set')
+      return false
+    }
     const client = await getPool().connect();
     client.release();
     return true;

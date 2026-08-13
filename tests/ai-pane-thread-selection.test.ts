@@ -1,5 +1,11 @@
 import { describe, expect, it } from "vitest"
-import { resolveAutoThreadSelection } from "../features/ai-chat/thread-selection-guards"
+import {
+  resolveAutoThreadSelection,
+  shouldWriteActiveThreadToUrl,
+} from "../features/ai-chat/thread-selection-guards"
+
+const isPersistedThreadId = (value: string) =>
+  /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(value)
 
 describe("resolveAutoThreadSelection", () => {
   it("keeps selected thread locked after create -> send -> streamed reply", () => {
@@ -68,7 +74,25 @@ describe("resolveAutoThreadSelection", () => {
     })
   })
 
-  it("ignores external thread changes once a thread is already active", () => {
+  it("follows search-preview aiThreadId changes while another thread is active", () => {
+    const outcome = resolveAutoThreadSelection({
+      isOpen: true,
+      isCreating: false,
+      activeThreadId: "9b881005-48cb-4d61-bb2e-f45fc4e24844",
+      externalRequestedThreadId: null,
+      urlRequestedThreadId: "1b2db291-df72-4b06-b602-1fbd56a78cc8",
+      disableUrlSync: false,
+      openTabIds: ["9b881005-48cb-4d61-bb2e-f45fc4e24844"],
+    })
+
+    expect(outcome).toEqual({
+      type: "load-requested-thread",
+      threadId: "1b2db291-df72-4b06-b602-1fbd56a78cc8",
+      source: "url",
+    })
+  })
+
+  it("ignores external thread changes once a thread is already active when url sync is disabled", () => {
     const outcome = resolveAutoThreadSelection({
       isOpen: true,
       isCreating: false,
@@ -80,5 +104,37 @@ describe("resolveAutoThreadSelection", () => {
     })
 
     expect(outcome).toEqual({ type: "none" })
+  })
+})
+
+describe("shouldWriteActiveThreadToUrl", () => {
+  it("does not stomp a different persisted thread requested by the address bar", () => {
+    expect(
+      shouldWriteActiveThreadToUrl({
+        activeThreadId: "9b881005-48cb-4d61-bb2e-f45fc4e24844",
+        liveThreadId: "1b2db291-df72-4b06-b602-1fbd56a78cc8",
+        isPersistedThreadId,
+      }),
+    ).toBe(false)
+  })
+
+  it("writes when the address bar has no thread yet", () => {
+    expect(
+      shouldWriteActiveThreadToUrl({
+        activeThreadId: "9b881005-48cb-4d61-bb2e-f45fc4e24844",
+        liveThreadId: null,
+        isPersistedThreadId,
+      }),
+    ).toBe(true)
+  })
+
+  it("skips when url already matches active", () => {
+    expect(
+      shouldWriteActiveThreadToUrl({
+        activeThreadId: "9b881005-48cb-4d61-bb2e-f45fc4e24844",
+        liveThreadId: "9b881005-48cb-4d61-bb2e-f45fc4e24844",
+        isPersistedThreadId,
+      }),
+    ).toBe(false)
   })
 })

@@ -9,6 +9,7 @@ import {
   shouldSuppressGenericStatusText,
   statusPayloadToExecutionTraceEvent,
 } from "../features/ai-chat/execution-trace"
+import { toolResultRowsFromDetails } from "../features/ai-chat/tool-result-display"
 import { useAiExecutionTraceStore } from "../app/store/ai-execution-trace-store"
 import type { AiOrchestratedBuildEvent } from "../app/lib/ai/ai-orchestrated-build-types"
 
@@ -110,6 +111,24 @@ describe("statusPayloadToExecutionTraceEvent", () => {
     )
     expect(merged.phase).toBe("completed")
     expect(merged.text).toContain("Finished looking up projects")
+  })
+
+  it("keeps collapsed tool text short and stores result_summary in details", () => {
+    const finished = statusPayloadToExecutionTraceEvent({
+      sequence: 12,
+      type: "tool_finished",
+      phase: "completed",
+      round: 0,
+      tool_name: "ai_list_task_artifacts",
+      ok: true,
+      text: "Finished ai_list_task_artifacts.",
+      result_summary: "Listed artifacts — none found.",
+      data_summary: { count: 0, items: [] },
+      entities: [],
+    })
+    expect(finished?.text).toBe("Finished listing task artifacts.")
+    expect(finished?.details?.result_summary).toBe("Listed artifacts — none found.")
+    expect(finished?.details?.data_summary).toEqual({ count: 0, items: [] })
   })
 
   it("keeps parallel tool calls as distinct stacked steps", () => {
@@ -564,5 +583,23 @@ describe("useAiExecutionTraceStore", () => {
       useAiExecutionTraceStore.getState().buckets.a.stepsById,
     )
     expect(ordered.map((step) => step.stepId)).toEqual(["a", "b"])
+  })
+})
+
+describe("toolResultRowsFromDetails", () => {
+  it("extracts publishing destinations for the expandable tool panel", () => {
+    const rows = toolResultRowsFromDetails({
+      data_summary: {
+        count: 2,
+        destinations: [
+          { id: "d1", name: "Dimas blog", start_url: "https://dimas-silva.pt/blog" },
+          { id: "d2", name: "Articulate site", start_url: "https://example.com" },
+        ],
+      },
+    })
+    expect(rows).toEqual([
+      { id: "d1", label: "Dimas blog", meta: "https://dimas-silva.pt/blog" },
+      { id: "d2", label: "Articulate site", meta: "https://example.com" },
+    ])
   })
 })

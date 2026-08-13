@@ -8,6 +8,10 @@ const BUILD_UNIT_FAILURE_MESSAGES: Record<string, string> = {
   component_revision_conflict:
     "This task had a newer edit, so the generated change was not saved.",
   provider_timeout: "The AI provider timed out while working on this task.",
+  token_call_already_finalized:
+    "A previous attempt left a stuck token reservation. Retry the build — it should continue cleanly.",
+  worker_dispatch_http_546:
+    "The worker ran out of memory while generating. It will retry with a lighter mode.",
   user_token_limit_exceeded: "You have reached your daily AI token limit.",
   team_token_limit_exceeded: "Your team has reached its daily AI token limit.",
   user_token_limit_would_be_exceeded:

@@ -117,6 +117,15 @@ type AiBuildArtifactPreviewState = {
   clearExceptThread: (threadId: string | null) => void
   /** Drop saved/failed previews whose version is already reflected on the server row. */
   pruneConsumedSavedPreviews: (artifactId: string, currentVersion: number) => void
+  /**
+   * Freeze the on-screen artifact body as before_content_json when the worker
+   * omitted it (started events stay tiny). Required for honest HTML diffs.
+   */
+  ensureBeforeBaseline: (args: {
+    artifactId: string
+    contentJson?: ArtifactContentJson | null
+    contentText?: string | null
+  }) => void
   getPreview: (key: string) => AiBuildArtifactPreviewEntry | null
   listForAssistantMessage: (assistantMessageId: string) => AiBuildArtifactPreviewEntry[]
   listForThread: (threadId: string) => AiBuildArtifactPreviewEntry[]
@@ -210,6 +219,7 @@ export function parseBuildArtifactPreviewPayload(payload: Record<string, unknown
   title: string | null
   contentText: string | null
   beforeContentText: string | null
+  beforeContentJson: ArtifactContentJson | null
   diffContentText: string | null
   contentJson: ArtifactContentJson | null
   assetData: ArtifactAssetData | null
@@ -313,6 +323,10 @@ export function parseBuildArtifactPreviewPayload(payload: Record<string, unknown
           : typeof source.before_content_text === "string"
             ? source.before_content_text
             : null,
+    beforeContentJson:
+      (asRecord(record.before_content_json) as ArtifactContentJson | null)
+      ?? (asRecord(record.beforeContentJson) as ArtifactContentJson | null)
+      ?? (asRecord(source.before_content_json) as ArtifactContentJson | null),
     diffContentText:
       typeof record.diff_content_text === "string"
         ? record.diff_content_text
@@ -573,6 +587,36 @@ export const useAiBuildArtifactPreviewStore = create<AiBuildArtifactPreviewState
     // No-op: saved preview cards are required by AI chat history after hard
     // refresh. Editor/overview overlays already ignore saved previews when the
     // list/get row has caught up (see ArtifactWorkspace / ArtifactPane).
+  },
+
+  ensureBeforeBaseline: ({ artifactId, contentJson, contentText }) => {
+    const id = artifactId.trim()
+    if (!id) return
+    const hasJson = Boolean(contentJson && typeof contentJson === "object")
+    const hasText = typeof contentText === "string" && contentText.trim().length > 0
+    if (!hasJson && !hasText) return
+    set((state) => {
+      let changed = false
+      const next: Record<string, AiBuildArtifactPreviewEntry> = { ...state.previews }
+      for (const [key, entry] of Object.entries(next)) {
+        if (entry.artifactId !== id) continue
+        if (entry.phase === "saved" || entry.phase === "failed") continue
+        const needsJson = hasJson && !entry.beforeContentJson
+        const needsText = hasText && !entry.beforeContentText?.trim()
+        if (!needsJson && !needsText) continue
+        changed = true
+        next[key] = {
+          ...entry,
+          beforeContentJson: needsJson
+            ? (contentJson as ArtifactContentJson)
+            : entry.beforeContentJson,
+          beforeContentText: needsText
+            ? String(contentText)
+            : entry.beforeContentText,
+        }
+      }
+      return changed ? { previews: next } : state
+    })
   },
 
   getPreview: (key) => get().previews[key] ?? null,

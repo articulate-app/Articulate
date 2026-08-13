@@ -2,7 +2,6 @@
 
 import React, { useCallback, useEffect, useLayoutEffect, useState } from "react";
 import { useSearchParams, useRouter, usePathname } from "next/navigation";
-import { TaskHeaderBar } from "../components/ui/task-header-bar";
 import { TaskFilters } from "../components/tasks/TaskFilters";
 import { buildFilterSearchParams } from "../lib/tasks-filter-url";
 import { useTasksUI } from "../store/tasks-ui";
@@ -14,6 +13,8 @@ import type { TaskEditFields } from "../hooks/use-task-edit-fields";
 import type { FilterOptions } from "../lib/services/filters";
 import { useMobileDetection } from "../hooks/use-mobile-detection";
 import { Sidebar } from "../components/ui/Sidebar";
+import { GlobalSearchModal } from "../components/ui/global-search-modal";
+import { HeaderCreatePopupHost } from "../components/ui/header-create-popup-host";
 import { TaskComposerTray } from "../components/tasks/TaskComposerTray";
 import { MobileTaskComposerSheet } from "../components/tasks/MobileTaskComposerSheet";
 import { buildNewAiThreadParams } from "../lib/ai-thread-route";
@@ -182,6 +183,7 @@ export default function TasksLayout({ children, modal }: LayoutProps) {
 
   // Filter pane open state
   const [isFilterOpen, setIsFilterOpen] = useState(false);
+  const [isSearchModalOpen, setIsSearchModalOpen] = useState(false);
   
 
   // Get access token for task edit fields
@@ -205,11 +207,6 @@ export default function TasksLayout({ children, modal }: LayoutProps) {
   
   // Debug log
   console.log('[layout] isFilterOpen:', isFilterOpen, 'editFields:', editFields, 'users:', users, 'filterOptions:', filterOptions);
-
-  // Handler for filter button (could open a filter modal or pane)
-  const handleFilterClick = () => {
-    setIsFilterOpen(true);
-  };
 
   // Handler for sidebar toggle (desktop collapse + mobile drawer).
   const handleSidebarToggle = () => {
@@ -258,29 +255,7 @@ export default function TasksLayout({ children, modal }: LayoutProps) {
           onSidebarToggle: handleSidebarToggle,
         }}
       >
-        <div
-          className="flex h-screen w-full flex-col bg-white"
-          style={{ ["--global-header-height" as string]: "4rem" }}
-        >
-          {!isMobile && (
-            <TaskHeaderBar
-              searchValue={globalSearch.committedQuery}
-              onSearchChange={globalSearch.setDraftQuery}
-              onSearchCommit={(value) => globalSearch.commitSearch({ nextQuery: value })}
-              isSearchOpen={globalSearch.isOpen}
-              onSearchOpenChange={globalSearch.setIsOpen}
-              selectedTypeFilters={globalSearch.pendingSelectedTypes}
-              onToggleTypeFilter={globalSearch.togglePendingTypeFilter}
-              onPreviewResultSelect={globalSearch.openSearchResult}
-              onShowMore={globalSearch.handleShowMore}
-              onShowAll={globalSearch.handleShowAll}
-              onClearSearch={globalSearch.clearSearch}
-              onFilterClick={handleFilterClick}
-              onSidebarToggle={handleSidebarToggle}
-              onNewAiThreadClick={handleNewAiThreadClick}
-            />
-          )}
-
+        <div className="flex h-screen w-full flex-col bg-white">
           <div className="flex min-h-0 flex-1 w-full overflow-hidden">
             {isMobile ? (
               <div className="w-0 min-w-0 overflow-hidden">
@@ -298,7 +273,10 @@ export default function TasksLayout({ children, modal }: LayoutProps) {
                 )}
                 style={{ width: isSidebarCollapsed ? 64 : sidebarWidth }}
               >
-                <Sidebar isCollapsed={isSidebarCollapsed} />
+                <Sidebar
+                  isCollapsed={isSidebarCollapsed}
+                  onOpenSearch={() => setIsSearchModalOpen(true)}
+                />
                 {!isSidebarCollapsed ? (
                   <div
                     role="separator"
@@ -338,6 +316,24 @@ export default function TasksLayout({ children, modal }: LayoutProps) {
             </div>
           </div>
         </div>
+
+        {!isMobile ? (
+          <>
+            <GlobalSearchModal
+              open={isSearchModalOpen}
+              onOpenChange={setIsSearchModalOpen}
+              searchValue={globalSearch.committedQuery}
+              onSearchChange={globalSearch.setDraftQuery}
+              onSearchCommit={(value) => globalSearch.commitSearch({ nextQuery: value })}
+              selectedTypeFilters={globalSearch.pendingSelectedTypes}
+              onToggleTypeFilter={globalSearch.togglePendingTypeFilter}
+              onPreviewResultSelect={globalSearch.openSearchResult}
+              onShowAll={globalSearch.handleShowAll}
+              onClearSearch={globalSearch.clearSearch}
+            />
+            <HeaderCreatePopupHost onNewAiThreadClick={handleNewAiThreadClick} />
+          </>
+        ) : null}
 
         <TaskComposerTray />
         <MobileTaskComposerSheet />
