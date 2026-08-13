@@ -12,6 +12,12 @@ import {
   clearSourceCenterSelectionParams,
   getCenterSourceIdFromParams,
 } from "./source-selection-url"
+import {
+  applyTemplateCenterSelectionParams,
+  CENTER_TEMPLATE_ID_PARAM,
+  clearTemplateCenterSelectionParams,
+  getCenterTemplateIdFromParams,
+} from "./template-selection-url"
 
 export type CenterPaneEntity =
   | "task"
@@ -21,6 +27,7 @@ export type CenterPaneEntity =
   | "thread"
   | "artifact"
   | "source"
+  | "template"
 
 /** Unified Research middle-pane tool (Keywords + Prompts). */
 export const RESEARCH_CENTER_VIEW = "research"
@@ -54,6 +61,7 @@ export type ActiveCenterSelection =
   | { type: "thread"; id: string }
   | { type: "artifact"; id: string; version: number | null }
   | { type: "source"; id: string }
+  | { type: "template"; id: string }
   | { type: "research"; tab: ResearchTab }
   | { type: "create"; createType: CreateCenterType }
   /** @deprecated Normalized to research by callers when possible. */
@@ -132,6 +140,10 @@ export function getActiveCenterSelection(params: ReadableParams): ActiveCenterSe
   if (centerSourceId) {
     return { type: "source", id: centerSourceId }
   }
+  const centerTemplateId = getCenterTemplateIdFromParams(params)
+  if (centerTemplateId) {
+    return { type: "template", id: centerTemplateId }
+  }
   const centerView = params.get("centerView")
   if (centerView === CREATE_CENTER_VIEW) {
     return { type: "create", createType: getCreateCenterTypeFromParams(params) }
@@ -160,13 +172,14 @@ export function clearActiveCenterSelectionParams(next: URLSearchParams) {
   next.delete("centerView")
   clearArtifactCenterSelectionParams(next)
   clearSourceCenterSelectionParams(next)
+  clearTemplateCenterSelectionParams(next)
   next.delete(KEYWORD_RESEARCH_QUERY_PARAM)
   next.delete(PROMPT_RESEARCH_QUERY_PARAM)
   next.delete(RESEARCH_QUERY_PARAM)
   next.delete(RESEARCH_TAB_PARAM)
   next.delete(RESEARCH_REGION_PARAM)
   next.delete(CREATE_TYPE_PARAM)
-  next.delete("rightTaskId")
+  // Pane isolation: never clear right* from a middle-selection helper.
   next.delete("id")
 }
 
@@ -181,6 +194,7 @@ function clearCenterPaneSelection(next: URLSearchParams) {
   next.delete("centerView")
   clearArtifactCenterSelectionParams(next)
   clearSourceCenterSelectionParams(next)
+  clearTemplateCenterSelectionParams(next)
   next.delete(KEYWORD_RESEARCH_QUERY_PARAM)
   next.delete(PROMPT_RESEARCH_QUERY_PARAM)
   next.delete(RESEARCH_QUERY_PARAM)
@@ -198,16 +212,6 @@ function clearGenericSelection(next: URLSearchParams) {
   next.delete("briefingTypeId")
   next.delete("threadId")
   next.delete("mentionId")
-}
-
-function clearRightPaneSelection(next: URLSearchParams) {
-  next.delete("rightTaskId")
-  next.delete("rightProjectId")
-  next.delete("rightUserId")
-  next.delete("rightTeamId")
-  next.delete("rightThreadId")
-  next.delete("rightMentionId")
-  next.delete("rightTab")
 }
 
 function clearCenterSplitLayout(next: URLSearchParams) {
@@ -241,12 +245,24 @@ export function buildCenterPaneSelectionSearchParams(args: {
   const next = new URLSearchParams(currentSearchParams.toString())
   clearGenericSelection(next)
   clearCenterPaneSelection(next)
-  clearRightPaneSelection(next)
+  // Pane isolation: do not clear right* — middle opens must not mutate the right pane.
   clearCenterSplitLayout(next)
   next.delete("itemKind")
   next.delete("centerSuggestionId")
   next.delete("stackTeamId")
-  next.set("layout", "right")
+  // Ensure details/middle is visible without wiping an existing left/middle/right layout.
+  const layout = new Set((next.get("layout") || "left,middle").split(",").filter(Boolean))
+  layout.add("middle")
+  // Opening a center selection must not drop the left object list (e.g. mentions → calendar).
+  // Solo-right AI focus stays solo-right only when there was never a left/top column.
+  if (!layout.has("left") && !layout.has("top") && layout.has("right") && next.get("layout") === "right") {
+    next.set("layout", "middle,right")
+  } else {
+    if (!layout.has("left") && !layout.has("top")) {
+      layout.add("left")
+    }
+    next.set("layout", Array.from(layout).join(","))
+  }
 
   if (entity === "task") {
     next.set("centerTaskId", String(id))
@@ -280,6 +296,10 @@ export function buildCenterPaneSelectionSearchParams(args: {
   }
   if (entity === "source") {
     applySourceCenterSelectionParams(next, { sourceId: String(id) })
+    return next
+  }
+  if (entity === "template") {
+    applyTemplateCenterSelectionParams(next, { workspaceId: String(id) })
     return next
   }
 
@@ -333,6 +353,7 @@ export function buildCenterPaneTabSelectionSearchParams(args: {
     | "thread"
     | "artifact"
     | "source"
+    | "template"
     | "research"
     | "create"
     | "keyword-research"
@@ -346,6 +367,8 @@ export function buildCenterPaneTabSelectionSearchParams(args: {
   researchRegionId?: string | null
   /** Create flow type when kind is "create". */
   createType?: CreateCenterType | null
+  /** Optional project/user/team detail tab (centerTab). */
+  tab?: string | null
   /** @deprecated Use researchQuery. */
   keywordQuery?: string | null
   /** @deprecated Use researchQuery. */
@@ -360,6 +383,7 @@ export function buildCenterPaneTabSelectionSearchParams(args: {
     researchTab = null,
     researchRegionId = null,
     createType = null,
+    tab = null,
     keywordQuery = null,
     promptQuery = null,
   } = args
@@ -368,12 +392,14 @@ export function buildCenterPaneTabSelectionSearchParams(args: {
     const next = new URLSearchParams(currentSearchParams.toString())
     clearGenericSelection(next)
     clearCenterPaneSelection(next)
-    clearRightPaneSelection(next)
+    // Pane isolation: do not clear right*.
     clearCenterSplitLayout(next)
     next.delete("itemKind")
     next.delete("centerSuggestionId")
     next.delete("stackTeamId")
-    next.set("layout", "right")
+    const layout = new Set((next.get("layout") || "left,middle").split(",").filter(Boolean))
+    layout.add("middle")
+    next.set("layout", Array.from(layout).join(","))
     applyCreateCenterParams(next, createType)
     return next
   }
@@ -382,12 +408,14 @@ export function buildCenterPaneTabSelectionSearchParams(args: {
     const next = new URLSearchParams(currentSearchParams.toString())
     clearGenericSelection(next)
     clearCenterPaneSelection(next)
-    clearRightPaneSelection(next)
+    // Pane isolation: do not clear right*.
     clearCenterSplitLayout(next)
     next.delete("itemKind")
     next.delete("centerSuggestionId")
     next.delete("stackTeamId")
-    next.set("layout", "right")
+    const layout = new Set((next.get("layout") || "left,middle").split(",").filter(Boolean))
+    layout.add("middle")
+    next.set("layout", Array.from(layout).join(","))
     const tab: ResearchTab =
       researchTab ??
       (kind === "prompt-research" ? "prompts" : "keywords")
@@ -407,9 +435,11 @@ export function buildCenterPaneTabSelectionSearchParams(args: {
     const next = new URLSearchParams(currentSearchParams.toString())
     clearGenericSelection(next)
     clearCenterPaneSelection(next)
-    clearRightPaneSelection(next)
+    // Pane isolation: do not clear right*.
     clearCenterSplitLayout(next)
-    next.set("layout", "right")
+    const layout = new Set((next.get("layout") || "left,middle").split(",").filter(Boolean))
+    layout.add("middle")
+    next.set("layout", Array.from(layout).join(","))
     next.set("itemKind", "suggestion")
     next.set("centerSuggestionId", String(id))
     next.delete("centerTaskId")
@@ -420,8 +450,9 @@ export function buildCenterPaneTabSelectionSearchParams(args: {
     currentSearchParams,
     entity: kind,
     id,
+    tab,
     version: kind === "artifact" ? artifactVersion : null,
   })
 }
 
-export { ARTIFACT_VERSION_PARAM, CENTER_ARTIFACT_ID_PARAM, CENTER_SOURCE_ID_PARAM }
+export { ARTIFACT_VERSION_PARAM, CENTER_ARTIFACT_ID_PARAM, CENTER_SOURCE_ID_PARAM, CENTER_TEMPLATE_ID_PARAM }

@@ -2,7 +2,8 @@
 
 import { ensureAiThread, ensureProjectThread } from "../ai-chat/ai-utils"
 import { isPersistedAiThreadId } from "../ai-chat/thread-id"
-import { shallowReplaceSearchParams } from "../../app/lib/tasks-shallow-nav"
+import { openWorkspaceView } from "../../app/lib/open-workspace-view"
+import { isAiOpenSomewhere } from "../../app/lib/workspace-pane-url"
 import type { SelectedArtifactContext } from "../../app/lib/artifacts/artifact-types"
 import {
   computeArtifactContentHash,
@@ -11,37 +12,27 @@ import {
 
 function ensureAiPaneVisibleInUrl(preferThreadId?: string | null) {
   if (typeof window === "undefined") return
-  const pathname = window.location.pathname
-  const next = new URLSearchParams(window.location.search)
-  const nextLayout = new Set((next.get("layout") || "left,middle").split(",").filter(Boolean))
-  nextLayout.add("right")
-  next.set("layout", Array.from(nextLayout).join(","))
-  next.set("rightView", "ai")
-  next.set("taskAiOpen", "true")
-
-  const existingThreadId = next.get("aiThreadId")
-  if (isPersistedAiThreadId(existingThreadId)) {
-    // Keep the chat the user is already working in.
-    shallowReplaceSearchParams(pathname, next, "artifact-selection-keep-thread")
-    return
-  }
-
-  if (preferThreadId && isPersistedAiThreadId(preferThreadId)) {
-    next.set("aiThreadId", preferThreadId)
-  }
-
-  shallowReplaceSearchParams(pathname, next, "artifact-selection")
+  const params = new URLSearchParams(window.location.search)
+  const existingThreadId = params.get("aiThreadId")
+  const threadId =
+    (isPersistedAiThreadId(existingThreadId) ? existingThreadId : null) ||
+    (preferThreadId && isPersistedAiThreadId(preferThreadId) ? preferThreadId : null)
+  // Default: AI in right pane (established UX). Preserve existing thread identity.
+  openWorkspaceView(
+    {
+      type: "ai",
+      aiThreadId: threadId || undefined,
+    },
+    {
+      pane: params.get("centerView") === "ai" ? "middle" : "right",
+      source: threadId ? "artifact-selection-keep-thread" : "artifact-selection",
+    },
+  )
 }
 
 function isAiPaneAlreadyOpen(): boolean {
   if (typeof window === "undefined") return false
-  const params = new URLSearchParams(window.location.search)
-  const layout = (params.get("layout") || "").split(",").filter(Boolean)
-  return (
-    params.get("taskAiOpen") === "true"
-    || params.get("rightView") === "ai"
-    || layout.includes("right")
-  )
+  return isAiOpenSomewhere(new URLSearchParams(window.location.search))
 }
 
 /** Attach an artifact selection chip in the AI composer and open the task/project AI pane. */

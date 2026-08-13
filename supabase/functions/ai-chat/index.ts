@@ -242,6 +242,7 @@ async function fetchOpenAiWithTokenAccounting(args: {
     Math.max(256, args.defaultMaxCompletionTokens ?? 4096),
   );
   const callKey = nextTokenCallKey(args.context, args.stage);
+  const reserveStartedAtMs = performance.now();
   const { data: reservation, error: reservationError } = await args.context.client.rpc("ai_reserve_token_call", {
     p_thread_id: args.context.threadId,
     p_client_request_id: args.context.clientRequestId,
@@ -253,6 +254,11 @@ async function fetchOpenAiWithTokenAccounting(args: {
     p_estimated_completion_tokens: estimatedCompletion,
     p_run_id: args.context.runId,
     p_metadata: { endpoint: new URL(args.url).pathname },
+  });
+  console.log("ai-chat timing token_reserve", {
+    stage: args.stage,
+    ms: Math.round(performance.now() - reserveStartedAtMs),
+    allowed: reservation?.allowed === true,
   });
   if (reservationError) {
     throw new AiTokenAccountingError("token_accounting_unavailable", reservationError.message);
@@ -271,7 +277,13 @@ async function fetchOpenAiWithTokenAccounting(args: {
 
   const eventId = String(reservation.event_id ?? "");
   try {
+    const fetchStartedAtMs = performance.now();
     const response = await fetch(args.url, args.init);
+    console.log("ai-chat timing provider_headers", {
+      stage: args.stage,
+      status: response.status,
+      ms: Math.round(performance.now() - fetchStartedAtMs),
+    });
     const clone = response.clone();
     keepTokenAccountingAlive(finalizeTokenEvent({
       context: args.context,
@@ -1083,6 +1095,330 @@ const TOOLS = [
   },
 
   {
+    type: "function",
+    function: {
+      name: "list_project_social_profiles",
+      description: "List the brand and competitor social profiles linked on a project (network + profile URL + last sync). Use when the user asks which social accounts are tracked for a brand/client or its competitors, or before reading social stats.",
+      parameters: {
+        type: "object",
+        properties: {
+          project_id: {
+            type: "integer",
+            nullable: true,
+            description: "Exact project id when already known.",
+          },
+          project_name: {
+            type: "string",
+            nullable: true,
+            description: "Project/brand name as said by the user (e.g. JCDecaux). Fuzzy-resolved among visible projects.",
+          },
+        },
+        required: [],
+      },
+    },
+  },
+
+  {
+    type: "function",
+    function: {
+      name: "read_project_social_stats",
+      description: "Read competitive social media statistics for a project's owned brand and its competitors (posts, interactions, impressions/views, followers, share of voice, optional timeseries). Use when the user asks about social performance, follower counts, engagement, competitor social comparison, or Competition-tab metrics. Resolve the project by project_id or project_name.",
+      parameters: {
+        type: "object",
+        properties: {
+          project_id: {
+            type: "integer",
+            nullable: true,
+            description: "Exact project id when already known.",
+          },
+          project_name: {
+            type: "string",
+            nullable: true,
+            description: "Project/brand name as said by the user (e.g. JCDecaux). Fuzzy-resolved among visible projects.",
+          },
+          date_from: {
+            type: "string",
+            nullable: true,
+            description: "Inclusive period start (ISO date or datetime). Defaults to last 30 days when omitted with date_to.",
+          },
+          date_to: {
+            type: "string",
+            nullable: true,
+            description: "Inclusive period end (ISO date or datetime). Defaults to today when omitted with date_from.",
+          },
+          networks: {
+            type: "array",
+            nullable: true,
+            items: {
+              type: "string",
+              enum: ["linkedin", "instagram", "facebook", "youtube", "tiktok", "x"],
+            },
+            description: "Optional network filter. Omit for all linked networks.",
+          },
+          include_timeseries: {
+            type: "boolean",
+            nullable: true,
+            description: "When true, include daily post/follower timeseries points (can be large). Default false — entity totals are enough for most answers.",
+          },
+          include_top_posts: {
+            type: "boolean",
+            nullable: true,
+            description: "When true, include each entity's top posts. Default false.",
+          },
+        },
+        required: [],
+      },
+    },
+  },
+
+  {
+    type: "function",
+    function: {
+      name: "list_publishing_destinations",
+      description: "List publishing destinations available to the user (external websites/CMS destinations for agentic publishing), including destination memory (guidance + entry points). Use before publish_content or configure_publishing_destination to resolve existing candidates. A missing destination is a solvable dependency — do NOT tell the user to configure settings manually; call configure_publishing_destination when you have enough platform/URL information.",
+      parameters: {
+        type: "object",
+        properties: {
+          project_id: { type: "integer", nullable: true, description: "Optional project scope. When omitted, returns personal/owner destinations plus project destinations when project context is known." },
+        },
+        required: [],
+      },
+    },
+  },
+
+  {
+    type: "function",
+    function: {
+      name: "configure_publishing_destination",
+      description: "Create or update a publishing destination conversationally (e.g. user says “Squarespace, account.squarespace.com”). Normalizes URLs, infers a display name, avoids duplicates, can start browser connection/authentication, and can immediately continue a pending publication via pending_publication. Never send the user to Project Settings just because a destination row is missing.",
+      parameters: {
+        type: "object",
+        properties: {
+          project_id: { type: "integer", nullable: true },
+          project_name: { type: "string", nullable: true, description: "Project/brand display name for naming + discovery hints (e.g. Articulate)." },
+          destination_id: { type: "string", nullable: true, description: "Update an existing destination when known." },
+          name: { type: "string", nullable: true, description: "Optional display name. When omitted, inferred from project + platform." },
+          service_or_platform: { type: "string", nullable: true, description: "e.g. Squarespace, WordPress, Mailchimp." },
+          start_url: { type: "string", nullable: true, description: "Publishing/login URL. Bare hosts like account.squarespace.com are accepted." },
+          purpose: { type: "string", nullable: true },
+          content_type: { type: "string", nullable: true, description: "article | newsletter | social_post | landing_page | other" },
+          guidance: { type: "string", nullable: true },
+          connect: { type: "boolean", nullable: true, description: "Start browser connection when not connected. Defaults true unless pending_publication is provided (publication starts auth itself)." },
+          pending_publication: {
+            type: "object",
+            nullable: true,
+            description: "When configuring as a dependency of publishing, include the original publish payload so publication starts immediately after destination setup/auth.",
+            properties: {
+              artifact_id: { type: "string", nullable: true },
+              publish_mode: { type: "string", enum: ["now", "scheduled"], nullable: true },
+              scheduled_at: { type: "string", nullable: true },
+              timezone: { type: "string", nullable: true },
+              content: {
+                type: "object",
+                nullable: true,
+                properties: {
+                  type: { type: "string", nullable: true },
+                  title: { type: "string", nullable: true },
+                  body: { type: "string", nullable: true },
+                  excerpt: { type: "string", nullable: true },
+                  seo: { type: "object", nullable: true },
+                  media: { type: "array", nullable: true, items: { type: "object" } },
+                  metadata: { type: "object", nullable: true },
+                },
+              },
+            },
+          },
+        },
+        required: [],
+      },
+    },
+  },
+
+  {
+    type: "function",
+    function: {
+      name: "publish_content",
+      description: "Start publishing content now OR schedule it for later via the Publishing Engine. Supports publish_mode=now|scheduled. For scheduling, resolve natural-language times into an ISO-8601 timestamptz using the user's timezone (pass timezone as IANA, e.g. Europe/Lisbon). Ask only when the date/time is genuinely ambiguous. Artifact is optional — pass artifact_id OR structured content. Resolve destinations semantically via list_publishing_destinations. If none exist but the user provided a platform/URL, call configure_publishing_destination (with pending_publication) instead of refusing.",
+      parameters: {
+        type: "object",
+        properties: {
+          destination_id: { type: "string", description: "UUID of the publishing destination from list_publishing_destinations." },
+          artifact_id: { type: "string", nullable: true, description: "Optional artifact UUID to publish." },
+          project_id: { type: "integer", nullable: true },
+          publish_mode: {
+            type: "string",
+            enum: ["now", "scheduled"],
+            nullable: true,
+            description: "Defaults to now. Use scheduled when the user asks to publish later.",
+          },
+          scheduled_at: {
+            type: "string",
+            nullable: true,
+            description: "Required when publish_mode=scheduled. Absolute ISO-8601 / RFC3339 timestamp (UTC or offset).",
+          },
+          timezone: {
+            type: "string",
+            nullable: true,
+            description: "IANA timezone used to interpret/display the schedule (e.g. Europe/Lisbon).",
+          },
+          content: {
+            type: "object",
+            nullable: true,
+            description: "Inline content when no artifact exists.",
+            properties: {
+              type: { type: "string", nullable: true },
+              title: { type: "string", nullable: true },
+              body: { type: "string", nullable: true },
+              excerpt: { type: "string", nullable: true },
+              seo: {
+                type: "object",
+                nullable: true,
+                properties: {
+                  title: { type: "string", nullable: true },
+                  description: { type: "string", nullable: true },
+                },
+              },
+              media: { type: "array", nullable: true, items: { type: "object" } },
+              metadata: { type: "object", nullable: true },
+            },
+          },
+        },
+        required: ["destination_id"],
+      },
+    },
+  },
+
+  {
+    type: "function",
+    function: {
+      name: "list_scheduled_publications",
+      description: "List one-time scheduled publications for the user (status=scheduled). Use before reschedule/cancel/publish-now so you can resolve the intended item semantically.",
+      parameters: {
+        type: "object",
+        properties: {
+          project_id: { type: "integer", nullable: true },
+        },
+        required: [],
+      },
+    },
+  },
+
+  {
+    type: "function",
+    function: {
+      name: "reschedule_publication",
+      description: "Change scheduled_at for an internally scheduled publication that has not executed yet. Resolve the target via list_scheduled_publications. External/native schedules cannot be changed with this tool alone.",
+      parameters: {
+        type: "object",
+        properties: {
+          publication_run_id: { type: "string" },
+          scheduled_at: { type: "string", description: "New ISO-8601 timestamptz." },
+          timezone: { type: "string", nullable: true },
+        },
+        required: ["publication_run_id", "scheduled_at"],
+      },
+    },
+  },
+
+  {
+    type: "function",
+    function: {
+      name: "cancel_scheduled_publication",
+      description: "Cancel a scheduled publication. Internal schedules cancel locally. External/native schedules require explicit user confirmation then confirm_external_cancel=true.",
+      parameters: {
+        type: "object",
+        properties: {
+          publication_run_id: { type: "string" },
+          confirm_external_cancel: {
+            type: "boolean",
+            nullable: true,
+            description: "Set true only after the user explicitly confirms cancelling an external native schedule.",
+          },
+        },
+        required: ["publication_run_id"],
+      },
+    },
+  },
+
+  {
+    type: "function",
+    function: {
+      name: "publish_scheduled_now",
+      description: "Execute an internally scheduled publication immediately instead of waiting for the scheduled time.",
+      parameters: {
+        type: "object",
+        properties: {
+          publication_run_id: { type: "string" },
+        },
+        required: ["publication_run_id"],
+      },
+    },
+  },
+
+  {
+    type: "function",
+    function: {
+      name: "get_publication_state",
+      description: "Read the active publication run state for the current user/thread (or a specific publication_run_id). Use when the user refers to an ongoing publication (“continue”, “what’s happening”, “stop”, “publish it now”) without naming an ID. Surfaces needs_user questions and awaiting_publish_confirmation.",
+      parameters: {
+        type: "object",
+        properties: {
+          publication_run_id: { type: "string", nullable: true, description: "Optional specific run UUID. When omitted, returns active runs for this user/thread." },
+          active_only: { type: "boolean", nullable: true },
+          project_id: { type: "integer", nullable: true },
+        },
+        required: [],
+      },
+    },
+  },
+
+  {
+    type: "function",
+    function: {
+      name: "continue_publication",
+      description: "Resume an active publication after user input (or after the user answered a browser-agent clarification in chat). Pass the user's natural-language instruction. Do not invent browser selectors.",
+      parameters: {
+        type: "object",
+        properties: {
+          publication_run_id: { type: "string", description: "UUID of the active publication run." },
+          instruction: { type: "string", nullable: true, description: "User instruction for the publishing agent (e.g. “use Blog”)." },
+        },
+        required: ["publication_run_id"],
+      },
+    },
+  },
+
+  {
+    type: "function",
+    function: {
+      name: "confirm_publication",
+      description: "Confirm the final irreversible publish/send for a run that is awaiting_publish_confirmation. Only call when the user explicitly confirms publishing that specific run (e.g. “publish it”, “yes publish”). Do not treat unrelated conversation as confirmation.",
+      parameters: {
+        type: "object",
+        properties: {
+          publication_run_id: { type: "string" },
+        },
+        required: ["publication_run_id"],
+      },
+    },
+  },
+
+  {
+    type: "function",
+    function: {
+      name: "cancel_publication",
+      description: "Cancel an active publication run when the user asks to stop/cancel it.",
+      parameters: {
+        type: "object",
+        properties: {
+          publication_run_id: { type: "string" },
+        },
+        required: ["publication_run_id"],
+      },
+    },
+  },
+
+  {
   type: "function",
   function: {
     name: "ai_update_project_fields",
@@ -1474,6 +1810,34 @@ const TOOLS = [
   {
     type: "function",
     function: {
+      name: "ai_search_artifacts",
+      description: "Search artifacts the user can already see across tasks, projects and AI chats (including deliverables created in another thread). Use when the user names/refers to an existing document or media deliverable and you need its artifact_id before updating or deciding to create. Prefer ai_list_task_artifacts / ai_list_project_artifacts / ai_list_ai_thread_artifacts when that exact scope is already known. Returns ranked matches with app_link; then use ai_read_artifact or ai_start_artifact_build operation=update with the returned id.",
+      parameters: {
+        type: "object",
+        additionalProperties: false,
+        properties: {
+          query: {
+            type: "string",
+            description: "Title or distinctive phrase from the deliverable (e.g. brand + topic). Minimum 2 characters.",
+          },
+          limit: { type: "integer", minimum: 1, maximum: 50 },
+          task_id: { type: ["integer", "null"], description: "Optional: narrow to one task." },
+          project_id: { type: ["integer", "null"], description: "Optional: narrow to one project (includes task-owned artifacts in that project)." },
+          ai_thread_id: { type: ["string", "null"], description: "Optional: narrow to one AI thread's owned artifacts." },
+          artifact_types: {
+            type: ["array", "null"],
+            items: { type: "string" },
+            description: "Optional artifact_type filters (e.g. document, image).",
+          },
+        },
+        required: ["query"],
+      },
+    },
+  },
+
+  {
+    type: "function",
+    function: {
       name: "ai_attach_artifact_to_task",
       description: "Attach an existing chat-owned artifact to one exact authorized task. The artifact keeps its origin chat and version history.",
       parameters: {
@@ -1509,7 +1873,7 @@ const TOOLS = [
               additionalProperties: false,
               properties: {
                 handle: { type: "string", description: "Unique mission-local handle such as article_en or video_script_pt." },
-                task_id: { type: ["integer", "null"], description: "Optional task owner for creates. For operation=update with artifact_id, omit — ownership is resolved from the existing artifact. Do NOT copy ambient/open center-pane task_id unless the user tagged that task or asked to create for that task." },
+                task_id: { type: ["integer", "null"], description: "Optional task owner for creates. When the user asks to generate/update a deliverable for a specific task you resolved (read_task/search_tasks), you MUST pass that task_id — @-tags are not required. For operation=update with artifact_id, omit — ownership is resolved from the existing artifact. Do NOT invent a task_id from an unrelated open pane when the request is about a different named task." },
                 project_id: { type: ["integer", "null"], description: "Optional project owner for creates when the artifact should not belong to a task. When the user names a brand/client, pass the project_id from read_project (or project_name) so brand_kit is used. For operation=update with artifact_id, omit ambient thread/project scope project_id (causes artifact_target_not_in_project on task-owned artifacts)." },
                 project_name: { type: ["string", "null"], description: "Optional project/brand name for creates when project_id is unknown; backend resolves a visible project." },
                 artifact_id: { type: ["string", "null"], description: "Exact existing artifact UUID for an in-place update; null for creation. When set with operation=update, do not also set source_artifact_id/source_handle to the same artifact." },
@@ -2180,8 +2544,49 @@ function normalizeAmbientContext(raw: unknown): {
   };
 }
 
-function buildArtifactOnlySystemPrompt(args: {
-  thread: any;
+// Keep this prompt byte-stable across requests: it forms the OpenAI prompt-cache
+// prefix (tools + system message). Anything per-turn/volatile belongs in
+// buildTurnContextPrompt, which is appended near the end of the message list.
+function buildArtifactOnlySystemPrompt() {
+  return [
+    "You are the AI workspace assistant.",
+    "Use the complete user request, recent conversation, explicit scope and factual tool results to understand intent semantically. Do not depend on exact spelling, tags, UI selection, language-specific keywords or literal aliases.",
+    "DELIVERABLES: Artifacts are durable workspace records (structured text, media, presentations, files, datasets). Create or update an artifact when the user needs a lasting deliverable they can open, version, attach to a task/project, or download later. Do NOT create an artifact for every content-shaped request — short answers, clarifications, comparisons and one-off chat replies may stay in chat. Do NOT refuse artifacts when they are clearly the right durable home. When the user asks to adapt a Word/template/URL into a downloadable document, an artifact document is the correct durable home (ChatGPT-style file) so they can open and download it — that is not an unsolicited extra deliverable. After a successful create/update of a downloadable document, include the tool's exact download_links (app://artifact/.../download) in the final reply so the user can download immediately (e.g. Word/DOCX). Prefer that over inventing a separate ad-hoc file pipeline. System/project libraries contain reusable planning templates only — never treat them as output records.",
+    "SOURCE ARCHITECTURE: sources are inputs, not outputs. A source may belong to a task, project or AI thread, or remain unattached. Import URLs, uploaded files, pasted text and research with source tools; then use those sources when answering or when building artifacts.",
+    "LANGUAGE: Match conversational replies and clarifications to the language of the user's latest message. For deliverable content adapted from sources, templates or URLs, keep the language of that source material unless the user explicitly asks to translate or rewrite in another language.",
+    "Artifacts may belong to a task, project or AI thread. task_id, channel_id and language_id are optional metadata. Do not ask for any of them unless the user's actual goal requires that choice.",
+    "FACTUAL CONTEXT ONLY: CURRENT SCOPE, AMBIENT UI CONTEXT, OPEN CENTER-PANE ARTIFACT, FACTUAL UI/THREAD TARGETS, RECENT THREAD ARTIFACTS and SELECTED ARTIFACT CONTEXT are facts about what is open, tagged or recently touched. Interpret the user's actual request against that context. Do not treat any of those facts as an automatic instruction to create, update, attach ownership, or skip a response.",
+    "OPEN CENTER-PANE TASK / PROJECT: ambient center_task_id or scoped project_id may reflect an open pane. Ownership for creates/updates should follow the user request and tool facts (including ai_attach_artifact_to_task when attaching later), not the mere presence of an open pane.",
+    "COPY + CAROUSEL SCRIPT: when the user asks for post copy plus a carousel/slide breakdown (headline + short line per slide), create ONE document/caption artifact with the ready-to-publish copy and the slide script in text. Do NOT use artifact_type=carousel and do NOT set media_items unless they explicitly ask to generate the slide images/visuals.",
+    "When an artifact is warranted, decide whether to create/update one artifact or several. Use separate artifacts when they have independent formats, languages, publication lifecycles, tool requirements or version histories. Use depends_on_handles/source_handle for dependencies so independent artifacts can build in parallel.",
+    "When updating an existing artifact, use ai_start_artifact_build with artifact_id + operation=update (leave source_artifact_id/source_handle null). Use source_* only when creating a different derived artifact. Do not invent a second deliverable when the request is clearly about an existing one already identified in context.",
+    "FIND EXISTING DELIVERABLES: when the user refers to a document/media by name or topic and its artifact_id is not already in factual context/tool results, call ai_search_artifacts (works across tasks/projects/other chats the user can see). If a strong match exists and the request is to revise/improve/mark changes on that deliverable, update it. Create a new artifact only when there is no suitable match or the user explicitly wants a new/separate deliverable. Prefer ai_list_task_artifacts / ai_list_project_artifacts / ai_list_ai_thread_artifacts when that scope is already known.",
+    "Task-level SEO keywords (keyword, secondary_keywords) live on the task via ai_update_task_fields / ai_create_task and apply to every artifact under that task. Use them for pure SEO keyword edits. meta_title / meta_description / h1 / h2 are separate task SEO fields.",
+    "Tags and ambient UI facts are optional context. Users often name the project, task or deliverable in plain language with no tags. Resolve those names with tools when needed.",
+    "When project_id is missing from CURRENT SCOPE / TARGETS but the user names a client, brand, website or blog (e.g. Dimas, Articulate): call list_visible_projects, pick the best semantic match, then read_project. Ask which project only when multiple candidates remain equally plausible.",
+    "BRAND KIT: when the user asks to extract/import/update brand colors, fonts, logo or visual identity for a project, call extract_project_brand with project_name (and url if given). Accept imperfect names/typos. If the project was named earlier in this conversation, reuse that project_name or the project_id from a prior tool result — do not ask again unless ambiguous. Do not require tags, an AI-thread project association, or a tagged task. If the tool returns needs_clarification/candidates, ask which project. Do not invent brand tokens.",
+    "ON-BRAND CREATIVES: when generating ads/images/video for a named brand/client that matches a visible project, resolve that project (list_visible_projects + read_project) and pass project_id (or project_name) on ai_start_artifact_build creates so the worker receives brand_kit. Prefer the project's brand_kit (colors, fonts, logo, layout templates, and approved_image_banks) over web/training knowledge of well-known brands. When approved_image_banks are present, prefer those stock libraries for photography choices and respect any license/notes — do not invent other stock sources unless the user asks. Layout templates include visual image references — the media worker attaches those images multimodally when generating creatives; you do not need to re-upload them. Use web knowledge only to fill gaps the kit does not cover — never invent conflicting brand tokens when a non-empty kit exists.",
+    "BRAND LAYOUT TEMPLATES: when asked whether a project has visual/layout templates, call read_project and inspect brand_layout_templates (and brand_kit.design_templates). Do not conclude they are missing based on empty artifacts or attachments lists — templates are stored on the project Brand kit. When TAGGED BRAND TEMPLATES are present, treat those specific templates as the user's preferred layout references for this turn; call read_project for the tagged project_id to load full visual details.",
+    "HTML NEWSLETTER / EMAIL CODE: when the user asks for a newsletter in HTML (or to follow an HTML email template), create/update an artifact with artifact_role=newsletter_html and instruct the worker to return a complete email-ready HTML document (doctype/head/style + nested presentation tables). Do not ask for copy-only unless the user explicitly wants copy without HTML. The UI can preview and edit raw HTML — do not flatten email HTML into a simple TipTap table or prose blocks.",
+    "For task/project/user names, inspect factual candidates with read/search tools and choose the best semantic match. Ask only when the candidates are genuinely ambiguous.",
+    "SOCIAL / COMPETITION STATS: when the user asks about social followers, engagement, posts, impressions, share of voice, or competitor social performance for a brand/project, resolve the project (list_visible_projects or project_name) then call read_project_social_stats. Use list_project_social_profiles to see which networks/accounts are linked. Never invent follower or engagement numbers — only report tool results. Default periods are the last 30 days unless the user specifies otherwise; pass date_from/date_to and set include_timeseries=true only when they ask about trends over time.",
+    "PUBLISHING: when the user asks to publish/post/send content to a website, blog, CMS, newsletter destination or similar, resolve the project, then list_publishing_destinations. Choose the destination semantically from factual candidates — tolerate misspellings and multilingual wording. Ask only when candidates are genuinely ambiguous. If NO suitable destination exists, treat that as a solvable dependency: ask only for genuinely missing platform/URL info; once the user provides it (e.g. “é squarespace account.squarespace.com”), call configure_publishing_destination with start_url + service_or_platform + project context and include pending_publication with the original publish payload (inline content or artifact_id) so publication continues automatically after sign-in. NEVER tell the user to open Publishing Settings / Integrations to add a destination manually. Pass artifact_id when publishing an existing artifact; otherwise pass structured content inline — do not create a task/project/artifact merely to publish. For “publish now” use publish_mode=now. For later times, resolve ISO scheduled_at + IANA timezone (default Europe/Lisbon when Portugal context is clear) with publish_mode=scheduled. When there is an active publication, use get_publication_state / continue_publication / confirm_publication / cancel_publication. If the user says they signed in / finished login, call continue_publication on the awaiting-auth run. For scheduled items use list_scheduled_publications, reschedule_publication, cancel_scheduled_publication, publish_scheduled_now. If status is awaiting_publish_confirmation and the user explicitly confirms, call confirm_publication. Explicit setup requests (“add our Squarespace blog”, “connect Articulate for publishing”) use the same configure_publishing_destination tool. BROWSER PREVIEW: when configure_publishing_destination / publish_content returns a live browser session, the chat UI shows an embedded preview automatically — do NOT paste live.browser-use.com / CDP / Live View URLs into the reply as external links. You may mention the destination entry URL (e.g. lovable.dev/…) as configuration context, but never as a substitute for the in-chat browser preview.",
+    "SELECTED ARTIFACT CONTEXT: when present, it identifies an artifact (and optional span/region). Pass the full selection object unchanged on updates when relevant. It is location/intent context only — not a lock to that span. The artifact worker sees the full document and should make any related edits needed for coherence. Act according to the user request.",
+    "IN-PLACE UPDATE OWNERSHIP: for operation=update with artifact_id, omit ambient project_id/task_id unless they are already the artifact's own task/project. Do not attach a project_id just because the thread is scoped to a project — that fails with artifact_target_not_in_project for task-owned artifacts.",
+    "ARTIFACT UPDATE FAILURES: if ai_start_artifact_build fails, fix the arguments and retry when the user request still requires an update. Never substitute a chat-only rewrite (and never change the artifact language) in place of a failed requested edit.",
+    "Several tools may be used in one run. You may create records, then use their returned IDs in later tool rounds.",
+    "Never invent IDs, URLs, database facts or tool results.",
+    "Artifact read/list tools return app_link, markdown_link and download_links. When mentioning an artifact in the reply, paste markdown_link exactly once on its own line (e.g. `[Title](app://artifact/<id>)`) — do not wrap it in a bullet/numbered list, and do not also print the title as plain text above/beside the link. Never paste bare app:// URLs, never paste app://ai-build/... / build_app_link, and never invent web URLs. After ai_start_artifact_build for multiple artifacts, paste every entry from data.artifacts[].markdown_link (or data.artifact_links_markdown) — one chip per artifact on its own line — not a single build link.",
+    "INTERNAL LINKBUILDING (artifacts + web content): when creating or updating blog/article and similar site content where it fits the user request, include natural internal links to other blog posts and key site pages (product, category, contact, about, etc.). Resolve project_id (scope, targets, or list_visible_projects + read_project) for project_url, then use read_public_webpage on the site and blog listing/detail pages to discover factual link opportunities. Only ask the user for blog URLs after browsing fails. Never invent a site-index or crawl tool that is not in your tool list.",
+    "When ai_start_artifact_build succeeds, skip empty acknowledgements like 'Build started' or 'Queued' — the build timeline already shows that. Do write short Cursor-style narration: a brief plan before tools, then a substantive reply after tools (what changed, what to check next). Keep narration visible even when an artifact build is running.",
+    "RESPONSE SHAPE: Prefer interleaved progress — short approach text, then tools, then a clear final answer. Do not leave the user with tools-only silence when a short explanation would help. For downloadable adaptations, end with a concise result summary plus the download link(s) — not only tool-status narration.",
+    "Use ai_request_clarification only when an essential user decision or source is missing after using available context and tools. Do not let backend metadata gaps manufacture clarifications.",
+    "The factual context sections (CURRENT SCOPE, AMBIENT UI CONTEXT, OPEN CENTER-PANE ARTIFACT, FACTUAL UI/THREAD TARGETS, TAGGED BRAND TEMPLATES, RECENT THREAD ARTIFACTS, SELECTED ARTIFACT CONTEXT) are provided in a dedicated context message near the end of the conversation.",
+  ].join("\n\n");
+}
+
+
+function buildTurnContextPrompt(args: {
   scope: any;
   selectedArtifactContext: SelectedArtifactContext | null;
   targets: any[];
@@ -2218,33 +2623,7 @@ function buildArtifactOnlySystemPrompt(args: {
       }
     : null;
   return [
-    "You are the AI workspace assistant.",
-    "Use the complete user request, recent conversation, explicit scope and factual tool results to understand intent semantically. Do not depend on exact spelling, tags, UI selection, language-specific keywords or literal aliases.",
-    "DELIVERABLES: Artifacts are durable workspace records (structured text, media, presentations, files, datasets). Create or update an artifact when the user needs a lasting deliverable they can open, version, attach to a task/project, or download later. Do NOT create an artifact for every content-shaped request — short answers, clarifications, comparisons and one-off chat replies may stay in chat. Do NOT refuse artifacts when they are clearly the right durable home. When the user asks to adapt a Word/template file into a downloadable document, an artifact document is appropriate if they can download/export it afterwards; prefer that over inventing a separate ad-hoc file pipeline, and mention download/export when relevant. System/project libraries contain reusable planning templates only — never treat them as output records.",
-    "SOURCE ARCHITECTURE: sources are inputs, not outputs. A source may belong to a task, project or AI thread, or remain unattached. Import URLs, uploaded files, pasted text and research with source tools; then use those sources when answering or when building artifacts.",
-    "LANGUAGE: Match conversational replies and clarifications to the language of the user's latest message. For deliverable content adapted from sources, templates or URLs, keep the language of that source material unless the user explicitly asks to translate or rewrite in another language.",
-    "Artifacts may belong to a task, project or AI thread. task_id, channel_id and language_id are optional metadata. Do not ask for any of them unless the user's actual goal requires that choice.",
-    "FACTUAL CONTEXT ONLY: CURRENT SCOPE, AMBIENT UI CONTEXT, OPEN CENTER-PANE ARTIFACT, FACTUAL UI/THREAD TARGETS, RECENT THREAD ARTIFACTS and SELECTED ARTIFACT CONTEXT are facts about what is open, tagged or recently touched. Interpret the user's actual request against that context. Do not treat any of those facts as an automatic instruction to create, update, attach ownership, or skip a response.",
-    "OPEN CENTER-PANE TASK / PROJECT: ambient center_task_id or scoped project_id may reflect an open pane. Ownership for creates/updates should follow the user request and tool facts (including ai_attach_artifact_to_task when attaching later), not the mere presence of an open pane.",
-    "COPY + CAROUSEL SCRIPT: when the user asks for post copy plus a carousel/slide breakdown (headline + short line per slide), create ONE document/caption artifact with the ready-to-publish copy and the slide script in text. Do NOT use artifact_type=carousel and do NOT set media_items unless they explicitly ask to generate the slide images/visuals.",
-    "When an artifact is warranted, decide whether to create/update one artifact or several. Use separate artifacts when they have independent formats, languages, publication lifecycles, tool requirements or version histories. Use depends_on_handles/source_handle for dependencies so independent artifacts can build in parallel.",
-    "When updating an existing artifact, use ai_start_artifact_build with artifact_id + operation=update (leave source_artifact_id/source_handle null). Use source_* only when creating a different derived artifact. Do not invent a second deliverable when the request is clearly about an existing one already identified in context.",
-    "Task-level SEO keywords (keyword, secondary_keywords) live on the task via ai_update_task_fields / ai_create_task and apply to every artifact under that task. Use them for pure SEO keyword edits. meta_title / meta_description / h1 / h2 are separate task SEO fields.",
-    "Tags and ambient UI facts are optional context. Users often name the project, task or deliverable in plain language with no tags. Resolve those names with tools when needed.",
-    "When project_id is missing from CURRENT SCOPE / TARGETS but the user names a client, brand, website or blog (e.g. Dimas, Articulate): call list_visible_projects, pick the best semantic match, then read_project. Ask which project only when multiple candidates remain equally plausible.",
-    "BRAND KIT: when the user asks to extract/import/update brand colors, fonts, logo or visual identity for a project, call extract_project_brand with project_name (and url if given). Accept imperfect names/typos. If the project was named earlier in this conversation, reuse that project_name or the project_id from a prior tool result — do not ask again unless ambiguous. Do not require tags, an AI-thread project association, or a tagged task. If the tool returns needs_clarification/candidates, ask which project. Do not invent brand tokens.",
-    "ON-BRAND CREATIVES: when generating ads/images/video for a named brand/client that matches a visible project, resolve that project (list_visible_projects + read_project) and pass project_id (or project_name) on ai_start_artifact_build creates so the worker receives brand_kit. Prefer the project's brand_kit (colors, fonts, logo, and layout templates) over web/training knowledge of well-known brands. Layout templates include visual image references — the media worker attaches those images multimodally when generating creatives; you do not need to re-upload them. Use web knowledge only to fill gaps the kit does not cover — never invent conflicting brand tokens when a non-empty kit exists.",
-    "BRAND LAYOUT TEMPLATES: when asked whether a project has visual/layout templates, call read_project and inspect brand_layout_templates (and brand_kit.design_templates). Do not conclude they are missing based on empty artifacts or attachments lists — templates are stored on the project Brand kit. When TAGGED BRAND TEMPLATES are present, treat those specific templates as the user's preferred layout references for this turn; call read_project for the tagged project_id to load full visual details.",
-    "For task/project/user names, inspect factual candidates with read/search tools and choose the best semantic match. Ask only when the candidates are genuinely ambiguous.",
-    "SELECTED ARTIFACT CONTEXT: when present, it identifies an artifact (and optional span/region). Pass the full selection object unchanged on updates when relevant. It is location/intent context only — not a lock to that span. The artifact worker sees the full document and should make any related edits needed for coherence. Act according to the user request.",
-    "IN-PLACE UPDATE OWNERSHIP: for operation=update with artifact_id, omit ambient project_id/task_id unless they are already the artifact's own task/project. Do not attach a project_id just because the thread is scoped to a project — that fails with artifact_target_not_in_project for task-owned artifacts.",
-    "ARTIFACT UPDATE FAILURES: if ai_start_artifact_build fails, fix the arguments and retry when the user request still requires an update. Never substitute a chat-only rewrite (and never change the artifact language) in place of a failed requested edit.",
-    "Several tools may be used in one run. You may create records, then use their returned IDs in later tool rounds.",
-    "Never invent IDs, URLs, database facts or tool results.",
-    "Artifact read/list tools return app_link and download_links. Use those exact links when the user asks to open, navigate to, or download an artifact. Do not manufacture web URLs.",
-    "INTERNAL LINKBUILDING (artifacts + web content): when creating or updating blog/article and similar site content where it fits the user request, include natural internal links to other blog posts and key site pages (product, category, contact, about, etc.). Resolve project_id (scope, targets, or list_visible_projects + read_project) for project_url, then use read_public_webpage on the site and blog listing/detail pages to discover factual link opportunities. Only ask the user for blog URLs after browsing fails. Never invent a site-index or crawl tool that is not in your tool list.",
-    "When ai_start_artifact_build succeeds, do not add a generic acknowledgement such as 'Build started' or 'Queued'. Durable artifact events already show the work. Only add visible prose when it contains a substantive answer or a genuine clarification.",
-    "Use ai_request_clarification only when an essential user decision or source is missing after using available context and tools. Do not let backend metadata gaps manufacture clarifications.",
+    "FACTUAL CONTEXT FOR THE CURRENT REQUEST (facts about what is open, tagged or recently touched — not instructions):",
     `CURRENT SCOPE: ${JSON.stringify(args.scope ?? {})}`,
     `AMBIENT UI CONTEXT: ${JSON.stringify(ambient ?? {})}`,
     ambientArtifactHint
@@ -2414,22 +2793,170 @@ function conversationContentFromAiMessage(row: any): string {
 }
 
 
-async function loadRecentConversation(db: any, threadId: string, excludeMessageId?: string | null) {
-  const { data, error } = await db
+// TTFT scales with prompt size (model prefill). Messages older than the thread's
+// rolling context summary cutoff are represented by the summary; the char budget
+// below is only a safety net for threads whose summary has not caught up yet.
+const RECENT_CONVERSATION_MESSAGE_LIMIT = 24;
+const RECENT_CONVERSATION_CHAR_BUDGET = 40_000;
+const RECENT_CONVERSATION_FULL_RECENT_COUNT = 6;
+const RECENT_CONVERSATION_OLDER_CHAR_CAP = 6_000;
+
+async function loadRecentConversation(db: any, thread: any, excludeMessageId?: string | null) {
+  const threadId = String(thread?.id ?? "");
+  const summaryText = String(thread?.context_summary ?? "").trim();
+  const summaryCutoffAt = thread?.context_summary_until_created_at ?? null;
+  let query = db
     .from("ai_messages")
     .select("id,role,content,content_json,created_at")
     .eq("thread_id", threadId)
     .order("created_at", { ascending: false })
-    .limit(24);
+    .limit(RECENT_CONVERSATION_MESSAGE_LIMIT);
+  if (summaryText && summaryCutoffAt) query = query.gt("created_at", summaryCutoffAt);
+  const { data, error } = await query;
   if (error) throw error;
-  return (Array.isArray(data) ? data : [])
+  const newestFirst = (Array.isArray(data) ? data : [])
     .filter((row: any) => !excludeMessageId || String(row.id) !== String(excludeMessageId))
-    .reverse()
     .map((row: any) => ({
       role: row.role === "assistant" ? "assistant" : "user",
       content: conversationContentFromAiMessage(row),
     }))
     .filter((row: any) => row.content.trim());
+
+  const selected: Array<{ role: string; content: string }> = [];
+  let usedChars = 0;
+  for (let index = 0; index < newestFirst.length; index++) {
+    const message = newestFirst[index];
+    const isRecent = index < RECENT_CONVERSATION_FULL_RECENT_COUNT;
+    const content = !isRecent && message.content.length > RECENT_CONVERSATION_OLDER_CHAR_CAP
+      ? `${message.content.slice(0, RECENT_CONVERSATION_OLDER_CHAR_CAP)}\n…[older message truncated]`
+      : message.content;
+    if (!isRecent && usedChars + content.length > RECENT_CONVERSATION_CHAR_BUDGET) break;
+    selected.push({ role: message.role, content });
+    usedChars += content.length;
+  }
+  const ordered = selected.reverse();
+  if (summaryText) {
+    ordered.unshift({
+      role: "system",
+      content: `SUMMARY OF EARLIER CONVERSATION (older turns are archived; treat these facts as prior context):\n\n${summaryText}`,
+    });
+  }
+  return ordered;
+}
+
+
+// Rolling thread summary: fold turns that fall out of the recent window into a
+// compact summary instead of dropping them. Runs asynchronously after each run,
+// so it never adds latency to the request path.
+// Hybrid trigger (message count OR unsummarized volume) with large fold batches:
+// refreshing too often would re-invalidate the prompt-cache prefix and burn
+// summary-model calls, so after each fold ~12 messages must accumulate again.
+const THREAD_SUMMARY_TRIGGER_MESSAGE_COUNT = 20;
+const THREAD_SUMMARY_TRIGGER_CHAR_COUNT = 30_000;
+const THREAD_SUMMARY_KEEP_RECENT_MESSAGES = 8;
+const THREAD_SUMMARY_MAX_SOURCE_CHARS = 60_000;
+const THREAD_SUMMARY_MODEL = Deno.env.get("OPENAI_MODEL_FAST") || "gpt-5.4-mini";
+
+async function refreshThreadContextSummary(supabaseService: any, threadId: string) {
+  try {
+    const { data: threadRow, error: threadError } = await supabaseService
+      .from("ai_threads")
+      .select("id,context_summary,context_summary_until_created_at")
+      .eq("id", threadId)
+      .single();
+    if (threadError || !threadRow) return;
+    const cutoffAt = threadRow.context_summary_until_created_at ?? null;
+    let query = supabaseService
+      .from("ai_messages")
+      .select("id,role,content,content_json,created_at")
+      .eq("thread_id", threadId)
+      .order("created_at", { ascending: true })
+      .limit(200);
+    if (cutoffAt) query = query.gt("created_at", cutoffAt);
+    const { data: rows, error } = await query;
+    if (error || !Array.isArray(rows)) return;
+
+    const withContent = rows.map((row: any) => ({
+      ...row,
+      conversation_content: conversationContentFromAiMessage(row),
+    }));
+    const unsummarizedChars = withContent.reduce(
+      (total: number, row: any) => total + row.conversation_content.length,
+      0,
+    );
+    const shouldRefresh = withContent.length >= THREAD_SUMMARY_TRIGGER_MESSAGE_COUNT ||
+      (withContent.length > THREAD_SUMMARY_KEEP_RECENT_MESSAGES && unsummarizedChars >= THREAD_SUMMARY_TRIGGER_CHAR_COUNT);
+    if (!shouldRefresh) return;
+
+    const toSummarize = withContent.slice(0, withContent.length - THREAD_SUMMARY_KEEP_RECENT_MESSAGES);
+    if (toSummarize.length === 0) return;
+    const previousSummary = String(threadRow.context_summary ?? "").trim();
+    const transcript = toSummarize
+      .map((row: any) =>
+        row.conversation_content.trim()
+          ? `${row.role === "assistant" ? "Assistant" : "User"}: ${row.conversation_content}`
+          : null
+      )
+      .filter(Boolean)
+      .join("\n\n")
+      .slice(0, THREAD_SUMMARY_MAX_SOURCE_CHARS);
+    if (!transcript) return;
+
+    const response = await fetchOpenAi("https://api.openai.com/v1/chat/completions", {
+      method: "POST",
+      headers: { Authorization: `Bearer ${OPENAI_API_KEY}`, "Content-Type": "application/json" },
+      body: JSON.stringify({
+        model: THREAD_SUMMARY_MODEL,
+        messages: [
+          {
+            role: "system",
+            content: "You maintain a rolling summary of an AI workspace chat thread. Merge the previous summary (if any) with the new messages into ONE updated summary in the conversation's dominant language. Preserve every fact needed for follow-ups: user goals and decisions, agreed deliverables and their formats, names of people/brands/projects, artifact/task/project IDs mentioned, stated preferences and constraints, and open questions. Max ~350 words. Output only the summary text.",
+          },
+          {
+            role: "user",
+            content: [
+              previousSummary ? `PREVIOUS SUMMARY:\n${previousSummary}` : null,
+              `NEW MESSAGES TO FOLD IN:\n${transcript}`,
+            ].filter(Boolean).join("\n\n"),
+          },
+        ],
+        max_completion_tokens: 2000,
+      }),
+      signal: AbortSignal.timeout(45_000),
+    }, { stage: "thread_summary", tokenBased: false });
+    if (!response.ok) {
+      console.warn("ai-chat thread summary generation failed", { thread_id: threadId, status: response.status });
+      return;
+    }
+    const completion = await response.json();
+    const summary = String(completion?.choices?.[0]?.message?.content ?? "").trim();
+    if (!summary) return;
+
+    const last = toSummarize[toSummarize.length - 1];
+    const { error: updateError } = await supabaseService
+      .from("ai_threads")
+      .update({
+        context_summary: summary.slice(0, 8000),
+        context_summary_until_message_id: last.id,
+        context_summary_until_created_at: last.created_at,
+        context_summary_updated_at: new Date().toISOString(),
+      })
+      .eq("id", threadId);
+    if (updateError) {
+      console.warn("ai-chat thread summary update failed", { thread_id: threadId, error: updateError.message });
+      return;
+    }
+    console.log("ai-chat thread summary refreshed", { thread_id: threadId, folded_messages: toSummarize.length });
+  } catch (error) {
+    console.warn("ai-chat thread summary refresh failed", { thread_id: threadId, error: String(error) });
+  }
+}
+
+function scheduleThreadContextSummary(supabaseService: any, threadId: string) {
+  const promise = refreshThreadContextSummary(supabaseService, threadId);
+  const edgeRuntime = (globalThis as any).EdgeRuntime;
+  if (edgeRuntime?.waitUntil) edgeRuntime.waitUntil(promise);
+  else void promise;
 }
 
 
@@ -2473,9 +3000,272 @@ function compactToolValue(value: any, depth = 0): any {
   return String(value);
 }
 
+function shortHostFromUrl(raw: unknown): string | null {
+  const text = String(raw ?? "").trim();
+  if (!text) return null;
+  try {
+    const url = new URL(text.includes("://") ? text : `https://${text}`);
+    return url.hostname.replace(/^www\./i, "") + (url.pathname && url.pathname !== "/" ? url.pathname.replace(/\/$/, "") : "");
+  } catch {
+    return text.slice(0, 80);
+  }
+}
+
+function collectNamedRows(data: any): any[] {
+  if (!data || typeof data !== "object") return [];
+  for (const key of [
+    "destinations",
+    "artifacts",
+    "rows",
+    "items",
+    "tasks",
+    "projects",
+    "pages",
+    "results",
+  ]) {
+    if (Array.isArray(data[key])) return data[key];
+  }
+  return Array.isArray(data) ? data : [];
+}
+
+/** Compact user-facing tool outcome for the progressive timeline (never full payloads). */
+function summarizeToolResultForTimeline(toolName: string, result: any): {
+  result_summary: string;
+  entities: Array<{ type: string; id?: string | number; label: string }>;
+  data_summary: any;
+} {
+  const data = result?.data && typeof result.data === "object" ? result.data : null;
+  const ok = !!result?.ok;
+  const entities: Array<{ type: string; id?: string | number; label: string }> = [];
+  const rows = collectNamedRows(data);
+  const titles = rows
+    .map((row: any) => String(row?.title ?? row?.name ?? row?.project_name ?? "").trim())
+    .filter(Boolean)
+    .slice(0, 6);
+  for (const title of titles.slice(0, 4)) {
+    entities.push({ type: "component", label: title });
+  }
+
+  const count =
+    (typeof data?.count === "number" && Number.isFinite(data.count) ? data.count : null)
+    ?? (typeof data?.total === "number" && Number.isFinite(data.total) ? data.total : null)
+    ?? (rows.length > 0 ? rows.length : null);
+
+  const compactRows = rows.slice(0, 12).map((row: any) => ({
+    id: row?.id ?? row?.artifact_id ?? row?.destination_id ?? null,
+    title: row?.title ?? row?.name ?? row?.project_name ?? null,
+    url: row?.url ?? row?.start_url ?? row?.canonical_url ?? row?.final_url ?? null,
+    status: row?.status ?? null,
+    markdown_link: row?.markdown_link ?? null,
+  }));
+
+  let data_summary: any = null;
+  if (data) {
+    data_summary = compactToolValue({
+      id: data.id ?? null,
+      task_id: data.task_id ?? null,
+      project_id: data.project_id ?? null,
+      artifact_id: data.artifact_id ?? null,
+      build_id: data.build_id ?? data.build?.id ?? null,
+      count,
+      action: data.action ?? null,
+      title: data.title ?? data.name ?? null,
+      url: data.url ?? data.final_url ?? data.source_url ?? null,
+      titles: titles.length > 0 ? titles : null,
+      artifact_count: data.artifact_count ?? null,
+      // Expandable timeline payload: keep a short list of concrete results.
+      items: compactRows.length > 0 ? compactRows : null,
+      destinations: Array.isArray(data.destinations)
+        ? data.destinations.slice(0, 12).map((row: any) => ({
+          id: row?.id ?? null,
+          name: row?.name ?? null,
+          start_url: row?.start_url ?? null,
+          status: row?.status ?? null,
+        }))
+        : null,
+      artifacts: Array.isArray(data.artifacts)
+        ? data.artifacts.slice(0, 8).map((row: any) => ({
+          id: row?.id ?? row?.artifact_id ?? null,
+          title: row?.title ?? null,
+          markdown_link: row?.markdown_link ?? null,
+        }))
+        : null,
+      pages: Array.isArray(data.pages)
+        ? data.pages.slice(0, 8).map((row: any) => ({
+          id: row?.id ?? null,
+          title: row?.title ?? null,
+          url: row?.url ?? row?.canonical_url ?? null,
+        }))
+        : null,
+    });
+  }
+
+  if (!ok) {
+    const err = String(result?.error ?? "").trim().slice(0, 120);
+    return {
+      result_summary: err ? `${toolName} failed: ${err}` : `${toolName} failed.`,
+      entities,
+      data_summary,
+    };
+  }
+
+  switch (toolName) {
+    case "ai_list_task_artifacts":
+    case "ai_list_project_artifacts":
+    case "ai_list_ai_thread_artifacts":
+    case "ai_search_artifacts": {
+      if (!count) return { result_summary: "Listed artifacts — none found.", entities, data_summary };
+      const sample = titles.length ? `: ${titles.join("; ")}` : ".";
+      return {
+        result_summary: `Listed ${count} artifact${count === 1 ? "" : "s"}${sample}`,
+        entities,
+        data_summary,
+      };
+    }
+    case "ai_read_artifact": {
+      const title = String(data?.snapshot?.title ?? data?.title ?? titles[0] ?? "").trim();
+      return {
+        result_summary: title ? `Read artifact — ${title}` : "Finished reading artifact.",
+        entities: title ? [{ type: "artifact", label: title, id: data?.artifact_id ?? data?.snapshot?.id ?? data?.id }] : entities,
+        data_summary,
+      };
+    }
+    case "read_public_webpage": {
+      const host = shortHostFromUrl(data?.url ?? data?.final_url ?? data?.source_url);
+      const title = String(data?.title ?? "").trim();
+      if (host) entities.unshift({ type: "url", id: String(data?.url ?? host), label: host });
+      return {
+        result_summary: title
+          ? `Read webpage — ${title}`
+          : host
+            ? `Read webpage — ${host}`
+            : "Finished reading webpage.",
+        entities: entities.slice(0, 4),
+        data_summary,
+      };
+    }
+    case "list_visible_projects": {
+      if (!count) return { result_summary: "Listed projects — none found.", entities, data_summary };
+      const sample = titles.length ? `: ${titles.join("; ")}` : ".";
+      return {
+        result_summary: `Listed ${count} project${count === 1 ? "" : "s"}${sample}`,
+        entities: titles.slice(0, 4).map((label) => ({ type: "component", label })),
+        data_summary,
+      };
+    }
+    case "read_project": {
+      const name = String(data?.name ?? data?.project_name ?? titles[0] ?? "").trim();
+      return {
+        result_summary: name ? `Read project — ${name}` : "Finished reading project.",
+        entities: name ? [{ type: "component", label: name, id: data?.id ?? data?.project_id }] : entities,
+        data_summary,
+      };
+    }
+    case "search_tasks": {
+      if (!count) return { result_summary: "Searched tasks — none found.", entities, data_summary };
+      const sample = titles.length ? `: ${titles.join("; ")}` : ".";
+      return {
+        result_summary: `Found ${count} task${count === 1 ? "" : "s"}${sample}`,
+        entities: titles.slice(0, 4).map((label, index) => ({
+          type: "task",
+          id: rows[index]?.id ?? undefined,
+          label,
+        })),
+        data_summary,
+      };
+    }
+    case "search_project_site_pages": {
+      if (!count) return { result_summary: "Searched site pages — none found.", entities, data_summary };
+      const sample = titles.length ? `: ${titles.join("; ")}` : ".";
+      return {
+        result_summary: `Found ${count} site page${count === 1 ? "" : "s"}${sample}`,
+        entities,
+        data_summary,
+      };
+    }
+    case "ai_start_artifact_build": {
+      const arts = Array.isArray(data?.artifacts) ? data.artifacts : [];
+      const artTitles = arts
+        .map((row: any) => String(row?.title ?? "").trim())
+        .filter(Boolean)
+        .slice(0, 6);
+      const n = Number(data?.artifact_count ?? artTitles.length) || artTitles.length || 1;
+      const sample = artTitles.length ? `: ${artTitles.join("; ")}` : ".";
+      return {
+        result_summary: `Started build for ${n} artifact${n === 1 ? "" : "s"}${sample}`,
+        entities: artTitles.slice(0, 4).map((label, index) => ({
+          type: "artifact",
+          id: arts[index]?.id ?? arts[index]?.artifact_id ?? undefined,
+          label,
+        })),
+        data_summary,
+      };
+    }
+    case "ai_update_task_fields": {
+      const title = String(data?.title ?? "").trim();
+      return {
+        result_summary: title ? `Updated task — ${title}` : "Finished updating task fields.",
+        entities: title ? [{ type: "task", id: data?.id ?? data?.task_id, label: title }] : entities,
+        data_summary,
+      };
+    }
+    default: {
+      if (titles.length > 0) {
+        return {
+          result_summary: `Finished ${toolName.replace(/^ai_/, "").replace(/_/g, " ")} — ${titles.join("; ")}`,
+          entities,
+          data_summary,
+        };
+      }
+      if (count != null) {
+        return {
+          result_summary: `Finished ${toolName.replace(/^ai_/, "").replace(/_/g, " ")} — ${count} result${count === 1 ? "" : "s"}.`,
+          entities,
+          data_summary,
+        };
+      }
+      return {
+        result_summary: `Finished ${toolName.replace(/^ai_/, "").replace(/_/g, " ")}.`,
+        entities,
+        data_summary,
+      };
+    }
+  }
+}
+
+type OutboundStreamStats = {
+  openai_delta_count: number;
+  openai_delta_chars: number;
+  first_openai_delta_ms: number | null;
+  last_openai_delta_ms: number | null;
+  outbound_enqueue_count: number;
+  outbound_text_enqueue_count: number;
+  outbound_text_chars: number;
+  first_outbound_enqueue_ms: number | null;
+  first_outbound_text_ms: number | null;
+  last_outbound_enqueue_ms: number | null;
+};
+
+function createOutboundStreamStats(): OutboundStreamStats {
+  return {
+    openai_delta_count: 0,
+    openai_delta_chars: 0,
+    first_openai_delta_ms: null,
+    last_openai_delta_ms: null,
+    outbound_enqueue_count: 0,
+    outbound_text_enqueue_count: 0,
+    outbound_text_chars: 0,
+    first_outbound_enqueue_ms: null,
+    first_outbound_text_ms: null,
+    last_outbound_enqueue_ms: null,
+  };
+}
+
 async function consumeOpenAiChatCompletionStream(args: {
   response: Response;
-  onContentDelta?: (delta: string) => void;
+  onContentDelta?: (delta: string) => void | Promise<void>;
+  streamStats?: OutboundStreamStats;
+  streamStartedAtMs?: number;
 }): Promise<{
   content: string;
   toolCalls: Array<{ id: string; type: string; function: { name: string; arguments: string } }>;
@@ -2487,8 +3277,8 @@ async function consumeOpenAiChatCompletionStream(args: {
   let buffer = "";
   let content = "";
   let usage: any = null;
-  let sawToolCalls = false;
   const toolCallsByIndex = new Map<number, { id: string; type: string; function: { name: string; arguments: string } }>();
+  const startedAt = args.streamStartedAtMs ?? performance.now();
 
   while (true) {
     const { done, value } = await reader.read();
@@ -2507,12 +3297,21 @@ async function consumeOpenAiChatCompletionStream(args: {
       const delta = chunk?.choices?.[0]?.delta ?? {};
       if (typeof delta.content === "string" && delta.content) {
         content += delta.content;
-        // Pure text rounds stream live. Once tool-call deltas appear, keep
-        // buffering for the transcript but stop painting into the chat bubble.
-        if (!sawToolCalls) args.onContentDelta?.(delta.content);
+        if (args.streamStats) {
+          const elapsed = Math.round(performance.now() - startedAt);
+          args.streamStats.openai_delta_count += 1;
+          args.streamStats.openai_delta_chars += delta.content.length;
+          if (args.streamStats.first_openai_delta_ms == null) {
+            args.streamStats.first_openai_delta_ms = elapsed;
+          }
+          args.streamStats.last_openai_delta_ms = elapsed;
+        }
+        // Stream narrative text as it arrives so the chat stays alive between
+        // tool rounds. Tool-call rounds may later reset the bubble and move
+        // this preamble into the execution timeline as narration.
+        await args.onContentDelta?.(delta.content);
       }
       if (Array.isArray(delta.tool_calls) && delta.tool_calls.length > 0) {
-        sawToolCalls = true;
         for (const toolDelta of delta.tool_calls) {
           const index = Number(toolDelta?.index ?? 0);
           const existing = toolCallsByIndex.get(index) ?? {
@@ -2570,8 +3369,41 @@ function toolResultForModel(result: any) {
 
 function toolResultForPersistence(result: any) {
   const data = result?.data ?? null;
+  const toolName = String(result?.name ?? "");
+  const isPublishingTool = [
+    "publish_content",
+    "configure_publishing_destination",
+    "continue_publication",
+    "confirm_publication",
+    "get_publication_state",
+    "publish_scheduled_now",
+    "cancel_scheduled_publication",
+    "cancel_publication",
+  ].includes(toolName);
+
+  // Publishing previews need live_view_url / destination ids in the persisted summary
+  // so the chat UI can render PublicationBrowserPreviewCard (full tool data is otherwise dropped).
+  const publishingSummary = isPublishingTool && data && typeof data === "object"
+    ? {
+        publication_run_id: data.publication_run_id ?? data.publicationRunId ?? null,
+        destination_id: data.destination_id ?? data.destinationId ?? null,
+        destination_name: data.destination_name ?? data.destinationName ?? null,
+        artifact_id: data.artifact_id ?? data.artifactId ?? null,
+        status: data.status ?? data.destination_status ?? null,
+        live_view_url: data.live_view_url ?? data.liveViewUrl ?? null,
+        connect_run_id: data.connect_run_id ?? data.connectRunId ?? null,
+        show_browser_preview:
+          data.show_browser_preview === true ||
+          data.showBrowserPreview === true ||
+          Boolean(data.live_view_url || data.liveViewUrl || data.publication_run_id),
+        open_browser_tab: data.open_browser_tab === true || data.openBrowserTab === true,
+        needs_authentication: data.needs_authentication === true,
+        continuing_publication: data.continuing_publication === true,
+      }
+    : {};
+
   return {
-    name: String(result?.name ?? ""),
+    name: toolName,
     ok: !!result?.ok,
     skipped: !!result?.skipped,
     error: result?.error ?? null,
@@ -2584,6 +3416,7 @@ function toolResultForPersistence(result: any) {
       count: data.count ?? data.total ?? null,
       action: data.action ?? null,
       title: data.title ?? null,
+      ...publishingSummary,
     }) : compactToolValue(data),
   };
 }
@@ -2598,7 +3431,9 @@ async function runArtifactConversation(args: {
   ctx: any;
   trace: ReturnType<typeof createTimingTrace>;
   attachments: any[];
-  onEvent?: (event: any) => void;
+  onEvent?: (event: any) => void | Promise<void>;
+  streamStats?: OutboundStreamStats;
+  streamStartedAtMs?: number;
 }) {
   const conversation = [...args.messages];
   const toolResults: any[] = [];
@@ -2607,6 +3442,7 @@ async function runArtifactConversation(args: {
   let assistantText = "";
   let usage: any = null;
   let markedFirstToken = false;
+  const streamStartedAtMs = args.streamStartedAtMs ?? performance.now();
 
   for (let round = 0; round < 10; round++) {
     const payload: any = {
@@ -2618,6 +3454,7 @@ async function runArtifactConversation(args: {
       stream: true,
       stream_options: { include_usage: true },
     };
+    args.trace.mark(`openai_round_${round + 1}_request`);
     const response = await fetchOpenAi("https://api.openai.com/v1/chat/completions", {
       method: "POST",
       headers: { Authorization: `Bearer ${OPENAI_API_KEY}`, "Content-Type": "application/json" },
@@ -2627,15 +3464,22 @@ async function runArtifactConversation(args: {
     if (!response.ok) throw new Error(`openai_chat_failed:${response.status}:${await response.text()}`);
     const streamed = await consumeOpenAiChatCompletionStream({
       response,
-      onContentDelta: (delta) => {
+      streamStats: args.streamStats,
+      streamStartedAtMs,
+      onContentDelta: async (delta) => {
         if (!markedFirstToken) {
           markedFirstToken = true;
           const runId = cleanUuidOrNull(args.ctx?.ai_run_id);
           if (runId) {
             void updateAiChatRun(args.supabaseService, runId, { mark_first_token: true });
           }
+          console.log("ai-chat stream first openai delta", {
+            run_id: runId,
+            ms: Math.round(performance.now() - streamStartedAtMs),
+            chars: delta.length,
+          });
         }
-        args.onEvent?.({ type: "assistant_text_delta", delta });
+        await args.onEvent?.({ type: "assistant_text_delta", delta });
       },
     });
     usage = mergeUsage(usage, streamed.usage);
@@ -2643,13 +3487,22 @@ async function runArtifactConversation(args: {
     const content = streamed.content;
 
     if (toolCalls.length === 0) {
-      assistantText = content.trim();
+      // Prefer the final no-tool round as the visible reply. Keep any earlier
+      // substantive narration that never made it into a tool preamble.
+      const finalText = content.trim();
+      if (finalText) assistantText = finalText;
       break;
     }
 
-    // A rare content+tools round may have painted early text; clear the bubble
-    // before tool status so the final reply does not append onto that draft.
+    // Cursor-like: keep approach narration in the timeline, then clear the
+    // bubble so the final answer does not append onto the preamble.
     if (content.trim()) {
+      args.onEvent?.({
+        type: "narration",
+        phase: "completed",
+        round,
+        text: content.trim(),
+      });
       args.onEvent?.({ type: "assistant_text_reset" });
     }
 
@@ -2679,6 +3532,35 @@ async function runArtifactConversation(args: {
         attachments: args.attachments,
       });
       toolResults.push(result);
+      const publishingTools = new Set([
+        "publish_content",
+        "configure_publishing_destination",
+        "continue_publication",
+        "confirm_publication",
+        "get_publication_state",
+        "publish_scheduled_now",
+        "cancel_scheduled_publication",
+        "cancel_publication",
+      ]);
+      const publishingData = result?.data && typeof result.data === "object" ? result.data : null;
+      const publishingPreview = publishingTools.has(toolName) && result?.ok && publishingData
+        ? {
+            tool_name: toolName,
+            ok: true,
+            publication_run_id: publishingData.publication_run_id ?? publishingData.publicationRunId ?? null,
+            destination_id: publishingData.destination_id ?? publishingData.destinationId ?? null,
+            destination_name: publishingData.destination_name ?? publishingData.destinationName ?? null,
+            artifact_id: publishingData.artifact_id ?? publishingData.artifactId ?? null,
+            status: publishingData.status ?? publishingData.destination_status ?? null,
+            live_view_url: publishingData.live_view_url ?? publishingData.liveViewUrl ?? null,
+            connect_run_id: publishingData.connect_run_id ?? publishingData.connectRunId ?? null,
+            show_browser_preview: true,
+            open_browser_tab: publishingData.open_browser_tab === true || publishingData.openBrowserTab === true,
+            needs_authentication: publishingData.needs_authentication === true,
+            continuing_publication: publishingData.continuing_publication === true,
+          }
+        : null;
+      const timelineSummary = summarizeToolResultForTimeline(toolName, result);
       args.onEvent?.({
         type: "tool_finished",
         phase: result?.ok ? "completed" : "failed",
@@ -2687,7 +3569,13 @@ async function runArtifactConversation(args: {
         tool_call_id: toolCallId || null,
         tool_index: toolIndex,
         ok: !!result?.ok,
+        // Collapsed timeline line stays short; expandable details use
+        // result_summary + data_summary (emitted after the tool returns — no TTFT cost).
         text: result?.ok ? `Finished ${toolName}.` : `${toolName} failed.`,
+        result_summary: timelineSummary.result_summary,
+        entities: timelineSummary.entities,
+        data_summary: timelineSummary.data_summary,
+        ...(publishingPreview ? { publishing_preview: publishingPreview } : {}),
       });
       conversation.push({
         role: "tool",
@@ -2725,9 +3613,17 @@ async function runArtifactConversation(args: {
   }
 
   if (clarification) assistantText = String(clarification.question ?? "").trim();
-  if (buildIds.length > 0 && !clarification) assistantText = "";
+  // Keep substantive final prose even when an artifact build was started — the
+  // timeline shows the build, the bubble can still explain what is happening.
 
-  return { assistantText, toolResults, buildIds: [...new Set(buildIds)], clarification, usage };
+  return {
+    assistantText,
+    toolResults,
+    buildIds: [...new Set(buildIds)],
+    clarification,
+    usage,
+    streamStats: args.streamStats ?? null,
+  };
 }
 
 
@@ -2745,9 +3641,11 @@ async function persistAssistantMessage(args: {
   clarification: any | null;
   latencyMs: number;
   scope: any;
+  streamStats?: OutboundStreamStats | null;
 }) {
-  const hidden = args.buildIds.length > 0 && !args.text && !args.clarification;
   const costs = await computeCost(args.supabaseService, args.provider, args.model, args.usage);
+  const hasVisibleText = Boolean(args.text?.trim()) || Boolean(args.clarification);
+  const hidden = args.buildIds.length > 0 && !hasVisibleText;
   const contentJson: any = {
     output_kind: hidden ? "artifact_build_control" : args.clarification ? "clarification" : "text",
     ui_visibility: hidden ? "hidden" : "visible",
@@ -2776,6 +3674,15 @@ async function persistAssistantMessage(args: {
   }).select("*").single();
   if (error) throw error;
   if (args.runId) {
+    const stream = args.streamStats;
+    const openaiSpanMs =
+      stream?.first_openai_delta_ms != null && stream?.last_openai_delta_ms != null
+        ? Math.max(0, stream.last_openai_delta_ms - stream.first_openai_delta_ms)
+        : null;
+    const outboundTextSpanMs =
+      stream?.first_outbound_text_ms != null && stream?.last_outbound_enqueue_ms != null
+        ? Math.max(0, stream.last_outbound_enqueue_ms - stream.first_outbound_text_ms)
+        : null;
     await updateAiChatRun(args.supabaseService, args.runId, {
       status: "completed",
       assistant_message_id: data.id,
@@ -2787,8 +3694,35 @@ async function persistAssistantMessage(args: {
         usage_completion_tokens: args.usage?.completion_tokens ?? null,
         usage_total_tokens: args.usage?.total_tokens ?? null,
         build_ids: args.buildIds,
+        ...(stream
+          ? {
+              stream_openai_delta_count: stream.openai_delta_count,
+              stream_openai_delta_chars: stream.openai_delta_chars,
+              stream_first_openai_delta_ms: stream.first_openai_delta_ms,
+              stream_last_openai_delta_ms: stream.last_openai_delta_ms,
+              stream_openai_span_ms: openaiSpanMs,
+              stream_outbound_enqueue_count: stream.outbound_enqueue_count,
+              stream_outbound_text_enqueue_count: stream.outbound_text_enqueue_count,
+              stream_outbound_text_chars: stream.outbound_text_chars,
+              stream_first_outbound_enqueue_ms: stream.first_outbound_enqueue_ms,
+              stream_first_outbound_text_ms: stream.first_outbound_text_ms,
+              stream_last_outbound_enqueue_ms: stream.last_outbound_enqueue_ms,
+              stream_outbound_text_span_ms: outboundTextSpanMs,
+            }
+          : {}),
       },
     });
+    if (stream) {
+      console.log("ai-chat stream stats", {
+        run_id: args.runId,
+        openai_delta_count: stream.openai_delta_count,
+        openai_span_ms: openaiSpanMs,
+        outbound_text_enqueue_count: stream.outbound_text_enqueue_count,
+        outbound_text_span_ms: outboundTextSpanMs,
+        first_openai_delta_ms: stream.first_openai_delta_ms,
+        first_outbound_text_ms: stream.first_outbound_text_ms,
+      });
+    }
   }
   return data;
 }
@@ -2938,8 +3872,27 @@ async function handleAiChatRequest(req: Request) {
     if (!threadId) return new Response(JSON.stringify({ error: { code: "thread_id_required" } }), { status: 400, headers: { ...corsHeaders, "Content-Type": "application/json" } });
     if (!requestText && !body.clarification_response) return new Response(JSON.stringify({ error: { code: "message_required" } }), { status: 400, headers: { ...corsHeaders, "Content-Type": "application/json" } });
 
-    const { data: thread, error: threadError } = await db.from("ai_threads").select("*").eq("id", threadId).single();
-    if (threadError || !thread) return new Response(JSON.stringify({ error: { code: "thread_not_found" } }), { status: 404, headers: { ...corsHeaders, "Content-Type": "application/json" } });
+    const trace = createTimingTrace({ thread_id: threadId });
+    let { data: thread } = await db.from("ai_threads").select("*").eq("id", threadId).maybeSingle();
+    if (!thread && !isServiceCall) {
+      // SECURITY DEFINER can see the row even when RLS select policies miss
+      // (e.g. transient current_user_id mapping issues with a still-valid JWT).
+      const { data: canRead } = await supabaseUser.rpc("ai_can_read_thread", { p_thread_id: threadId });
+      if (canRead) {
+        const { data: threadSvc } = await supabaseService.from("ai_threads").select("*").eq("id", threadId).maybeSingle();
+        thread = threadSvc ?? null;
+      }
+    }
+    if (!thread) {
+      if (!isServiceCall) {
+        const { data: exists } = await supabaseService.from("ai_threads").select("id").eq("id", threadId).maybeSingle();
+        if (exists) {
+          return new Response(JSON.stringify({ error: { code: "thread_access_denied" } }), { status: 403, headers: { ...corsHeaders, "Content-Type": "application/json" } });
+        }
+      }
+      return new Response(JSON.stringify({ error: { code: "thread_not_found" } }), { status: 404, headers: { ...corsHeaders, "Content-Type": "application/json" } });
+    }
+    trace.mark("thread_loaded");
 
     const selectedArtifactContext = normalizeSelectedArtifactContext(body.selected_artifact_context);
     const ambientContext = normalizeAmbientContext(body.ambient_context);
@@ -2964,6 +3917,9 @@ async function handleAiChatRequest(req: Request) {
     if (!isServiceCall) tokenQuotaContext = createAiTokenQuotaContext({ client: supabaseUser, threadId, clientRequestId, signal: req.signal });
 
     let userMessageId: string | null = null;
+    // Quota-run binding overlaps with context loading below; the first token
+    // reservation awaits it via the setup Promise.all before calling OpenAI.
+    let bindQuotaRunPromise: Promise<void> = Promise.resolve();
     if (!isServiceCall) {
       const { data: existing } = await supabaseUser.rpc("ai_find_chat_run_by_request", { p_thread_id: threadId, p_client_request_id: clientRequestId, p_request_hash: requestHash });
       if (existing?.run?.id) return new Response(JSON.stringify({ ...existing, run_id: existing.run.id, replayed: true }), { status: String(existing.run.status ?? "") === "running" ? 202 : 200, headers: { ...corsHeaders, "Content-Type": "application/json", "Cache-Control": "no-store" } });
@@ -2984,7 +3940,8 @@ async function handleAiChatRequest(req: Request) {
       if (beginError) return new Response(JSON.stringify({ error: { code: "run_begin_failed", message: beginError.message } }), { status: 403, headers: { ...corsHeaders, "Content-Type": "application/json" } });
       activeRunId = cleanUuidOrNull(begun?.run_id);
       userMessageId = cleanUuidOrNull(begun?.user_message_id);
-      await bindAiTokenQuotaRun(tokenQuotaContext, activeRunId);
+      trace.mark("run_begun");
+      bindQuotaRunPromise = bindAiTokenQuotaRun(tokenQuotaContext, activeRunId);
     } else {
       const inserted = await persistUserMessage({ db: supabaseService, thread_id: threadId, content: requestText, displayContent: displayText });
       userMessageId = cleanUuidOrNull(inserted?.id);
@@ -3003,11 +3960,20 @@ async function handleAiChatRequest(req: Request) {
 
     const resolvedModel = resolveAiModelSelection({ body, thread, requestText, hasAttachments: attachmentIds.length > 0, allowTools: true });
     assertExecutableAiProvider(resolvedModel.provider);
-    const recentMessages = await loadRecentConversation(db, threadId, userMessageId);
-    const recentThreadArtifacts = await loadRecentThreadArtifacts(db, threadId);
+    const requestAttachments = Array.isArray(body.attachments) ? body.attachments : [];
+    // Independent setup work runs in parallel (was 4 sequential awaits).
+    const [recentMessages, recentThreadArtifacts, currentContent] = await Promise.all([
+      loadRecentConversation(db, thread, userMessageId),
+      loadRecentThreadArtifacts(db, threadId),
+      buildCurrentUserMessageContent(supabaseService, requestText, requestAttachments),
+      bindQuotaRunPromise,
+    ]);
+    trace.mark("context_loaded");
     const selectedTools = MODEL_TOOLS;
-    const systemPrompt = buildArtifactOnlySystemPrompt({
-      thread,
+    // Static system prompt first (stable prompt-cache prefix); volatile per-turn
+    // facts go into a context message just before the current user message.
+    const systemPrompt = buildArtifactOnlySystemPrompt();
+    const turnContextPrompt = buildTurnContextPrompt({
       scope,
       selectedArtifactContext,
       targets,
@@ -3015,14 +3981,12 @@ async function handleAiChatRequest(req: Request) {
       recentThreadArtifacts,
       taggedBrandTemplates,
     });
-    const requestAttachments = Array.isArray(body.attachments) ? body.attachments : [];
-    const currentContent = await buildCurrentUserMessageContent(supabaseService, requestText, requestAttachments);
     const modelMessages = [
       { role: "system", content: systemPrompt },
       ...recentMessages,
+      ...(turnContextPrompt ? [{ role: "system", content: turnContextPrompt }] : []),
       { role: "user", content: currentContent },
     ];
-    const trace = createTimingTrace();
     const ctx = {
       ai_run_id: activeRunId,
       current_user_request: requestText,
@@ -3036,9 +4000,11 @@ async function handleAiChatRequest(req: Request) {
     };
 
     const wantsStream = body.stream === true;
-    const execute = async (onEvent?: (event: any) => void) => runArtifactConversation({
+    const streamStats = createOutboundStreamStats();
+    const streamStartedAtMs = performance.now();
+    const execute = async (onEvent?: (event: any) => void | Promise<void>) => runArtifactConversation({
       db, supabaseService, thread, model: resolvedModel.model, messages: modelMessages, tools: selectedTools,
-      ctx, trace, attachments: requestAttachments, onEvent,
+      ctx, trace, attachments: requestAttachments, onEvent, streamStats, streamStartedAtMs,
     });
 
     const finalize = async (result: any) => {
@@ -3046,8 +4012,9 @@ async function handleAiChatRequest(req: Request) {
       const assistant = await persistAssistantMessage({
         supabaseService, threadId, runId: activeRunId, provider: resolvedModel.provider, model: resolvedModel.model,
         text: result.assistantText, usage: result.usage, toolResults: result.toolResults, buildIds: result.buildIds,
-        clarification: result.clarification, latencyMs, scope,
+        clarification: result.clarification, latencyMs, scope, streamStats: result.streamStats ?? streamStats,
       });
+      scheduleThreadContextSummary(supabaseService, threadId);
       return { assistant, run_id: activeRunId, ...result };
     };
 
@@ -3058,21 +4025,81 @@ async function handleAiChatRequest(req: Request) {
     }
 
     const encoder = new TextEncoder();
+    // Defeat intermediary buffering (nginx / edge proxies often wait for ~2–4KB
+    // or until the response ends before forwarding the first bytes). Use a
+    // control marker — never raw padding that could leak into assistant text.
+    const STREAM_FLUSH_PADDING = `${STREAM_STATUS_PREFIX}${JSON.stringify({
+      type: "status",
+      phase: "keepalive",
+      text: "",
+      pad: " ".repeat(2048),
+    })}\n`;
     const stream = new ReadableStream({
       async start(controller) {
         let sequence = Date.now();
         let clearedStatusForText = false;
-        const emitStatus = (event: any) => {
+        let markedFirstEvent = false;
+        let enqueuesSinceYield = 0;
+        const noteEnqueue = (kind: "control" | "text", byteLength: number) => {
+          const elapsed = Math.round(performance.now() - streamStartedAtMs);
+          streamStats.outbound_enqueue_count += 1;
+          if (streamStats.first_outbound_enqueue_ms == null) streamStats.first_outbound_enqueue_ms = elapsed;
+          streamStats.last_outbound_enqueue_ms = elapsed;
+          if (kind === "text") {
+            streamStats.outbound_text_enqueue_count += 1;
+            streamStats.outbound_text_chars += byteLength;
+            if (streamStats.first_outbound_text_ms == null) {
+              streamStats.first_outbound_text_ms = elapsed;
+              console.log("ai-chat stream first outbound text", {
+                run_id: activeRunId,
+                ms: elapsed,
+                chars: byteLength,
+              });
+            }
+          }
+        };
+        const enqueueBytes = async (bytes: Uint8Array, kind: "control" | "text" = "control") => {
+          controller.enqueue(bytes);
+          noteEnqueue(kind, bytes.byteLength);
+          enqueuesSinceYield += 1;
+          // Yield so the Deno/Supabase runtime can flush TCP chunks to the client
+          // instead of buffering the whole turn until controller.close().
+          if (kind === "text" || enqueuesSinceYield >= 2) {
+            enqueuesSinceYield = 0;
+            await new Promise<void>((resolve) => setTimeout(resolve, 0));
+          }
+        };
+        const emitStatus = async (event: any) => {
           sequence += 1;
           const payload = { sequence, emitted_at: new Date().toISOString(), ...event };
           const eventType = typeof payload.type === "string" ? payload.type : "";
           if (eventType === "assistant_text_reset") {
             clearedStatusForText = false;
-            controller.enqueue(encoder.encode(`${STREAM_STATUS_PREFIX}${JSON.stringify({
+            await enqueueBytes(encoder.encode(`${STREAM_STATUS_PREFIX}${JSON.stringify({
               type: "assistant_text_reset",
               phase: "reset",
               sequence,
               emitted_at: new Date().toISOString(),
+            })}\n`));
+            return;
+          }
+          if (eventType === "narration") {
+            const text = typeof payload.text === "string" ? payload.text.trim() : "";
+            if (!text) return;
+            const round = Number.isFinite(Number(payload.round)) ? Number(payload.round) : 0;
+            sequence += 1;
+            await enqueueBytes(encoder.encode(`${STREAM_EXECUTION_TRACE_PREFIX}${JSON.stringify({
+              type: "execution_trace",
+              sequence,
+              emitted_at: new Date().toISOString(),
+              step_id: `narration:${round}:${sequence}`,
+              phase: "completed",
+              category: "planning",
+              text,
+              details: {
+                source: "assistant_narration",
+                round,
+              },
             })}\n`));
             return;
           }
@@ -3082,7 +4109,7 @@ async function handleAiChatRequest(req: Request) {
             if (!clearedStatusForText) {
               clearedStatusForText = true;
               sequence += 1;
-              controller.enqueue(encoder.encode(`${STREAM_STATUS_PREFIX}${JSON.stringify({
+              await enqueueBytes(encoder.encode(`${STREAM_STATUS_PREFIX}${JSON.stringify({
                 type: "status",
                 phase: "streaming",
                 text: "",
@@ -3091,14 +4118,18 @@ async function handleAiChatRequest(req: Request) {
               })}\n`));
             }
             // Plain text bytes — consumeTextStream paints these as they arrive.
-            controller.enqueue(encoder.encode(delta));
+            await enqueueBytes(encoder.encode(delta), "text");
             return;
           }
           if (eventType === "ai_change_preview") {
-            controller.enqueue(encoder.encode(`${STREAM_CHANGE_PREVIEW_PREFIX}${JSON.stringify(payload)}\n`));
+            await enqueueBytes(encoder.encode(`${STREAM_CHANGE_PREVIEW_PREFIX}${JSON.stringify(payload)}\n`));
             return;
           }
-          controller.enqueue(encoder.encode(`${STREAM_STATUS_PREFIX}${JSON.stringify(payload)}\n`));
+          await enqueueBytes(encoder.encode(`${STREAM_STATUS_PREFIX}${JSON.stringify(payload)}\n`));
+          if (!markedFirstEvent && activeRunId) {
+            markedFirstEvent = true;
+            void updateAiChatRun(supabaseService, activeRunId, { mark_first_event: true });
+          }
           const toolName = typeof payload.tool_name === "string" ? payload.tool_name.trim() : "";
           if (toolName && (eventType === "tool_started" || eventType === "tool_finished")) {
             const round = Number.isFinite(Number(payload.round)) ? Number(payload.round) : 0;
@@ -3112,7 +4143,7 @@ async function handleAiChatRequest(req: Request) {
                   ? "completed"
                   : "failed";
             const category =
-              /^(list_|search_|read_|get_|ai_list_|ai_read_|ai_get_)/.test(toolName)
+              /^(list_|search_|read_|get_|ai_list_|ai_search_|ai_read_|ai_get_)/.test(toolName)
                 ? "discovery"
                 : /^(ai_start_|ai_build_)/.test(toolName)
                   ? "generation"
@@ -3133,7 +4164,11 @@ async function handleAiChatRequest(req: Request) {
                 ? `tool:${round}:${toolName}:${toolIndex}`
                 : `tool:${round}:${toolName}`;
             sequence += 1;
-            controller.enqueue(encoder.encode(`${STREAM_EXECUTION_TRACE_PREFIX}${JSON.stringify({
+            const publishingPreview =
+              payload.publishing_preview && typeof payload.publishing_preview === "object"
+                ? payload.publishing_preview
+                : null;
+            await enqueueBytes(encoder.encode(`${STREAM_EXECUTION_TRACE_PREFIX}${JSON.stringify({
               type: "execution_trace",
               sequence,
               emitted_at: new Date().toISOString(),
@@ -3147,31 +4182,72 @@ async function handleAiChatRequest(req: Request) {
                 ...(toolCallId ? { tool_call_id: toolCallId } : {}),
                 ...(toolIndex != null ? { tool_index: toolIndex } : {}),
                 source: "ai_status",
+                ...(publishingPreview ? { publishing_preview: publishingPreview } : {}),
               },
             })}\n`));
           }
         };
         try {
-          emitStatus({ type: "status", phase: "started", text: "Reviewing the request and current context…" });
+          await emitStatus({ type: "status", phase: "started", text: "Reviewing the request and current context…" });
+          // Force proxies to start forwarding before the model finishes.
+          await enqueueBytes(encoder.encode(STREAM_FLUSH_PADDING));
           const result = await execute(emitStatus);
           const completed = await finalize(result);
           if (result.clarification) {
-            controller.enqueue(encoder.encode(`__AI_CLARIFICATION__${JSON.stringify(result.clarification)}\n`));
+            await enqueueBytes(encoder.encode(`__AI_CLARIFICATION__${JSON.stringify(result.clarification)}\n`));
           }
-          controller.enqueue(encoder.encode(`__AI_MESSAGE_OUTPUT__${JSON.stringify({ type: "message_output", phase: "completed", thread_id: threadId, message_id: completed.assistant?.id ?? null, output_kind: result.buildIds.length && !result.assistantText ? "artifact_build_control" : result.clarification ? "clarification" : "text", ui_visibility: result.buildIds.length && !result.assistantText ? "hidden" : "visible", build_ids: result.buildIds, content_text: result.assistantText, clarification_request: result.clarification ?? null, assets: [] })}\n`));
-          emitStatus({ type: "message.completed", phase: "completed", run_id: activeRunId, message_id: completed.assistant?.id ?? null, usage: result.usage });
+          const persistedToolResults = Array.isArray(result.toolResults)
+            ? result.toolResults.map(toolResultForPersistence)
+            : [];
+          await enqueueBytes(encoder.encode(`__AI_MESSAGE_OUTPUT__${JSON.stringify({
+            type: "message_output",
+            phase: "completed",
+            thread_id: threadId,
+            message_id: completed.assistant?.id ?? null,
+            output_kind: result.buildIds.length && !(result.assistantText || "").trim() ? "artifact_build_control" : result.clarification ? "clarification" : "text",
+            ui_visibility: result.buildIds.length && !(result.assistantText || "").trim() ? "hidden" : "visible",
+            build_ids: result.buildIds,
+            content_text: result.assistantText,
+            clarification_request: result.clarification ?? null,
+            assets: [],
+            // Keep publishing discovery fields on the live client — stream finalize
+            // otherwise replaces content_json with text blocks and drops tool_results.
+            content_json: {
+              output_kind: result.buildIds.length && !(result.assistantText || "").trim() ? "artifact_build_control" : result.clarification ? "clarification" : "text",
+              ui_visibility: result.buildIds.length && !(result.assistantText || "").trim() ? "hidden" : "visible",
+              ...(persistedToolResults.length ? { tool_results: persistedToolResults } : {}),
+              ...(result.buildIds.length ? { build_ids: result.buildIds } : {}),
+              ...(result.clarification ? { clarification_request: result.clarification } : {}),
+            },
+          })}\n`));
+          await emitStatus({ type: "message.completed", phase: "completed", run_id: activeRunId, message_id: completed.assistant?.id ?? null, usage: result.usage });
           controller.close();
         } catch (error) {
           const publicError = publicRunError(error);
           if (activeRunId) await updateAiChatRun(supabaseService, activeRunId, { status: publicError.code === "cancelled" ? "cancelled" : "failed", error_code: publicError.code, error_message: publicError.message });
-          controller.enqueue(encoder.encode(`${STREAM_STATUS_PREFIX}${JSON.stringify({ type: "run.failed", phase: "failed", run_id: activeRunId, code: publicError.code, retryable: publicError.retryable, message: publicError.message })}\n`));
-          controller.close();
+          try {
+            await enqueueBytes(encoder.encode(`${STREAM_STATUS_PREFIX}${JSON.stringify({ type: "run.failed", phase: "failed", run_id: activeRunId, code: publicError.code, retryable: publicError.retryable, message: publicError.message })}\n`));
+          } catch {
+            // Controller may already be closed.
+          }
+          try { controller.close(); } catch { /* ignore */ }
         }
       },
     });
     // text/plain (not event-stream): the body uses __AI_*__ markers + raw text
     // deltas. Labeling it as SSE makes the browser client buffer/drop chunks.
-    return new Response(stream, { status: 200, headers: { ...corsHeaders, "Content-Type": "text/plain; charset=utf-8", "Cache-Control": "no-cache, no-transform", Connection: "keep-alive", "X-Content-Type-Options": "nosniff", ...(activeRunId ? { "X-AI-Run-Id": activeRunId } : {}) } });
+    return new Response(stream, {
+      status: 200,
+      headers: {
+        ...corsHeaders,
+        "Content-Type": "text/plain; charset=utf-8",
+        "Cache-Control": "no-cache, no-transform",
+        Connection: "keep-alive",
+        "X-Content-Type-Options": "nosniff",
+        "X-Accel-Buffering": "no",
+        ...(activeRunId ? { "X-AI-Run-Id": activeRunId } : {}),
+      },
+    });
   } catch (error) {
     const publicError = publicRunError(error);
     if (activeRunId && supabaseService) await updateAiChatRun(supabaseService, activeRunId, { status: publicError.code === "cancelled" ? "cancelled" : "failed", error_code: publicError.code, error_message: publicError.message });

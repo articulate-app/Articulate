@@ -31,6 +31,8 @@ export type WorkspaceUrlState = {
   rightTab?: string
   taskAiOpen?: string
   aiThreadId?: string
+  publicationRunId?: string
+  centerArtifactId?: string
   groupBy?: string
   groupOrder?: string
   mode?: string
@@ -73,6 +75,8 @@ const KNOWN_KEYS: Array<keyof WorkspaceUrlState> = [
   "rightTab",
   "taskAiOpen",
   "aiThreadId",
+  "publicationRunId",
+  "centerArtifactId",
   "groupBy",
   "groupOrder",
   "mode",

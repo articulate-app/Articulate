@@ -1,6 +1,7 @@
 import { createRouteHandlerClient } from "@supabase/auth-helpers-nextjs"
 import { cookies } from "next/headers"
 import { NextResponse } from "next/server"
+import { refreshGoogleAccessToken } from "@/lib/google-oauth"
 import { createServiceRoleClient } from "@/lib/supabase/service-role"
 
 export const dynamic = "force-dynamic"
@@ -108,13 +109,78 @@ export async function POST(req: Request) {
       if (error) {
         return NextResponse.json({ error: error.message }, { status: 500 })
       }
+
+      await service
+        .from("project_search_console_properties")
+        .update({
+          backfill_status: "queued",
+          updated_at: new Date().toISOString(),
+        })
+        .eq("id", data.id)
+
+      // Fire-and-forget historical sync with a freshly refreshed Google token.
+      const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL
+      const anonKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY
+      if (supabaseUrl && anonKey && session.access_token) {
+        void (async () => {
+          try {
+            const { data: oauth } = await service
+              .from("project_google_oauth_connections")
+              .select("refresh_token")
+              .eq("id", connection.id)
+              .maybeSingle()
+            const refreshToken =
+              typeof oauth?.refresh_token === "string" ? oauth.refresh_token : ""
+            const googleAccess = refreshToken
+              ? (await refreshGoogleAccessToken(refreshToken)).access_token
+              : null
+            await fetch(`${supabaseUrl}/functions/v1/sync-search-console`, {
+              method: "POST",
+              headers: {
+                Authorization: `Bearer ${session.access_token}`,
+                apikey: anonKey,
+                "Content-Type": "application/json",
+              },
+              body: JSON.stringify({
+                project_id: projectId,
+                job_type: "backfill",
+                trigger: "oauth_connect",
+                search_type: "web",
+                ...(googleAccess ? { access_token: googleAccess } : {}),
+              }),
+            })
+          } catch (syncError) {
+            console.warn("search console backfill trigger failed", syncError)
+          }
+        })()
+      }
+
       gsc = data
     }
 
-    if (gaPropertyId) {
+    // Prefer an explicit GA selection. If the user only picks Search Console
+    // after a prior disconnect, restore the most recently used GA property so
+    // Analytics does not stay "Not connected" by accident.
+    let resolvedGaPropertyId = gaPropertyId
+    if (!resolvedGaPropertyId) {
+      const { data: previousGa } = await service
+        .from("project_analytics_properties")
+        .select("ga_property_id")
+        .eq("project_id", projectId)
+        .order("updated_at", { ascending: false })
+        .limit(1)
+        .maybeSingle()
+      if (previousGa?.ga_property_id) {
+        resolvedGaPropertyId = String(previousGa.ga_property_id)
+          .trim()
+          .replace(/^properties\//, "")
+      }
+    }
+
+    if (resolvedGaPropertyId) {
       const { data, error } = await supabase.rpc("fn_set_project_ga_property", {
         p_project_id: projectId,
-        p_ga_property_id: gaPropertyId,
+        p_ga_property_id: resolvedGaPropertyId,
         p_default_uri: null,
       })
       if (error) {

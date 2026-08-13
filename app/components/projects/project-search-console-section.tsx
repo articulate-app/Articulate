@@ -12,10 +12,10 @@ import { GoogleConnectPanel } from "./google-connect-panel"
 import { isGoogleOAuthConnectEnabledInMainUi } from "@/lib/google-oauth-feature"
 import {
   getSearchConsoleBreakdown,
-  syncCompetitiveContent,
   type SearchConsoleBreakdown,
   type SearchConsoleBreakdownRow,
 } from "@/lib/services/project-competitive-content"
+import { syncProjectSearchConsole } from "@/lib/services/project-search-console"
 
 type BreakdownTab = "queries" | "pages"
 
@@ -122,14 +122,18 @@ export function ProjectSearchConsoleSection({
   async function handleSync() {
     setIsSyncing(true)
     try {
-      const result = await syncCompetitiveContent({
+      const result = await syncProjectSearchConsole({
         projectId,
-        runType: "search_console_sync",
+        jobType: "performance",
+        trigger: "manual",
       })
       if (!result.ok) {
         throw new Error(result.error || "Search Console sync failed")
       }
       await queryClient.invalidateQueries({ queryKey })
+      await queryClient.invalidateQueries({
+        queryKey: ["project-search-overview", projectId],
+      })
       toast({ title: "Search Console synced" })
     } catch (syncError) {
       toast({

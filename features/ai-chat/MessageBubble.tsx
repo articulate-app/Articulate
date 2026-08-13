@@ -12,6 +12,11 @@ import { buildNextUrlForEntityLink, isTasksShellPath, parseAppEntityLink } from 
 import { shallowPushSearchParams } from "../../app/lib/tasks-shallow-nav"
 import { exportArtifactDownload } from "../../app/lib/services/artifacts"
 import { useCenterPaneTabsStore } from "../../app/store/center-pane-tabs"
+import { useAiBuildArtifactPreviewStore } from "../../app/store/ai-build-artifact-preview-store"
+import {
+  listUnitsForBuild,
+  useAiOrchestratedBuildStore,
+} from "../../app/store/ai-orchestrated-build-store"
 import { Composer, type MentionSuggestion } from "./Composer"
 import { buildAiChatTaggedRefs, type TaggedTaskChannelRef, type TaggedTaskComponentRef } from "./build-ai-chat-tagged-refs"
 import { enhanceBlocksWithMarkdownTables, tableBlockToClipboardText } from "./text-to-output-blocks"
@@ -29,6 +34,7 @@ import type { AiMessageSegment } from "./composer-inline-editor"
 import { parseAiMessageChangeSet } from "./ai-message-change-set"
 import { AssistantMessageRestoreFooter } from "./AssistantMessageRestoreFooter"
 import { shouldSuppressBuildAckChatBubble } from "./component-linked-message-output"
+import { isPersistedAiMessageId } from "./thread-id"
 
 interface MessageBubbleProps {
   msg: AiMessage
@@ -49,6 +55,7 @@ interface MessageBubbleProps {
   resendAfterUserMessageEdit?: (args: {
     editedMessage: AiMessage
     newContent: string
+    newContentJson?: unknown
     attachments: AiAttachmentMeta[]
     taggedTaskIds: number[]
     taggedProjectIds: number[]
@@ -69,6 +76,8 @@ interface MessageBubbleProps {
   changePreview?: React.ReactNode
   /** Durable multi-task orchestrated build progress card. */
   orchestratedBuild?: React.ReactNode
+  /** Compact Live View preview for an AI-initiated publication run. */
+  publicationPreview?: React.ReactNode
   /** "Component sources checked" / "Structure decision" trace cards, rendered above previews. */
   traceCards?: React.ReactNode
   /** Request Plan V3 execution-plan audit card (live or persisted). */
@@ -335,6 +344,7 @@ export function MessageBubble({
   componentEditPreview = null,
   changePreview = null,
   orchestratedBuild = null,
+  publicationPreview = null,
   traceCards = null,
   requestPlanCard = null,
   executionTimeline = null,
@@ -390,29 +400,22 @@ export function MessageBubble({
       })
 
       try {
-        const { error: updateError } = await supabase
-          .from("ai_messages")
-          .update({
-            content: trimmed,
-            ...(userContentJson ? { content_json: userContentJson } : {}),
-          })
-          .eq("id", msg.id)
-        if (updateError) throw updateError
-
+        // Remove the edited row and everything after it. Resend inserts a fresh user
+        // message via ai_begin_chat_run — keeping the old row caused persistent duplicates.
         const { error: deleteError } = await supabase
           .from("ai_messages")
           .delete()
           .eq("thread_id", msg.thread_id)
-          .gt("created_at", msg.created_at)
+          .gte("created_at", msg.created_at)
         if (deleteError) throw deleteError
 
-        setIsEditing(false)
-        setShowTouchActions(false)
-
         const refs = buildAiChatTaggedRefs(messageTags)
-        await resendAfterUserMessageEdit({
+        // Start resend first so the messages cache is truncated before we leave edit mode
+        // (avoids a one-frame flash of the pre-edit content).
+        const resendPromise = resendAfterUserMessageEdit({
           editedMessage: msg,
           newContent: trimmed,
+          newContentJson: userContentJson,
           attachments: (msg.attachments ?? []) as AiAttachmentMeta[],
           taggedTaskIds: refs.tagged_task_ids,
           taggedProjectIds: refs.tagged_project_ids,
@@ -421,6 +424,9 @@ export function MessageBubble({
           taggedTaskChannelRefs: refs.tagged_task_channel_refs,
           taggedTaskComponentRefs: refs.tagged_task_component_refs,
         })
+        setIsEditing(false)
+        setShowTouchActions(false)
+        await resendPromise
       } catch (error: unknown) {
         console.error("Failed to edit message:", error)
         toast({
@@ -480,6 +486,30 @@ export function MessageBubble({
     }
   }, [])
 
+  const resolveArtifactIdForBuild = (buildId: string): { artifactId: string; title: string | null } | null => {
+    const id = buildId.trim()
+    if (!id) return null
+
+    const previews = Object.values(useAiBuildArtifactPreviewStore.getState().previews)
+      .filter((row) => row.buildId === id && row.artifactId)
+      .sort((a, b) => b.sequence - a.sequence)
+    if (previews[0]?.artifactId) {
+      return { artifactId: previews[0].artifactId, title: previews[0].title ?? null }
+    }
+
+    const buildEntry = useAiOrchestratedBuildStore.getState().getBuild(id)
+    if (buildEntry) {
+      for (const unit of listUnitsForBuild(buildEntry)) {
+        const keyMatch = String(unit.unit_key ?? "").match(/^artifact:([0-9a-f-]{36})$/i)
+        if (keyMatch?.[1]) {
+          return { artifactId: keyMatch[1], title: buildEntry.title?.trim() || null }
+        }
+      }
+    }
+
+    return null
+  }
+
   const handleAssistantLinkClick = (event: React.MouseEvent<HTMLDivElement>) => {
     const target = event.target as HTMLElement | null
     const anchor = target?.closest("a")
@@ -506,14 +536,32 @@ export function MessageBubble({
       return
     }
 
-    if (parsedLink.type === "artifact") {
+    let navigableLink = parsedLink
+    if (parsedLink.type === "ai-build") {
+      const resolved = resolveArtifactIdForBuild(parsedLink.id)
+      if (!resolved) {
+        toast({
+          title: "Artifact still opening",
+          description: "The build is queued — try again in a moment, or open it from the preview card above.",
+        })
+        return
+      }
+      navigableLink = { type: "artifact", id: resolved.artifactId }
       useCenterPaneTabsStore.getState().upsertTab({
         kind: "artifact",
-        id: parsedLink.id,
+        id: resolved.artifactId,
+        title: resolved.title,
       })
     }
 
-    if (parsedLink.type === "user") {
+    if (navigableLink.type === "artifact") {
+      useCenterPaneTabsStore.getState().upsertTab({
+        kind: "artifact",
+        id: navigableLink.id,
+      })
+    }
+
+    if (navigableLink.type === "user") {
       toast({
         title: "User link not available yet",
         description: "TODO: wire app://user links to a dedicated user details view.",
@@ -524,7 +572,7 @@ export function MessageBubble({
     const nextUrl = buildNextUrlForEntityLink({
       currentPathname: pathname,
       currentSearchParams: new URLSearchParams(searchParams.toString()),
-      parsedLink,
+      parsedLink: navigableLink,
       fromAiChat: true,
     })
     if (!nextUrl) return
@@ -550,6 +598,7 @@ export function MessageBubble({
   const hasInlinePreview = Boolean(componentEditPreview)
   const hasChangePreview = Boolean(changePreview) && !isMine
   const hasOrchestratedBuild = Boolean(orchestratedBuild) && !isMine
+  const hasPublicationPreview = Boolean(publicationPreview) && !isMine
   const hasTraceCards = Boolean(traceCards) && !isMine
   const hasRequestPlanCard = Boolean(requestPlanCard) && !isMine
   const hasExecutionTimeline = Boolean(executionTimeline) && !isMine
@@ -585,6 +634,7 @@ export function MessageBubble({
       || hasInlinePreview
       || hasChangePreview
       || hasOrchestratedBuild
+      || hasPublicationPreview
       || hasTraceCards
       || hasRequestPlanCard
       || hasExecutionTimeline
@@ -592,33 +642,71 @@ export function MessageBubble({
       || hasOutroHtml
       || Boolean(msg.content?.trim())
     )
-  const showAssistantActionRow = hasAssistantResponse
+  const canRestoreAssistantMessage =
+    hasAssistantResponse && isPersistedAiMessageId(msg.id)
+  const showAssistantActionRow =
+    hasAssistantResponse
+    && (showAssistantCopyButton || canRestoreAssistantMessage)
+
+  const userDisplayContent = useMemo(
+    () => (msg.role === "user" ? resolveUserMessageDisplayContent(msg.content ?? "", msg.content_json) : ""),
+    [msg.content, msg.content_json, msg.role],
+  )
+  const hasUserTextContent = Boolean((userDisplayContent || msg.content || "").trim())
+  const hasUserAttachments = isMine && (msg.attachments?.length ?? 0) > 0
   const shouldRenderBubble =
-    isMine
-    || isEditing
-    || hasAssistantPlainContent
-    || hasInlinePreview
-    || hasChangePreview
-    || hasOrchestratedBuild
-    || hasTraceCards
-    || hasRequestPlanCard
-    || hasExecutionTimeline
-    || hasIntroHtml
-    || hasOutroHtml
-    || Boolean(clarificationCard)
-    || Boolean(runFailureCard)
+    (isMine && (isEditing || hasUserTextContent))
+    || (!isMine && (
+      hasAssistantPlainContent
+      || hasInlinePreview
+      || hasChangePreview
+      || hasOrchestratedBuild
+      || hasPublicationPreview
+      || hasTraceCards
+      || hasRequestPlanCard
+      || hasExecutionTimeline
+      || hasIntroHtml
+      || hasOutroHtml
+      || Boolean(clarificationCard)
+      || Boolean(runFailureCard)
+    ))
+
+  const appLinkLabelsForDisplay = (): Record<string, string> => {
+    const labels: Record<string, string> = {}
+    const previews = Object.values(useAiBuildArtifactPreviewStore.getState().previews)
+    for (const preview of previews) {
+      const title = preview.title?.trim()
+      if (!title) continue
+      if (preview.artifactId) {
+        labels[`app://artifact/${preview.artifactId}`] = title
+      }
+      if (preview.buildId) {
+        labels[`app://ai-build/${preview.buildId}`] = title
+      }
+    }
+    for (const entry of Object.values(useAiOrchestratedBuildStore.getState().builds)) {
+      const title = entry.title?.trim()
+      if (!title || !entry.buildId) continue
+      labels[`app://ai-build/${entry.buildId}`] = labels[`app://ai-build/${entry.buildId}`] || title
+      for (const unit of listUnitsForBuild(entry)) {
+        const keyMatch = String(unit.unit_key ?? "").match(/^artifact:([0-9a-f-]{36})$/i)
+        if (keyMatch?.[1]) {
+          const href = `app://artifact/${keyMatch[1]}`
+          labels[href] = labels[href] || title
+        }
+      }
+    }
+    return labels
+  }
 
   const renderAssistantHtml = (html: string) => (
     <div
       className={AI_CHAT_ASSISTANT_MESSAGE_CLASS}
       onClick={handleAssistantLinkClick}
-      dangerouslySetInnerHTML={{ __html: formatAssistantContentForDisplay(html) }}
+      dangerouslySetInnerHTML={{
+        __html: formatAssistantContentForDisplay(html, { appLinkLabels: appLinkLabelsForDisplay() }),
+      }}
     />
-  )
-
-  const userDisplayContent = useMemo(
-    () => (msg.role === "user" ? resolveUserMessageDisplayContent(msg.content ?? "", msg.content_json) : ""),
-    [msg.content, msg.content_json, msg.role],
   )
 
   const renderUserMessage = (content: string) => (
@@ -636,16 +724,27 @@ export function MessageBubble({
       onTouchEnd={handleTouchEnd}
       onTouchCancel={handleTouchEnd}
     >
-      <div className="relative max-w-[80%] min-w-0">
+      <div className={`relative max-w-[80%] min-w-0 ${isMine ? "flex flex-col items-end" : ""}`}>
         {!isMine && status === "pending" && <div className="text-xs text-muted-foreground">Sending...</div>}
         {status === "failed" && <div className="text-xs text-red-600">Failed to send. Retry?</div>}
+
+        {hasUserAttachments ? (
+          <Attachments
+            items={msg.attachments}
+            className={`w-fit max-w-full justify-end ${shouldRenderBubble ? "mb-2" : ""}`}
+          />
+        ) : null}
 
         {shouldRenderBubble ? (
         <div
           data-ai-selectable="chat-message"
           data-message-id={msg.id}
           data-message-role={msg.role}
-          className={`rounded-lg px-3 py-2 text-sm break-words max-w-full min-w-0 overflow-x-hidden ${isMine ? "bg-gray-100" : "bg-white"}`}
+          className={`px-3.5 py-2.5 text-sm break-words max-w-full min-w-0 overflow-x-hidden ${
+            isMine
+              ? "rounded-[22px] bg-[#f4f4f4] text-gray-900"
+              : "rounded-lg bg-white"
+          }`}
         >
           {hasExecutionTimeline && !isEditing ? (
             <div className="mb-3 w-full min-w-0 max-w-full">{executionTimeline}</div>
@@ -658,6 +757,9 @@ export function MessageBubble({
           ) : null}
           {hasOrchestratedBuild && !isEditing ? (
             <div className="mb-3 w-full min-w-0 max-w-full">{orchestratedBuild}</div>
+          ) : null}
+          {hasPublicationPreview && !isEditing ? (
+            <div className="mb-3 w-full min-w-0 max-w-full">{publicationPreview}</div>
           ) : null}
           {hasChangePreview && !isEditing ? (
             <div className="mb-3 w-full min-w-0 max-w-full">{changePreview}</div>
@@ -704,7 +806,9 @@ export function MessageBubble({
                       className={AI_CHAT_ASSISTANT_MESSAGE_CLASS}
                       onClick={handleAssistantLinkClick}
                       dangerouslySetInnerHTML={{
-                        __html: formatAssistantBlocksForDisplay(segment.blocks),
+                        __html: formatAssistantBlocksForDisplay(segment.blocks, {
+                          appLinkLabels: appLinkLabelsForDisplay(),
+                        }),
                       }}
                     />
                   )
@@ -737,7 +841,9 @@ export function MessageBubble({
             )
           ) : null}
 
-          {!(isEditing && isMine) && !hasStructuredBlocks ? <Attachments items={msg.attachments} /> : null}
+          {!isMine && !(isEditing && isMine) && !hasStructuredBlocks ? (
+            <Attachments items={msg.attachments} className="mt-2" />
+          ) : null}
 
           {showAssistantActionRow ? (
             <div className="mt-2 flex items-center justify-start gap-1">
@@ -752,15 +858,17 @@ export function MessageBubble({
                   <Copy className="w-3.5 h-3.5" />
                 </button>
               ) : null}
-              <AssistantMessageRestoreFooter
-                inline
-                showMetadata={false}
-                threadId={msg.thread_id}
-                messageId={msg.id}
-                changeSet={assistantChangeSet}
-                taskId={taskId ?? _threadContext?.task_id ?? null}
-                activeChannelId={activeChannelId ?? null}
-              />
+              {canRestoreAssistantMessage ? (
+                <AssistantMessageRestoreFooter
+                  inline
+                  showMetadata={false}
+                  threadId={msg.thread_id}
+                  messageId={msg.id}
+                  changeSet={assistantChangeSet}
+                  taskId={taskId ?? _threadContext?.task_id ?? null}
+                  activeChannelId={activeChannelId ?? null}
+                />
+              ) : null}
             </div>
           ) : null}
         </div>

@@ -16,6 +16,8 @@ export type ArtifactRichDiffBodyProps = {
   /** Prefer raw HTML when already available (section / hunk previews). */
   beforeHtml?: string | null
   afterHtml?: string | null
+  /** Skip re-diff and render this track-changes HTML directly (chat segments). */
+  prebuiltHtml?: string | null
   /** Omit unchanged blocks — used in AI chat preview cards. */
   changedOnly?: boolean
   label?: string | null
@@ -35,6 +37,7 @@ export function ArtifactRichDiffBody({
   afterContentJson,
   beforeHtml,
   afterHtml,
+  prebuiltHtml = null,
   changedOnly = false,
   label,
   addedChars = 0,
@@ -43,6 +46,9 @@ export function ArtifactRichDiffBody({
   compact = false,
 }: ArtifactRichDiffBodyProps) {
   const html = useMemo(() => {
+    if (typeof prebuiltHtml === "string" && prebuiltHtml.trim()) {
+      return prebuiltHtml
+    }
     const resolvedBefore = resolveArtifactDiffHtml({
       contentText: beforeText,
       contentJson: beforeContentJson,
@@ -62,6 +68,7 @@ export function ArtifactRichDiffBody({
     beforeHtml,
     beforeText,
     changedOnly,
+    prebuiltHtml,
   ])
 
   return (

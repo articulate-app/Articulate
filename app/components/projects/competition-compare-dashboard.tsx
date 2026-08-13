@@ -26,6 +26,8 @@ type CompetitionCompareDashboardProps = {
   isLoading: boolean
   error: Error | null
   onRetry?: () => void
+  dateRange?: { from?: Date; to?: Date }
+  onDateRangeChange?: (value: { from?: Date; to?: Date }) => void
 }
 
 export function CompetitionCompareDashboard({
@@ -33,6 +35,8 @@ export function CompetitionCompareDashboard({
   isLoading,
   error,
   onRetry,
+  dateRange,
+  onDateRangeChange,
 }: CompetitionCompareDashboardProps) {
   const entityMeta = useMemo(() => {
     const entities = summary?.entities ?? []
@@ -148,6 +152,8 @@ export function CompetitionCompareDashboard({
           summary={summary}
           defaultMetric="interactions"
           defaultInterval="week"
+          dateRange={dateRange}
+          onDateRangeChange={onDateRangeChange}
         />
       )}
     </div>

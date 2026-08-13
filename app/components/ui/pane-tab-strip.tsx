@@ -1,19 +1,40 @@
 "use client"
 
-import { useEffect, useRef, useState, type MouseEvent as ReactMouseEvent } from "react"
+import {
+  useEffect,
+  useRef,
+  useState,
+  type DragEvent as ReactDragEvent,
+  type MouseEvent as ReactMouseEvent,
+  type ReactNode,
+} from "react"
 import { X as XIcon } from "lucide-react"
 import { cn } from "@/lib/utils"
 import {
   AI_PANE_TAB_ACTIVE_CLASS,
+  AI_PANE_TAB_CHIP_CLASS,
   AI_PANE_TAB_FILLER_CLASS,
   AI_PANE_TAB_INACTIVE_CLASS,
+  AI_PANE_TAB_SCROLL_CLASS,
   AI_PANE_TAB_SELECTED_CLASS,
   AI_PANE_TAB_STRIP_CLASS,
 } from "../../../features/ai-chat/tab-strip-tokens"
+import type { WorkspacePaneId } from "../../lib/workspace-view"
 
 export type PaneTabStripItem = {
   key: string
   label: string
+  /** Optional leading icon (keep ≤12px so it fits the compact chip). */
+  icon?: ReactNode
+}
+
+export type PaneTabDropMeta = {
+  title?: string
+  /**
+   * Destination strip key that should sit immediately after the dropped tab.
+   * `null` means append at the end of the strip.
+   */
+  beforeKey?: string | null
 }
 
 type PaneTabStripProps = {
@@ -25,6 +46,22 @@ type PaneTabStripProps = {
   className?: string
   /** Notified when the multi-selection set changes (for overflow menus, etc.). */
   onSelectionChange?: (keys: string[]) => void
+  /** Pane that owns this strip — enables cross-pane drag-and-drop. */
+  paneId?: WorkspacePaneId
+  /** Drop a tab that was dragged from another pane (optional insert position). */
+  onDropTabFromOtherPane?: (
+    tabKey: string,
+    fromPane: WorkspacePaneId,
+    meta?: PaneTabDropMeta,
+  ) => void
+}
+
+const WORKSPACE_TAB_DND_MIME = "application/x-articulate-workspace-tab"
+
+type WorkspaceTabDragPayload = {
+  pane: WorkspacePaneId
+  key: string
+  title?: string
 }
 
 function rangeKeys(tabs: PaneTabStripItem[], fromKey: string, toKey: string): string[] {
@@ -36,9 +73,56 @@ function rangeKeys(tabs: PaneTabStripItem[], fromKey: string, toKey: string): st
   return tabs.slice(start, end + 1).map((tab) => tab.key)
 }
 
+function sameKeyList(a: string[], b: string[]): boolean {
+  return a.length === b.length && a.every((key, index) => key === b[index])
+}
+
+function readWorkspaceTabDragPayload(event: ReactDragEvent): WorkspaceTabDragPayload | null {
+  const raw =
+    event.dataTransfer.getData(WORKSPACE_TAB_DND_MIME) ||
+    event.dataTransfer.getData("text/plain")
+  if (!raw) return null
+  try {
+    const parsed = JSON.parse(raw) as WorkspaceTabDragPayload
+    if (
+      (parsed.pane === "left" || parsed.pane === "middle" || parsed.pane === "right") &&
+      typeof parsed.key === "string" &&
+      parsed.key.includes(":")
+    ) {
+      return parsed
+    }
+  } catch {
+    // ignore
+  }
+  return null
+}
+
+function isWorkspaceTabDrag(event: ReactDragEvent): boolean {
+  const types = [...event.dataTransfer.types]
+  return types.includes(WORKSPACE_TAB_DND_MIME) || types.includes("text/plain")
+}
+
+function insertIndexForTabPointer(event: ReactDragEvent, tabIndex: number): number {
+  const rect = (event.currentTarget as HTMLElement).getBoundingClientRect()
+  const mid = rect.left + rect.width / 2
+  return event.clientX < mid ? tabIndex : tabIndex + 1
+}
+
+function DropInsertLine() {
+  return (
+    <div
+      className="pointer-events-none flex w-1.5 shrink-0 items-stretch justify-center self-stretch py-1"
+      aria-hidden
+    >
+      <span className="w-px flex-1 rounded-full bg-gray-400" />
+    </div>
+  )
+}
+
 /**
  * Horizontal tab strip matching the AI pane chrome (scrollable, close on each tab).
  * Supports Chrome-like Shift-range and ⌘/Ctrl toggle multi-select for bulk close.
+ * Optional cross-pane drag-and-drop when `paneId` + `onDropTabFromOtherPane` are set.
  */
 export function PaneTabStrip({
   tabs,
@@ -47,48 +131,55 @@ export function PaneTabStrip({
   onClose,
   className,
   onSelectionChange,
+  paneId,
+  onDropTabFromOtherPane,
 }: PaneTabStripProps) {
   const scrollRef = useRef<HTMLDivElement>(null)
   const anchorKeyRef = useRef<string | null>(activeKey)
+  const onSelectionChangeRef = useRef(onSelectionChange)
+  onSelectionChangeRef.current = onSelectionChange
   const [selectedKeys, setSelectedKeys] = useState<string[]>(() => (activeKey ? [activeKey] : []))
+  const selectedKeysRef = useRef(selectedKeys)
+  selectedKeysRef.current = selectedKeys
+  /** Index in `tabs` where the dragged tab would insert (0…tabs.length). */
+  const [dropInsertIndex, setDropInsertIndex] = useState<number | null>(null)
+
+  // Referentially unstable `tabs` arrays from parents must not re-trigger effects.
+  const tabKeysSignature = tabs.map((tab) => tab.key).join("\0")
 
   const commitSelection = (keys: string[], anchorKey?: string | null) => {
     const unique = Array.from(new Set(keys))
     if (anchorKey !== undefined) anchorKeyRef.current = anchorKey
     setSelectedKeys(unique)
-    onSelectionChange?.(unique)
+    onSelectionChangeRef.current?.(unique)
   }
 
-  // Drop selection entries that no longer exist; keep anchor valid.
+  // Reconcile multi-select with tab list + external activation.
+  // Only call setState when the list actually changes. Parents often pass a new `tabs` array
+  // each render; scheduling setState (even with a bailout updater) still counts toward
+  // React's nested-update limit and surfaces as "Maximum update depth exceeded".
   useEffect(() => {
-    const keySet = new Set(tabs.map((tab) => tab.key))
-    setSelectedKeys((prev) => {
-      const next = prev.filter((key) => keySet.has(key))
-      if (next.length === prev.length && next.every((key, index) => key === prev[index])) {
-        return prev
-      }
-      onSelectionChange?.(next)
-      return next
-    })
+    const keySet = new Set(tabKeysSignature.length > 0 ? tabKeysSignature.split("\0") : [])
     if (anchorKeyRef.current && !keySet.has(anchorKeyRef.current)) {
       anchorKeyRef.current = activeKey
     }
-  }, [tabs, activeKey, onSelectionChange])
 
-  // Plain activation from outside should collapse multi-select to the active tab.
-  useEffect(() => {
-    if (!activeKey) return
-    setSelectedKeys((prev) => {
-      if (prev.length <= 1 && prev[0] === activeKey) return prev
-      // Only auto-collapse when selection is a single foreign tab (external activate).
-      if (prev.length === 1 && prev[0] !== activeKey) {
+    const prev = selectedKeysRef.current
+    let next = prev.filter((key) => keySet.has(key))
+
+    // Plain activation from outside should collapse multi-select to the active tab
+    // (only when selection is a single foreign tab — keep intentional multi-select).
+    if (activeKey && !(next.length <= 1 && next[0] === activeKey)) {
+      if (next.length === 1 && next[0] !== activeKey) {
         anchorKeyRef.current = activeKey
-        onSelectionChange?.([activeKey])
-        return [activeKey]
+        next = [activeKey]
       }
-      return prev
-    })
-  }, [activeKey, onSelectionChange])
+    }
+
+    if (sameKeyList(next, prev)) return
+    setSelectedKeys(next)
+    onSelectionChangeRef.current?.(next)
+  }, [tabKeysSignature, activeKey])
 
   useEffect(() => {
     const el = scrollRef.current
@@ -124,10 +215,14 @@ export function PaneTabStrip({
     active?.scrollIntoView({ block: "nearest", inline: "nearest" })
   }, [activeKey, tabs.length])
 
-  if (tabs.length === 0) return null
+  if (tabs.length === 0 && !onDropTabFromOtherPane) return null
 
   const selectedSet = new Set(selectedKeys)
   const isMultiSelected = selectedKeys.length > 1
+  const canDrag = Boolean(paneId)
+  const canAcceptDrop = Boolean(paneId && onDropTabFromOtherPane)
+
+  const clearDropIndicator = () => setDropInsertIndex(null)
 
   const handleTabClick = (key: string, event: ReactMouseEvent) => {
     const isToggle = event.metaKey || event.ctrlKey
@@ -167,37 +262,109 @@ export function PaneTabStrip({
     commitSelection(nextSelected.length > 0 ? nextSelected : [], anchorKeyRef.current)
   }
 
+  const handleDragStart = (key: string, event: ReactDragEvent) => {
+    if (!paneId) return
+    const label = tabs.find((tab) => tab.key === key)?.label
+    const payload: WorkspaceTabDragPayload = {
+      pane: paneId,
+      key,
+      title: label?.trim() || undefined,
+    }
+    const serialized = JSON.stringify(payload)
+    event.dataTransfer.setData(WORKSPACE_TAB_DND_MIME, serialized)
+    event.dataTransfer.setData("text/plain", serialized)
+    event.dataTransfer.effectAllowed = "move"
+  }
+
+  const acceptCrossPaneDrag = (event: ReactDragEvent) => {
+    if (!canAcceptDrop || !isWorkspaceTabDrag(event)) return false
+    event.preventDefault()
+    event.dataTransfer.dropEffect = "move"
+    return true
+  }
+
+  const handleStripDragOver = (event: ReactDragEvent) => {
+    if (!acceptCrossPaneDrag(event)) return
+    // Empty strip / trailing filler — append.
+    if (tabs.length === 0) {
+      setDropInsertIndex(0)
+      return
+    }
+    setDropInsertIndex(tabs.length)
+  }
+
+  const handleTabDragOver = (tabIndex: number, event: ReactDragEvent) => {
+    if (!acceptCrossPaneDrag(event)) return
+    event.stopPropagation()
+    setDropInsertIndex(insertIndexForTabPointer(event, tabIndex))
+  }
+
+  const handleDragLeave = (event: ReactDragEvent) => {
+    const related = event.relatedTarget as Node | null
+    if (!scrollRef.current?.contains(related)) {
+      clearDropIndicator()
+    }
+  }
+
+  const handleDrop = (event: ReactDragEvent) => {
+    const insertIndex = dropInsertIndex
+    clearDropIndicator()
+    if (!paneId || !onDropTabFromOtherPane) return
+    event.preventDefault()
+    event.stopPropagation()
+    const payload = readWorkspaceTabDragPayload(event)
+    if (!payload || payload.pane === paneId) return
+    const index = insertIndex ?? tabs.length
+    const beforeKey = index >= tabs.length ? null : tabs[index]?.key ?? null
+    onDropTabFromOtherPane(payload.key, payload.pane, {
+      title: payload.title,
+      beforeKey,
+    })
+  }
+
   return (
-    <div className={cn("flex min-h-0 min-w-0 flex-1 items-stretch", className)}>
-      <div
-        ref={scrollRef}
-        className="ai-chat-tabs-scroll min-h-0 min-w-0 overflow-x-auto overflow-y-hidden"
-      >
+    <div
+      className={cn("flex min-h-0 min-w-0 flex-1 items-stretch", className)}
+      onDragOver={handleStripDragOver}
+      onDragLeave={handleDragLeave}
+      onDrop={handleDrop}
+    >
+      <div ref={scrollRef} className={AI_PANE_TAB_SCROLL_CLASS}>
         <div className={AI_PANE_TAB_STRIP_CLASS}>
-          {tabs.map((tab) => {
+          {tabs.length === 0 && dropInsertIndex === 0 ? <DropInsertLine /> : null}
+          {tabs.map((tab, tabIndex) => {
             const isActive = activeKey === tab.key
             const isSelected = selectedSet.has(tab.key)
             return (
-              <div
-                key={tab.key}
-                data-pane-tab-key={tab.key}
-                aria-selected={isActive}
-                data-multi-selected={isSelected && isMultiSelected ? "true" : undefined}
-                className={cn(
-                  "flex h-full min-h-0 w-40 shrink-0 cursor-pointer self-stretch border-r border-gray-200 bg-white",
-                  isActive ? AI_PANE_TAB_ACTIVE_CLASS : AI_PANE_TAB_INACTIVE_CLASS,
-                  isSelected && isMultiSelected && AI_PANE_TAB_SELECTED_CLASS,
-                )}
-                onClick={(event) => handleTabClick(tab.key, event)}
-              >
-                <div className="flex h-full min-h-0 w-full min-w-0 items-center gap-1 px-3">
-                  <span className="min-w-0 flex-1 truncate text-sm" title={tab.label}>
+              <div key={tab.key} className="flex min-w-0 shrink-0 items-stretch">
+                {dropInsertIndex === tabIndex ? <DropInsertLine /> : null}
+                <div
+                  data-pane-tab-key={tab.key}
+                  aria-selected={isActive}
+                  data-multi-selected={isSelected && isMultiSelected ? "true" : undefined}
+                  draggable={canDrag}
+                  onDragStart={(event) => handleDragStart(tab.key, event)}
+                  onDragOver={(event) => handleTabDragOver(tabIndex, event)}
+                  className={cn(
+                    AI_PANE_TAB_CHIP_CLASS,
+                    isActive ? AI_PANE_TAB_ACTIVE_CLASS : AI_PANE_TAB_INACTIVE_CLASS,
+                    isSelected && isMultiSelected && AI_PANE_TAB_SELECTED_CLASS,
+                    canDrag && "cursor-grab active:cursor-grabbing",
+                  )}
+                  onClick={(event) => handleTabClick(tab.key, event)}
+                >
+                  {tab.icon ? (
+                    <span className="inline-flex h-3 w-3 shrink-0 items-center justify-center text-current opacity-70 [&>svg]:h-3 [&>svg]:w-3">
+                      {tab.icon}
+                    </span>
+                  ) : null}
+                  <span className="min-w-0 flex-1 truncate" title={tab.label}>
                     {tab.label}
                   </span>
                   <button
                     type="button"
                     onClick={(event) => handleCloseClick(tab.key, event)}
-                    className="rounded p-0.5 text-gray-500 hover:bg-gray-100 hover:text-gray-900"
+                    className="rounded p-0.5 text-gray-400 opacity-70 hover:bg-black/5 hover:text-gray-700 hover:opacity-100"
                     title={
                       isMultiSelected && isSelected
                         ? `Close ${selectedKeys.length} tabs`
@@ -215,9 +382,14 @@ export function PaneTabStrip({
               </div>
             )
           })}
+          {tabs.length > 0 && dropInsertIndex === tabs.length ? <DropInsertLine /> : null}
         </div>
       </div>
-      <div className={AI_PANE_TAB_FILLER_CLASS} aria-hidden />
+      <div
+        className={AI_PANE_TAB_FILLER_CLASS}
+        aria-hidden
+        onDragOver={handleStripDragOver}
+      />
     </div>
   )
 }

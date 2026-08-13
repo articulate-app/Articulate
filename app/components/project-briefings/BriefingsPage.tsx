@@ -1,6 +1,7 @@
 "use client"
 
 import React, { useMemo, useRef, useState, useCallback, useEffect } from 'react'
+import { flushSync } from 'react-dom'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { useSearchParams } from 'next/navigation'
 import dynamic from 'next/dynamic'
@@ -11,7 +12,16 @@ import { OverviewTab } from '../projects/OverviewTab'
 import { CommentsTab } from '../projects/CommentsTab'
 import { getProjectOverview, type ProjectOverview, uploadProjectFile } from '../../lib/services/projects-briefing'
 import { deleteProject } from '../../lib/services/projects'
+import {
+  invalidateAfterProjectArchive,
+  removeArchivedProjectFromCaches,
+} from '../../lib/project-archive-cache'
+import {
+  clearBodyPointerEvents,
+  scheduleBodyPointerUnlock,
+} from '../../lib/radix-body-pointer-unlock'
 import { ProjectAnalyticsTab } from '../projects/ProjectAnalyticsTab'
+import { ProjectSeoSearchTab } from '../projects/ProjectSeoSearchTab'
 import { ProjectKeywordTrackingTab } from '../projects/ProjectKeywordTrackingTab'
 import { ProjectAiVisibilityTab } from '../projects/ProjectAiVisibilityTab'
 import { ProjectCompetitorsTab } from '../projects/ProjectCompetitorsTab'
@@ -63,6 +73,7 @@ const ALLOWED_TABS = [
   'activity',
   'comments',
   'analytics',
+  'seo-search',
   'ai-visibility',
   'keywords',
   'competitors',
@@ -122,6 +133,35 @@ export function BriefingsPage({
   const [settingsCategory, setSettingsCategory] = useState<ProjectSettingsCategory>("details")
   const [showDeleteDialog, setShowDeleteDialog] = useState(false)
   const [isDeleting, setIsDeleting] = useState(false)
+
+  // Same BriefingsPage instance can switch projects without remounting — reset delete UI.
+  useEffect(() => {
+    setShowDeleteDialog(false)
+    setIsDeleting(false)
+    clearBodyPointerEvents()
+  }, [projectId])
+
+  // Opening from DropdownMenu can leave body pointer-events:none; clear once so the
+  // confirm dialog’s own overlay/content (pointer-events-auto) stay clickable.
+  useEffect(() => {
+    if (!showDeleteDialog) return
+    clearBodyPointerEvents()
+    const t0 = window.setTimeout(clearBodyPointerEvents, 0)
+    const t1 = window.setTimeout(clearBodyPointerEvents, 50)
+    return () => {
+      window.clearTimeout(t0)
+      window.clearTimeout(t1)
+    }
+  }, [showDeleteDialog])
+
+  const openDeleteDialog = useCallback(() => {
+    // Let DropdownMenu finish closing before AlertDialog mounts (avoids stuck pointer lock).
+    window.setTimeout(() => {
+      clearBodyPointerEvents()
+      setIsDeleting(false)
+      setShowDeleteDialog(true)
+    }, 50)
+  }, [])
   const [isTabsHovered, setIsTabsHovered] = useState(false)
   const [isDropzoneActive, setIsDropzoneActive] = useState(false)
   const tabsScrollRef = useRef<HTMLDivElement | null>(null)
@@ -283,28 +323,45 @@ export function BriefingsPage({
     "rounded-none border-b-0 data-[state=active]:bg-transparent data-[state=active]:shadow-[inset_0_-2px_0_0_#111827]"
 
   const handleDeleteProject = useCallback(async () => {
-    setIsDeleting(true)
+    if (isDeleting) return
+
+    // Close dialog synchronously before onClose unmounts this view. Unmounting while
+    // Radix AlertDialog is still open leaves document.body pointer-events:none.
+    flushSync(() => {
+      setShowDeleteDialog(false)
+      setIsDeleting(true)
+    })
+    // Timers are not tied to this component — they must survive onClose unmount.
+    scheduleBodyPointerUnlock()
+
     try {
+      removeArchivedProjectFromCaches(queryClient, projectId)
       const { error } = await deleteProject(projectId)
       if (error) throw error
       toast({
         title: "Project deleted",
         description: "The project was archived and removed from active lists.",
       })
-      queryClient.invalidateQueries({ queryKey: ["projects-minimal"] })
-      queryClient.invalidateQueries({ queryKey: ["project-overview", projectId] })
-      setShowDeleteDialog(false)
-      onClose?.()
+      void invalidateAfterProjectArchive(queryClient, projectId)
+      // Let Radix finish portal teardown before swapping the center pane.
+      window.setTimeout(() => {
+        scheduleBodyPointerUnlock()
+        onClose?.()
+        setIsDeleting(false)
+        scheduleBodyPointerUnlock()
+      }, 120)
     } catch (err: any) {
       toast({
         title: "Error",
         description: err?.message || "Failed to delete project",
         variant: "destructive",
       })
-    } finally {
+      // Roll back optimistic list removal if the archive failed.
+      void invalidateAfterProjectArchive(queryClient, projectId)
+      clearBodyPointerEvents()
       setIsDeleting(false)
     }
-  }, [onClose, projectId, queryClient])
+  }, [isDeleting, onClose, projectId, queryClient])
 
   const handleProjectDrop = useCallback(
     async (event: React.DragEvent<HTMLDivElement>) => {
@@ -372,7 +429,6 @@ export function BriefingsPage({
             />
           )}
           rightSlot={<ProjectHeaderWatchers projectId={projectId} />}
-          className="border-b border-gray-200"
           actions={(
             [
               {
@@ -385,7 +441,7 @@ export function BriefingsPage({
                 id: 'project-delete',
                 label: 'Delete project',
                 icon: <Trash2 className="h-4 w-4" />,
-                onSelect: () => setShowDeleteDialog(true),
+                onSelect: openDeleteDialog,
                 destructive: true,
                 separatorBefore: true,
               },
@@ -394,7 +450,7 @@ export function BriefingsPage({
         />
       ) : (
       /* Header */
-      <div className="flex min-w-0 items-center justify-between gap-2 border-b border-gray-200 border-t-0 bg-white px-6 py-2.5">
+      <div className="flex min-w-0 items-center justify-between gap-2 bg-white px-6 py-2.5">
         <div className="flex min-w-0 flex-1 items-center gap-2.5">
           <div className="flex h-8 w-8 shrink-0 items-center justify-center overflow-hidden rounded border border-gray-200 bg-gray-50">
             {logoUrl ? (
@@ -429,7 +485,11 @@ export function BriefingsPage({
                 <MoreVertical className="h-4 w-4" />
               </Button>
             </DropdownMenuTrigger>
-            <DropdownMenuContent align="end" className="min-w-[12rem]">
+            <DropdownMenuContent
+              align="end"
+              className="min-w-[12rem]"
+              onCloseAutoFocus={(event) => event.preventDefault()}
+            >
               <DropdownMenuItem onClick={() => openProjectSettings('details')}>
                 <Settings className="mr-2 h-4 w-4" />
                 Project settings
@@ -437,7 +497,10 @@ export function BriefingsPage({
               <DropdownMenuSeparator />
               <DropdownMenuItem
                 className="text-red-600 focus:text-red-600"
-                onClick={() => setShowDeleteDialog(true)}
+                onSelect={(event) => {
+                  event.preventDefault()
+                  openDeleteDialog()
+                }}
               >
                 <Trash2 className="mr-2 h-4 w-4" />
                 Delete project
@@ -474,8 +537,25 @@ export function BriefingsPage({
         initialCategory={settingsCategory}
       />
 
-      <AlertDialog open={showDeleteDialog} onOpenChange={setShowDeleteDialog}>
-        <AlertDialogContent>
+      <AlertDialog
+        open={showDeleteDialog}
+        onOpenChange={(open) => {
+          if (isDeleting && !open) return
+          setShowDeleteDialog(open)
+          if (!open) scheduleBodyPointerUnlock()
+        }}
+      >
+        <AlertDialogContent
+          onOpenAutoFocus={(event) => {
+            // Avoid fighting DropdownMenu focus restore after successive deletes.
+            event.preventDefault()
+            clearBodyPointerEvents()
+          }}
+          onCloseAutoFocus={(event) => {
+            event.preventDefault()
+            scheduleBodyPointerUnlock()
+          }}
+        >
           <AlertDialogHeader>
             <AlertDialogTitle>Delete project?</AlertDialogTitle>
             <AlertDialogDescription>
@@ -487,6 +567,7 @@ export function BriefingsPage({
             <AlertDialogAction
               onClick={(event) => {
                 event.preventDefault()
+                event.stopPropagation()
                 void handleDeleteProject()
               }}
               disabled={isDeleting}
@@ -533,6 +614,12 @@ export function BriefingsPage({
               className={tabTriggerClassName}
             >
               Analytics
+            </TabsTrigger>
+            <TabsTrigger
+              value="seo-search"
+              className={tabTriggerClassName}
+            >
+              SEO & search
             </TabsTrigger>
             <TabsTrigger 
               value="ai-visibility"
@@ -600,6 +687,10 @@ export function BriefingsPage({
 
             <TabsContent value="analytics" className="h-full m-0 mt-0 p-6">
               <ProjectAnalyticsTab projectId={projectId} />
+            </TabsContent>
+
+            <TabsContent value="seo-search" className="h-full m-0 mt-0 p-6">
+              <ProjectSeoSearchTab projectId={projectId} />
             </TabsContent>
 
             <TabsContent value="ai-visibility" className="h-full m-0 mt-0 p-6">

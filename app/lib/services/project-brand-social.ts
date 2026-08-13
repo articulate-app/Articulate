@@ -12,13 +12,12 @@ import {
   type SocialEntityType,
 } from "@/lib/project-social"
 import {
+  startSocialProfilesSync,
   syncCompetitorSocialPosts,
+  type DiscoverSocialProfilesResult,
   type SyncCompetitorSocialPostsResult,
 } from "@/lib/services/project-competitors"
-import {
-  fetchSocialProfileCandidates,
-  type SocialProfileCandidate,
-} from "@/lib/services/social-profile-discovery"
+import { fetchSocialProfileCandidates } from "@/lib/services/social-profile-discovery"
 
 export const PROJECT_BRAND_SOCIAL_PROFILES_QUERY_KEY =
   "project-brand-social-profiles" as const
@@ -137,15 +136,11 @@ export async function getProjectWebsiteUrl(projectId: number): Promise<string | 
   return url || null
 }
 
-export type DiscoverSocialProfilesResult = {
-  candidates: SocialProfileCandidate[]
-  created: number
-  alreadyLinked: number
-}
+export type { DiscoverSocialProfilesResult }
 
 /**
- * Read the project website and link every social profile it advertises.
- * Networks already linked are left untouched.
+ * Read the project website, link every social profile it advertises and start
+ * syncing the new ones. Networks already linked are left untouched.
  */
 export async function discoverBrandSocialProfilesFromWebsite(args: {
   projectId: number
@@ -156,33 +151,54 @@ export async function discoverBrandSocialProfilesFromWebsite(args: {
     websiteUrl: args.websiteUrl,
   })
   if (candidates.length === 0) {
-    return { candidates, created: 0, alreadyLinked: 0 }
+    return {
+      candidates,
+      created: 0,
+      alreadyLinked: 0,
+      createdNetworks: [],
+      sync: { started: false, error: null },
+    }
   }
 
   const existing = await listProjectBrandSocialProfiles(args.projectId)
   const linkedNetworks = new Set(existing.map((profile) => profile.network))
 
-  let created = 0
   let alreadyLinked = 0
+  const createdIds: number[] = []
+  const createdNetworks: CompetitorSocialNetwork[] = []
   for (const candidate of candidates) {
     if (linkedNetworks.has(candidate.network)) {
       alreadyLinked += 1
       continue
     }
     try {
-      await createBrandSocialProfile({
+      const profile = await createBrandSocialProfile({
         projectId: args.projectId,
         network: candidate.network,
         profileUrl: candidate.profileUrl,
       })
       linkedNetworks.add(candidate.network)
-      created += 1
+      createdIds.push(profile.id)
+      createdNetworks.push(candidate.network)
     } catch {
       alreadyLinked += 1
     }
   }
 
-  return { candidates, created, alreadyLinked }
+  const sync = createdIds.length
+    ? await startSocialProfilesSync({
+        projectId: args.projectId,
+        brandSocialProfileIds: createdIds,
+      })
+    : { started: false, error: null }
+
+  return {
+    candidates,
+    created: createdIds.length,
+    alreadyLinked,
+    createdNetworks,
+    sync,
+  }
 }
 
 export async function updateBrandSocialProfile(args: {

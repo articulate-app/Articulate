@@ -236,6 +236,19 @@ export const useAiChangePreviewStreamStore = create<AiChangePreviewStreamState>(
       if (prev && isLiveAiChangePreviewPhase(prev.phase) && prev.assistantMessageIds[messageId]) {
         return state
       }
+      // History hydrate is idempotent — avoid store churn (and React update loops)
+      // when ChatWindow re-runs layout effects with the same persisted snapshot.
+      if (
+        prev
+        && prev.assistantMessageIds[messageId]
+        && prev.phase === preview.phase
+        && prev.ok === (preview.ok ?? prev.ok)
+        && (prev.summary ?? null) === (preview.summary ?? prev.summary ?? null)
+        && (prev.title ?? null) === (preview.title ?? prev.title ?? null)
+        && (prev.error ?? null) === (preview.error ?? prev.error ?? null)
+      ) {
+        return state
+      }
       const next = mergePreview(prev, { ...preview, change_id: key }, {
         key,
         threadId,

@@ -2,7 +2,7 @@
 
 import React, { useCallback, useEffect, useRef, useState } from "react"
 import { createPortal } from "react-dom"
-import { Sparkles } from "lucide-react"
+import { MessageSquareText, Sparkles } from "lucide-react"
 
 type SelectionAnchor = { left: number; top: number }
 
@@ -18,6 +18,8 @@ type SelectionAskAiMenuProps<T> = {
   resolve: (container: HTMLElement, range: Range) => T | null
   /** Invoked when the user clicks "Add to chat" — attaches the selection as free-form context. */
   onAsk: (context: T) => void
+  /** Optional "Comment" action — starts a comment thread anchored to the selection. */
+  onComment?: (context: T) => void
   /** Extract selected text from the resolved context for min-length checks. */
   getSelectedText?: (context: T) => string
   /** Minimum selected characters before the affordance appears. */
@@ -41,6 +43,7 @@ export function SelectionAskAiMenu<T>({
   containerSelector,
   resolve,
   onAsk,
+  onComment,
   getSelectedText = defaultSelectedText as (context: T) => string,
   minChars = MENU_MIN_CHARS_DEFAULT,
 }: SelectionAskAiMenuProps<T>) {
@@ -143,18 +146,34 @@ export function SelectionAskAiMenu<T>({
       }}
       onMouseDown={(event) => event.preventDefault()}
     >
-      <button
-        type="button"
-        onClick={() => {
-          const context = active.context
-          setActive(null)
-          onAsk(context)
-        }}
-        className="inline-flex items-center gap-1.5 rounded-lg border border-gray-200 bg-white px-2.5 py-1.5 text-xs font-medium text-violet-700 shadow-lg hover:bg-violet-50"
-      >
-        <Sparkles className="h-3.5 w-3.5" aria-hidden />
-        Add to chat
-      </button>
+      <div className="flex items-center overflow-hidden rounded-lg border border-gray-200 bg-white shadow-lg">
+        <button
+          type="button"
+          onClick={() => {
+            const context = active.context
+            setActive(null)
+            onAsk(context)
+          }}
+          className="inline-flex items-center gap-1.5 px-2.5 py-1.5 text-xs font-medium text-violet-700 hover:bg-violet-50"
+        >
+          <Sparkles className="h-3.5 w-3.5" aria-hidden />
+          Add to chat
+        </button>
+        {onComment ? (
+          <button
+            type="button"
+            onClick={() => {
+              const context = active.context
+              setActive(null)
+              onComment(context)
+            }}
+            className="inline-flex items-center gap-1.5 border-l border-gray-100 px-2.5 py-1.5 text-xs font-medium text-gray-700 hover:bg-gray-50"
+          >
+            <MessageSquareText className="h-3.5 w-3.5" aria-hidden />
+            Comment
+          </button>
+        ) : null}
+      </div>
     </div>,
     document.body,
   )

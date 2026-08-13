@@ -8,6 +8,10 @@ import { format, isToday, isYesterday, differenceInDays } from "date-fns"
 import { DropdownMenu, DropdownMenuContent, DropdownMenuTrigger, DropdownMenuItem } from "../../components/ui/dropdown-menu"
 import { Dialog, DialogContent, DialogTitle, DialogFooter } from "../../components/ui/dialog"
 import { Button } from "../../components/ui/button"
+import {
+  PANE_CHROME_ICON_BUTTON_CLASS,
+  PANE_CHROME_ICON_CLASS,
+} from "../../app/components/tasks/pane-header-tokens"
 
 function getThreadDisplayTitle(title: string | null | undefined): string {
   const normalized = (title ?? "").trim()
@@ -105,8 +109,8 @@ export function HistoryDropdown({ onSelectThread, activeThreadId }: HistoryDropd
   return (
     <DropdownMenu modal={false}>
       <DropdownMenuTrigger asChild>
-        <button className="p-2 hover:bg-gray-100 rounded-md transition-colors" title="Chat History">
-          <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+        <button type="button" className={PANE_CHROME_ICON_BUTTON_CLASS} title="Chat History">
+          <svg className={PANE_CHROME_ICON_CLASS} fill="none" stroke="currentColor" viewBox="0 0 24 24">
             <circle cx="12" cy="12" r="10"/>
             <polyline points="12,6 12,12 16,14"/>
           </svg>

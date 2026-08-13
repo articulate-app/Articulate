@@ -24,15 +24,16 @@ function cleanPersistedArtifactMetadata(meta: unknown): Record<string, unknown> 
 
 const SUPABASE_URL = Deno.env.get("SUPABASE_URL")!;
 const SUPABASE_ANON_KEY = Deno.env.get("SUPABASE_ANON_KEY")!;
+const SUPABASE_SERVICE_ROLE_KEY = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY") ?? "";
 const OPENAI_API_KEY = Deno.env.get("OPENAI_API_KEY")!;
 const ARTIFACT_MODEL = Deno.env.get("OPENAI_ARTIFACT_MODEL") ?? Deno.env.get("OPENAI_BUILD_MODEL") ?? Deno.env.get("OPENAI_MODEL_FAST") ?? "gpt-5.4-mini";
 const MAX_COMPLETION_TOKENS = Math.max(2000, Math.min(30000, Number(Deno.env.get("OPENAI_ARTIFACT_MAX_COMPLETION_TOKENS") ?? 16000) || 16000));
-// Keep streaming previews snappy in-session, but avoid flooding durable events
-// (refresh rehydrates from the event tail — dozens of full-body previews hurt).
-// Heartbeats only (no body). Keep very sparse: each appendEvent is an RPC and
-// full-doc rewrites OOM the isolate when combined with huge tool-arg buffers.
-const PREVIEW_EMIT_MIN_CHARS = 4000;
-const PREVIEW_EMIT_MIN_MS = 6000;
+// Progressive previews: emit truncated section_html heartbeats (not full
+// content_json) so chat/task cards stream without flooding the event log or
+// OOM-ing the isolate on huge tool-arg buffers.
+const PREVIEW_EMIT_MIN_CHARS = 600;
+const PREVIEW_EMIT_MIN_MS = 900;
+const PREVIEW_SECTION_MAX_CHARS = 8000;
 
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
@@ -229,6 +230,46 @@ function normalizeArtifactContentJson(contentJson: any, contentText: string) {
   return ensureRichTextBlocksHaveHtml(contentJson, contentText);
 }
 
+function looksLikeEmailHtmlDocument(html: string): boolean {
+  const source = String(html ?? "");
+  if (!source.trim()) return false;
+  if (/<!doctype\s+html/i.test(source) || /<html\b/i.test(source)) return true;
+  if (/role\s*=\s*["']presentation["']/i.test(source) && /<table\b/i.test(source)) return true;
+  if (/<style\b/i.test(source) && /<table\b/i.test(source)) return true;
+  const tableCount = (source.match(/<table\b/gi) ?? []).length;
+  return tableCount >= 2 && /cellpadding|cellspacing|bgcolor|align=/i.test(source);
+}
+
+function stampHtmlEmailContentFormat(args: {
+  contentJson: any;
+  artifactRole?: string | null;
+  instruction?: string | null;
+}): any {
+  const contentJson =
+    args.contentJson && typeof args.contentJson === "object" && !Array.isArray(args.contentJson)
+      ? { ...args.contentJson }
+      : { version: 1, blocks: [] };
+  if (String(contentJson.content_format ?? "").trim().toLowerCase() === "html_email") {
+    return contentJson;
+  }
+  const role = String(args.artifactRole ?? "").toLowerCase();
+  const instruction = String(args.instruction ?? "").toLowerCase();
+  const wantsHtmlEmail =
+    role.includes("newsletter_html")
+    || role.includes("html_email")
+    || (instruction.includes("html") && (instruction.includes("newsletter") || instruction.includes("email")))
+    || instruction.includes("html email");
+  const blocks = Array.isArray(contentJson.blocks) ? contentJson.blocks : [];
+  const html = blocks
+    .map((block: any) => (typeof block?.html === "string" ? block.html : ""))
+    .filter(Boolean)
+    .join("\n");
+  if (wantsHtmlEmail || looksLikeEmailHtmlDocument(html)) {
+    contentJson.content_format = "html_email";
+  }
+  return contentJson;
+}
+
 function resolveUnitSelection(context: any): ArtifactSelectionLike | null {
   const spec = context?.unit?.input_snapshot?.artifact_spec ?? {};
   const merged = mergeArtifactSelection(spec?.selection ?? null, null);
@@ -301,7 +342,7 @@ const SAVE_FULL_TOOL = {
   type: "function",
   function: {
     name: "save_artifact_version",
-    description: "Save the complete updated artifact document. Prefer apply_artifact_patches for surgical edits. Use this for create/large rewrites when returning the full body is simpler. Put the authoritative body in content_json.blocks[].html (preserve <figure data-attachment-id> media you are not changing). content_text is a shorter plain mirror. Call exactly once per successful run (either this or apply_artifact_patches).",
+    description: "Save the complete updated artifact document. Prefer apply_artifact_patches for surgical edits. Use this for create/large rewrites when returning the full body is simpler. Put the authoritative body in content_json.blocks[].html (preserve <figure data-attachment-id> media you are not changing). For HTML newsletters/emails, put the FULL email document HTML in blocks[0].html and set content_json.content_format=\"html_email\". content_text is a shorter plain mirror. Call exactly once per successful run (either this or apply_artifact_patches).",
     parameters: {
       type: "object",
       additionalProperties: false,
@@ -365,6 +406,9 @@ async function callModelRound(args: {
   context: any;
   unitId: string;
   buildId: string;
+  /** Work-unit attempt (1-based). Must be part of the token call identity so retries
+   * after OOM do not collide with already-finalized rounds from a prior attempt. */
+  attempt: number;
   round: number;
   messages: any[];
   tools: any[];
@@ -374,6 +418,7 @@ async function callModelRound(args: {
   onSaveArgsProgress?: (partial: { contentText: string; title: string | null }) => Promise<void> | void;
 }) {
   const useStream = args.stream === true;
+  const attempt = Math.max(1, Number(args.attempt) || 1);
   const maxCompletionTokens = Math.max(
     1200,
     Math.min(MAX_COMPLETION_TOKENS, Number(args.maxCompletionTokens ?? MAX_COMPLETION_TOKENS) || MAX_COMPLETION_TOKENS),
@@ -394,17 +439,36 @@ async function callModelRound(args: {
   const { data: reservation, error: reserveError } = await args.supabase.rpc("ai_reserve_token_call", {
     p_thread_id: args.context?.build?.thread_id,
     p_client_request_id: args.unitId,
-    p_call_key: `artifact_agent_round_${args.round}`,
+    p_call_key: `artifact_agent_a${attempt}_r${args.round}`,
     p_stage: "artifact_agent",
     p_provider: "openai",
     p_model: ARTIFACT_MODEL,
     p_estimated_prompt_tokens: estimatedPrompt,
     p_estimated_completion_tokens: maxCompletionTokens,
     p_run_id: args.context?.build?.ai_run_id ?? null,
-    p_metadata: { build_id: args.buildId, unit_id: args.unitId, artifact_id: args.context?.artifact?.id ?? null, round: args.round },
+    p_metadata: {
+      build_id: args.buildId,
+      unit_id: args.unitId,
+      artifact_id: args.context?.artifact?.id ?? null,
+      attempt,
+      round: args.round,
+    },
   });
   if (reserveError) throw new ArtifactBuildError("token_accounting_unavailable", reserveError.message, true);
-  if (reservation?.allowed !== true) throw new ArtifactBuildError(String(reservation?.code ?? "token_limit_exceeded"), "The artifact build cannot continue within the current token allowance.", false, reservation?.usage ?? null);
+  if (reservation?.allowed !== true) {
+    const code = String(reservation?.code ?? "token_limit_exceeded");
+    // Retries after OOM used to hit this when call_key ignored attempt. Treat as
+    // retryable once so a fresh call_key / released reservation can proceed.
+    const retryable = code === "token_call_already_finalized";
+    throw new ArtifactBuildError(
+      code,
+      code === "token_call_already_finalized"
+        ? "A previous attempt already used this token reservation. Retrying with a fresh reservation."
+        : "The artifact build cannot continue within the current token allowance.",
+      retryable,
+      reservation?.usage ?? null,
+    );
+  }
 
   const eventId = String(reservation.event_id ?? "");
   let response: Response | null = null;
@@ -571,6 +635,60 @@ async function callModelRound(args: {
   }
 }
 
+async function signAttachmentUrl(serviceDb: any, filePath: string): Promise<string | null> {
+  const path = String(filePath ?? "").trim()
+  if (!path) return null
+  const objectPath = path.replace(/^attachments\//, "")
+  const { data, error } = await serviceDb.storage
+    .from("attachments")
+    .createSignedUrl(objectPath, 60 * 60 * 6)
+  if (error || !data?.signedUrl) return null
+  return data.signedUrl
+}
+
+/** Attach short-lived https URLs so html_email can use real <img src>. */
+async function enrichSourcesWithExtractedImageUrls(serviceDb: any, sources: any[]): Promise<any[]> {
+  if (!Array.isArray(sources) || sources.length === 0) return sources
+  const out: any[] = []
+  for (const source of sources) {
+    const meta = source?.metadata && typeof source.metadata === "object" ? source.metadata : {}
+    const fromMeta = Array.isArray(meta.extracted_images) ? meta.extracted_images : []
+    const fromJson = Array.isArray(source?.content_json?.extracted_images)
+      ? source.content_json.extracted_images
+      : []
+    const images = (fromMeta.length ? fromMeta : fromJson).slice(0, 24)
+    if (!images.length) {
+      out.push(source)
+      continue
+    }
+    const extracted_images = []
+    for (const img of images) {
+      if (!img || typeof img !== "object") continue
+      const filePath = String((img as any).file_path ?? "").trim()
+      const url = filePath ? await signAttachmentUrl(serviceDb, filePath) : null
+      extracted_images.push({
+        attachment_id: (img as any).attachment_id ?? null,
+        file_name: (img as any).file_name ?? null,
+        page: (img as any).page ?? null,
+        width: (img as any).width ?? null,
+        height: (img as any).height ?? null,
+        mime_type: (img as any).mime_type ?? "image/png",
+        url,
+      })
+    }
+    out.push({
+      ...source,
+      extracted_images,
+      metadata: {
+        ...meta,
+        extracted_images,
+        extracted_image_count: extracted_images.length,
+      },
+    })
+  }
+  return out
+}
+
 function buildInitialMessages(
   context: any,
   selection: ArtifactSelectionLike | null,
@@ -581,6 +699,7 @@ function buildInitialMessages(
 
   const system = [
     "You are a durable artifact-generation agent. Complete exactly the artifact in the current work unit.",
+    "SHARED CONTEXT (when present) contains user-provided facts and constraints that are MANDATORY for this deliverable: names, quotes, figures, style and length requirements. Use them faithfully. Never replace user-provided facts with invented content.",
     "Sources are inputs; artifacts are outputs. Read a source only when its summary is insufficient.",
     "LANGUAGE: Keep the deliverable in the language of the provided sources/templates/URLs unless task_instruction or request explicitly asks to translate or rewrite in another language. Do not switch language just because the chat request is written in a different language.",
     "SELECTED ARTIFACT CONTEXT (if present) is factual UI context about what the user highlighted — not a write lock and not a scope limiter. Interpret the user request yourself.",
@@ -588,7 +707,9 @@ function buildInitialMessages(
     "Prefer apply_artifact_patches for surgical edits: you specify exact old_html/new_html (or verified plain_start/plain_end+expected_text on artifact_plain_for_offsets). You may pass multiple non-overlapping patches.",
     "Use save_artifact_version when creating a new document or when a full rewrite is simpler. Always return the full updated document in that case.",
     "Put authoritative HTML in content_json.blocks[].html when using save_artifact_version. Preserve <figure data-attachment-id> media you are not changing.",
-    "CRITICAL — LISTS: Use real HTML lists only: <ul><li>…</li></ul> or <ol><li>…</li></ol>. Never leave markdown bullets (- item) or bare numbered lines as plain text.",
+    "HTML EMAIL / NEWSLETTER CODE: when the user asks for HTML newsletter/email (or artifact_role is newsletter_html / content_format html_email), return ONE complete email-ready HTML document in content_json.blocks[0].html (doctype/html/head/style + nested role=presentation tables + inline styles as needed). Also set content_json.content_format to \"html_email\". Do NOT convert email layout tables into TipTap semantic tables, markdown, or plain copy blocks. Do NOT strip <style>, wrappers, or nested tables. Copy-only deliverables are allowed only when the user explicitly asks for copy without HTML.",
+    "SOURCE IMAGES: When source_summaries (or ai_read_source) include extracted_images with url fields, you MUST embed those exact https URLs in <img src=\"...\"> for HTML email. Prefer the extracted PDF/page images over inventing placeholders or empty gray boxes. Do not use TipTap <figure data-attachment-id> for html_email — use real <img src> URLs.",
+    "CRITICAL — LISTS: For prose documents use real HTML lists only: <ul><li>…</li></ul> or <ol><li>…</li></ol>. Never leave markdown bullets (- item) or bare numbered lines as plain text. This list rule does not apply inside email HTML layout tables.",
     "Call exactly one of apply_artifact_patches or save_artifact_version to finish.",
     "Do not return placeholders or hidden reasoning.",
   ].join(" ");
@@ -612,6 +733,11 @@ function buildInitialMessages(
   const user = {
     request: context?.build?.request_text ?? unit?.instruction ?? "",
     task_instruction: unit?.instruction ?? "",
+    // Facts the chat model marked as mandatory for this build (user-provided
+    // information, style constraints). Without this, workers invent content.
+    shared_context: typeof context?.build_shared_context === "string" && context.build_shared_context.trim()
+      ? context.build_shared_context.trim().slice(0, 12000)
+      : null,
     operation: unit?.input_snapshot?.artifact_operation ?? spec?.operation ?? "create",
     artifact: compactArtifactForModel(artifact, 60000),
     // Same plain string used to validate plain_start/plain_end patches.
@@ -669,8 +795,95 @@ Deno.serve(async (request) => {
     });
     if (contextError || generationContext?.ok === false) throw new ArtifactBuildError("artifact_generation_context_failed", contextError?.message ?? generationContext?.error ?? "Could not load artifact generation context.");
     context = generationContext;
+    if (SUPABASE_SERVICE_ROLE_KEY && Array.isArray(context?.sources) && context.sources.length) {
+      try {
+        const serviceDb = createClient(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY, {
+          auth: { persistSession: false, autoRefreshToken: false },
+        })
+        // Re-import up to 2 PDF sources that never got image extraction (older imports).
+        for (const source of context.sources.slice(0, 8)) {
+          const meta = source?.metadata && typeof source.metadata === "object" ? source.metadata : {}
+          const hasImages = Array.isArray(meta.extracted_images) && meta.extracted_images.length > 0
+          const contentType = String(meta.imported_content_type ?? "").toLowerCase()
+          const looksPdf = contentType.includes("pdf")
+          if (hasImages || !looksPdf || !source?.id || !source?.attachment_id) continue
+          try {
+            await fetch(`${SUPABASE_URL}/functions/v1/ai-source-import-worker`, {
+              method: "POST",
+              headers: {
+                Authorization: authorization,
+                apikey: SUPABASE_ANON_KEY,
+                "Content-Type": "application/json",
+              },
+              body: JSON.stringify({ source_id: source.id }),
+              signal: AbortSignal.timeout(90000),
+            })
+            const { data: refreshed } = await supabase.rpc("ai_get_source_v1", {
+              p_source_id: source.id,
+              p_version_number: null,
+            })
+            if (refreshed?.ok !== false && refreshed?.source) {
+              source.metadata = refreshed.source.metadata ?? source.metadata
+              source.content_text = refreshed.source.content_text ?? source.content_text
+              source.content_json = refreshed.source.content_json ?? source.content_json
+              source.content_preview = String(refreshed.source.content_text ?? source.content_preview ?? "")
+                .replace(/\s+/g, " ")
+                .slice(0, 5000)
+            }
+          } catch (reimportError) {
+            console.warn("ai-artifact-worker pdf reimport skipped", {
+              source_id: source.id,
+              error: String(reimportError),
+            })
+          }
+        }
+        context.sources = await enrichSourcesWithExtractedImageUrls(serviceDb, context.sources)
+      } catch (enrichError) {
+        console.warn("ai-artifact-worker source image enrich failed", String(enrichError))
+      }
+    }
+    const unitAttempt = Math.max(1, Number(context?.unit?.attempt) || 1);
 
-    // Canonical plain from HTML so UI diffs don't treat format round-trips as full rewrites.
+    // If a prior attempt OOMed mid-stream, its token reservation may still be
+    // open (or earlier rounds finalized). Clear open reservations so this
+    // attempt can reserve fresh keys without token_call_already_finalized.
+    try {
+      const { error: releaseError } = await supabase.rpc("ai_release_open_token_calls_v1", {
+        p_client_request_id: unitId,
+        p_reason: unitAttempt > 1 ? "work_unit_retry" : "work_unit_start",
+      });
+      if (releaseError) {
+        console.warn("ai-artifact-worker token reservation release skipped", releaseError.message);
+      }
+    } catch (releaseError) {
+      console.warn("ai-artifact-worker token reservation release failed", String(releaseError));
+    }
+
+    // Build-level shared_context carries user-mandated facts for the deliverable;
+    // the generation-context RPC does not include the plan, so fetch it separately.
+    try {
+      const { data: sharedContextData } = await supabase.rpc("ai_get_build_shared_context_v1", {
+        p_build_id: buildId,
+        p_unit_id: unitId,
+        p_lease_token: leaseToken,
+      });
+      if (sharedContextData?.ok === true && typeof sharedContextData.shared_context === "string") {
+        context.build_shared_context = sharedContextData.shared_context;
+      }
+    } catch (sharedContextError) {
+      console.warn("ai-artifact-worker shared context fetch failed", { build_id: buildId, error: String(sharedContextError) });
+    }
+
+    // Freeze the pre-edit body once. Plain for tiny started events; JSON for
+    // preview/saved so refresh/track-changes never compare plain↔rich HTML.
+    const beforeContentJsonRaw =
+      context?.artifact?.content_json
+      ?? context?.source_artifact?.content_json
+      ?? null;
+    const beforeContentJson =
+      beforeContentJsonRaw && typeof beforeContentJsonRaw === "object"
+        ? beforeContentJsonRaw
+        : null;
     const beforeContentText =
       artifactDiffPlainFromContent(
         typeof context?.artifact?.content_text === "string"
@@ -678,7 +891,7 @@ Deno.serve(async (request) => {
           : typeof context?.source_artifact?.content_text === "string"
             ? context.source_artifact.content_text
             : null,
-        context?.artifact?.content_json ?? context?.source_artifact?.content_json ?? null,
+        beforeContentJson,
       ) || null;
 
     const selection = resolveUnitSelection(context);
@@ -742,6 +955,19 @@ Deno.serve(async (request) => {
       },
     });
 
+    const toPreviewSectionHtml = (rawText: string): string => {
+      const raw = String(rawText ?? "").trim();
+      if (!raw) return "";
+      if (/<[a-z][\s\S]*>/i.test(raw)) return raw.slice(0, PREVIEW_SECTION_MAX_CHARS);
+      // Plain/markdown progressive args → light HTML the chat preview can render.
+      const escaped = raw
+        .replace(/&/g, "&amp;")
+        .replace(/</g, "&lt;")
+        .replace(/>/g, "&gt;");
+      return `<p>${escaped.replace(/\n{2,}/g, "</p><p>").replace(/\n/g, "<br/>")}</p>`
+        .slice(0, PREVIEW_SECTION_MAX_CHARS);
+    };
+
     const emitLivePreview = async (partial: {
       contentText: string
       title?: string | null
@@ -749,7 +975,11 @@ Deno.serve(async (request) => {
       sectionHtml?: string | null
     }) => {
       const contentText = String(partial.contentText ?? "");
-      const sectionHtml = typeof partial.sectionHtml === "string" ? partial.sectionHtml.trim() : "";
+      const sectionHtml = toPreviewSectionHtml(
+        typeof partial.sectionHtml === "string" && partial.sectionHtml.trim()
+          ? partial.sectionHtml
+          : contentText,
+      );
       if (!contentText.trim() && !sectionHtml) return;
       await appendEvent(supabase, {
         buildId,
@@ -761,6 +991,7 @@ Deno.serve(async (request) => {
           task_id: context?.artifact?.task_id ?? null,
           title: String(partial.title ?? context?.artifact?.title ?? "Artifact").slice(0, 240),
           artifact_type: context?.artifact?.artifact_type ?? "document",
+          // Keep durable events light — progressive body rides on section_html.
           content_text: null,
           before_content_text: null,
           diff_content_text: null,
@@ -801,10 +1032,19 @@ Deno.serve(async (request) => {
             : existingAssetData,
       };
       const afterPlain = artifactDiffPlainFromContent(snapshot.content_text, snapshot.content_json);
+      // Plain-text equality alone is wrong for highlight-only edits (<mark> / tip-tap
+      // highlight): stripping tags makes yellow marks look like a noop and skips save.
+      const beforeHtmlCanonical = String(extractPrimaryArtifactHtml(beforeContentJson) ?? "")
+        .replace(/\s+/g, " ")
+        .trim();
+      const afterHtmlCanonical = String(extractPrimaryArtifactHtml(snapshot.content_json) ?? "")
+        .replace(/\s+/g, " ")
+        .trim();
       const isNoopChange = Boolean(
         beforeContentText
         && afterPlain
-        && beforeContentText === afterPlain,
+        && beforeContentText === afterPlain
+        && beforeHtmlCanonical === afterHtmlCanonical,
       );
       const sectionHtml = typeof args.sectionHtml === "string" && args.sectionHtml.trim()
         ? args.sectionHtml.trim()
@@ -835,6 +1075,7 @@ Deno.serve(async (request) => {
           artifact_type: context?.artifact?.artifact_type ?? "document",
           content_text: snapshot.content_text,
           before_content_text: beforeContentText,
+          before_content_json: beforeContentJson,
           // Identical canonical plain → no diff counts in the UI.
           diff_content_text: isNoopChange ? beforeContentText : afterPlain,
           content_json: snapshot.content_json,
@@ -926,23 +1167,45 @@ Deno.serve(async (request) => {
       hasSelectionContext ? selection : null,
     );
     let savedResult: any = null;
+    // Streaming grows tool-arg buffers in-memory and OOMs large Word/document
+    // adapts on Supabase's ~256MB isolate. Prefer non-streaming when the source
+    // document is already large (plain text OR HTML blocks), and always on retry.
+    const sourceArtifact = context?.artifact ?? context?.source_artifact ?? null;
+    const sourcePlainChars = Number(
+      String(
+        (typeof sourceArtifact?.content_text === "string" ? sourceArtifact.content_text : "")
+        || "",
+      ).length,
+    );
+    const sourceHtmlChars = (() => {
+      const blocks = sourceArtifact?.content_json?.blocks;
+      if (!Array.isArray(blocks)) return 0;
+      let total = 0;
+      for (const block of blocks) {
+        if (typeof block?.html === "string") total += block.html.length;
+      }
+      return total;
+    })();
+    const isLargeSource = sourcePlainChars >= 12000 || sourceHtmlChars >= 40000;
+    const streamModel = unitAttempt <= 1 && !isLargeSource;
     for (let round = 1; round <= 6; round++) {
       const modelRound = await callModelRound({
         supabase,
         context,
         unitId,
         buildId,
+        attempt: unitAttempt,
         round,
         messages,
         tools: WORKER_TOOLS,
-        // Non-streaming avoids growing SSE/tool-arg buffers that OOM the isolate
-        // when the model rewrites large HTML.
-        stream: false,
+        // Stream tool-arg deltas so chat/task previews update while generating.
+        // Durable events stay truncated (section_html only) to avoid OOM/flood.
+        stream: streamModel,
         maxCompletionTokens: MAX_COMPLETION_TOKENS,
         onSaveArgsProgress: async (partial) => {
           await emitLivePreview({
             ...partial,
-            sectionHtml: /<[a-z][\s\S]*>/i.test(partial.contentText) ? partial.contentText : null,
+            sectionHtml: partial.contentText,
           });
         },
       });
@@ -989,7 +1252,11 @@ Deno.serve(async (request) => {
                 title: String(toolArgs.title ?? context?.artifact?.title ?? "Artifact").slice(0, 240),
                 status: String(toolArgs.status ?? "ready"),
                 content_text: patched.contentText,
-                content_json: patched.contentJson,
+                content_json: stampHtmlEmailContentFormat({
+                  contentJson: patched.contentJson,
+                  artifactRole: context?.artifact?.artifact_role ?? context?.unit?.input_snapshot?.artifact_spec?.artifact_role ?? null,
+                  instruction: context?.unit?.instruction ?? context?.build?.request_text ?? null,
+                }),
                 asset_data: existingAssetData,
                 metadata: {
                   ...cleanPersistedArtifactMetadata(context?.artifact?.metadata),
@@ -1037,10 +1304,14 @@ Deno.serve(async (request) => {
             result = { ok: false, error: "artifact_already_saved", data: null };
           } else {
             const contentText = String(toolArgs.content_text ?? "");
-            const contentJson = normalizeArtifactContentJson(
-              toolArgs.content_json && typeof toolArgs.content_json === "object" ? toolArgs.content_json : null,
-              contentText,
-            );
+            const contentJson = stampHtmlEmailContentFormat({
+              contentJson: normalizeArtifactContentJson(
+                toolArgs.content_json && typeof toolArgs.content_json === "object" ? toolArgs.content_json : null,
+                contentText,
+              ),
+              artifactRole: context?.artifact?.artifact_role ?? context?.unit?.input_snapshot?.artifact_spec?.artifact_role ?? null,
+              instruction: context?.unit?.instruction ?? context?.build?.request_text ?? null,
+            });
             const modelAssets =
               toolArgs.asset_data && typeof toolArgs.asset_data === "object"
                 ? toolArgs.asset_data
@@ -1126,6 +1397,7 @@ Deno.serve(async (request) => {
         ...savedItem,
         content_text: snapshot.content_text,
         before_content_text: beforeContentText,
+        before_content_json: beforeContentJson,
         // Same canonical plain as before → UI shows 0 +/- chars and no hunk cards.
         diff_content_text: wasNoop
           ? beforeContentText

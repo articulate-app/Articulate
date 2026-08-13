@@ -46,8 +46,10 @@ describe("useChatScrollFollow helpers", () => {
       offsetFromTop: CHAT_USER_MESSAGE_SCROLL_OFFSET_PX,
     })
 
+    // Message sits 320px below the container's viewport top (420 - 100); anchoring
+    // it at the 16px comfort offset moves scrollTop from 200 to 200 + 320 - 16.
     expect(scrollTo).toHaveBeenCalledWith({
-      top: 400,
+      top: 504,
       behavior: "smooth",
     })
   })

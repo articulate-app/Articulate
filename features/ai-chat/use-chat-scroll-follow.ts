@@ -7,6 +7,7 @@ export const CHAT_SCROLL_THROTTLE_MS = 300
 // A small top padding so a submitted user message is anchored at the top of the
 // viewport (not buried mid-scroll) while the assistant reply streams below it.
 export const CHAT_USER_MESSAGE_SCROLL_OFFSET_PX = 16
+export const CHAT_USER_MESSAGE_SCROLL_ROOM_CSS = "70vh"
 
 export function computeDistanceFromBottom(element: HTMLElement): number {
   return element.scrollHeight - element.scrollTop - element.clientHeight
@@ -24,7 +25,10 @@ export type ScrollUserMessageIntoComfortViewOptions = {
   offsetFromTop?: number
 }
 
-/** Anchors a user message near the top edge so the assistant reply streams below it. */
+/**
+ * Anchors a user message near the top edge so the assistant reply streams below it.
+ * Uses scrollTop + viewport delta so nested wrappers / long threads stay stable.
+ */
 export function scrollUserMessageIntoComfortView(
   messageElement: HTMLElement,
   container: HTMLElement,
@@ -33,14 +37,27 @@ export function scrollUserMessageIntoComfortView(
   const { behavior = "smooth", offsetFromTop = CHAT_USER_MESSAGE_SCROLL_OFFSET_PX } = options
   const containerRect = container.getBoundingClientRect()
   const elementRect = messageElement.getBoundingClientRect()
-  // Delta from the current viewport — more stable than absolute offsetTop while
-  // bottom padding and streaming content are still changing layout.
-  const delta = elementRect.top - containerRect.top - offsetFromTop
-  if (Math.abs(delta) < 1) return
+  const top =
+    container.scrollTop + (elementRect.top - containerRect.top) - offsetFromTop
+  const nextTop = Math.max(0, top)
+  if (Math.abs(container.scrollTop - nextTop) < 1) return
   container.scrollTo({
-    top: Math.max(0, container.scrollTop + delta),
+    top: nextTop,
     behavior,
   })
+}
+
+/** Apply bottom scroll-room immediately (same frame as send) — class toggles lag one paint. */
+export function ensureChatScrollRoom(
+  container: HTMLElement | null,
+  enabled: boolean,
+): void {
+  if (!container) return
+  if (enabled) {
+    container.style.paddingBottom = CHAT_USER_MESSAGE_SCROLL_ROOM_CSS
+  } else if (container.style.paddingBottom === CHAT_USER_MESSAGE_SCROLL_ROOM_CSS) {
+    container.style.paddingBottom = ""
+  }
 }
 
 type UseChatScrollFollowOptions = {
@@ -103,13 +120,20 @@ export function useChatScrollFollow({
     lastScrollAtRef.current = performance.now()
   }, [clearScheduledScroll, scrollContainerToBottom])
 
+  const clearJumpToBottom = useCallback(() => {
+    setShowJumpToBottom(false)
+  }, [])
+
   const scrollUserMessageIntoView = useCallback(
     (messageElement: HTMLElement | null, behavior: ScrollBehavior = "smooth") => {
       const container = scrollContainerRef.current
       if (!container || !messageElement) return
       clearScheduledScroll()
+      // Ensure room exists before measuring — critical on long threads at bottom.
+      ensureChatScrollRoom(container, true)
       scrollUserMessageIntoComfortView(messageElement, container, { behavior })
       window.requestAnimationFrame(() => {
+        scrollUserMessageIntoComfortView(messageElement, container, { behavior: "auto" })
         syncFollowFromScroll()
       })
     },
@@ -203,6 +227,7 @@ export function useChatScrollFollow({
     notifyContentGrowth,
     markNewContentBelow,
     jumpToBottom,
+    clearJumpToBottom,
     syncFollowFromScroll,
   }
 }

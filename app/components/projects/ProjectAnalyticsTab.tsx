@@ -8,19 +8,26 @@ import {
   AlertCircle,
   Edit2,
   Plus,
-  SlidersHorizontal,
   ArrowDownRight,
   ArrowUpRight,
   Minus,
+  ChevronDown,
+  Info,
+  SlidersHorizontal,
 } from "lucide-react"
 import { cn } from "@/lib/utils"
 import { createClient } from "../../lib/supabase/client"
 import { Card } from "../ui/card"
-import { Button } from "../ui/button"
 import { DateRangePicker } from "../ui/date-range-picker"
 import { MultiSelect } from "../ui/multi-select"
-import { Popover, PopoverContent, PopoverTrigger } from "../ui/popover"
-import { Label } from "../ui/label"
+import {
+  Tooltip,
+  TooltipContent,
+  TooltipProvider,
+  TooltipTrigger,
+} from "../ui/tooltip"
+import { getGaChannelTooltip } from "@/lib/ga-channel-labels"
+import { CompetitionPeriodSelect } from "./competition-period-select"
 import {
   LineChart,
   Line,
@@ -32,6 +39,8 @@ import {
   Legend,
 } from "recharts"
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "../ui/select"
+import { Popover, PopoverContent, PopoverTrigger } from "../ui/popover"
+import { Label } from "../ui/label"
 import { ProjectAnalyticsSettings } from "./ProjectAnalyticsSettings"
 import { ProjectAnalyticsPagesSection } from "./ProjectAnalyticsPagesSection"
 import { ProjectSearchConsoleSection } from "./project-search-console-section"
@@ -41,13 +50,8 @@ import {
   CHART_LINE_STROKE,
   formatChartAxisDate,
 } from "./chart-date-range-footer"
-import {
-  ChartPreviewDateRangeButton,
-  ChartPreviewHoverActions,
-} from "./chart-preview-hover-actions"
-
 type PeriodType = "day" | "week" | "month"
-
+type CompareMode = "previous" | "year_ago"
 type YMetric = "sessions" | "active_users"
 
 export type ProjectAnalyticsPoint = {
@@ -73,6 +77,10 @@ export type ProjectAnalyticsChannelSummary = {
 }
 
 type TrendDirection = "up" | "down" | "flat" | "new"
+
+const numberFormatter = new Intl.NumberFormat("en-US", {
+  maximumFractionDigits: 0,
+})
 
 function getTrendDirection(changePct: number | null | undefined, currentValue: number): TrendDirection {
   if (changePct == null) {
@@ -101,7 +109,7 @@ function ChannelTrendBadge({
       ? "New"
       : changePct == null
         ? "—"
-        : `${changePct > 0 ? "+" : ""}${decimalFormatter.format(changePct)}%`
+        : `${changePct > 0 ? "+" : ""}${numberFormatter.format(Math.round(changePct))}%`
 
   return (
     <span
@@ -112,7 +120,7 @@ function ChannelTrendBadge({
         direction === "down" && "text-rose-600",
         (direction === "flat" || direction === "new") && "text-gray-500",
       )}
-      title="vs previous period of equal length"
+      title="vs comparison period"
     >
       <Icon className={compact ? "h-3 w-3" : "h-3.5 w-3.5"} />
       <span>{label}</span>
@@ -165,14 +173,6 @@ const Y_METRIC_LABELS: Record<YMetric, string> = {
   sessions: "Sessions",
   active_users: "Active users",
 }
-
-const numberFormatter = new Intl.NumberFormat("en-US", {
-  maximumFractionDigits: 0,
-})
-
-const decimalFormatter = new Intl.NumberFormat("en-US", {
-  maximumFractionDigits: 1,
-})
 
 const formatSessionDuration = (seconds: number | null | undefined): string => {
   if (!seconds || isNaN(seconds)) {
@@ -333,7 +333,7 @@ export function ProjectAnalyticsTab({
   const setDateRange = onDateRangeChange ?? setUncontrolledDateRange
   const [selectedChannels, setSelectedChannels] = useState<string[]>([])
   const [yMetric, setYMetric] = useState<YMetric>("sessions")
-  const [filtersOpen, setFiltersOpen] = useState(false)
+  const [compareMode, setCompareMode] = useState<CompareMode>("previous")
 
   const supabase = useMemo(() => createClient(), [])
 
@@ -371,6 +371,7 @@ export function ProjectAnalyticsTab({
       "project-analytics",
       projectId,
       periodType,
+      compareMode,
       from ? from.toISOString().slice(0, 10) : null,
       to ? to.toISOString().slice(0, 10) : null,
     ],
@@ -398,6 +399,7 @@ export function ProjectAnalyticsTab({
           p_period_type: "day",
           p_start_date: startDateStr,
           p_end_date: endDateStr,
+          p_compare_mode: compareMode,
         })
 
       if (timeseriesError || summaryError) {
@@ -564,7 +566,7 @@ export function ProjectAnalyticsTab({
       0,
     )
     if (prev === 0) return totalSessions > 0 ? null : 0
-    return Math.round(((totalSessions - prev) / prev) * 1000) / 10
+    return Math.round(((totalSessions - prev) / prev) * 100)
   }, [channelTrendRows, selectedChannels.length, totalSessions, totalTrafficRow])
 
   const overallActiveUsersChangePct = useMemo(() => {
@@ -576,7 +578,7 @@ export function ProjectAnalyticsTab({
       0,
     )
     if (prev === 0) return totalActiveUsers > 0 ? null : 0
-    return Math.round(((totalActiveUsers - prev) / prev) * 1000) / 10
+    return Math.round(((totalActiveUsers - prev) / prev) * 100)
   }, [channelTrendRows, selectedChannels.length, totalActiveUsers, totalTrafficRow])
 
   const handlePeriodTypeChange = (next: PeriodType) => {
@@ -584,70 +586,105 @@ export function ProjectAnalyticsTab({
   }
 
   const hasData = chartData.length > 0
+  const compareLabel =
+    compareMode === "year_ago"
+      ? "Same period last year"
+      : "Previous period"
 
+  const quietSelectTriggerClass =
+    "group h-auto w-auto gap-1 border-0 bg-transparent p-0 text-sm text-gray-700 shadow-none hover:text-gray-900 focus:ring-0 focus:ring-offset-0 [&>svg:last-child]:hidden"
+
+  const analyticsFilterFields = (
+    <>
+      <div className="space-y-1.5">
+        <Label className="text-xs text-gray-500">Channels</Label>
+        <MultiSelect
+          options={channelOptions}
+          value={selectedChannels}
+          onChange={setSelectedChannels}
+          placeholder="All channels"
+        />
+      </div>
+      <div className="space-y-1.5">
+        <Label className="text-xs text-gray-500">Granularity</Label>
+        <Select
+          value={periodType}
+          onValueChange={(value: PeriodType) => handlePeriodTypeChange(value)}
+        >
+          <SelectTrigger className="h-8 text-xs">
+            <SelectValue />
+          </SelectTrigger>
+          <SelectContent>
+            {(["day", "week", "month"] as PeriodType[]).map((type) => (
+              <SelectItem key={type} value={type} className="text-xs">
+                {PERIOD_LABELS[type]}
+              </SelectItem>
+            ))}
+          </SelectContent>
+        </Select>
+      </div>
+      <div className="space-y-1.5">
+        <Label className="text-xs text-gray-500">Metric</Label>
+        <Select value={yMetric} onValueChange={(value: YMetric) => setYMetric(value)}>
+          <SelectTrigger className="h-8 text-xs">
+            <SelectValue />
+          </SelectTrigger>
+          <SelectContent>
+            {(Object.keys(Y_METRIC_LABELS) as YMetric[]).map((metric) => (
+              <SelectItem key={metric} value={metric} className="text-xs">
+                {Y_METRIC_LABELS[metric]}
+              </SelectItem>
+            ))}
+          </SelectContent>
+        </Select>
+      </div>
+      <div className="space-y-1.5">
+        <Label className="text-xs text-gray-500">Compare</Label>
+        <Select
+          value={compareMode}
+          onValueChange={(value: CompareMode) => setCompareMode(value)}
+        >
+          <SelectTrigger className="h-8 text-xs">
+            <SelectValue />
+          </SelectTrigger>
+          <SelectContent>
+            <SelectItem value="previous" className="text-xs">
+              Previous period
+            </SelectItem>
+            <SelectItem value="year_ago" className="text-xs">
+              Same period last year
+            </SelectItem>
+          </SelectContent>
+        </Select>
+      </div>
+    </>
+  )
+
+  /** Overview: one quiet control; full tab keeps inline selects. */
   const analyticsFiltersControl = isPreview ? (
-    <Popover open={filtersOpen} onOpenChange={setFiltersOpen} modal={false}>
+    <Popover modal={false}>
       <PopoverTrigger
         type="button"
+        className="group inline-flex items-center gap-1 rounded-sm text-sm text-gray-700 transition-colors hover:text-gray-900 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-gray-300"
         aria-label="Chart filters"
-        title="Chart filters"
-        className="inline-flex h-7 w-7 items-center justify-center rounded-md border border-gray-200 bg-white/95 text-gray-600 shadow-sm backdrop-blur hover:bg-white hover:text-gray-900 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-gray-300"
       >
-        <SlidersHorizontal className="h-3.5 w-3.5" />
+        <SlidersHorizontal className="h-3.5 w-3.5 text-gray-400 transition-colors group-hover:text-gray-600" />
+        <span>Filters</span>
+        <ChevronDown className="h-3.5 w-3.5 shrink-0 text-gray-400 transition-colors group-hover:text-gray-600" />
       </PopoverTrigger>
       <PopoverContent align="end" className="z-[80] w-72 space-y-3 p-3" sideOffset={6}>
-        <div className="space-y-1.5">
-          <Label className="text-xs text-gray-500">Channels</Label>
-          <MultiSelect
-            options={channelOptions}
-            value={selectedChannels}
-            onChange={setSelectedChannels}
-            placeholder="All channels"
-          />
-        </div>
-        <div className="space-y-1.5">
-          <Label className="text-xs text-gray-500">Period</Label>
-          <Select
-            value={periodType}
-            onValueChange={(value: PeriodType) => handlePeriodTypeChange(value)}
-          >
-            <SelectTrigger className="h-8 text-xs">
-              <SelectValue />
-            </SelectTrigger>
-            <SelectContent>
-              {(["day", "week", "month"] as PeriodType[]).map((type) => (
-                <SelectItem key={type} value={type} className="text-xs">
-                  {PERIOD_LABELS[type]}
-                </SelectItem>
-              ))}
-            </SelectContent>
-          </Select>
-        </div>
-        <div className="space-y-1.5">
-          <Label className="text-xs text-gray-500">Metric</Label>
-          <Select value={yMetric} onValueChange={(value: YMetric) => setYMetric(value)}>
-            <SelectTrigger className="h-8 text-xs">
-              <SelectValue />
-            </SelectTrigger>
-            <SelectContent>
-              {(Object.keys(Y_METRIC_LABELS) as YMetric[]).map((metric) => (
-                <SelectItem key={metric} value={metric} className="text-xs">
-                  {Y_METRIC_LABELS[metric]}
-                </SelectItem>
-              ))}
-            </SelectContent>
-          </Select>
-        </div>
+        {analyticsFilterFields}
       </PopoverContent>
     </Popover>
   ) : (
-    <div className="flex min-w-0 flex-wrap items-center gap-2 sm:justify-end">
+    <div className="flex min-w-0 flex-wrap items-center gap-3 sm:justify-end">
       <Select
         value={periodType}
         onValueChange={(value: PeriodType) => handlePeriodTypeChange(value)}
       >
-        <SelectTrigger className="h-8 w-[7.5rem] text-xs">
+        <SelectTrigger className={quietSelectTriggerClass}>
           <SelectValue />
+          <ChevronDown className="h-3.5 w-3.5 shrink-0 text-gray-400 transition-colors group-hover:text-gray-600" />
         </SelectTrigger>
         <SelectContent>
           {(["day", "week", "month"] as PeriodType[]).map((type) => (
@@ -659,8 +696,9 @@ export function ProjectAnalyticsTab({
       </Select>
 
       <Select value={yMetric} onValueChange={(value: YMetric) => setYMetric(value)}>
-        <SelectTrigger className="h-8 w-36 text-xs">
+        <SelectTrigger className={quietSelectTriggerClass}>
           <SelectValue />
+          <ChevronDown className="h-3.5 w-3.5 shrink-0 text-gray-400 transition-colors group-hover:text-gray-600" />
         </SelectTrigger>
         <SelectContent>
           {(Object.keys(Y_METRIC_LABELS) as YMetric[]).map((metric) => (
@@ -668,6 +706,24 @@ export function ProjectAnalyticsTab({
               {Y_METRIC_LABELS[metric]}
             </SelectItem>
           ))}
+        </SelectContent>
+      </Select>
+
+      <Select
+        value={compareMode}
+        onValueChange={(value: CompareMode) => setCompareMode(value)}
+      >
+        <SelectTrigger className={quietSelectTriggerClass} title="Comparison period">
+          <span className="truncate">vs {compareLabel.toLowerCase()}</span>
+          <ChevronDown className="h-3.5 w-3.5 shrink-0 text-gray-400 transition-colors group-hover:text-gray-600" />
+        </SelectTrigger>
+        <SelectContent>
+          <SelectItem value="previous" className="text-xs">
+            Previous period
+          </SelectItem>
+          <SelectItem value="year_ago" className="text-xs">
+            Same period last year
+          </SelectItem>
         </SelectContent>
       </Select>
     </div>
@@ -721,7 +777,10 @@ export function ProjectAnalyticsTab({
   const channelTrendsList =
     channelTrendRows.length === 0 ? null : (
       <div className="space-y-1.5">
-        <div className="text-[11px] font-medium text-gray-500">Channel trends</div>
+        <div className="text-[11px] font-medium text-gray-500">
+          Channel trends · vs {compareLabel.toLowerCase()}
+        </div>
+        <TooltipProvider delayDuration={200}>
         <div className="divide-y divide-gray-100 rounded-md border border-gray-100">
           {channelTrendRows.slice(0, isPreview ? 6 : undefined).map((row) => {
             const sessions = Number(row.total_sessions ?? 0)
@@ -739,7 +798,20 @@ export function ProjectAnalyticsTab({
                 className="flex items-center justify-between gap-3 px-3 py-2"
               >
                 <div className="min-w-0">
-                  <div className="truncate text-xs text-gray-900">{row.channel_group}</div>
+                  <Tooltip>
+                    <TooltipTrigger asChild>
+                      <button
+                        type="button"
+                        className="inline-flex max-w-full items-center gap-1 truncate text-left text-xs text-gray-900"
+                      >
+                        <span className="truncate">{row.channel_group}</span>
+                        <Info className="h-3 w-3 shrink-0 text-gray-400" />
+                      </button>
+                    </TooltipTrigger>
+                    <TooltipContent className="max-w-xs text-xs">
+                      {getGaChannelTooltip(row.channel_group)}
+                    </TooltipContent>
+                  </Tooltip>
                   <div className="text-[11px] text-gray-500">
                     {numberFormatter.format(currentValue)}{" "}
                     {yMetric === "active_users" ? "users" : "sessions"}
@@ -754,6 +826,7 @@ export function ProjectAnalyticsTab({
             )
           })}
         </div>
+        </TooltipProvider>
       </div>
     )
 
@@ -828,7 +901,7 @@ export function ProjectAnalyticsTab({
                 tickFormatter={(value) =>
                   typeof value === "number"
                     ? value >= 1000
-                      ? `${decimalFormatter.format(value / 1000)}k`
+                      ? `${numberFormatter.format(Math.round(value / 100) / 10)}k`
                       : numberFormatter.format(value)
                     : ""
                 }
@@ -891,18 +964,12 @@ export function ProjectAnalyticsTab({
 
     return (
       <div className="min-w-0 space-y-3">
+        <div className="flex flex-wrap items-center justify-between gap-2">
+          <CompetitionPeriodSelect value={dateRange} onChange={setDateRange} />
+          {analyticsFiltersControl}
+        </div>
         {summaryCards}
-        <ChartPreviewHoverActions
-          enabled={chartAvailable}
-          actions={
-            <>
-              {analyticsFiltersControl}
-              <ChartPreviewDateRangeButton value={dateRange} onChange={setDateRange} />
-            </>
-          }
-        >
-          {trafficChartCard}
-        </ChartPreviewHoverActions>
+        {trafficChartCard}
         {chartAvailable ? channelTrendsList : null}
       </div>
     )
@@ -977,7 +1044,7 @@ export function ProjectAnalyticsTab({
               Channel breakdown
             </h3>
             <p className="text-xs text-gray-500">
-              Trend vs the previous period of equal length.
+              Trend vs {compareLabel.toLowerCase()}.
             </p>
           </div>
         </div>
@@ -987,6 +1054,7 @@ export function ProjectAnalyticsTab({
             No channel data for the selected range.
           </div>
         ) : (
+          <TooltipProvider delayDuration={200}>
           <div className="overflow-x-auto">
             <table className="min-w-full text-left text-sm">
               <thead className="border-b bg-gray-50 text-xs font-medium uppercase text-gray-500">
@@ -1006,7 +1074,20 @@ export function ProjectAnalyticsTab({
                   return (
                     <tr key={row.channel_group} className="border-b last:border-0">
                       <td className="px-4 py-2 text-sm text-gray-900">
-                        {row.channel_group}
+                        <Tooltip>
+                          <TooltipTrigger asChild>
+                            <button
+                              type="button"
+                              className="inline-flex items-center gap-1 text-left"
+                            >
+                              {row.channel_group}
+                              <Info className="h-3.5 w-3.5 text-gray-400" />
+                            </button>
+                          </TooltipTrigger>
+                          <TooltipContent className="max-w-xs text-xs">
+                            {getGaChannelTooltip(row.channel_group)}
+                          </TooltipContent>
+                        </Tooltip>
                       </td>
                       <td className="px-4 py-2 text-right text-sm">
                         {numberFormatter.format(sessions)}
@@ -1039,6 +1120,7 @@ export function ProjectAnalyticsTab({
               </tbody>
             </table>
           </div>
+          </TooltipProvider>
         )}
       </Card>
 

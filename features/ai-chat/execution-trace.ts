@@ -18,7 +18,7 @@ export type AiExecutionTraceCategory =
   | "generation"
   | "verification"
 
-export type AiExecutionTraceEntityType = "task" | "channel" | "component" | "url"
+export type AiExecutionTraceEntityType = "task" | "channel" | "component" | "url" | "artifact"
 
 export type AiExecutionTraceEntity = {
   type: AiExecutionTraceEntityType
@@ -64,7 +64,13 @@ const CATEGORIES = new Set<AiExecutionTraceCategory>([
   "generation",
   "verification",
 ])
-const ENTITY_TYPES = new Set<AiExecutionTraceEntityType>(["task", "channel", "component", "url"])
+const ENTITY_TYPES = new Set<AiExecutionTraceEntityType>([
+  "task",
+  "channel",
+  "component",
+  "url",
+  "artifact",
+])
 
 /** Generic `__AI_STATUS__` copy that should hide when specific timeline steps exist. */
 const GENERIC_STATUS_PATTERNS = [
@@ -203,6 +209,8 @@ export function mergeExecutionTraceStep(
   if (next.sequence < previous.sequence) {
     return {
       ...previous,
+      entities: previous.entities.length > 0 ? previous.entities : next.entities,
+      details: previous.details ?? next.details,
       previewKeys: uniqueStrings([...previous.previewKeys, ...next.previewKeys]),
       editStreamKeys: uniqueStrings([...previous.editStreamKeys, ...next.editStreamKeys]),
     }
@@ -211,8 +219,25 @@ export function mergeExecutionTraceStep(
     ...next,
     sequence: previous.sequence,
     emittedAt: previous.emittedAt,
+    entities: next.entities.length > 0 ? next.entities : previous.entities,
+    details: mergeTraceDetails(previous.details, next.details),
     previewKeys: uniqueStrings([...previous.previewKeys, ...next.previewKeys]),
     editStreamKeys: uniqueStrings([...previous.editStreamKeys, ...next.editStreamKeys]),
+  }
+}
+
+function mergeTraceDetails(
+  previous: Record<string, unknown> | null,
+  next: Record<string, unknown> | null,
+): Record<string, unknown> | null {
+  if (!previous) return next
+  if (!next) return previous
+  return {
+    ...previous,
+    ...next,
+    // Never drop a finished tool payload when a later sparse update arrives.
+    data_summary: next.data_summary ?? previous.data_summary,
+    result_summary: next.result_summary ?? previous.result_summary,
   }
 }
 
@@ -300,6 +325,12 @@ const TOOL_TRACE_COPY: Record<
     started: "Reading a public webpage…",
     completed: "Finished reading webpage.",
     failed: "Webpage read failed.",
+  },
+  list_publishing_destinations: {
+    category: "discovery",
+    started: "Listing publishing destinations…",
+    completed: "Finished listing publishing destinations.",
+    failed: "Publishing destination listing failed.",
   },
   ai_start_artifact_build: {
     category: "generation",
@@ -396,11 +427,22 @@ export function statusPayloadToExecutionTraceEvent(
   }
 
   const fallbackText = toTrimmedString(record.text)
+  const resultSummary = toTrimmedString(record.result_summary)
   const stepId = toolCallId
     ? `tool:${round}:${toolCallId}`
     : toolIndex != null
       ? `tool:${round}:${toolName}:${toolIndex}`
       : `tool:${round}:${toolName}`
+  const publishingPreview = asRecord(record.publishing_preview)
+  const entitiesRaw = Array.isArray(record.entities) ? record.entities : []
+  const entities = entitiesRaw
+    .map((item) => normalizeEntity(item))
+    .filter((item): item is AiExecutionTraceEntity => item != null)
+    .slice(0, 8)
+  const dataSummary = asRecord(record.data_summary)
+
+  // Keep the collapsed line short ("Finished listing…"). Concrete results live
+  // in details.data_summary for the expandable row UI.
   return {
     type: "execution_trace",
     sequence,
@@ -409,12 +451,16 @@ export function statusPayloadToExecutionTraceEvent(
     phase,
     category: categorizeToolName(toolName),
     text: toolStatusTraceText(toolName, phase, fallbackText),
+    ...(entities.length > 0 ? { entities } : {}),
     details: {
       tool_name: toolName,
       round,
       ...(toolCallId ? { tool_call_id: toolCallId } : {}),
       ...(toolIndex != null ? { tool_index: toolIndex } : {}),
       source: "ai_status",
+      ...(resultSummary ? { result_summary: resultSummary } : {}),
+      ...(dataSummary ? { data_summary: dataSummary } : {}),
+      ...(publishingPreview ? { publishing_preview: publishingPreview } : {}),
     },
   }
 }
@@ -850,6 +896,62 @@ export function mapBuildEventToExecutionTraceSteps(
     base,
   )
   if (artifactSteps.length > 0) return artifactSteps
+
+  if (
+    normalizeBuildEventType(eventType) === "build.concurrency_degraded"
+    || isBuildEventType(eventType, "concurrency_degraded")
+  ) {
+    const previous =
+      toFiniteNumber(payload.previous_concurrency_limit)
+      ?? toFiniteNumber(payload.previousConcurrencyLimit)
+    const next =
+      toFiniteNumber(payload.concurrency_limit)
+      ?? toFiniteNumber(payload.concurrencyLimit)
+      ?? 1
+    return [
+      base({
+        stepId: "build:concurrency",
+        phase: "warning",
+        category: "generation",
+        text:
+          previous != null && previous > next
+            ? `High load — slowing generation from ${previous} parallel workers to ${next} so remaining articles can finish.`
+            : "High load — switching remaining articles to sequential generation.",
+        details: {
+          previous_concurrency_limit: previous,
+          concurrency_limit: next,
+        },
+      }),
+    ]
+  }
+
+  if (
+    isBuildEventType(eventType, "retry_scheduled")
+    || normalizeBuildEventType(eventType) === "work_unit.retry_scheduled"
+  ) {
+    const attempt = toFiniteNumber(payload.attempt)
+    const maxAttempts = toFiniteNumber(payload.max_attempts)
+    const errorCode = toTrimmedString(payload.error_code) ?? ""
+    const isResource =
+      /resource_limit|546|WORKER_RESOURCE/i.test(errorCode)
+    const attemptLabel =
+      attempt != null && maxAttempts != null ? ` (${attempt}/${maxAttempts})` : ""
+    return [
+      base({
+        stepId: `${unitId}:retry`,
+        phase: "warning",
+        category: "generation",
+        text: isResource
+          ? `Document is large — retrying in a lighter mode${attemptLabel}…`
+          : `Queued retry for this deliverable${attemptLabel}…`,
+        details: {
+          attempt,
+          max_attempts: maxAttempts,
+          error_code: errorCode || null,
+        },
+      }),
+    ]
+  }
 
   if (
     isBuildEventType(eventType, "failed")

@@ -75,10 +75,13 @@ export type ProjectCompetitorSocialPost = {
 export type SyncCompetitorSocialPostsResult = {
   ok: boolean
   status?: string
+  mode?: string
   trigger?: string
   profiles_total?: number
   profiles_succeeded?: number
   profiles_failed?: number
+  /** Snapshots left running at Bright Data; the resume cron finishes them. */
+  profiles_pending?: number
   error?: string
   results?: Array<Record<string, unknown>>
 }
@@ -230,25 +233,73 @@ export async function createCompetitorSocialProfile(args: {
   return data as ProjectCompetitorSocialProfile
 }
 
+export type SocialDiscoverySync = {
+  /** True once Bright Data snapshots are running for the freshly linked profiles. */
+  started: boolean
+  error: string | null
+}
+
+export type DiscoverSocialProfilesResult = {
+  candidates: SocialProfileCandidate[]
+  created: number
+  alreadyLinked: number
+  createdNetworks: CompetitorSocialNetwork[]
+  sync: SocialDiscoverySync
+}
+
+const NO_SYNC: SocialDiscoverySync = { started: false, error: null }
+
 /**
- * Read a competitor website and link every social profile it advertises.
- * Networks already linked to that competitor are left untouched.
+ * Discovery is useless without data, so linking profiles immediately starts their
+ * first sync. Snapshots keep running server-side even if this request is cut short.
+ */
+export async function startSocialProfilesSync(args: {
+  projectId: number
+  socialProfileIds?: number[]
+  brandSocialProfileIds?: number[]
+}): Promise<SocialDiscoverySync> {
+  try {
+    const result = await syncCompetitorSocialPosts({
+      projectId: args.projectId,
+      socialProfileIds: args.socialProfileIds,
+      brandSocialProfileIds: args.brandSocialProfileIds,
+      entityType: args.brandSocialProfileIds?.length ? "owned" : "competitor",
+      mode: "trigger",
+      trigger: "manual",
+    })
+    if (!result.ok) {
+      return { started: false, error: result.error ?? "Could not start the sync" }
+    }
+    return { started: true, error: null }
+  } catch (error) {
+    return {
+      started: false,
+      error: error instanceof Error ? error.message : "Could not start the sync",
+    }
+  }
+}
+
+/**
+ * Read a competitor website, link every social profile it advertises and start
+ * syncing the new ones. Networks already linked to that competitor are untouched.
  */
 export async function discoverCompetitorSocialProfilesFromWebsite(args: {
   projectId: number
   competitorId: number
   websiteUrl: string
-}): Promise<{
-  candidates: SocialProfileCandidate[]
-  created: number
-  alreadyLinked: number
-}> {
+}): Promise<DiscoverSocialProfilesResult> {
   const candidates = await fetchSocialProfileCandidates({
     projectId: args.projectId,
     websiteUrl: args.websiteUrl,
   })
   if (candidates.length === 0) {
-    return { candidates, created: 0, alreadyLinked: 0 }
+    return {
+      candidates,
+      created: 0,
+      alreadyLinked: 0,
+      createdNetworks: [],
+      sync: NO_SYNC,
+    }
   }
 
   const supabase = createClientComponentClient()
@@ -264,28 +315,43 @@ export async function discoverCompetitorSocialProfilesFromWebsite(args: {
     ),
   )
 
-  let created = 0
   let alreadyLinked = 0
+  const createdIds: number[] = []
+  const createdNetworks: CompetitorSocialNetwork[] = []
   for (const candidate of candidates) {
     if (linkedNetworks.has(candidate.network)) {
       alreadyLinked += 1
       continue
     }
     try {
-      await createCompetitorSocialProfile({
+      const profile = await createCompetitorSocialProfile({
         projectId: args.projectId,
         competitorId: args.competitorId,
         network: candidate.network,
         profileUrl: candidate.profileUrl,
       })
       linkedNetworks.add(candidate.network)
-      created += 1
+      createdIds.push(profile.id)
+      createdNetworks.push(candidate.network)
     } catch {
       alreadyLinked += 1
     }
   }
 
-  return { candidates, created, alreadyLinked }
+  const sync = createdIds.length
+    ? await startSocialProfilesSync({
+        projectId: args.projectId,
+        socialProfileIds: createdIds,
+      })
+    : NO_SYNC
+
+  return {
+    candidates,
+    created: createdIds.length,
+    alreadyLinked,
+    createdNetworks,
+    sync,
+  }
 }
 
 export async function updateCompetitorSocialProfile(args: {
@@ -381,12 +447,19 @@ export async function listCompetitorSocialPosts(args: {
   })
 }
 
+/**
+ * @param mode `trigger` starts Bright Data snapshots and returns immediately,
+ * `resume` collects snapshots that are already running, `sync` (default) does both.
+ */
 export async function syncCompetitorSocialPosts(args: {
   projectId?: number
   competitorId?: number
   socialProfileId?: number
+  socialProfileIds?: number[]
   brandSocialProfileId?: number
+  brandSocialProfileIds?: number[]
   entityType?: "owned" | "competitor" | "all"
+  mode?: "sync" | "trigger" | "resume"
   trigger?: "manual" | "automatic"
 }): Promise<SyncCompetitorSocialPostsResult> {
   const supabase = createClientComponentClient()
@@ -397,8 +470,11 @@ export async function syncCompetitorSocialPosts(args: {
         project_id: args.projectId,
         competitor_id: args.competitorId,
         social_profile_id: args.socialProfileId,
+        social_profile_ids: args.socialProfileIds,
         brand_social_profile_id: args.brandSocialProfileId,
+        brand_social_profile_ids: args.brandSocialProfileIds,
         entity_type: args.entityType ?? "all",
+        mode: args.mode ?? "sync",
         trigger: args.trigger ?? "manual",
       },
     },
@@ -415,6 +491,7 @@ export async function syncCompetitorSocialPosts(args: {
   return {
     ok: record.ok === true,
     status: typeof record.status === "string" ? record.status : undefined,
+    mode: typeof record.mode === "string" ? record.mode : undefined,
     trigger: typeof record.trigger === "string" ? record.trigger : undefined,
     profiles_total:
       typeof record.profiles_total === "number" ? record.profiles_total : undefined,
@@ -424,6 +501,8 @@ export async function syncCompetitorSocialPosts(args: {
         : undefined,
     profiles_failed:
       typeof record.profiles_failed === "number" ? record.profiles_failed : undefined,
+    profiles_pending:
+      typeof record.profiles_pending === "number" ? record.profiles_pending : undefined,
     error: typeof record.error === "string" ? record.error : undefined,
     results: Array.isArray(record.results)
       ? (record.results as Array<Record<string, unknown>>)

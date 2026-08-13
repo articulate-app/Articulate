@@ -45,6 +45,28 @@ describe("artifact-rich-diff-html", () => {
     expect(html).toContain("broader")
   })
 
+  it("keeps a newly inserted table as one intact added block", () => {
+    const before = "<h2>Compare</h2><p>Cork is useful.</p>"
+    const after =
+      "<h2>Compare</h2><table><tr><td><p>Cork</p></td><td><p>Wool</p></td></tr></table><p>Cork is useful.</p>"
+    const html = buildArtifactTrackChangesHtml(before, after, { changedOnly: true })
+    expect(html).toContain("<table")
+    expect(html).toContain("artifact-diff-block-ins")
+    expect(html).toContain("<td>")
+    // Must not slice the table at nested </p>.
+    expect(html).toMatch(/<table[\s\S]*<\/table>/i)
+  })
+
+  it("does not treat formatting-only SEO title churn as a full delete", () => {
+    const before =
+      "<p>SEO Meta Title: Acoustic insulation with cork: a primer for specifiers | Dimas &amp; Silva</p><p>Body stays.</p>"
+    const after =
+      "<p>SEO Meta Title: Acoustic insulation with cork: a primer for specifiers | Dimas & Silva</p><p>Body stays.</p><table><tr><td>Cork</td><td>Wool</td></tr></table>"
+    const html = buildArtifactTrackChangesHtml(before, after, { changedOnly: true })
+    expect(html).toContain("<table")
+    expect(html).not.toMatch(/artifact-diff-block-del[^>]*>[\s\S]*SEO Meta Title/)
+  })
+
   it("resolves html from content_json blocks", () => {
     const html = resolveArtifactDiffHtml({
       contentJson: {
@@ -53,5 +75,38 @@ describe("artifact-rich-diff-html", () => {
       },
     })
     expect(html).toContain("<strong>world</strong>")
+  })
+
+  it("keeps identical headings anchored when body paragraphs shift", () => {
+    const before = [
+      "<h2>Prevention in the workplace</h2>",
+      "<p>Old advice one.</p>",
+      "<p>Old advice two.</p>",
+      "<h2>Common illnesses</h2>",
+      "<p>Old illnesses.</p>",
+    ].join("")
+    const after = [
+      "<h2>Prevention in the workplace</h2>",
+      "<p>New advice one with more detail.</p>",
+      "<p>New advice two with more detail.</p>",
+      "<p>Extra paragraph inserted.</p>",
+      "<h2>Common illnesses</h2>",
+      "<p>Updated illnesses.</p>",
+    ].join("")
+    const html = buildArtifactTrackChangesHtml(before, after)
+    expect(html).toContain("<h2>Prevention in the workplace</h2>")
+    expect(html).toContain("<h2>Common illnesses</h2>")
+    expect(html).not.toMatch(
+      /<(h2)[^>]*artifact-diff-block-del[^>]*>\s*Prevention in the workplace/i,
+    )
+    expect(html).not.toMatch(
+      /artifact-diff-block-del[^>]*>\s*<h2>\s*Prevention in the workplace/i,
+    )
+    expect(html).not.toMatch(
+      /<(h2)[^>]*artifact-diff-block-del[^>]*>\s*Common illnesses/i,
+    )
+    expect(html).not.toMatch(
+      /artifact-diff-block-del[^>]*>\s*<h2>\s*Common illnesses/i,
+    )
   })
 })

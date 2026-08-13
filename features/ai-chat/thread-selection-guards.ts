@@ -18,8 +18,8 @@ type ResolveAutoThreadSelectionArgs = {
  * Resolve whether the pane should auto-select a thread from URL/external state.
  *
  * Important: once a thread is selected, keep it locked until the user explicitly
- * changes it (tab click/history pick/new chat). Background data churn must not
- * hijack selection.
+ * changes it (tab click/history pick/new chat) or the address bar `aiThreadId`
+ * changes. Background data churn / stale external ids must not hijack selection.
  */
 export function resolveAutoThreadSelection({
   isOpen,
@@ -34,6 +34,8 @@ export function resolveAutoThreadSelection({
 
   // Keep external (search opener) as a one-shot initializer only.
   // It should never steal selection after the user/thread state is active.
+  // Search opens while a thread is already active must update `aiThreadId` in
+  // the URL and leave `disableUrlSync` false so the URL branch below can follow.
   if (activeThreadId) {
     if (disableUrlSync) return { type: "none" }
     if (!urlRequestedThreadId || urlRequestedThreadId === activeThreadId) return { type: "none" }
@@ -53,4 +55,20 @@ export function resolveAutoThreadSelection({
   }
 
   return { type: "bootstrap-scope-thread" }
+}
+
+/**
+ * Whether the active-thread → URL sync effect should write `aiThreadId`.
+ * When the address bar already requests a different persisted thread (e.g. search
+ * preview click), do not stomp it — the URL→state effect will follow.
+ */
+export function shouldWriteActiveThreadToUrl(args: {
+  activeThreadId: string
+  liveThreadId: string | null
+  isPersistedThreadId: (value: string) => boolean
+}): boolean {
+  const { activeThreadId, liveThreadId, isPersistedThreadId } = args
+  if (liveThreadId === activeThreadId) return false
+  if (liveThreadId && isPersistedThreadId(liveThreadId)) return false
+  return true
 }

@@ -18,8 +18,8 @@ export function isLeftPaneObject(value: string | null | undefined): value is Lef
 }
 
 export function normalizeLeftPaneObject(value: string | null | undefined): LeftPaneObject {
-  // Homepage ("all") was removed from the switcher; map legacy URLs to tasks.
-  if (value === "all") return "tasks"
+  // Home ("all") is not a left-pane object; map legacy URLs to tasks.
+  if (value === "all" || value === "home") return "tasks"
   if (value === "ai-threads") return "ai_chats"
   if (value === "artifact") return "artifacts"
   return isLeftPaneObject(value) && value !== "all" ? value : "tasks"
@@ -64,7 +64,7 @@ export function getPrimarySectionFromPath(pathname: string): PrimarySectionKey |
 }
 
 export function leftPaneObjectToPath(value: LeftPaneObject): string {
-  if (value === "all") return "/"
+  if (value === "all") return "/tasks"
   if (value === "projects") return "/projects"
   if (value === "mentions") return "/mentions"
   if (value === "users") return "/users"
@@ -74,7 +74,7 @@ export function leftPaneObjectToPath(value: LeftPaneObject): string {
 }
 
 export function leftPaneObjectLabel(value: LeftPaneObject): string {
-  if (value === "all") return "Home"
+  if (value === "all") return "Tasks"
   if (value === "tasks") return "Tasks"
   if (value === "projects") return "Projects"
   if (value === "mentions") return "Mentions"
@@ -84,15 +84,12 @@ export function leftPaneObjectLabel(value: LeftPaneObject): string {
 }
 
 /**
- * Priority order for object pills that are surfaced directly (vs. tucked into the overflow menu).
- * On task views the object toggle is secondary to contextual (task) controls, so only the leanest
- * objects are eligible to be promoted to visible pills.
+ * Lean priority used by callers that only need the primary object types.
  */
 export const OBJECT_PILL_PRIORITY: LeftPaneObject[] = ["tasks", "projects"]
 
 /**
- * Full greedy-fit priority for visible pills (used on non-task views where there is room to expose
- * more object types). Mentions is least-used so it sinks to the bottom / overflow first.
+ * Greedy-fit priority for visible pills. Lower-priority types overflow first when space is tight.
  */
 export const OBJECT_PILL_VISIBLE_PRIORITY: LeftPaneObject[] = [
   "tasks",
@@ -105,22 +102,23 @@ export const OBJECT_PILL_VISIBLE_PRIORITY: LeftPaneObject[] = [
 
 /** Width thresholds (px of the *available* left-pane toolbar space, not the viewport). */
 export const ADAPTIVE_OBJECT_SWITCHER_BREAKPOINTS = {
-  /** Below this, fall back to the compact single dropdown (truly limited space). */
-  compactMax: 320,
-  /** At/above this a task view may promote a third object pill; non-task views fit greedily. */
+  /**
+   * Below this, fall back to the compact single dropdown.
+   * Keep low — hybrid greedy-fit already collapses pills; a high floor traps the UI in dropdown
+   * whenever the left pane is a typical split width (~250–320px).
+   */
+  compactMax: 120,
+  /** Convenience breakpoint for tests / callers; pills themselves fit greedily by width. */
   wideMin: 520,
 } as const
 
 /** Approx rendered pill geometry (px) used to greedily fit pills without overflowing the row. */
-const OBJECT_PILL_OVERFLOW_TRIGGER_WIDTH = 96
+const OBJECT_PILL_OVERFLOW_TRIGGER_WIDTH = 78
 const OBJECT_PILL_GAP = 4
-/** Object pills stay secondary to task controls, so cap how many can show on task views. */
-const TASK_VIEW_MAX_PILLS_NARROW = 2
-const TASK_VIEW_MAX_PILLS_WIDE = 3
 
-/** h-8 px-3 pill (24px padding + 2px border) + ~7.5px per label char, rounded up. */
+/** h-7 px-2.5 chip (~20px padding) + ~7px per label char at text-[13px]. */
 function estimateObjectPillWidth(object: LeftPaneObject): number {
-  return Math.ceil(28 + leftPaneObjectLabel(object).length * 7.5)
+  return Math.ceil(20 + leftPaneObjectLabel(object).length * 7)
 }
 
 export type AdaptiveObjectSwitcherMode = "dropdown" | "hybrid"
@@ -137,20 +135,19 @@ export type AdaptiveObjectSwitcherState = {
  *
  * Rules:
  * - Very limited space -> compact dropdown, everything in overflow.
- * - Non-task views fit as many object pills as the width allows (all of them when wide), with any
- *   leftovers in the overflow menu — they have spare room because task controls aren't competing.
- * - Task views keep object pills lean (max 2 narrow / 3 wide) so groupBy / filters / ordering keep
- *   priority and are never crowded out.
+ * - Otherwise greedily fit as many object pills as the width allows (all of them when wide), with
+ *   leftovers in the overflow menu. Task chrome is icon-only / in "…", so object pills are not capped.
  * - The active object is always represented: surfaced as a visible pill when there is room, otherwise
  *   left in overflow (the overflow trigger then displays the active object's label).
  */
 export function getAdaptiveObjectSwitcherState({
   containerWidth,
-  activeObject,
-  isTaskView,
+  activeObject: _activeObject,
+  isTaskView: _isTaskView,
 }: {
   containerWidth: number
   activeObject: LeftPaneObject
+  /** Kept for call-site compatibility; no longer caps pills (greedy fit for all views). */
   isTaskView: boolean
 }): AdaptiveObjectSwitcherState {
   const all = [...LEFT_PANE_OBJECTS] as LeftPaneObject[]
@@ -171,16 +168,10 @@ export function getAdaptiveObjectSwitcherState({
     return dropdownState
   }
 
-  const orderedAll = OBJECT_PILL_VISIBLE_PRIORITY.filter((o) => all.includes(o))
-  const isWide = containerWidth >= ADAPTIVE_OBJECT_SWITCHER_BREAKPOINTS.wideMin
-
-  // Task views reserve room for task controls -> only the top-priority objects are candidates.
-  const candidates = isTaskView
-    ? orderedAll.slice(0, isWide ? TASK_VIEW_MAX_PILLS_WIDE : TASK_VIEW_MAX_PILLS_NARROW)
-    : orderedAll
+  const candidates = OBJECT_PILL_VISIBLE_PRIORITY.filter((o) => all.includes(o as (typeof LEFT_PANE_OBJECTS)[number]))
 
   // Fast path: if every candidate fits with no overflow at all, show them directly (no "More").
-  if (candidates.length === all.length) {
+  {
     let total = 0
     candidates.forEach((o, i) => {
       total += estimateObjectPillWidth(o) + (i > 0 ? OBJECT_PILL_GAP : 0)

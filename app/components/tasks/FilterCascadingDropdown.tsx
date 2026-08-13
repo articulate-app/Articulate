@@ -172,8 +172,8 @@ export function FilterCascadingDropdown({
           aria-label={variant === 'icon' ? 'Filter tasks' : undefined}
           className={cn(
             variant === 'icon' &&
-              'relative inline-flex h-8 w-8 shrink-0 items-center justify-center rounded text-gray-500 hover:bg-gray-100 hover:text-gray-700',
-            variant === 'default' && 'inline-flex items-center gap-1.5',
+              'relative inline-flex h-7 w-7 shrink-0 items-center justify-center rounded text-gray-500 hover:bg-gray-100 hover:text-gray-700',
+            variant === 'default' && 'inline-flex items-center gap-1',
             className,
             variant === 'default' && activeFiltersCount > 0 && 'font-semibold',
             variant === 'icon' && activeFiltersCount > 0 && 'text-gray-800',
@@ -181,10 +181,10 @@ export function FilterCascadingDropdown({
         >
           {variant === 'icon' ? (
             <>
-              <Filter className="h-4 w-4" />
+              <Filter className="h-3.5 w-3.5" />
               {activeFiltersCount > 0 ? (
                 <span
-                  className="absolute -right-0.5 -top-0.5 flex h-4 min-w-4 items-center justify-center rounded-full bg-gray-300 px-1 text-[10px] font-medium tabular-nums text-gray-800"
+                  className="absolute -right-0.5 -top-0.5 flex h-3.5 min-w-3.5 items-center justify-center rounded-full bg-gray-300 px-1 text-[9px] font-medium tabular-nums text-gray-800"
                   aria-hidden
                 >
                   {activeFiltersCount > 9 ? '9+' : activeFiltersCount}
@@ -202,7 +202,7 @@ export function FilterCascadingDropdown({
                   {activeFiltersCount}
                 </span>
               ) : null}
-              <ChevronDown className="h-4 w-4 shrink-0 opacity-70" />
+              <ChevronDown className="h-3.5 w-3.5 shrink-0 opacity-70" />
             </>
           )}
         </button>

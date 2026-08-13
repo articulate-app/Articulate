@@ -32,17 +32,29 @@ export type FetchPostsArgs = {
   maxPosts: number
 }
 
+/** Everything needed to start a Bright Data snapshot, without starting it. */
+export type BrightDataRequestSpec = {
+  options: import("./client.ts").BrightDataTriggerOptions
+  input: unknown[]
+  metadata: Record<string, unknown>
+}
+
+export type FetchPostsResult = {
+  posts: NormalizedCompetitorPost[]
+  snapshotId: string | null
+  rawCount: number
+  metadata: Record<string, unknown>
+}
+
 export type NetworkAdapter = {
   network: CompetitorSocialNetwork
+  /** Trigger and collection are separate so a slow snapshot can be resumed later. */
+  buildRequest: (args: FetchPostsArgs) => BrightDataRequestSpec
+  mapRecords: (records: unknown[], args: FetchPostsArgs) => NormalizedCompetitorPost[]
   fetchPosts: (
     args: FetchPostsArgs,
     client: import("./client.ts").BrightDataClient,
-  ) => Promise<{
-    posts: NormalizedCompetitorPost[]
-    snapshotId: string | null
-    rawCount: number
-    metadata: Record<string, unknown>
-  }>
+  ) => Promise<FetchPostsResult>
 }
 
 export function asRecord(value: unknown): Record<string, unknown> | null {

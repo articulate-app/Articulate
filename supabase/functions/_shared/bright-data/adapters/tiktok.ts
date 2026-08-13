@@ -1,4 +1,3 @@
-import type { BrightDataClient } from "../client.ts"
 import {
   asRecord,
   normalizeHttpUrl,
@@ -6,9 +5,9 @@ import {
   toNullableFiniteInt,
   toNullableString,
   type FetchPostsArgs,
-  type NetworkAdapter,
   type NormalizedCompetitorPost,
 } from "../types.ts"
+import { createNetworkAdapter } from "./create-adapter.ts"
 
 /** TikTok posts — discover by profile URL. */
 const TIKTOK_POSTS_DATASET_ID = "gd_lu702nij2f790tmv9h"
@@ -64,13 +63,14 @@ function mapTikTokPost(raw: unknown): NormalizedCompetitorPost | null {
   }
 }
 
-export const tiktokAdapter: NetworkAdapter = {
+export const tiktokAdapter = createNetworkAdapter({
   network: "tiktok",
-  async fetchPosts(args: FetchPostsArgs, client: BrightDataClient) {
+  mapPost: mapTikTokPost,
+  buildRequest(args: FetchPostsArgs) {
     const input: Record<string, unknown> = { url: args.profileUrl }
     if (args.startDateIso) input.start_date = args.startDateIso
 
-    const { snapshotId, records } = await client.triggerAndCollect({
+    return {
       options: {
         datasetId: TIKTOK_POSTS_DATASET_ID,
         type: "discover_new",
@@ -79,21 +79,10 @@ export const tiktokAdapter: NetworkAdapter = {
         includeErrors: true,
       },
       input: [input],
-    })
-
-    const posts = records
-      .map(mapTikTokPost)
-      .filter((post): post is NormalizedCompetitorPost => Boolean(post))
-      .slice(0, Math.max(1, args.maxPosts))
-
-    return {
-      posts,
-      snapshotId,
-      rawCount: records.length,
       metadata: {
         dataset_id: TIKTOK_POSTS_DATASET_ID,
         discover_by: "profile_url",
       },
     }
   },
-}
+})

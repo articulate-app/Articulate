@@ -12,8 +12,8 @@ import { Popover, PopoverContent, PopoverTrigger } from "../ui/popover"
 import { cn } from "@/lib/utils"
 import { getImageUrl } from "../../lib/public-media"
 import { toast } from "../ui/use-toast"
-import { buildCenterPaneSelectionSearchParams } from "../../lib/center-pane-selection-url"
-import { shallowReplaceSearchParams } from "../../lib/tasks-shallow-nav"
+import { openWorkspaceView } from "../../lib/open-workspace-view"
+import { useWorkspaceHostPane } from "../workspace/workspace-host-pane-context"
 import {
   getProjectWatcherCandidates,
   getProjectWatchersCurrent,
@@ -28,6 +28,7 @@ interface ProjectOverviewWatchersProps {
 
 export function ProjectOverviewWatchers({ projectId }: ProjectOverviewWatchersProps) {
   const queryClient = useQueryClient()
+  const hostPane = useWorkspaceHostPane()
   const pathname = usePathname()
   const [isAddOpen, setIsAddOpen] = useState(false)
 
@@ -95,20 +96,16 @@ export function ProjectOverviewWatchers({ projectId }: ProjectOverviewWatchersPr
   const handleOpenProfile = useCallback(
     (userId: number) => {
       setIsAddOpen(false)
-      const base = new URLSearchParams(
-        typeof window !== "undefined" ? window.location.search : "",
+      openWorkspaceView(
+        { type: "user", id: userId },
+        {
+          pane: hostPane,
+          pathname,
+          source: "project-overview-watcher-open",
+        },
       )
-      const next = buildCenterPaneSelectionSearchParams({
-        currentSearchParams: base,
-        entity: "user",
-        id: userId,
-      })
-      next.delete("stackTaskId")
-      next.delete("stackUserId")
-      next.delete("stackTeamId")
-      shallowReplaceSearchParams(pathname, next, "project-overview-watcher-open")
     },
-    [pathname],
+    [hostPane, pathname],
   )
 
   const addPopover = (
@@ -170,78 +167,87 @@ export function ProjectOverviewWatchers({ projectId }: ProjectOverviewWatchersPr
   )
 
   return (
-    <div className="space-y-3">
-      <div className="flex items-center justify-between gap-2">
+    <div className="space-y-4">
+      <div className="flex items-center justify-between gap-3">
         <div>
           <h3 className="text-sm font-medium text-gray-900">Watchers</h3>
           <p className="mt-0.5 text-xs text-gray-500">
-            People notified about project activity. Some watchers may be locked if you lack permission to manage them.
+            People notified about this project&apos;s activity. Different from team
+            members — watchers do not need a seat on the team.
           </p>
         </div>
         {addPopover}
       </div>
       {isLoading && currentWatchers.length === 0 ? (
-        <div className="flex items-center justify-center py-6 text-gray-400">
-          <Loader2 className="h-4 w-4 animate-spin" />
+        <div className="flex items-center justify-center py-8">
+          <Loader2 className="h-5 w-5 animate-spin text-gray-400" />
         </div>
       ) : currentWatchers.length === 0 ? (
-        <div className="px-0 py-4 text-sm text-gray-500">
+        <div className="py-4 text-sm text-gray-500">
           No watchers yet. Add someone to start watching this project.
         </div>
       ) : (
-        <ul className="flex flex-col gap-0.5">
+        <div>
           {currentWatchers.map((watcher) => {
             const displayName = watcher.full_name || watcher.email || `User #${watcher.user_id}`
             const isManageable = watcher.is_manageable !== false
             return (
-              <li key={watcher.watcher_id ?? watcher.user_id}>
-                <div className="group flex items-center gap-3 rounded-md px-1 py-2 hover:bg-gray-50">
-                  <button
-                    type="button"
-                    className="flex min-w-0 flex-1 items-center gap-3 text-left"
-                    title={`Open ${displayName}`}
-                    aria-label={`Open ${displayName}`}
-                    onClick={() => handleOpenProfile(watcher.user_id)}
-                  >
-                    <UserAvatar
-                      name={displayName}
-                      photoUrl={watcher.photo ? getImageUrl(watcher.photo) : null}
-                      size="sm"
-                    />
-                    <span className="min-w-0 flex-1 truncate text-sm font-medium text-gray-900">
+              <div
+                key={watcher.watcher_id ?? watcher.user_id}
+                className="flex items-center justify-between gap-3 border-b border-gray-100 py-3 last:border-b-0"
+              >
+                <button
+                  type="button"
+                  className="flex min-w-0 flex-1 items-center gap-3 text-left"
+                  title={`Open ${displayName}`}
+                  aria-label={`Open ${displayName}`}
+                  onClick={() => handleOpenProfile(watcher.user_id)}
+                >
+                  <UserAvatar
+                    name={displayName}
+                    photoUrl={watcher.photo ? getImageUrl(watcher.photo) : null}
+                    size="sm"
+                  />
+                  <div className="min-w-0">
+                    <div className="truncate text-sm font-medium text-gray-900">
                       {displayName}
-                    </span>
-                  </button>
+                    </div>
+                    <p className="truncate text-sm text-gray-500">
+                      {watcher.email || "No email"}
+                    </p>
+                  </div>
+                </button>
+                <div className="flex shrink-0 items-center gap-1.5">
                   {isManageable ? (
                     <Button
                       type="button"
                       variant="ghost"
-                      size="icon"
-                      className="h-7 w-7 shrink-0 text-gray-400 opacity-0 hover:bg-red-50 hover:text-red-600 group-hover:opacity-100 focus-visible:opacity-100"
+                      size="sm"
+                      className="h-8 w-8 p-0 text-gray-400 hover:text-red-600"
                       title="Remove watcher"
                       aria-label={`Remove ${displayName}`}
                       disabled={watchersMutation.isPending}
                       onClick={() => handleToggle(watcher.user_id)}
                     >
                       {watchersMutation.isPending ? (
-                        <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                        <Loader2 className="h-4 w-4 animate-spin" />
                       ) : (
-                        <X className="h-3.5 w-3.5" />
+                        <X className="h-4 w-4" />
                       )}
                     </Button>
                   ) : (
                     <span
-                      className="shrink-0 px-1 text-[10px] text-gray-400"
+                      className="px-1 text-[10px] text-gray-400"
                       title="You don't have permission to remove this watcher"
                     >
                       Locked
                     </span>
                   )}
                 </div>
-              </li>
+              </div>
             )
           })}
-        </ul>
+        </div>
       )}
     </div>
   )

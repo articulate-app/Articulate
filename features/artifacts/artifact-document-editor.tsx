@@ -13,6 +13,11 @@ import { ArtifactDocumentRenderer } from "./artifact-document-renderer"
 import { ComponentOutputEditableBody } from "../tasks/components/ComponentOutputEditableBody"
 import { uploadArtifactInlineAttachment } from "./upload-artifact-inline-attachment"
 import { AI_CHAT_PREVIEW_BODY_WRAPPER_CLASS } from "../tasks/components/component-output-body-shared"
+import {
+  buildHtmlEmailContentJson,
+  isHtmlEmailArtifact,
+} from "./artifact-html-document"
+import { ArtifactHtmlDocumentFromArtifact } from "./artifact-html-document-view"
 
 function htmlToPlainText(html: string): string {
   if (typeof document === "undefined") {
@@ -362,7 +367,40 @@ export function ArtifactDocumentEditor({
     onOpenFullscreen,
   }
 
-  if (readOnly) {
+  // Full HTML email / code documents bypass TipTap so nested layout tables survive.
+  if (isHtmlEmailArtifact(artifact)) {
+    return (
+      <div className={cn("min-w-0", className)} {...selectableProps}>
+        <ArtifactHtmlDocumentFromArtifact
+          artifact={artifact}
+          readOnly={readOnly}
+          onChange={(nextHtml) => {
+            const contentJson = buildHtmlEmailContentJson(nextHtml, artifact.content_json)
+            const plain = typeof contentJson.blocks?.[0]?.text === "string"
+              ? contentJson.blocks[0].text
+              : ""
+            setRichHtml(nextHtml)
+            setPlainText(plain)
+            setBlocks(contentJson.blocks ?? [])
+            onContentJsonChange?.(contentJson)
+            onContentTextChange?.(plain)
+          }}
+        />
+      </div>
+    )
+  }
+
+  // Keep TipTap mounted while read-only (e.g. AI generating) so rich text does not
+  // flash away when swapping to the block renderer. Media-heavy docs still use renderer.
+  const preferReadonlyTipTap =
+    readOnly
+    && (
+      initialBlocks.length === 0
+      || !blocksHaveMedia(initialBlocks)
+      || Boolean(singleRichTextHtml(initialBlocks))
+    )
+
+  if (readOnly && !preferReadonlyTipTap) {
     return (
       <div className={cn("min-w-0", className)} {...selectableProps}>
         <ArtifactDocumentRenderer
@@ -437,6 +475,7 @@ export function ArtifactDocumentEditor({
           placeholder="Write artifact content…"
           className={AI_CHAT_PREVIEW_BODY_WRAPPER_CLASS}
           disableInlineMediaControls={false}
+          readOnly={readOnly}
           forceContentKey={resolvedForceKey}
           onInsertAttachment={async (file) =>
             uploadArtifactInlineAttachment(artifact.id, file)

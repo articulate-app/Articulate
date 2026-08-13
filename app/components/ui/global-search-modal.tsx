@@ -109,8 +109,7 @@ export function GlobalSearchModal({
         aria-modal="true"
         aria-label="Search"
         className={cn(
-          "relative z-10 flex w-full max-w-xl flex-col overflow-hidden rounded-2xl bg-white shadow-2xl",
-          "max-h-[min(72vh,36rem)]",
+          "relative z-10 flex h-[min(72vh,36rem)] w-full max-w-xl flex-col overflow-hidden rounded-2xl bg-white shadow-2xl",
         )}
       >
         <div className="flex shrink-0 items-center gap-2 border-b border-gray-100 px-4 py-3">
@@ -179,7 +178,7 @@ export function GlobalSearchModal({
               setInputValue(next)
               onSearchChange?.(next)
             }}
-            className="max-h-none rounded-none border-0 shadow-none"
+            className="h-full max-h-none rounded-none border-0 shadow-none"
           />
         </div>
       </div>

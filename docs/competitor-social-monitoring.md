@@ -52,6 +52,27 @@ select cron.schedule(
 
 Automatic sync loads **active brand + competitor** profiles.
 
+## Snapshot lifecycle (why syncs are resumable)
+
+Bright Data snapshots for LinkedIn, Instagram, Facebook and YouTube regularly need
+more than the ~150s an Edge Function can stay alive. A snapshot is therefore triggered
+once and its id is stored on the sync run (`metadata.snapshot_id`); the run stays
+`queued` until an invocation collects it. The same scrape is never paid for twice.
+
+Modes (`mode` in the request body):
+
+| Mode | Behaviour |
+| --- | --- |
+| `trigger` | Start snapshots and return immediately. Used right after profile discovery. |
+| `resume` | Collect snapshots that are already pending. Runs every 2 minutes via `resume-pending-social-snapshots`. |
+| `sync` (default) | Resume a pending snapshot if there is one, otherwise trigger and wait as long as the request budget allows. Leaves the run pending instead of failing. |
+
+A pending run is abandoned only after 60 minutes; runs with no snapshot id (killed
+worker) are still released after 4 minutes.
+
+The resume cron ships in `20260805130000_resume_pending_social_snapshots_cron.sql`
+and needs the `project_url` / `service_role_key` vault secrets.
+
 ## Manual sync
 
 Project Settings → **Competition**, or Competition tab → **Sync now**:
@@ -62,7 +83,15 @@ Authorization: Bearer <user JWT>
 { "project_id": 123, "trigger": "manual" }
 ```
 
-Optional scopes: `competitor_id`, `social_profile_id`, `brand_social_profile_id`, `entity_type` (`owned` | `competitor` | `all`).
+Optional scopes: `competitor_id`, `social_profile_id(s)`, `brand_social_profile_id(s)`,
+`entity_type` (`owned` | `competitor` | `all`), `mode`.
+
+## Discovery starts the sync
+
+"Find social profiles" (own brand and competitors) links the profiles and immediately
+calls the function with `mode: "trigger"` for the profiles it just created, so nobody
+has to sync network by network from Settings. The response reports
+`profiles_pending`, and posts land as soon as the resume cron collects the snapshots.
 
 ## Read path
 

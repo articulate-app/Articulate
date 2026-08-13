@@ -580,7 +580,11 @@ export default function UserPage() {
                     )}
 
                     {rightView === 'project-details' && rightProjectId && (
-                      <BriefingsPage projectId={parseInt(rightProjectId, 10)} onClose={handleCloseRightPane} />
+                      <BriefingsPage
+                        key={parseInt(rightProjectId, 10)}
+                        projectId={parseInt(rightProjectId, 10)}
+                        onClose={handleCloseRightPane}
+                      />
                     )}
 
                     {rightView === 'team-details' && rightTeamId && (

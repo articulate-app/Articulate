@@ -4,7 +4,7 @@ import { cn } from "@/lib/utils"
 import { useEffect, useState, useRef, useCallback, useMemo, Dispatch, SetStateAction } from "react"
 import { Thread } from '../../types/task'
 import { Button } from "../ui/button"
-import { Trash2, Copy, Upload, Image as ImageIcon, X, ChevronLeft, ChevronsLeft, Maximize2, Minimize2, ChevronRight, ChevronDown, PanelRight, ExternalLink, Bot, MoreHorizontal, Plus, Loader2, Check, Star, RefreshCw, Share2 } from "lucide-react"
+import { Trash2, Copy, Upload, Image as ImageIcon, X, ChevronLeft, ChevronsLeft, ChevronRight, ChevronDown, PanelRight, ExternalLink, Bot, MoreHorizontal, Plus, Loader2, Check, Star, Share2 } from "lucide-react"
 import { RichTextEditor } from "../ui/rich-text-editor"
 import {
   COMPONENT_OUTPUT_EDITOR_CLASS,
@@ -19,7 +19,8 @@ import { Button as UIButton } from "../ui/button"
 import { AddCommentInput } from "../comments-section/add-comment-input"
 import type { Task as BaseTask, ReviewData } from '../../lib/types/tasks'
 import { updateItemInStore } from '../../../hooks/use-infinite-query'
-import { useQuery, useQueryClient, type QueryClient } from '@tanstack/react-query'
+import { useQuery, useQueryClient } from '@tanstack/react-query'
+import { enqueueTaskDelete, enqueueTaskPatch } from '../../lib/task-write-queue'
 import { bumpAndInvalidateHomeSidebarRecent } from '../../lib/home-sidebar-recents-cache'
 import { trackGlobalObjectOpen } from '../../lib/services/global-search'
 import { flushSync } from 'react-dom'
@@ -28,7 +29,6 @@ import { useTaskAttachmentsUpload } from '../../hooks/use-task-attachments-uploa
 import { useTaskWatchers } from '../../hooks/use-task-watchers'
 import { fetchThreadMentionsBatch } from '../../hooks/use-thread-mentions-batch'
 import {
-  normalizeBootstrapRelatedIdeas,
   type TaskBootstrapTaskWatcher,
 } from '@/lib/types/task-details-bootstrap'
 import { AddTaskForm } from './AddTaskForm'
@@ -69,14 +69,13 @@ import { Command, CommandEmpty, CommandGroup, CommandInput, CommandItem, Command
 import { getImageUrl } from "../../lib/public-media"
 import { flushPendingEdits } from "../../lib/task-suggestions/pending-edits"
 import { usePlannerOptimisticTasks } from "../../store/planner-optimistic-tasks"
-import { useTaskComposerStore } from "../../store/task-composer-store"
 import { submitTaskReview } from "./review-submit"
 import { useTasksScope } from "../../contexts/tasks-scope-context"
-import { buildCenterPaneSelectionSearchParams, type CenterPaneEntity } from "../../lib/center-pane-selection-url"
-import { shallowReplaceSearchParams } from "../../lib/tasks-shallow-nav"
+import type { CenterPaneEntity } from "../../lib/center-pane-selection-url"
+import { openWorkspaceView } from "../../lib/open-workspace-view"
+import { useWorkspaceHostPane } from "../workspace/workspace-host-pane-context"
 import { buildGenericTaskPrompt } from "../../../features/ai-chat/ai-utils"
-import { TASK_PANE_HEADER_ROW_CLASS, TASK_PANE_HEADER_SHELL_CLASS } from "./pane-header-tokens"
-import { Tabs, TabsList, TabsTrigger } from "../ui/tabs"
+import { TASK_DETAILS_HEADER_ROW_CLASS } from "./pane-header-tokens"
 import { TaskOverviewPreviews } from "./task-overview-previews"
 import { TaskOverviewChannelsPill } from "./task-overview-channels-pill"
 import { TASK_OVERVIEW_COMMENT_DOCK_ID } from "./task-overview-updates-comments"
@@ -173,16 +172,6 @@ type Task = Omit<BaseTask, 'id' | 'assigned_to_id' | 'project_id_int' | 'content
 
 type TaskActiveFieldContext = AiActiveFieldContext
 
-type TaskRelatedIdeaRow = {
-  id: string
-  task_id: number
-  project_id: number | null
-  title: string | null
-  description: string | null
-  content_type_id: number | null
-  status: string
-}
-
 // Helper to attach abortSignal if available
 function withAbortSignal(query: any, signal: AbortSignal) {
   if (query && typeof query.abortSignal === 'function') {
@@ -231,13 +220,9 @@ const TASK_DISPLAY_ONLY_FIELDS = new Set<string>([
   'channel_names',
 ]);
 
-// Longer idle debounce so a real editing session (open a dropdown, choose an
-// option, move to the next field) coalesces into a SINGLE PATCH. The timer is
-// reset on every field change and only flushes once the user goes idle.
-const TASK_AUTOSAVE_DEBOUNCE_MS = 1500;
-
 // Keep ONLY canonical editable source fields (allowlist) and drop undefined
 // values. Display/computed fields are derived by the DB trigger from the ids.
+// Network writes go through `app/lib/task-write-queue` (debounced patches + serial deletes).
 function buildCanonicalTaskPatch(fields: Record<string, any>): Record<string, any> {
   const canonical: Record<string, any> = {};
   for (const [key, value] of Object.entries(fields)) {
@@ -246,130 +231,6 @@ function buildCanonicalTaskPatch(fields: Record<string, any>): Record<string, an
     canonical[key] = value;
   }
   return canonical;
-}
-
-// --- Module-level task autosave queue ----------------------------------------
-// The queue lives at MODULE scope (not component state) so it survives
-// TaskDetails remounts that can happen between field edits — e.g. optimistic
-// cache updates, tab/channel changes, or URL param changes that re-key the pane.
-// This is what guarantees sequential edits coalesce into one PATCH regardless of
-// re-renders/remounts. Keyed by task id.
-type TaskAutosaveEntry = {
-  pending: Record<string, any>;
-  needsListInvalidation: boolean;
-  timer: ReturnType<typeof setTimeout> | null;
-  inFlight: boolean;
-  supabase: any;
-  queryClient: QueryClient;
-};
-
-const taskAutosaveQueue = new Map<string, TaskAutosaveEntry>();
-
-async function runTaskAutosaveLoop(taskId: string): Promise<void> {
-  const entry = taskAutosaveQueue.get(taskId);
-  if (!entry || entry.inFlight) return;
-  if (Object.keys(entry.pending).length === 0) return;
-
-  const queryClient = entry.queryClient;
-  entry.inFlight = true;
-  let sawError = false;
-  let listInvalidationNeeded = false;
-  try {
-    // Drain the queue: edits that arrive while a save is in flight are queued
-    // and sent as a follow-up patch on the next loop iteration.
-    while (Object.keys(entry.pending).length > 0) {
-      const payload = entry.pending;
-      listInvalidationNeeded = listInvalidationNeeded || entry.needsListInvalidation;
-      entry.pending = {};
-      entry.needsListInvalidation = false;
-      try {
-        // Return minimal — no `.select('*')`. Optimistic cache already applied.
-        const { error } = await entry.supabase
-          .from('tasks')
-          .update(payload)
-          .eq('id', taskId);
-        if (error) throw error;
-      } catch (err) {
-        sawError = true;
-        toast({
-          title: 'Failed to save changes',
-          description: (err as Error)?.message || 'An error occurred while saving.',
-          variant: 'destructive',
-        });
-      }
-    }
-  } finally {
-    entry.inFlight = false;
-  }
-
-  if (!sawError && queryClient) {
-    // Refetch once, after the batch settles (not after every field change).
-    queryClient.invalidateQueries({ queryKey: ['task', String(taskId)] });
-    if (listInvalidationNeeded) {
-      queryClient.invalidateQueries({ queryKey: ['tasks'] });
-      queryClient.invalidateQueries({ queryKey: ['kanban-bootstrap'] });
-    }
-  }
-}
-
-function enqueueTaskPatch(
-  taskId: string,
-  canonicalFields: Record<string, any>,
-  requiresListInvalidation: boolean,
-  deps: { supabase: any; queryClient: QueryClient }
-): void {
-  if (Object.keys(canonicalFields).length === 0) return;
-  let entry = taskAutosaveQueue.get(taskId);
-  if (!entry) {
-    entry = {
-      pending: {},
-      needsListInvalidation: false,
-      timer: null,
-      inFlight: false,
-      supabase: deps.supabase,
-      queryClient: deps.queryClient,
-    };
-    taskAutosaveQueue.set(taskId, entry);
-  }
-  // Always refresh to the latest client instances for the in-flight flush.
-  entry.supabase = deps.supabase;
-  entry.queryClient = deps.queryClient;
-  Object.assign(entry.pending, canonicalFields);
-  if (requiresListInvalidation) entry.needsListInvalidation = true;
-  // Reset the idle debounce on every field change.
-  if (entry.timer) clearTimeout(entry.timer);
-  entry.timer = setTimeout(() => {
-    const current = taskAutosaveQueue.get(taskId);
-    if (current) current.timer = null;
-    void runTaskAutosaveLoop(taskId);
-  }, TASK_AUTOSAVE_DEBOUNCE_MS);
-}
-
-// Flush a specific task's pending patch immediately (best-effort). Used on hard
-// page unload. Normal in-app navigation relies on the debounce timer, which
-// keeps running because the queue lives at module scope.
-function flushTaskAutosave(taskId: string): void {
-  const entry = taskAutosaveQueue.get(taskId);
-  if (!entry) return;
-  if (entry.timer) {
-    clearTimeout(entry.timer);
-    entry.timer = null;
-  }
-  if (Object.keys(entry.pending).length > 0) {
-    void runTaskAutosaveLoop(taskId);
-  }
-}
-
-function flushAllTaskAutosaves(): void {
-  taskAutosaveQueue.forEach((_entry, taskId) => flushTaskAutosave(taskId));
-}
-
-// Register a single global handler so pending edits are flushed on page unload
-// (hard navigation / tab close). Bound once per window.
-if (typeof window !== 'undefined' && !(window as any).__taskAutosaveUnloadBound) {
-  (window as any).__taskAutosaveUnloadBound = true;
-  window.addEventListener('pagehide', flushAllTaskAutosaves);
-  window.addEventListener('beforeunload', flushAllTaskAutosaves);
 }
 
 // Helper to update nested fields for optimistic updates
@@ -409,10 +270,10 @@ export function TaskDetails({
   selectedTask,
   mode = 'task',
   onClose,
-  onCollapse,
-  isExpanded = false,
-  onExpand,
-  onRestore,
+  onCollapse: _onCollapse,
+  isExpanded: _isExpanded = false,
+  onExpand: _onExpand,
+  onRestore: _onRestore,
   onTaskUpdate,
   onAddSubtask,
   onDuplicateTask,
@@ -500,11 +361,11 @@ export function TaskDetails({
   const queryClient = useQueryClient();
   const supabase = createClientComponentClient(); // <-- Move here for all usages
   const upsertOptimisticPlannerTask = usePlannerOptimisticTasks((s) => s.upsert)
-  const openComposer = useTaskComposerStore((s) => s.openComposer)
   const searchParams = useSearchParams();
   const actualPathname = usePathname();
   const { basePath, preserveQueryKeys } = useTasksScope();
   const pathname = customPathname || actualPathname || basePath;
+  const hostPane = useWorkspaceHostPane()
   const commentThreadIdFromUrl = searchParams.get("commentThreadId");
   const tasksBasePath = basePath;
   const [currentUserId, setCurrentUserId] = useState<number | null>(null);
@@ -533,24 +394,33 @@ export function TaskDetails({
   }, [preserveQueryKeys]);
 
   /**
-   * Open a related entity (project/user) in the center pane while preserving the
-   * 3-pane layout + right AI pane + list/group/filter params. Clears any stale
-   * center/detail/stack selection so no old task detail remains underneath.
+   * Open a related entity (project/user) in the host workspace pane.
+   * Pane isolation: never write the opposite pane's active-view params.
    */
   const openCenterEntity = useCallback(
     (entity: CenterPaneEntity, id: string | number) => {
-      if (id == null || String(id).trim().length === 0) return;
-      const base = new URLSearchParams(
-        typeof window !== "undefined" ? window.location.search : searchParams.toString(),
-      );
-      const next = buildCenterPaneSelectionSearchParams({ currentSearchParams: base, entity, id });
-      // Drop stacked-detail params so the previous center object is fully replaced.
-      next.delete("stackTaskId");
-      next.delete("stackUserId");
-      next.delete("stackTeamId");
-      shallowReplaceSearchParams(pathname, next, "task-header-entity-open");
+      if (id == null || String(id).trim().length === 0) return
+      if (
+        entity !== "task" &&
+        entity !== "project" &&
+        entity !== "user" &&
+        entity !== "team" &&
+        entity !== "thread" &&
+        entity !== "artifact" &&
+        entity !== "source"
+      ) {
+        return
+      }
+      openWorkspaceView(
+        { type: entity, id },
+        {
+          pane: hostPane,
+          pathname,
+          source: "task-header-entity-open",
+        },
+      )
     },
-    [pathname, searchParams],
+    [hostPane, pathname],
   );
   const canLoadFollowups = isSuggestionMode || isBootstrapLoaded
   const tabFromUrlRaw = searchParams.get("taskTab") ?? searchParams.get("detailsTab")
@@ -612,8 +482,6 @@ export function TaskDetails({
     setLocalTaskTab((prev) => (prev === urlTaskTab ? prev : urlTaskTab))
   }, [urlTaskTab])
 
-  const [isTabsHovered, setIsTabsHovered] = useState(false)
-  const tabsScrollRef = useRef<HTMLDivElement | null>(null)
   
   const rawTaskWatchersBootstrap = (selectedTask as { task_watchers?: TaskBootstrapTaskWatcher[] } | null)
     ?.task_watchers
@@ -636,9 +504,6 @@ export function TaskDetails({
     initialEligibleTaskWatchers: rawEligibleTaskWatchersBootstrap,
   });
   const [isAddWatcherOpen, setIsAddWatcherOpen] = useState(false);
-  const [isRefreshingRelatedIdeas, setIsRefreshingRelatedIdeas] = useState(false);
-  const [ideaActionById, setIdeaActionById] = useState<Record<string, "accepted" | "dismissed" | null>>({});
-  
   // Handle AI build state from URL
   useEffect(() => {
     const middleView = searchParams.get('middleView');
@@ -737,6 +602,44 @@ export function TaskDetails({
   const [projectSearchQuery, setProjectSearchQuery] = useState("")
   const [isDeleteDialogOpen, setIsDeleteDialogOpen] = useState(false)
   const [isDeleting, setIsDeleting] = useState(false)
+
+  const clearBodyPointerEvents = useCallback(() => {
+    if (typeof document === 'undefined') return
+    if (document.body.style.pointerEvents === 'none') {
+      document.body.style.pointerEvents = ''
+    }
+  }, [])
+
+  const scheduleBodyPointerUnlock = useCallback(() => {
+    clearBodyPointerEvents()
+    if (typeof window === 'undefined') return [] as number[]
+    // Radix Dialog can re-apply the lock during close animation; keep clearing past it.
+    return [
+      window.setTimeout(clearBodyPointerEvents, 0),
+      window.setTimeout(clearBodyPointerEvents, 50),
+      window.setTimeout(clearBodyPointerEvents, 150),
+      window.setTimeout(clearBodyPointerEvents, 300),
+    ]
+  }, [clearBodyPointerEvents])
+
+  // Delete dialog can open from a menu; Radix may leave body pointer-events:none.
+  useEffect(() => {
+    if (!isDeleteDialogOpen) return
+    const timers = scheduleBodyPointerUnlock()
+    return () => {
+      timers.forEach((timerId) => window.clearTimeout(timerId))
+      clearBodyPointerEvents()
+    }
+  }, [isDeleteDialogOpen, scheduleBodyPointerUnlock, clearBodyPointerEvents])
+
+  // Closing a deleted task often activates the next center-pane tab without unmounting
+  // TaskDetails — reset delete UI state so the next task is immediately actionable.
+  useEffect(() => {
+    setIsDeleting(false)
+    setIsDeleteDialogOpen(false)
+    clearBodyPointerEvents()
+  }, [task?.id, clearBodyPointerEvents])
+
   const [resolvingThreadIds, setResolvingThreadIds] = useState<Set<number>>(new Set())
   const [isAiBuildOpen, setIsAiBuildOpen] = useState(false)
   const [pendingOutputAnchor, setPendingOutputAnchor] = useState<{
@@ -875,7 +778,7 @@ export function TaskDetails({
   const [isEditingMetaDescription, setIsEditingMetaDescription] = useState(false)
   const [isEditingKeyword, setIsEditingKeyword] = useState(false)
 
-  const titleInputRef = useRef<HTMLTextAreaElement>(null)
+  const titleInputRef = useRef<HTMLInputElement>(null)
 
   // Use currentUser prop for chat
   const currentUserName = currentUser?.user_metadata?.full_name || currentUser?.email || '';
@@ -1061,14 +964,22 @@ export function TaskDetails({
     const projectColor = (projectOption && 'color' in projectOption && typeof (projectOption as any).color === 'string')
       ? (projectOption as any).color
       : (task && typeof task.project_color === 'string' ? task.project_color : undefined);
+    const projectLogo =
+      projectOption && typeof (projectOption as any).logo === 'string'
+        ? (projectOption as any).logo
+        : null;
     
     // Set optimistic state immediately for instant display updates
     setOptimisticProjectId(projectId || null);
     setOptimisticProjectName(projectName || null);
     setOptimisticProjectColor(projectColor || null);
     
-    // Patch both foreign key and denormalized fields, including project_color
-    handleFieldChange('project_id_int', projectId || undefined, { project_name: projectName, project_color: projectColor });
+    // Patch both foreign key and denormalized fields, including project_color/logo
+    handleFieldChange('project_id_int', projectId || undefined, {
+      project_name: projectName,
+      project_color: projectColor,
+      project_logo: projectLogo,
+    });
   };
 
   // Optimistic Assignee Change
@@ -1354,30 +1265,6 @@ export function TaskDetails({
   }, [activeTaskTab, task, attachmentsUpload])
 
   useEffect(() => {
-    const el = tabsScrollRef.current
-    if (!el) return
-    const onWheel = (e: WheelEvent) => {
-      if (!isTabsHovered) return
-      if (el.scrollWidth <= el.clientWidth) return
-      let deltaX = e.deltaX
-      let deltaY = e.deltaY
-      if (e.deltaMode === WheelEvent.DOM_DELTA_LINE) {
-        deltaX *= 16
-        deltaY *= 16
-      } else if (e.deltaMode === WheelEvent.DOM_DELTA_PAGE) {
-        deltaX *= el.clientWidth
-        deltaY *= el.clientHeight
-      }
-      const delta = e.shiftKey ? deltaY : Math.abs(deltaX) > Math.abs(deltaY) ? deltaX : deltaY
-      if (delta === 0) return
-      e.preventDefault()
-      el.scrollLeft += delta
-    }
-    el.addEventListener("wheel", onWheel, { passive: false, capture: true })
-    return () => el.removeEventListener("wheel", onWheel, true)
-  }, [isTabsHovered])
-
-  useEffect(() => {
     const currentTaskId = task?.id ? Number(task.id) : null
     return () => {
       if (!currentTaskId) return
@@ -1632,15 +1519,20 @@ export function TaskDetails({
     [selectedGroupBy],
   )
 
-  const handleDeleteTask = async () => {
-    if (!task) return;
-    // Close dialog synchronously before potentially unmounting this component.
+  const handleDeleteTask = () => {
+    if (!task || isDeleting) return;
+    // Close dialog synchronously before potentially unmounting / switching tabs.
     // If we unmount while Radix Dialog is still "open", it can leave the document
     // in a state where pointer events are disabled (app feels frozen).
     flushSync(() => {
       setIsDeleteDialogOpen(false);
       setIsDeleting(true);
     });
+
+    // Intentionally not cleared in finally — a fast network response used to cancel these
+    // before Radix finished closing and re-locked the page.
+    scheduleBodyPointerUnlock();
+
     const t = task; // non-null assertion for linter
     const taskIdNum = Number((t as any).id)
     const taskIdStr = String((t as any).id)
@@ -1696,55 +1588,49 @@ export function TaskDetails({
       queryClient.setQueryData(['subtasks', taskIdNum], []);
     }
     
-    // Always close details pane after delete (desktop and mobile).
-    // Defer to a microtask so the Dialog close state above has a chance to commit.
+    // Always close / switch away after delete. Unlock delete UI immediately — onClose often
+    // activates the next center-pane tab without unmounting this component, and waiting on the
+    // network left the delete button disabled for the next task.
     queueMicrotask(() => {
       if (typeof onClose === 'function') onClose();
-    });
-    
-    try {
-      // Backend: promote subtasks, then delete main task
-      const supabase = createClientComponentClient();
-      if (String(t.content_type_id) === '39') {
-        await supabase.from('tasks').update({ parent_task_id_int: null }).eq('parent_task_id_int', t.id);
-      }
-      await supabase.from('tasks').delete().eq('id', t.id);
-      
-      // Update Typesense if available
-      const typesenseUpdater = getTypesenseUpdater();
-      if (typesenseUpdater) {
-        typesenseUpdater({ ...t, deleted: true });
-      }
-      
-      // Show success message
-      toast({
-        title: 'Task deleted',
-        description: 'The task has been successfully deleted.',
-      });
-      
-    } catch (err: any) {
-      console.error('Failed to delete task:', err);
-      
-      toast({
-        title: 'Failed to delete task',
-        description: err?.message || 'An error occurred while deleting the task.',
-        variant: 'destructive',
-      });
-      
-      // Rollback: refetch all data to restore the task
-      queryClient.invalidateQueries({ queryKey: ['tasks'] });
-      queryClient.invalidateQueries({ queryKey: ['subtasks'] });
-      queryClient.invalidateQueries({ queryKey: ['kanban-bootstrap'] });
-      queryClient.invalidateQueries({ queryKey: ['task'] });
-    } finally {
       setIsDeleting(false);
+      scheduleBodyPointerUnlock();
+    });
 
-      // Safety net: if a dialog unmount left the page with pointer events disabled,
-      // restore them so the app remains usable.
-      if (typeof document !== 'undefined' && document.body?.style?.pointerEvents === 'none') {
-        document.body.style.pointerEvents = '';
-      }
-    }
+    // Network delete is serialized with other task writes so rapid successive deletes
+    // do not stack parallel Supabase requests (timeouts under trigger load).
+    const supabase = createClientComponentClient();
+    enqueueTaskDelete({
+      taskId: t.id,
+      promoteSubtasks: String(t.content_type_id) === '39',
+      supabase,
+      onSuccess: () => {
+        const typesenseUpdater = getTypesenseUpdater();
+        if (typesenseUpdater) {
+          typesenseUpdater({ ...t, deleted: true });
+        }
+        toast({
+          title: 'Task deleted',
+          description: 'The task has been successfully deleted.',
+        });
+        setIsDeleting(false);
+        clearBodyPointerEvents();
+      },
+      onError: (err: unknown) => {
+        console.error('Failed to delete task:', err);
+        toast({
+          title: 'Failed to delete task',
+          description: (err as Error)?.message || 'An error occurred while deleting the task.',
+          variant: 'destructive',
+        });
+        queryClient.invalidateQueries({ queryKey: ['tasks'] });
+        queryClient.invalidateQueries({ queryKey: ['subtasks'] });
+        queryClient.invalidateQueries({ queryKey: ['kanban-bootstrap'] });
+        queryClient.invalidateQueries({ queryKey: ['task'] });
+        setIsDeleting(false);
+        clearBodyPointerEvents();
+      },
+    });
   }
 
   // NOTE: do not couple isDeleting to dialog open state; deletion continues after dialog closes.
@@ -1827,13 +1713,12 @@ export function TaskDetails({
 
 
   // --- Task detail autosave wiring ----------------------------------------
-  // The autosave queue itself lives at module scope (see top of file) so it
-  // survives remounts between field edits. This ref only exposes the latest
-  // supabase/queryClient instances to the module-level queue.
+  // Patches/deletes go through `app/lib/task-write-queue` (module scope) so they
+  // survive remounts and stay serialized. This ref only exposes the latest
+  // supabase/queryClient instances to that queue.
   const autosaveDepsRef = useRef({ supabase, queryClient });
   autosaveDepsRef.current = { supabase, queryClient };
 
-  // Local wrapper: enqueue a canonical patch into the shared module-level queue.
   const enqueueTaskPatchLocal = useCallback(
     (taskId: string, canonicalFields: Record<string, any>, requiresListInvalidation: boolean) => {
       enqueueTaskPatch(taskId, canonicalFields, requiresListInvalidation, autosaveDepsRef.current);
@@ -1956,69 +1841,6 @@ export function TaskDetails({
   const allMentions = allTaskMentions;
 
   const { data: editFields, isLoading: isEditFieldsLoading, error: editFieldsError } = useTaskEditFields(accessToken);
-  const allContentTypes = useMemo(() => editFields?.content_types ?? [], [editFields?.content_types])
-  const contentTypeLabelById = useMemo(() => {
-    const entries = allContentTypes.map((ct) => [String(ct.id), ct.title] as const)
-    return new Map(entries)
-  }, [allContentTypes])
-
-  const relatedIdeasQueryKey = useMemo(() => ['task-related-ideas', String(taskIdNum ?? '')], [taskIdNum])
-
-  const bootstrapRelatedIdeasRaw = (selectedTask as { related_ideas?: unknown } | null)?.related_ideas
-  const bootstrapRelatedIdeasProposed = useMemo((): TaskRelatedIdeaRow[] | null => {
-    if (!Array.isArray(bootstrapRelatedIdeasRaw)) return null
-    return normalizeBootstrapRelatedIdeas(bootstrapRelatedIdeasRaw).filter((r) => r.status === 'proposed')
-  }, [bootstrapRelatedIdeasRaw, selectedTask?.id])
-
-  const fetchRelatedIdeasProposed = useCallback(async (): Promise<TaskRelatedIdeaRow[]> => {
-    if (!taskIdNum) return []
-    const { data, error } = await supabase
-      .from("task_related_ideas")
-      .select("id, task_id, project_id, title, description, content_type_id, status")
-      .eq("task_id", taskIdNum)
-      .eq("status", "proposed")
-      .order("created_at", { ascending: false })
-    if (error) throw error
-    return (data ?? []) as TaskRelatedIdeaRow[]
-  }, [supabase, taskIdNum])
-
-  const relatedIdeasSeededFromBootstrap = Array.isArray(bootstrapRelatedIdeasRaw)
-  const {
-    data: relatedIdeas = [],
-    isLoading: isFetchedRelatedIdeasLoading,
-    isFetching: isFetchedRelatedIdeasFetching,
-  } = useQuery<TaskRelatedIdeaRow[]>({
-    queryKey: relatedIdeasQueryKey,
-    enabled: false,
-    queryFn: fetchRelatedIdeasProposed,
-    initialData: bootstrapRelatedIdeasProposed ?? undefined,
-    staleTime: relatedIdeasSeededFromBootstrap ? 1000 * 60 * 60 : Number.POSITIVE_INFINITY,
-    refetchOnMount: false,
-  })
-
-  useEffect(() => {
-    if (!taskIdNum || isSuggestionMode) return
-    if (bootstrapRelatedIdeasProposed == null) return
-    queryClient.setQueryData<TaskRelatedIdeaRow[]>(relatedIdeasQueryKey, bootstrapRelatedIdeasProposed)
-  }, [
-    bootstrapRelatedIdeasProposed,
-    taskIdNum,
-    isSuggestionMode,
-    relatedIdeasQueryKey,
-    queryClient,
-  ])
-
-  const isRelatedIdeasLoading =
-    !isSuggestionMode && !!taskIdNum && isFetchedRelatedIdeasLoading
-  const isRelatedIdeasFetching = !isSuggestionMode && !!taskIdNum && isFetchedRelatedIdeasFetching
-
-  const refetchRelatedIdeas = useCallback(async () => {
-    return await queryClient.fetchQuery({
-      queryKey: relatedIdeasQueryKey,
-      queryFn: fetchRelatedIdeasProposed,
-    })
-  }, [fetchRelatedIdeasProposed, queryClient, relatedIdeasQueryKey])
-
   // Reset optimistic states when task changes
   useEffect(() => {
     setOptimisticAssignedUserId(null);
@@ -2099,144 +1921,6 @@ export function TaskDetails({
       return true;
     });
   }, [editFields?.channels, currentProjectId]);
-
-  const handleRefreshRelatedIdeas = useCallback(async () => {
-    if (!taskIdNum || isRefreshingRelatedIdeas) return
-    setIsRefreshingRelatedIdeas(true)
-    try {
-      const { error } = await supabase.functions.invoke("ai-task-related-ideas-run", {
-        body: {
-          task_id: taskIdNum,
-          force: true,
-          trigger_source: "manual_refresh",
-        },
-      })
-      if (error) throw error
-      await refetchRelatedIdeas()
-      toast({ title: "Related ideas refreshed" })
-    } catch (err: any) {
-      toast({
-        title: "Failed to refresh ideas",
-        description: err?.message || "Could not refresh related ideas.",
-        variant: "destructive",
-      })
-    } finally {
-      setIsRefreshingRelatedIdeas(false)
-    }
-  }, [taskIdNum, isRefreshingRelatedIdeas, supabase, refetchRelatedIdeas])
-
-  const handleSetRelatedIdeaStatus = useCallback(
-    async (ideaId: string, nextStatus: "accepted" | "dismissed") => {
-      if (!ideaId || !taskIdNum) return
-      if (!currentUserId) {
-        toast({
-          title: "Missing user",
-          description: "Could not determine current user id.",
-          variant: "destructive",
-        })
-        return
-      }
-
-      const previousRows = queryClient.getQueryData<TaskRelatedIdeaRow[]>(relatedIdeasQueryKey) ?? []
-      setIdeaActionById((prev) => ({ ...prev, [ideaId]: nextStatus }))
-      queryClient.setQueryData<TaskRelatedIdeaRow[]>(
-        relatedIdeasQueryKey,
-        previousRows.filter((row) => row.id !== ideaId),
-      )
-
-      try {
-        const { data, error } = await supabase.rpc("set_task_related_idea_status", {
-          p_idea_id: ideaId,
-          p_status: nextStatus,
-          p_user_id: currentUserId,
-        })
-        if (error) throw error
-        const payload = data as any
-        if (payload && typeof payload === "object" && payload.ok === false) {
-          throw new Error(typeof payload.message === "string" ? payload.message : "Status update failed")
-        }
-        toast({ title: nextStatus === "accepted" ? "Idea accepted" : "Idea dismissed" })
-      } catch (err: any) {
-        queryClient.setQueryData<TaskRelatedIdeaRow[]>(relatedIdeasQueryKey, previousRows)
-        toast({
-          title: `Failed to ${nextStatus === "accepted" ? "accept" : "dismiss"} idea`,
-          description: err?.message || "Update failed",
-          variant: "destructive",
-        })
-      } finally {
-        setIdeaActionById((prev) => ({ ...prev, [ideaId]: null }))
-      }
-    },
-    [taskIdNum, currentUserId, queryClient, relatedIdeasQueryKey, supabase],
-  )
-
-  const handleAcceptRelatedIdea = useCallback(
-    (idea: TaskRelatedIdeaRow) => {
-      if (!task) return
-
-      const composerInitialValues = {
-        title: idea.title || "",
-        briefing: idea.description || "",
-        content_type_id: idea.content_type_id != null ? String(idea.content_type_id) : "",
-        project_id_int: task.project_id_int != null ? String(task.project_id_int) : "",
-        language_id: task.language_id || "",
-        production_type_id: task.production_type_id || "",
-        onSuccess: async (newTask: any) => {
-          const createdTaskIdRaw = newTask?.id
-          const createdTaskIdNum = Number(createdTaskIdRaw)
-          if (!Number.isFinite(createdTaskIdNum)) {
-            toast({
-              title: "Task created, but idea was not linked",
-              description: "Could not resolve the new task id to accept this idea.",
-              variant: "destructive",
-            })
-            return
-          }
-          if (!currentUserId) {
-            toast({
-              title: "Task created, but idea was not accepted",
-              description: "Could not determine current user id.",
-              variant: "destructive",
-            })
-            return
-          }
-
-          setIdeaActionById((prev) => ({ ...prev, [idea.id]: "accepted" }))
-          try {
-            const { data, error } = await supabase.rpc("set_task_related_idea_status", {
-              p_idea_id: idea.id,
-              p_status: "accepted",
-              p_user_id: currentUserId,
-            })
-            if (error) throw error
-            const payload = data as any
-            if (payload && typeof payload === "object" && payload.ok === false) {
-              throw new Error(typeof payload.message === "string" ? payload.message : "Status update failed")
-            }
-
-            const { error: updateIdeaError } = await supabase
-              .from("task_related_ideas")
-              .update({ accepted_task_id: createdTaskIdNum })
-              .eq("id", idea.id)
-            if (updateIdeaError) throw updateIdeaError
-
-            await refetchRelatedIdeas()
-            toast({ title: "Idea accepted" })
-          } catch (err: any) {
-            toast({
-              title: "Task created, but failed to accept idea",
-              description: err?.message || "Could not update related idea status.",
-              variant: "destructive",
-            })
-          } finally {
-            setIdeaActionById((prev) => ({ ...prev, [idea.id]: null }))
-          }
-        },
-      }
-      openComposer(composerInitialValues)
-    },
-    [task, currentUserId, supabase, refetchRelatedIdeas, openComposer],
-  )
 
   useEffect(() => {
     threadHistoryLoadedTaskIdRef.current = null;
@@ -3135,12 +2819,14 @@ export function TaskDetails({
         value: String(opt.id),
         label: opt.name,
         logo: opt.logo ?? opt.logo_url ?? null,
+        color: opt.color ?? null,
       }))
     if (currentProjectId && !activeProjects.some((opt) => String(opt.value) === String(currentProjectId))) {
       activeProjects.unshift({
         value: String(currentProjectId),
         label: currentProjectName || `Project #${currentProjectId}`,
-        logo: (task as any)?.project?.logo ?? null,
+        logo: (task as any)?.project?.logo ?? (task as any)?.project_logo ?? null,
+        color: (task as any)?.project?.color ?? task?.project_color ?? null,
       })
     }
     return activeProjects
@@ -3280,8 +2966,18 @@ export function TaskDetails({
       onDuplicateTask(initialValues);
     }
   };
-  const tabTriggerClassName =
-    "-mb-px rounded-none border-b-0 data-[state=active]:bg-transparent data-[state=active]:shadow-[inset_0_-2px_0_0_#111827]"
+  const renderProjectMark = (logo: string | null | undefined, color: string | null | undefined) => {
+    const logoUrl = logo ? getImageUrl(logo) : null
+    if (logoUrl) {
+      return <img src={logoUrl} alt="" className="h-4 w-4 shrink-0 rounded-sm object-cover" />
+    }
+    return (
+      <span
+        className="h-2 w-2 shrink-0 rounded-full bg-gray-300"
+        style={color ? { backgroundColor: color } : undefined}
+      />
+    )
+  }
 
   return (
     <>
@@ -3295,384 +2991,110 @@ export function TaskDetails({
       >
       <div className="flex min-h-0 flex-1 flex-col">
         <section className="flex min-h-0 flex-1 flex-col overflow-hidden">
-      <div className={cn(TASK_PANE_HEADER_SHELL_CLASS, "border-b-0")}>
-        {/* Header: title and actions */}
-        <div className={TASK_PANE_HEADER_ROW_CLASS}>
-          {onDetailStackBack ? (
+      {/* Single h-10 band including border-b so it aligns with left-pane row 2. */}
+      <div className={cn(TASK_DETAILS_HEADER_ROW_CLASS, "sticky top-0 z-10")}>
+          {activeTaskTab !== "overview" ? (
             <Button
               type="button"
               variant="ghost"
               size="sm"
-              className="h-8 w-8 shrink-0 p-0 text-gray-600 hover:bg-gray-100 hover:text-gray-900"
+              className="h-7 w-7 shrink-0 p-0 text-gray-600 hover:bg-gray-100 hover:text-gray-900"
+              onClick={() => setTaskTab("overview")}
+              aria-label="Back to overview"
+              title="Back to overview"
+            >
+              <ChevronLeft className="h-4 w-4" />
+            </Button>
+          ) : onDetailStackBack ? (
+            <Button
+              type="button"
+              variant="ghost"
+              size="sm"
+              className="h-7 w-7 shrink-0 p-0 text-gray-600 hover:bg-gray-100 hover:text-gray-900"
               onClick={onDetailStackBack}
               aria-label="Back to profile"
               title="Back to profile"
             >
-              <ChevronLeft className="h-5 w-5" />
+              <ChevronLeft className="h-4 w-4" />
             </Button>
           ) : isMobile && onMobileBack ? (
             <Button
               type="button"
               variant="ghost"
               size="sm"
-              className="h-8 w-8 shrink-0 p-0 text-gray-600 hover:bg-gray-100 hover:text-gray-900"
+              className="h-7 w-7 shrink-0 p-0 text-gray-600 hover:bg-gray-100 hover:text-gray-900"
               onClick={onMobileBack}
               aria-label="Go back"
               title="Go back"
             >
-              <ChevronLeft className="h-5 w-5" />
+              <ChevronLeft className="h-4 w-4" />
             </Button>
           ) : null}
-          {/* Task Title */}
-          <div className="mr-4 min-w-0 flex-1">
-            <h1 className="truncate text-base font-semibold text-gray-900">
+
+          <div className="flex min-w-0 flex-1 items-center gap-2">
+            <h1 className="min-w-0 truncate text-[13px] font-medium text-gray-800">
               {isLoading ? "Loading..." : (task?.title || "Untitled Task")}
             </h1>
-            <div className="mt-1 flex flex-nowrap items-center gap-2 text-xs text-gray-500">
-              {(() => {
-                const projectName = task?.project?.name ?? currentProjectName ?? "No project"
-                const projectVisual = projectLogoUrl ? (
-                  <img src={projectLogoUrl} alt="" className="h-4 w-4 shrink-0 rounded-sm object-cover" />
-                ) : (
-                  <span
-                    className="h-2 w-2 shrink-0 rounded-full bg-gray-300"
-                    style={currentProjectColor ? { backgroundColor: currentProjectColor } : undefined}
-                  />
-                )
-                if (!isSuggestionMode && currentProjectId != null) {
-                  return (
-                    <button
-                      type="button"
-                      onClick={() => openCenterEntity("project", currentProjectId)}
-                      className="flex min-w-0 items-center gap-2 rounded transition-colors hover:text-gray-700 hover:underline"
-                      title={`Open ${projectName}`}
-                    >
-                      {projectVisual}
-                      <span className="truncate">{projectName}</span>
-                    </button>
-                  )
-                }
-                return (
-                  <>
-                    {projectVisual}
-                    <span className="truncate">{projectName}</span>
-                  </>
-                )
-              })()}
-              {!isSuggestionMode ? (
-                <>
-                  <span className="shrink-0 text-gray-300" aria-hidden>·</span>
-                  {canEdit ? (
-                    <span className="inline-flex h-5 max-w-[12rem] shrink-0 items-center">
-                      <Select
-                        value={isLoading ? NONE_OPTION : (currentStatusId || NONE_OPTION)}
-                        onValueChange={
-                          isLoading
-                            ? undefined
-                            : (value) =>
-                                handleStatusChange({
-                                  target: { value: value === NONE_OPTION ? "" : value },
-                                } as React.ChangeEvent<HTMLSelectElement>)
-                        }
-                      >
-                        <SelectTrigger
-                          hideDropdownIcon
-                          className="!flex h-5 w-fit max-w-[12rem] shrink-0 flex-row flex-nowrap items-center gap-0 overflow-hidden whitespace-nowrap border-0 bg-transparent p-0 shadow-none focus:ring-0 focus:ring-offset-0 [&>span]:line-clamp-none [&>span]:inline-flex [&>span]:max-w-full [&>span]:items-center [&>span]:overflow-hidden [&>span]:whitespace-nowrap"
-                          aria-label="Change task status"
-                        >
-                          {currentStatusName ? (
-                            <span
-                              className="inline-flex h-5 max-w-[12rem] items-center gap-0.5 overflow-hidden whitespace-nowrap rounded-full px-2 text-[10px] font-medium leading-none"
-                              style={{
-                                backgroundColor: currentStatusColor || "#e5e7eb",
-                                color: currentStatusColor ? "#fff" : "#374151",
-                              }}
-                            >
-                              <span className="min-w-0 truncate">{currentStatusName}</span>
-                              <ChevronDown className="h-3 w-3 shrink-0 opacity-90" aria-hidden />
-                            </span>
-                          ) : (
-                            <span className="inline-flex h-5 items-center gap-0.5 whitespace-nowrap rounded-full bg-gray-100 px-2 text-[10px] font-medium leading-none text-gray-600">
-                              <span className="min-w-0 truncate">
-                                {isEditFieldsLoading
-                                  ? "Loading..."
-                                  : editFieldsError
-                                    ? "Error"
-                                    : "Status"}
-                              </span>
-                              <ChevronDown className="h-3 w-3 shrink-0 opacity-70" aria-hidden />
-                            </span>
-                          )}
-                        </SelectTrigger>
-                        <SelectContent className="w-[min(90vw,16rem)] max-w-full">
-                          <SelectItem value={NONE_OPTION}>Select status</SelectItem>
-                          {statusOptions.map((opt) => (
-                            <SelectItem key={String(opt.value)} value={String(opt.value)}>
-                              <span
-                                className="inline-flex items-center rounded-full px-2 py-0.5 text-xs font-medium"
-                                style={{
-                                  backgroundColor: opt.color || "#e5e7eb",
-                                  color: opt.color ? "#fff" : "#374151",
-                                }}
-                              >
-                                {opt.label}
-                              </span>
-                            </SelectItem>
-                          ))}
-                        </SelectContent>
-                      </Select>
-                    </span>
-                  ) : currentStatusName ? (
-                    <span
-                      className="inline-flex h-5 max-w-[12rem] shrink-0 items-center overflow-hidden whitespace-nowrap rounded-full px-2 text-[10px] font-medium leading-none"
-                      style={{
-                        backgroundColor: currentStatusColor || "#e5e7eb",
-                        color: currentStatusColor ? "#fff" : "#374151",
-                      }}
-                      title={currentStatusName}
-                    >
-                      <span className="min-w-0 truncate">{currentStatusName}</span>
-                    </span>
-                  ) : (
-                    <span className="shrink-0 text-[10px] text-gray-400">No status</span>
-                  )}
-                </>
-              ) : null}
-              {!isSuggestionMode ? (
-                <Popover
-                  open={isAddWatcherOpen}
-                  onOpenChange={(open) => {
-                    setIsAddWatcherOpen(open);
-                  }}
-                >
-                  <PopoverTrigger asChild>
-                    <button
-                      type="button"
-                      className="ml-1 inline-flex max-w-[140px] items-center gap-1 overflow-hidden rounded-full border border-gray-200 bg-white px-1.5 py-0.5"
-                      title="Manage watchers"
-                      aria-label="Manage watchers"
-                    >
-                      <div className="flex items-center -space-x-1">
-                        {taskWatchers.slice(0, 3).map((u) => (
-                          <UserAvatar
-                            key={u.watcher_user_id}
-                            name={u.full_name ?? `User #${u.watcher_user_id}`}
-                            photoUrl={getImageUrl(u.photo)}
-                            size="xs"
-                            className="h-5 w-5 min-h-5 min-w-5"
-                          />
-                        ))}
-                      </div>
-                      {taskWatchers.length > 3 ? (
-                        <span className="text-[10px] text-gray-500">+{taskWatchers.length - 3}</span>
-                      ) : null}
-                    </button>
-                  </PopoverTrigger>
-                  <PopoverContent className="w-[min(90vw,20rem)] p-0" align="start">
-                    <Command>
-                      <CommandInput
-                        placeholder="Search project users…"
-                        disabled={isTaskWatchersMutating}
-                      />
-                      <CommandList className="max-h-[260px]">
-                        <CommandEmpty>
-                          No users found
-                        </CommandEmpty>
-                        <CommandGroup>
-                          {watcherDropdownOptions.map((u) => {
-                            const isWatcher = selectedTaskWatcherIds.has(u.watcher_user_id)
-                            const displayName = u.full_name ?? `User #${u.watcher_user_id}`
-                            return (
-                              <CommandItem
-                                key={u.watcher_user_id}
-                                value={`${u.full_name ?? ""} ${u.watcher_user_id}`}
-                                className={cn(
-                                  "group cursor-pointer",
-                                  isTaskWatchersMutating && "pointer-events-none opacity-50",
-                                )}
-                                onSelect={() => {
-                                  void handleToggleTaskWatcher(u.watcher_user_id)
-                                }}
-                              >
-                                <div className="flex w-full min-w-0 items-center gap-2">
-                                  <UserAvatar
-                                    name={displayName}
-                                    photoUrl={getImageUrl(u.photo)}
-                                    size="xs"
-                                  />
-                                  <span className="min-w-0 flex-1 truncate" title={displayName}>
-                                    {displayName}
-                                  </span>
-                                  <button
-                                    type="button"
-                                    title={`Open ${displayName}`}
-                                    aria-label={`Open ${displayName}`}
-                                    className="inline-flex h-6 w-6 shrink-0 items-center justify-center rounded text-gray-400 opacity-0 transition-opacity hover:bg-gray-100 hover:text-gray-700 group-hover:opacity-100"
-                                    onClick={(e) => {
-                                      e.preventDefault()
-                                      e.stopPropagation()
-                                      handleOpenWatcherProfile(u.watcher_user_id)
-                                    }}
-                                    onPointerDown={(e) => e.stopPropagation()}
-                                  >
-                                    <ExternalLink className="h-3.5 w-3.5" />
-                                  </button>
-                                  <span
-                                    className={cn(
-                                      "shrink-0 text-[10px] font-medium",
-                                      isWatcher ? "text-gray-700" : "text-gray-400",
-                                    )}
-                                  >
-                                    {isWatcher ? "Watching" : "Add"}
-                                  </span>
-                                </div>
-                              </CommandItem>
-                            )
-                          })}
-                        </CommandGroup>
-                      </CommandList>
-                    </Command>
-                  </PopoverContent>
-                </Popover>
-              ) : null}
-            </div>
           </div>
-          
-          {/* Actions - right aligned */}
-          <div className="flex items-center gap-2">
-            {/* Actions dropdown menu */}
+
+          <div className="flex shrink-0 items-center gap-1">
             {!isSuggestionMode ? (
               <DropdownMenu>
                 <DropdownMenuTrigger asChild>
-                  <Button variant="ghost" size="sm" className="h-8 w-8 p-0">
+                  <Button variant="ghost" size="sm" className="h-7 w-7 p-0">
                     <MoreHorizontal className="h-4 w-4" />
                   </Button>
                 </DropdownMenuTrigger>
                 <DropdownMenuContent align="end">
-                {/* Add subtask - only for regular tasks (not main or subtask) */}
-                {!isLoading && task && task.content_type_id !== '39' && !task.parent_task_id_int && (
-                  <DropdownMenuItem onClick={handleAddSubtaskForRegular}>
-                    <Plus className="w-4 h-4 mr-2" />
-                    Add Subtask
-                  </DropdownMenuItem>
-                )}
-                {!isSuggestionMode && (
-                  <DropdownMenuItem onClick={handleDuplicateTask}>
-                  <Copy className="w-4 h-4 mr-2" />
-                  Duplicate Task
-                  </DropdownMenuItem>
-                )}
-                <DropdownMenuSub>
-                  <DropdownMenuSubTrigger className="gap-2">
-                    <Share2 className="w-4 h-4" />
-                    Share
-                    <ChevronRight className="ml-auto h-4 w-4 shrink-0 opacity-60" />
-                  </DropdownMenuSubTrigger>
-                  <DropdownMenuSubContent>
-                    <DropdownMenuItem onClick={() => {
-                      if (typeof window !== 'undefined') {
-                        navigator.clipboard.writeText(window.location.href);
-                        toast({
-                          title: 'Link copied',
-                          description: 'Task link copied to clipboard',
-                        });
-                      }
-                    }}>
-                      <Share2 className="w-4 h-4 mr-2" />
-                      Copy Link
+                  {!isLoading && task && task.content_type_id !== '39' && !task.parent_task_id_int && (
+                    <DropdownMenuItem onClick={handleAddSubtaskForRegular}>
+                      <Plus className="w-4 h-4 mr-2" />
+                      Add Subtask
                     </DropdownMenuItem>
-                  </DropdownMenuSubContent>
-                </DropdownMenuSub>
-                {!isSuggestionMode && taskIdNum ? (
-                  <DropdownMenuItem onClick={handleQuickFiveStarReview}>
-                    <Star className="w-4 h-4 mr-2" />
-                    Quick 5-star review
+                  )}
+                  <DropdownMenuItem onClick={handleDuplicateTask}>
+                    <Copy className="w-4 h-4 mr-2" />
+                    Duplicate Task
                   </DropdownMenuItem>
-                ) : null}
-                {!isSuggestionMode && (
-                  <DropdownMenuItem onClick={() => setIsDeleteDialogOpen(true)} className="text-red-600">
-                  <Trash2 className="w-4 h-4 mr-2" />
-                  Delete Task
+                  <DropdownMenuSub>
+                    <DropdownMenuSubTrigger className="gap-2">
+                      <Share2 className="w-4 h-4" />
+                      Share
+                      <ChevronRight className="ml-auto h-4 w-4 shrink-0 opacity-60" />
+                    </DropdownMenuSubTrigger>
+                    <DropdownMenuSubContent>
+                      <DropdownMenuItem onClick={() => {
+                        if (typeof window !== 'undefined') {
+                          navigator.clipboard.writeText(window.location.href);
+                          toast({
+                            title: 'Link copied',
+                            description: 'Task link copied to clipboard',
+                          });
+                        }
+                      }}>
+                        <Share2 className="w-4 h-4 mr-2" />
+                        Copy Link
+                      </DropdownMenuItem>
+                    </DropdownMenuSubContent>
+                  </DropdownMenuSub>
+                  {taskIdNum ? (
+                    <DropdownMenuItem onClick={handleQuickFiveStarReview}>
+                      <Star className="w-4 h-4 mr-2" />
+                      Quick 5-star review
+                    </DropdownMenuItem>
+                  ) : null}
+                  <DropdownMenuItem
+                    className="text-red-600 focus:text-red-700"
+                    onClick={() => setIsDeleteDialogOpen(true)}
+                  >
+                    <Trash2 className="w-4 h-4 mr-2" />
+                    Delete Task
                   </DropdownMenuItem>
-                )}
                 </DropdownMenuContent>
               </DropdownMenu>
             ) : null}
-
-            {/* Suggestion actions are shown in a pinned bottom bar (see below) */}
-            
-            {/* Close button - hidden on mobile */}
-            {onCollapse && !isMobile && (
-              <button
-                className="inline-flex items-center justify-center w-7 h-7 text-gray-500 hover:bg-gray-100 transition focus:outline-none focus:ring-2 focus:ring-blue-400"
-                aria-label="Close details pane"
-                onClick={onCollapse}
-                type="button"
-              >
-                <X className="w-5 h-5" />
-              </button>
-            )}
-            
-            {/* Expand/restore button - hidden on mobile */}
-            {(onExpand || onRestore) && !isMobile && (
-              <button
-                className="inline-flex items-center justify-center w-7 h-7 text-gray-500 hover:bg-gray-100 transition focus:outline-none focus:ring-2 focus:ring-blue-400"
-                aria-label={isExpanded ? 'Restore details pane' : 'Expand details pane'}
-                title={isExpanded ? 'Restore details pane' : 'Expand details pane'}
-                onClick={isExpanded ? onRestore : onExpand}
-                type="button"
-              >
-                {isExpanded ? <Minimize2 className="w-5 h-5" /> : <Maximize2 className="w-5 h-5" />}
-              </button>
-            )}
           </div>
-        </div>
-
       </div>
-      {/* Suggestions only ever have the single Overview tab, so the tab bar is pure noise there — hide
-          it and render the overview content directly. Normal tasks keep the full tab system. */}
-      {!isSuggestionMode && (
-      <Tabs
-        value={activeTaskTab}
-        onValueChange={(value) => setTaskTab(value as TaskTab)}
-        className="flex-none"
-      >
-        <div
-          ref={tabsScrollRef}
-          className="ai-chat-tabs-scroll min-h-0 min-w-0 overflow-x-auto overflow-y-visible border-b border-gray-200"
-          onMouseEnter={() => setIsTabsHovered(true)}
-          onMouseLeave={() => setIsTabsHovered(false)}
-        >
-          <TabsList className="h-auto flex-nowrap justify-start rounded-none border-t-0 bg-transparent p-0 px-4 whitespace-nowrap">
-            <TabsTrigger value="overview" className={tabTriggerClassName}>
-              Overview
-            </TabsTrigger>
-            {!isSuggestionMode ? (
-              <>
-                <TabsTrigger value="attachments" className={tabTriggerClassName}>
-                  Attachments
-                </TabsTrigger>
-                <TabsTrigger value="artifacts" className={tabTriggerClassName}>
-                  Artifacts
-                </TabsTrigger>
-                <TabsTrigger value="seo" className={tabTriggerClassName}>
-                  SEO and AI SEO
-                </TabsTrigger>
-                <TabsTrigger value="activity" className={tabTriggerClassName}>
-                  Activity
-                </TabsTrigger>
-                <TabsTrigger value="reviews" className={tabTriggerClassName}>
-                  Reviews
-                </TabsTrigger>
-                <TabsTrigger value="comments" className={tabTriggerClassName}>
-                  Comments
-                </TabsTrigger>
-              </>
-            ) : null}
-          </TabsList>
-        </div>
-      </Tabs>
-      )}
       {/* Main content (task-details body). The comments pane is a sibling <aside> below, so this
           column and the comments column share the same parent height via the top-level flex split. */}
       <div className="relative flex min-h-0 flex-1 flex-col overflow-hidden">
@@ -3687,55 +3109,52 @@ export function TaskDetails({
           <div className="grid grid-cols-[max-content_minmax(0,1fr)] gap-x-6 gap-y-2 items-start">
             {/* Task Title */}
             <label className="text-sm font-normal text-gray-400 self-center justify-self-start text-left" htmlFor="task-title">Title</label>
-            {isEditingTitle && canEdit ? (
-              <textarea
+            {canEdit ? (
+              <input
                 ref={titleInputRef}
                 id="task-title"
+                type="text"
                 data-ai-field-type="task_title"
                 data-ai-field-label="Title"
                 value={title}
                 onChange={e => setTitle(e.target.value)}
-                onFocus={() =>
+                onFocus={() => {
+                  setIsEditingTitle(true)
                   setTaskFieldContext({
                     fieldType: "task_title",
                     label: `${task?.title?.trim() || "Task"} - Title`,
                     entityId: task?.id ?? null,
                     instructions: taskBuildInstructions || null,
                   })
-                }
+                }}
                 onBlur={() => {
                   if (title !== task?.title) handleFieldChange('title', title);
                   setIsEditingTitle(false);
                 }}
-                onKeyDown={e => { 
-                  if (e.key === 'Enter' && !e.shiftKey) { 
+                onKeyDown={e => {
+                  if (e.key === 'Enter') {
+                    e.preventDefault()
                     if (title !== task?.title) handleFieldChange('title', title);
-                    setIsEditingTitle(false); 
+                    setIsEditingTitle(false);
+                    (e.target as HTMLInputElement).blur()
                   } else if (e.key === 'Escape') {
                     setTitle(task?.title ?? '');
                     setIsEditingTitle(false);
+                    (e.target as HTMLInputElement).blur()
                   }
                 }}
-                className="w-full px-3 py-2 border border-gray-200 rounded-md focus:outline-none focus:ring-2 focus:ring-gray-200 text-sm font-normal leading-normal resize-none min-h-[40px]"
-                rows={1}
-                autoFocus
+                placeholder="Set title"
                 disabled={isLoading}
+                className="h-10 min-h-10 w-full !cursor-text rounded-md border border-gray-200 bg-white px-3 text-sm font-normal leading-none text-gray-900 caret-gray-900 outline-none focus:ring-2 focus:ring-gray-200"
+                style={{ cursor: "text" }}
               />
             ) : (
               <div
-                className="w-full px-3 py-2 rounded-md border border-gray-200 cursor-pointer hover:border-gray-300 min-h-[40px] flex items-center min-w-0 overflow-hidden"
-                tabIndex={0}
-                onClick={!canEdit ? undefined : (e) => {
-                  const selection = window.getSelection()
-                  if (selection && !selection.isCollapsed && selection.toString().trim().length > 0) return
-                  setIsEditingTitle(true)
-                }}
-                onKeyDown={!canEdit ? undefined : (e => { if (e.key === 'Enter') setIsEditingTitle(true) })}
-                aria-label="Edit title"
+                className="flex h-10 min-h-10 w-full min-w-0 items-center overflow-hidden rounded-md border border-gray-200 px-3"
+                aria-label="Title"
                 title={title || ''}
-                style={isLoading ? { pointerEvents: 'none', opacity: 0.5 } : {}}
               >
-                <span className="text-sm font-normal text-gray-900 truncate block min-w-0 whitespace-nowrap select-text">{title || <span className="text-gray-400">Click to set title</span>}</span>
+                <span className="block min-w-0 truncate whitespace-nowrap text-sm font-normal text-gray-900">{title || <span className="text-gray-400">No title</span>}</span>
               </div>
             )}
             {/* Project */}
@@ -3753,15 +3172,7 @@ export function TaskDetails({
                 >
                   <SelectTrigger className="h-10 min-h-10 w-full min-w-0 border-gray-200 rounded-md text-sm leading-none">
                     <div className="flex min-w-0 items-center gap-2">
-                      {currentProjectOption?.logo ? (
-                        <img
-                          src={getImageUrl(currentProjectOption.logo || undefined) || undefined}
-                          alt=""
-                          className="h-4 w-4 shrink-0 rounded-sm object-cover"
-                        />
-                      ) : (
-                        <span className="h-2 w-2 shrink-0 rounded-full bg-gray-300" />
-                      )}
+                      {renderProjectMark(currentProjectOption?.logo, currentProjectOption?.color ?? currentProjectColor)}
                       <span className="truncate">
                         {currentProjectOption?.label || "Select project"}
                       </span>
@@ -3781,11 +3192,7 @@ export function TaskDetails({
                     {filteredProjectOptions.map((opt) => (
                       <SelectItem key={String(opt.value)} value={String(opt.value)}>
                         <div className="flex items-center gap-2">
-                          {opt.logo ? (
-                            <img src={getImageUrl(opt.logo || undefined) || undefined} alt="" className="h-4 w-4 rounded-sm object-cover" />
-                          ) : (
-                            <span className="h-2 w-2 rounded-full bg-gray-300" />
-                          )}
+                          {renderProjectMark(opt.logo, opt.color)}
                           <span className="truncate">{opt.label}</span>
                         </div>
                       </SelectItem>
@@ -3803,15 +3210,7 @@ export function TaskDetails({
               >
                 <SelectTrigger className="h-10 min-h-10 w-full min-w-0 border-gray-200 rounded-md text-sm leading-none">
                   <div className="flex min-w-0 items-center gap-2">
-                    {currentProjectOption?.logo ? (
-                      <img
-                        src={getImageUrl(currentProjectOption.logo || undefined) || undefined}
-                        alt=""
-                        className="h-4 w-4 shrink-0 rounded-sm object-cover"
-                      />
-                    ) : (
-                      <span className="h-2 w-2 shrink-0 rounded-full bg-gray-300" />
-                    )}
+                    {renderProjectMark(currentProjectOption?.logo, currentProjectOption?.color ?? currentProjectColor)}
                     <span className="truncate">
                       {currentProjectOption?.label || "Select project"}
                     </span>
@@ -3831,11 +3230,7 @@ export function TaskDetails({
                   {filteredProjectOptions.map((opt) => (
                     <SelectItem key={String(opt.value)} value={String(opt.value)}>
                       <div className="flex items-center gap-2">
-                        {opt.logo ? (
-                          <img src={getImageUrl(opt.logo || undefined) || undefined} alt="" className="h-4 w-4 rounded-sm object-cover" />
-                        ) : (
-                          <span className="h-2 w-2 rounded-full bg-gray-300" />
-                        )}
+                        {renderProjectMark(opt.logo, opt.color)}
                         <span className="truncate">{opt.label}</span>
                       </div>
                     </SelectItem>
@@ -3926,6 +3321,125 @@ export function TaskDetails({
                 )}
               </div>
             )}
+            {!isSuggestionMode ? (
+              <>
+                <label className="text-sm font-normal text-gray-400 self-center justify-self-start text-left">
+                  Watchers
+                </label>
+                <div className="w-full min-w-0">
+                  <Popover
+                    open={isAddWatcherOpen}
+                    onOpenChange={(open) => {
+                      setIsAddWatcherOpen(open)
+                    }}
+                  >
+                    <PopoverTrigger asChild>
+                      <button
+                        type="button"
+                        className="flex h-10 min-h-10 w-full min-w-0 items-center gap-2 rounded-md border border-gray-200 bg-white px-3 text-left text-sm hover:border-gray-300"
+                        title="Manage watchers"
+                        aria-label="Manage watchers"
+                        disabled={isLoading}
+                      >
+                        {taskWatchers.length > 0 ? (
+                          <>
+                            <div className="flex items-center -space-x-1">
+                              {taskWatchers.slice(0, 5).map((u) => (
+                                <UserAvatar
+                                  key={u.watcher_user_id}
+                                  name={u.full_name ?? `User #${u.watcher_user_id}`}
+                                  photoUrl={getImageUrl(u.photo)}
+                                  size="xs"
+                                  className="h-5 w-5 min-h-5 min-w-5"
+                                />
+                              ))}
+                            </div>
+                            {taskWatchers.length > 5 ? (
+                              <span className="text-xs text-gray-500">
+                                +{taskWatchers.length - 5}
+                              </span>
+                            ) : (
+                              <span className="truncate text-sm text-gray-900">
+                                {taskWatchers.length === 1
+                                  ? (taskWatchers[0]?.full_name ?? "1 watcher")
+                                  : `${taskWatchers.length} watchers`}
+                              </span>
+                            )}
+                          </>
+                        ) : (
+                          <span className="text-gray-400">
+                            {isTaskWatchersLoading ? "Loading…" : "Add watchers"}
+                          </span>
+                        )}
+                      </button>
+                    </PopoverTrigger>
+                    <PopoverContent className="w-[min(90vw,20rem)] p-0" align="start">
+                      <Command>
+                        <CommandInput
+                          placeholder="Search project users…"
+                          disabled={isTaskWatchersMutating}
+                        />
+                        <CommandList className="max-h-[260px]">
+                          <CommandEmpty>No users found</CommandEmpty>
+                          <CommandGroup>
+                            {watcherDropdownOptions.map((u) => {
+                              const isWatcher = selectedTaskWatcherIds.has(u.watcher_user_id)
+                              const displayName = u.full_name ?? `User #${u.watcher_user_id}`
+                              return (
+                                <CommandItem
+                                  key={u.watcher_user_id}
+                                  value={`${u.full_name ?? ""} ${u.watcher_user_id}`}
+                                  className={cn(
+                                    "group cursor-pointer",
+                                    isTaskWatchersMutating && "pointer-events-none opacity-50",
+                                  )}
+                                  onSelect={() => {
+                                    void handleToggleTaskWatcher(u.watcher_user_id)
+                                  }}
+                                >
+                                  <div className="flex w-full min-w-0 items-center gap-2">
+                                    <UserAvatar
+                                      name={displayName}
+                                      photoUrl={getImageUrl(u.photo)}
+                                      size="xs"
+                                    />
+                                    <span className="min-w-0 flex-1 truncate" title={displayName}>
+                                      {displayName}
+                                    </span>
+                                    <button
+                                      type="button"
+                                      title={`Open ${displayName}`}
+                                      aria-label={`Open ${displayName}`}
+                                      className="inline-flex h-6 w-6 shrink-0 items-center justify-center rounded text-gray-400 opacity-0 transition-opacity hover:bg-gray-100 hover:text-gray-700 group-hover:opacity-100"
+                                      onClick={(e) => {
+                                        e.preventDefault()
+                                        e.stopPropagation()
+                                        handleOpenWatcherProfile(u.watcher_user_id)
+                                      }}
+                                      onPointerDown={(e) => e.stopPropagation()}
+                                    >
+                                      <ExternalLink className="h-3.5 w-3.5" />
+                                    </button>
+                                    <span
+                                      className={cn(
+                                        "shrink-0 text-[10px] font-medium",
+                                        isWatcher ? "text-gray-700" : "text-gray-400",
+                                      )}
+                                    >
+                                      {isWatcher ? "Watching" : "Add"}
+                                    </span>
+                                  </div>
+                                </CommandItem>
+                              )
+                            })}
+                          </CommandGroup>
+                        </CommandList>
+                      </Command>
+                    </PopoverContent>
+                  </Popover>
+                </div>
+              </>
+            ) : null}
             {/* Due date */}
             <label className="text-sm font-normal text-gray-400 self-center justify-self-start text-left" htmlFor="task-due-date">Due date</label>
             {canEdit || isSuggestionMode ? (
@@ -4361,24 +3875,15 @@ export function TaskDetails({
               bootstrapAttachments={displayAttachments}
               reviewData={selectedTask?.review_data}
               preferredChannelId={activeChannelId}
-              onNavigateTab={setTaskTab}
               commentsPanelProps={commentsPanelProps}
-              relatedIdeas={relatedIdeas}
-              isRelatedIdeasLoading={isRelatedIdeasLoading || isRelatedIdeasFetching}
-              isRelatedIdeasRefreshing={isRefreshingRelatedIdeas}
-              ideaActionById={ideaActionById}
-              contentTypeLabelById={contentTypeLabelById}
-              onDismissRelatedIdea={(ideaId) => void handleSetRelatedIdeaStatus(ideaId, "dismissed")}
-              onAcceptRelatedIdea={(idea) => handleAcceptRelatedIdea(idea as TaskRelatedIdeaRow)}
-              onRefreshRelatedIdeas={() => void handleRefreshRelatedIdeas()}
               seedSeo={seedSeoFromTask}
               onArtifactTextSelectForComment={(selection) => {
                 if (!selection?.quote) {
                   setPendingArtifactTextQuote(null)
                   return
                 }
+                // Keep the dock collapsed; the composer shows a comment icon until clicked.
                 setPendingArtifactTextQuote(selection.quote)
-                setCommentsComposerFocusToken((token) => token + 1)
               }}
             />
           ) : null}
@@ -4493,11 +3998,13 @@ export function TaskDetails({
 
           {!isSuggestionMode && activeTaskTab === "artifacts" && taskIdNum ? (
             <section className="p-4 pb-0">
+              <h3 className="mb-3 text-base font-medium text-gray-900">Artifacts</h3>
               <ArtifactWorkspace
                 taskId={taskIdNum}
                 defaultChannelId={activeChannelId}
                 defaultLanguageId={task?.language_id ? Number(task.language_id) : null}
                 projectId={task?.project_id_int ?? null}
+                hideHeading
               />
             </section>
           ) : null}

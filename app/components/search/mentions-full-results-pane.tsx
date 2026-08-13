@@ -5,8 +5,9 @@ import { useSearchParams } from "next/navigation"
 import { useInfiniteQuery, useQueryClient } from "@tanstack/react-query"
 import { Loader2 } from "lucide-react"
 import { SearchResultRow } from "./SearchResultRow"
-import { ObjectListColumnHeader, getObjectListColumnHeaderLabels } from "./object-list-column-header"
 import type { GlobalSearchDocument } from "../../lib/global-search-types"
+import { groupByFriendlyDateBucket } from "../../lib/friendly-date-buckets"
+import { filterLeftPaneListItems } from "../../lib/left-pane-list-filter"
 import {
   fetchMentionsInbox,
   type MentionsInboxMode,
@@ -69,29 +70,15 @@ function dedupeMentions(items: GlobalSearchDocument[]): GlobalSearchDocument[] {
   return deduped
 }
 
-function startOfDay(value: Date): Date {
-  return new Date(value.getFullYear(), value.getMonth(), value.getDate())
-}
-
-function formatDateBucket(value: string | null): string {
-  if (!value) return "Unknown date"
-  const date = new Date(value)
-  if (Number.isNaN(date.getTime())) return "Unknown date"
-
-  const today = startOfDay(new Date())
-  const target = startOfDay(date)
-  const diffDays = Math.round((today.getTime() - target.getTime()) / 86_400_000)
-  if (diffDays === 0) return "Today"
-  if (diffDays === 1) return "Yesterday"
-  return new Intl.DateTimeFormat(undefined, { day: "numeric", month: "short", year: "numeric" }).format(date)
-}
-
 export function MentionsFullResultsPane({
   onResultSelect,
   viewScope,
+  filterQuery = "",
 }: {
   onResultSelect: (item: GlobalSearchDocument) => void
   viewScope: string
+  /** Local list filter — does not hit the network per keystroke. */
+  filterQuery?: string
 }) {
   const searchParams = useSearchParams()
   const queryClient = useQueryClient()
@@ -139,40 +126,30 @@ export function MentionsFullResultsPane({
   const mentionItems = useMemo(() => {
     const rows = query.data?.pages.flat() ?? []
     const deduped = dedupeMentions(rows)
-    if (mentionMode === "sent") {
-      return deduped.map((item) => {
-        if (item.entity_type !== "mention" || !item.display_payload) return item
-        return {
-          ...item,
-          display_payload: {
-            ...item.display_payload,
-            meta: (item.display_payload.meta ?? []).map((entry) =>
-              (entry.label?.trim() ?? "").toLowerCase() === "is_unread" ? { ...entry, value: "false" } : entry,
-            ),
-          },
-        }
-      })
-    }
-    return deduped
-  }, [mentionMode, query.data?.pages])
+    const normalized =
+      mentionMode === "sent"
+        ? deduped.map((item) => {
+            if (item.entity_type !== "mention" || !item.display_payload) return item
+            return {
+              ...item,
+              display_payload: {
+                ...item.display_payload,
+                meta: (item.display_payload.meta ?? []).map((entry) =>
+                  (entry.label?.trim() ?? "").toLowerCase() === "is_unread"
+                    ? { ...entry, value: "false" }
+                    : entry,
+                ),
+              },
+            }
+          })
+        : deduped
+    return filterLeftPaneListItems(normalized, filterQuery)
+  }, [filterQuery, mentionMode, query.data?.pages])
 
-  const groupedItems = useMemo(() => {
-    const groups: Array<{ label: string; items: GlobalSearchDocument[] }> = []
-    const map = new Map<string, GlobalSearchDocument[]>()
-    for (const item of mentionItems) {
-      const key = formatDateBucket(getMentionCreatedAt(item))
-      const existing = map.get(key)
-      if (existing) {
-        existing.push(item)
-      } else {
-        map.set(key, [item])
-      }
-    }
-    for (const [label, items] of map.entries()) {
-      groups.push({ label, items })
-    }
-    return groups
-  }, [mentionItems])
+  const groupedItems = useMemo(
+    () => groupByFriendlyDateBucket(mentionItems, (item) => getMentionCreatedAt(item)),
+    [mentionItems],
+  )
 
   const handleMentionSelect = (item: GlobalSearchDocument) => {
     const mentionId = item.entity_id
@@ -197,39 +174,35 @@ export function MentionsFullResultsPane({
   return (
     <div className="flex h-full min-h-0 flex-col bg-white">
       <div ref={scrollContainerRef} className="min-h-0 flex-1 overflow-auto">
-        <ObjectListColumnHeader {...getObjectListColumnHeaderLabels("mention")} />
         {query.isLoading ? (
-          <div className="flex h-full items-center justify-center px-6 text-sm text-gray-500">
-            <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+          <div className="flex h-full items-center justify-center px-6 text-xs text-gray-500">
+            <Loader2 className="mr-2 h-3.5 w-3.5 animate-spin" />
             Loading mentions...
           </div>
         ) : groupedItems.length === 0 ? (
-          <div className="flex h-full items-center justify-center px-6 text-sm text-gray-500">
+          <div className="flex h-full items-center justify-center px-6 text-xs text-gray-500">
             No mentions found.
           </div>
         ) : (
-          <div className="pb-4">
+          <div className="py-1 pb-4">
             {groupedItems.map((group) => (
-              <section key={group.label} className="pt-2">
-                {/* Sit under the shared 36px column header (top-9). */}
-                <div className="sticky top-9 z-10 bg-white px-3 py-1.5 text-xs font-medium text-gray-500">
+              <section key={group.label} className="pt-1">
+                <div className="sticky top-0 z-10 bg-white/95 px-3 py-1.5 text-[11px] font-normal text-gray-400 backdrop-blur-sm">
                   {group.label}
                 </div>
-                <div className="divide-y divide-gray-200">
-                  {group.items.map((item, index) => (
-                    <SearchResultRow
-                      key={`${viewScope}:list:mention:${String(item.entity_id ?? item.title)}:${group.label}:${index}`}
-                      item={item}
-                      onSelect={handleMentionSelect}
-                    />
-                  ))}
-                </div>
+                {group.items.map((item, index) => (
+                  <SearchResultRow
+                    key={`${viewScope}:list:mention:${String(item.entity_id ?? item.title)}:${group.label}:${index}`}
+                    item={item}
+                    onSelect={handleMentionSelect}
+                  />
+                ))}
               </section>
             ))}
             <div ref={sentinelRef} />
             {query.isFetchingNextPage ? (
-              <div className="flex items-center justify-center gap-2 py-3 text-sm text-gray-500">
-                <Loader2 className="h-4 w-4 animate-spin" />
+              <div className="flex items-center justify-center gap-2 py-3 text-xs text-gray-500">
+                <Loader2 className="h-3.5 w-3.5 animate-spin" />
                 Loading more...
               </div>
             ) : null}

@@ -93,7 +93,37 @@ const STALE_PUMP_AFTER_MS = 30_000
 /** Event tail size for history hydrate (status + preview cards in one RPC). */
 const HISTORY_HYDRATE_TAIL_EVENTS = 120
 /** Wait for ChatWindow to finish registering history builds before one bulk RPC. */
-const HISTORY_HYDRATE_COALESCE_MS = 120
+const HISTORY_HYDRATE_COALESCE_MS = 200
+/** Matches SQL `limit 40` on `ai_get_orchestrated_builds_v1`. */
+const HISTORY_HYDRATE_BULK_CHUNK = 40
+/** Coalesce artifact-list invalidations so history open does not refetch N times. */
+const ARTIFACT_LIST_INVALIDATE_MS = 450
+
+let artifactListInvalidateTimer: number | null = null
+let artifactListInvalidateClient: ReturnType<typeof useQueryClient> | null = null
+
+function scheduleArtifactListInvalidation(
+  queryClient: ReturnType<typeof useQueryClient>,
+): void {
+  artifactListInvalidateClient = queryClient
+  if (typeof window === "undefined") {
+    void queryClient.invalidateQueries({ queryKey: ["task-artifacts"] })
+    void queryClient.invalidateQueries({ queryKey: ["ai-thread-artifacts"] })
+    void queryClient.invalidateQueries({ queryKey: ["project-artifacts"] })
+    return
+  }
+  if (artifactListInvalidateTimer != null) {
+    window.clearTimeout(artifactListInvalidateTimer)
+  }
+  artifactListInvalidateTimer = window.setTimeout(() => {
+    artifactListInvalidateTimer = null
+    const client = artifactListInvalidateClient
+    if (!client) return
+    void client.invalidateQueries({ queryKey: ["task-artifacts"] })
+    void client.invalidateQueries({ queryKey: ["ai-thread-artifacts"] })
+    void client.invalidateQueries({ queryKey: ["project-artifacts"] })
+  }, ARTIFACT_LIST_INVALIDATE_MS) as unknown as number
+}
 
 type HistoryHydrateWaiter = {
   resolve: (ok: boolean) => void
@@ -298,6 +328,7 @@ function applyBuildPreviewEventsFromSnapshot(
           title: artifactParsed.title,
           contentText: artifactParsed.contentText,
           beforeContentText: artifactParsed.beforeContentText,
+          beforeContentJson: artifactParsed.beforeContentJson,
           diffContentText: artifactParsed.diffContentText,
           contentJson: artifactParsed.contentJson,
           assetData: artifactParsed.assetData,
@@ -387,9 +418,7 @@ function invalidateContentFromBuildSnapshot(
           : typeof payload.artifactId === "string"
             ? payload.artifactId
             : null
-      void queryClient.invalidateQueries({ queryKey: ["task-artifacts"] })
-      void queryClient.invalidateQueries({ queryKey: ["ai-thread-artifacts"] })
-      void queryClient.invalidateQueries({ queryKey: ["project-artifacts"] })
+      scheduleArtifactListInvalidation(queryClient)
       if (artifactId) {
         void queryClient.invalidateQueries({ queryKey: ["artifact", artifactId] })
         void queryClient.invalidateQueries({ queryKey: ["artifact-versions", artifactId] })
@@ -743,7 +772,13 @@ function buildHasRenderableArtifactCard(buildId: string): boolean {
   return Object.values(useAiBuildArtifactPreviewStore.getState().previews).some(
     (row) =>
       row.buildId === buildId
-      && (row.phase === "preview" || row.phase === "saved" || row.phase === "media" || row.phase === "failed"),
+      && (
+        row.phase === "started"
+        || row.phase === "preview"
+        || row.phase === "saved"
+        || row.phase === "media"
+        || row.phase === "failed"
+      ),
   )
 }
 
@@ -775,8 +810,8 @@ function settleTerminalArtifactPreviewCards(buildId: string): void {
 }
 
 /**
- * Hydrate many history builds in one PostgREST RPC (status + event tail + cards).
- * Replaces N× ai-build-orchestrator GETs on chat open.
+ * Hydrate many history builds via chunked PostgREST bulk RPCs.
+ * Avoids N× ai-build-orchestrator GETs (`after_sequence=1e9`) on chat open.
  */
 async function bootstrapHistoryBuildsBulk(args: {
   buildIds: string[]
@@ -803,38 +838,62 @@ async function bootstrapHistoryBuildsBulk(args: {
     store.setBuildFlags(buildId, { isPolling: true, error: null })
   }
 
-  try {
-    let snapshots: Map<string, AiOrchestratedBuildSnapshot>
-    try {
-      snapshots = await fetchAiOrchestratedBuildSnapshotsBulk({
-        requests: fetchIds.map((buildId) => ({
-          buildId,
-          tailEvents: HISTORY_HYDRATE_TAIL_EVENTS,
-        })),
-        defaultEventLimit: HISTORY_HYDRATE_TAIL_EVENTS,
-      })
-    } catch {
-      // Fallback: sequential status probes if bulk RPC is unavailable.
-      for (const buildId of fetchIds) {
-        await reconcileBuild(buildId, {
-          statusProbe: true,
-          queryClient: args.queryClient,
-        })
-        historyTailFetchedIds.add(buildId)
-        const latest = store.getBuild(buildId)
-        const ok = buildHasRenderableArtifactCard(buildId) || Boolean(latest?.didInitialReconcile)
-        resolveHistoryHydrateWaiters(buildId, ok)
-        if (
-          latest
-          && shouldMonitorOrchestratedBuild(latest)
-          && shouldPumpOrchestratedBuild(latest)
-        ) {
-          await reconcileBuild(buildId, { pumpOnce: true, queryClient: args.queryClient })
+  const settleMissingHistoryBuild = (buildId: string) => {
+    historyTailFetchedIds.add(buildId)
+    // Mark reconciled without an edge probe. Flip stub "queued" → completed so
+    // shouldMonitorOrchestratedBuild stops continuous polling.
+    const prev = store.getBuild(buildId)
+    if (prev?.build && (prev.build.status === "queued" || prev.build.status === "running")) {
+      useAiOrchestratedBuildStore.setState((state) => {
+        const entry = state.builds[buildId]
+        if (!entry?.build) return state
+        return {
+          builds: {
+            ...state.builds,
+            [buildId]: {
+              ...entry,
+              isPolling: false,
+              didInitialReconcile: true,
+              build: { ...entry.build, status: "completed" },
+              updatedAt: new Date().toISOString(),
+            },
+          },
         }
-        const after = store.getBuild(buildId)
-        if (after && shouldMonitorOrchestratedBuild(after)) args.onReadyToPoll?.(buildId)
+      })
+    } else {
+      store.setBuildFlags(buildId, { isPolling: false, didInitialReconcile: true })
+    }
+    settleTerminalArtifactPreviewCards(buildId)
+    resolveHistoryHydrateWaiters(buildId, buildHasRenderableArtifactCard(buildId))
+  }
+
+  try {
+    const snapshots = new Map<string, AiOrchestratedBuildSnapshot>()
+    const missingFromBulk: string[] = []
+
+    for (let offset = 0; offset < fetchIds.length; offset += HISTORY_HYDRATE_BULK_CHUNK) {
+      const chunk = fetchIds.slice(offset, offset + HISTORY_HYDRATE_BULK_CHUNK)
+      try {
+        const part = await fetchAiOrchestratedBuildSnapshotsBulk({
+          requests: chunk.map((buildId) => ({
+            buildId,
+            tailEvents: HISTORY_HYDRATE_TAIL_EVENTS,
+          })),
+          defaultEventLimit: HISTORY_HYDRATE_TAIL_EVENTS,
+        })
+        for (const buildId of chunk) {
+          const snapshot = part.get(buildId)
+          if (snapshot) snapshots.set(buildId, snapshot)
+          else missingFromBulk.push(buildId)
+        }
+      } catch (error) {
+        // Do NOT fall back to N× status-probe edge GETs — that is the storm on long threads.
+        console.warn("history bulk hydrate chunk failed", {
+          chunkSize: chunk.length,
+          error: error instanceof Error ? error.message : String(error),
+        })
+        for (const buildId of chunk) missingFromBulk.push(buildId)
       }
-      return
     }
 
     for (const buildId of fetchIds) {
@@ -846,21 +905,7 @@ async function bootstrapHistoryBuildsBulk(args: {
       const snapshot = snapshots.get(buildId)
       historyTailFetchedIds.add(buildId)
       if (!snapshot) {
-        await reconcileBuild(buildId, {
-          statusProbe: true,
-          queryClient: args.queryClient,
-        })
-        const latest = store.getBuild(buildId)
-        resolveHistoryHydrateWaiters(buildId, buildHasRenderableArtifactCard(buildId))
-        if (
-          latest
-          && shouldMonitorOrchestratedBuild(latest)
-          && shouldPumpOrchestratedBuild(latest)
-        ) {
-          await reconcileBuild(buildId, { pumpOnce: true, queryClient: args.queryClient })
-        }
-        const after = store.getBuild(buildId)
-        if (after && shouldMonitorOrchestratedBuild(after)) args.onReadyToPoll?.(buildId)
+        settleMissingHistoryBuild(buildId)
         continue
       }
 
@@ -870,14 +915,8 @@ async function bootstrapHistoryBuildsBulk(args: {
         replaceFromZero: false,
       })
       applyBuildPreviewEventsFromSnapshot(buildId, snapshot, -1, entry)
-      if (args.queryClient) {
-        invalidateContentFromBuildSnapshot(
-          args.queryClient,
-          snapshot,
-          -1,
-          entry.unitsById,
-        )
-      }
+      // History open must NOT invalidate project/task artifact lists — that caused
+      // 10+ identical ai_list_project_artifacts_v1 refetches with full content.
       settleTerminalArtifactPreviewCards(buildId)
       resolveHistoryHydrateWaiters(buildId, buildHasRenderableArtifactCard(buildId))
 
@@ -892,6 +931,7 @@ async function bootstrapHistoryBuildsBulk(args: {
       store.setBuildFlags(buildId, { isPolling: false, didInitialReconcile: true })
       if (shouldMonitorOrchestratedBuild(latest)) args.onReadyToPoll?.(buildId)
     }
+
   } finally {
     for (const buildId of fetchIds) {
       const entry = store.getBuild(buildId)

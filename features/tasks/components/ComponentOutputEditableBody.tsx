@@ -15,6 +15,7 @@ type ComponentOutputEditableBodyProps = {
   placeholder?: string
   className?: string
   fromAiChat?: boolean
+  readOnly?: boolean
   /** Force TipTap sync when AI/version content changes. */
   forceContentKey?: string | number | null
   /** When set, enables image/video toolbar + drag/drop/paste into TipTap. */
@@ -39,6 +40,7 @@ export function ComponentOutputEditableBody({
   placeholder = "Add output...",
   className,
   fromAiChat = false,
+  readOnly = false,
   forceContentKey = null,
   onInsertAttachment,
   disableInlineMediaControls = true,
@@ -66,11 +68,12 @@ export function ComponentOutputEditableBody({
         placeholder={placeholder}
         editorWrapperClassName={COMPONENT_OUTPUT_EDITOR_CLASS}
         flatSurface
+        readOnly={readOnly}
         disableInlineMediaControls={disableInlineMediaControls}
         enableOutputLinkNavigation
         fromAiChat={fromAiChat}
         forceContentKey={forceContentKey}
-        onInsertAttachment={onInsertAttachment}
+        onInsertAttachment={readOnly ? undefined : onInsertAttachment}
       />
     </div>
   )

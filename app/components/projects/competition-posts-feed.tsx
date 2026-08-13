@@ -1,6 +1,6 @@
 "use client"
 
-import { useMemo } from "react"
+import { useMemo, useState } from "react"
 import { format } from "date-fns"
 import { AlertCircle, ExternalLink, Loader2 } from "lucide-react"
 import { Card } from "../ui/card"
@@ -19,8 +19,11 @@ import {
   type CompetitorSocialNetwork,
 } from "@/lib/competitor-social"
 import {
+  SOCIAL_POST_SORT_METRICS,
   dedupeCrossNetworkPosts,
+  sortPostsByMetric,
   type DedupedSocialPost,
+  type SocialPostSortMetric,
 } from "@/lib/project-social-feed"
 import type { ProjectSocialPost } from "@/lib/services/project-brand-social"
 import type { ProjectCompetitorWithProfiles } from "@/lib/services/project-competitors"
@@ -168,9 +171,13 @@ type CompetitionPostsFeedProps = {
   hideDateRange?: boolean
   /** Hide network control when the parent Competition header already owns network filter. */
   hideNetworkFilter?: boolean
+  /** Hide the sort controls (e.g. the overview "Recent posts" strip). */
+  hideSort?: boolean
   /** Cap cards after cross-network dedupe (e.g. overview). */
   limitCards?: number
 }
+
+type PostSortMode = "recent" | "top"
 
 export function CompetitionPostsFeed({
   ownedEntityId,
@@ -188,68 +195,155 @@ export function CompetitionPostsFeed({
   hideFilters = false,
   hideDateRange = false,
   hideNetworkFilter = false,
+  hideSort = false,
   limitCards,
 }: CompetitionPostsFeedProps) {
+  const [sortMode, setSortMode] = useState<PostSortMode>("recent")
+  const [sortMetric, setSortMetric] = useState<SocialPostSortMetric>("interactions")
+
   const dedupedPosts = useMemo(() => {
-    const list = dedupeCrossNetworkPosts(posts)
+    const filtered = posts.filter((post) => {
+      if (filterNetwork !== "all" && post.network !== filterNetwork) {
+        return false
+      }
+      if (filterEntityId === "all") return true
+      if (filterEntityId === ownedEntityId) return Boolean(post.is_owned)
+      if (filterEntityId.startsWith("competitor:")) {
+        const competitorId = Number(filterEntityId.slice("competitor:".length))
+        return (
+          !post.is_owned
+          && Number(post.competitor_id) === competitorId
+        )
+      }
+      return true
+    })
+    const deduped = dedupeCrossNetworkPosts(filtered)
+    const list =
+      sortMode === "top" ? sortPostsByMetric(deduped, sortMetric) : deduped
     return typeof limitCards === "number" ? list.slice(0, limitCards) : list
-  }, [posts, limitCards])
+  }, [
+    posts,
+    limitCards,
+    sortMode,
+    sortMetric,
+    filterNetwork,
+    filterEntityId,
+    ownedEntityId,
+  ])
 
   const showNetwork = !hideNetworkFilter
   const showDateRange = !hideDateRange
+  const sortMetricLabel =
+    SOCIAL_POST_SORT_METRICS.find((option) => option.key === sortMetric)?.label ??
+    "Interactions"
 
   return (
     <section className="space-y-3">
-      {!hideFilters ? (
+      {!hideFilters || !hideSort ? (
         <div className="flex flex-wrap items-end gap-3">
-          <div className="min-w-[140px] flex-1 basis-[160px] sm:max-w-[200px] sm:flex-none">
-            <Label>Entity</Label>
-            <Select value={filterEntityId} onValueChange={onFilterEntityIdChange}>
-              <SelectTrigger>
-                <SelectValue placeholder="All" />
-              </SelectTrigger>
-              <SelectContent>
-                <SelectItem value="all">All</SelectItem>
-                <SelectItem value={ownedEntityId}>Our brand</SelectItem>
-                {competitors.map((competitor) => (
-                  <SelectItem
-                    key={competitor.id}
-                    value={`competitor:${competitor.id}`}
-                  >
-                    {competitor.name}
-                  </SelectItem>
-                ))}
-              </SelectContent>
-            </Select>
-          </div>
-          {showNetwork ? (
-            <div className="min-w-[120px] flex-1 basis-[140px] sm:max-w-[160px] sm:flex-none">
-              <Label>Network</Label>
-              <Select value={filterNetwork} onValueChange={onFilterNetworkChange}>
-                <SelectTrigger>
-                  <SelectValue placeholder="All" />
-                </SelectTrigger>
-                <SelectContent>
-                  <SelectItem value="all">All</SelectItem>
-                  {COMPETITOR_SOCIAL_NETWORKS.map((network) => (
-                    <SelectItem key={network} value={network}>
-                      {COMPETITOR_NETWORK_LABELS[network]}
-                    </SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
-            </div>
+          {!hideFilters ? (
+            <>
+              <div className="min-w-[140px] flex-1 basis-[160px] sm:max-w-[200px] sm:flex-none">
+                <Label>Entity</Label>
+                <Select value={filterEntityId} onValueChange={onFilterEntityIdChange}>
+                  <SelectTrigger>
+                    <SelectValue placeholder="All" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="all">All</SelectItem>
+                    <SelectItem value={ownedEntityId}>Our brand</SelectItem>
+                    {competitors.map((competitor) => (
+                      <SelectItem
+                        key={competitor.id}
+                        value={`competitor:${competitor.id}`}
+                      >
+                        {competitor.name}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              </div>
+              {showNetwork ? (
+                <div className="min-w-[120px] flex-1 basis-[140px] sm:max-w-[160px] sm:flex-none">
+                  <Label>Network</Label>
+                  <Select value={filterNetwork} onValueChange={onFilterNetworkChange}>
+                    <SelectTrigger>
+                      <SelectValue placeholder="All" />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="all">All</SelectItem>
+                      {COMPETITOR_SOCIAL_NETWORKS.map((network) => (
+                        <SelectItem key={network} value={network}>
+                          {COMPETITOR_NETWORK_LABELS[network]}
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                </div>
+              ) : null}
+              {showDateRange ? (
+                <div className="min-w-[180px] flex-1 basis-[200px] sm:flex-none">
+                  <Label>Date range</Label>
+                  <DateRangePicker
+                    value={dateRange}
+                    onChange={(range) =>
+                      onDateRangeChange(range ?? getDefaultDateRange())
+                    }
+                  />
+                </div>
+              ) : null}
+            </>
           ) : null}
-          {showDateRange ? (
-            <div className="min-w-[180px] flex-1 basis-[200px] sm:flex-none">
-              <Label>Date range</Label>
-              <DateRangePicker
-                value={dateRange}
-                onChange={(range) => onDateRangeChange(range ?? getDefaultDateRange())}
-              />
-            </div>
+
+          {!hideSort ? (
+            <>
+              <div className="min-w-[140px] flex-1 basis-[160px] sm:max-w-[180px] sm:flex-none">
+                <Label>Sort</Label>
+                <Select
+                  value={sortMode}
+                  onValueChange={(value) => setSortMode(value as PostSortMode)}
+                >
+                  <SelectTrigger>
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="recent">Most recent</SelectItem>
+                    <SelectItem value="top">Top performers</SelectItem>
+                  </SelectContent>
+                </Select>
+              </div>
+              {sortMode === "top" ? (
+                <div className="min-w-[140px] flex-1 basis-[160px] sm:max-w-[180px] sm:flex-none">
+                  <Label>Ranked by</Label>
+                  <Select
+                    value={sortMetric}
+                    onValueChange={(value) =>
+                      setSortMetric(value as SocialPostSortMetric)
+                    }
+                  >
+                    <SelectTrigger>
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent>
+                      {SOCIAL_POST_SORT_METRICS.map((option) => (
+                        <SelectItem key={option.key} value={option.key}>
+                          {option.label}
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                </div>
+              ) : null}
+            </>
           ) : null}
         </div>
+      ) : null}
+
+      {!hideSort && sortMode === "top" ? (
+        <p className="text-xs text-gray-500">
+          Ranked by highest {sortMetricLabel.toLowerCase()}; posts without that
+          metric are listed last.
+        </p>
       ) : null}
 
       {isLoading ? (

@@ -192,8 +192,10 @@ function readDetailTargetFromSearchParams(searchParams: SearchParamsLike, isShel
       mentionId: null,
     }
   }
+  // When the right pane hosts the thread (`rightView=thread`), do not also treat it as the
+  // middle-pane detail target — that dual-opens Message/thread in center + right.
   const rightThreadId = optionalString(searchParams.get("rightThreadId"))
-  if (rightThreadId) {
+  if (rightThreadId && searchParams.get("rightView") !== "thread" && rightThreadId !== "new") {
     return {
       entityType: "mention",
       entityId: rightThreadId,
@@ -1482,14 +1484,23 @@ export function useGlobalSearchController({
   )
 
   const getFullResultsQueryKey = useCallback(
-    (entityType: GlobalSearchItemEntityType) => [
-      "global-search",
-      "full",
-      routeObject,
-      objectDataSource,
-      searchValue.trim(),
-      entityType,
-    ],
+    (entityType: GlobalSearchItemEntityType) => {
+      // Object lists filter locally — keep their cache key free of the typed query.
+      const usesLocalFilter =
+        entityType === "project" ||
+        entityType === "user" ||
+        entityType === "artifact" ||
+        entityType === "ai_thread" ||
+        entityType === "mention"
+      return [
+        "global-search",
+        "full",
+        routeObject,
+        usesLocalFilter ? "object-list" : objectDataSource,
+        usesLocalFilter ? "" : searchValue.trim(),
+        entityType,
+      ]
+    },
     [objectDataSource, routeObject, searchValue],
   )
 
@@ -1530,7 +1541,21 @@ export function useGlobalSearchController({
         }
 
         let items: GlobalSearchDocument[] = []
-        if (hasQuery || !isObjectRoute) {
+        const sortAlphabetically =
+          entityType === "project" || entityType === "user"
+        // Left-pane object lists filter locally; always load discovery so typing never refetches.
+        const preferDiscoveryList =
+          isObjectRoute &&
+          (entityType === "project" ||
+            entityType === "user" ||
+            entityType === "artifact" ||
+            entityType === "ai_thread")
+        const byTitleAsc = (left: GlobalSearchDocument, right: GlobalSearchDocument) => {
+          const leftTitle = (left.display_payload?.title ?? left.title ?? "").trim()
+          const rightTitle = (right.display_payload?.title ?? right.title ?? "").trim()
+          return leftTitle.localeCompare(rightTitle, undefined, { sensitivity: "base", numeric: true })
+        }
+        if (!preferDiscoveryList && (hasQuery || !isObjectRoute)) {
           items = await fetchGlobalSearchDocumentsByType({
             query: trimmedQuery,
             entityType,
@@ -1538,17 +1563,33 @@ export function useGlobalSearchController({
             limit,
             signal,
           })
+          if (sortAlphabetically) {
+            items = [...items].sort(byTitleAsc)
+          }
         } else {
+          // Projects/users: pull a wide discovery page, sort A–Z, then slice for pagination.
+          const discoveryLimit =
+            sortAlphabetically || preferDiscoveryList
+              ? Math.max(500, offset + limit)
+              : Math.max(limit, offset + limit)
           const sections = await fetchGlobalSearchDiscoverySections({
             entityTypes: [entityType],
-            perTypeLimit: Math.max(limit, offset + limit),
+            perTypeLimit: discoveryLimit,
             // Do not inherit stale route-cancel signals for empty-query object list fetches.
           })
           const section =
             sections.find((entry) => entry.type === entityType) ??
-            sections.find((entry) => entry.entity_type === entityType)
+            sections.find((entry) => entry.entity_type === entityType) ??
+            sections.find((entry) =>
+              entityType === "ai_thread"
+                ? entry.type === "ai_threads" || entry.entity_type === "ai_thread"
+                : false,
+            )
           const discoveredItems = section?.items ?? []
-          items = discoveredItems.slice(offset, offset + limit)
+          const ordered = sortAlphabetically
+            ? [...discoveredItems].sort(byTitleAsc)
+            : discoveredItems
+          items = ordered.slice(offset, offset + limit)
         }
         if (requestId !== objectFetchRequestIdRef.current) {
           console.debug("[object fetch stale success ignored]", {

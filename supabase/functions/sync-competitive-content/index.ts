@@ -1,7 +1,6 @@
 import "jsr:@supabase/functions-js/edge-runtime.d.ts"
 import { createClient } from "jsr:@supabase/supabase-js@2"
 import {
-  extractKeywordCandidatesFromContent,
   normalizeHttpUrl,
   normalizeKeywordKey,
   pathMatchesPatterns,
@@ -332,12 +331,17 @@ async function syncSourceArticles(args: {
 
         if (existing) {
           if (existing.content_hash === hash) {
+            // Content unchanged, but still refresh dates/images when scrape found them.
+            const touchPayload: Record<string, unknown> = {
+              last_seen_at: new Date().toISOString(),
+              updated_at: new Date().toISOString(),
+            }
+            if (scraped.publishedAt) touchPayload.published_at = scraped.publishedAt
+            if (scraped.modifiedAt) touchPayload.modified_at = scraped.modifiedAt
+            if (scraped.imageUrl) touchPayload.image_url = scraped.imageUrl
             await service
               .from("project_competitive_content_articles")
-              .update({
-                last_seen_at: new Date().toISOString(),
-                updated_at: new Date().toISOString(),
-              })
+              .update(touchPayload)
               .eq("id", existing.id)
             skipped += 1
           } else {
@@ -428,147 +432,176 @@ async function syncSourceArticles(args: {
   }
 }
 
+function languageIdFromArticleCode(languageCode: string | null | undefined): string {
+  const code = (languageCode ?? "").trim().toLowerCase().slice(0, 2)
+  if (code === "pt") return "1014"
+  if (code === "es") return "1003"
+  if (code === "fr") return "1002"
+  if (code === "de") return "1001"
+  return "1000"
+}
+
+type KeywordIdeaRow = {
+  keyword: string
+  avgMonthlySearches?: number
+  competitionIndex?: number
+}
+
+async function researchKeywordsForArticleUrl(args: {
+  url: string
+  languageCode?: string | null
+}): Promise<KeywordIdeaRow[]> {
+  const response = await fetch(`${SUPABASE_URL}/functions/v1/keyword-ideas`, {
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${SUPABASE_SERVICE_ROLE_KEY}`,
+      apikey: SUPABASE_SERVICE_ROLE_KEY,
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify({
+      mode: "url",
+      url: args.url,
+      languageId: languageIdFromArticleCode(args.languageCode),
+      // Default to Portugal geo to match product keyword research defaults.
+      regionId: "2620",
+      pageSize: 10,
+    }),
+    signal: AbortSignal.timeout(25_000),
+  })
+  if (!response.ok) {
+    const text = await response.text().catch(() => "")
+    throw new Error(`keyword-ideas url mode failed (${response.status}): ${text.slice(0, 240)}`)
+  }
+  const json = await response.json()
+  const results = Array.isArray(json?.results) ? json.results : []
+  return results
+    .map((item: Record<string, unknown>) => ({
+      keyword: typeof item?.keyword === "string" ? item.keyword.trim() : "",
+      avgMonthlySearches: Number(item?.avgMonthlySearches) || 0,
+      competitionIndex: Number(item?.competitionIndex) || 0,
+    }))
+    .filter((item: KeywordIdeaRow) => Boolean(item.keyword))
+    .sort(
+      (a: KeywordIdeaRow, b: KeywordIdeaRow) =>
+        (b.avgMonthlySearches ?? 0) - (a.avgMonthlySearches ?? 0),
+    )
+}
+
 async function enrichKeywordsForProject(args: {
   service: ServiceClient
   projectId: number
   deadline: number
 }): Promise<Record<string, unknown>> {
   const { service, projectId, deadline } = args
-  const { data: articles } = await service
+  // URL-mode Google Ads calls are slower; keep batches small per invocation.
+  const { data: articles, error: listError } = await service
     .from("project_competitive_content_articles")
     .select(
-      "id, project_id, entity_type, competitor_id, title, description, content_markdown, markdown_excerpt, language_code, keywords_extracted_at, content_hash",
+      "id, project_id, entity_type, competitor_id, title, description, url, canonical_url, language_code, keywords_extracted_at",
     )
     .eq("project_id", projectId)
     .eq("is_active", true)
     .is("keywords_extracted_at", null)
-    .order("published_at", { ascending: false, nullsFirst: false })
-    .limit(40)
+    .order("id", { ascending: false })
+    .limit(8)
+
+  if (listError) {
+    return { processed: 0, failed: 0, error: listError.message }
+  }
 
   let processed = 0
   let failed = 0
+  const errors: string[] = []
 
   for (const article of articles ?? []) {
     if (Date.now() > deadline) break
+    const pageUrl = String(article.canonical_url || article.url || "").trim()
+    if (!pageUrl) {
+      failed += 1
+      errors.push(`article ${article.id}: missing url`)
+      continue
+    }
+
     try {
-      const headings = (article.title ? [String(article.title)] : []) as string[]
-      const candidates = extractKeywordCandidatesFromContent({
-        title: article.title as string | null,
-        description: article.description as string | null,
-        headings,
-        bodyText:
-          (article.markdown_excerpt as string | null) ??
-          (article.content_markdown as string | null)?.slice(0, 5000) ??
-          null,
+      const ideas = await researchKeywordsForArticleUrl({
+        url: pageUrl,
+        languageCode: article.language_code as string | null,
       })
 
-      // Remove previous inferred keywords for re-extract
+      if (ideas.length === 0) {
+        throw new Error("keyword-ideas returned no results for URL")
+      }
+
+      const primary = ideas[0]!
+      const secondary = ideas.slice(1, 6)
+
       await service
         .from("project_competitive_article_keywords")
         .delete()
         .eq("article_id", article.id)
         .in("keyword_type", ["inferred_primary", "inferred_secondary"])
 
-      const rows: Array<Record<string, unknown>> = []
-      if (candidates.primary) {
-        rows.push({
+      const nowIso = new Date().toISOString()
+      const rows: Array<Record<string, unknown>> = [
+        {
           project_id: projectId,
           article_id: article.id,
           entity_type: article.entity_type,
           competitor_id: article.competitor_id,
-          keyword: candidates.primary,
-          normalized_keyword: normalizeKeywordKey(candidates.primary),
+          keyword: primary.keyword,
+          normalized_keyword: normalizeKeywordKey(primary.keyword),
           keyword_type: "inferred_primary",
-          source: "content_analysis",
+          source: "keyword_research",
           language_code: article.language_code,
-          confidence: 0.7,
-          first_seen_at: new Date().toISOString(),
-          last_seen_at: new Date().toISOString(),
-        })
-      }
-      for (const secondary of candidates.secondary) {
-        rows.push({
+          search_volume: primary.avgMonthlySearches ?? null,
+          competition: primary.competitionIndex ?? null,
+          confidence: 0.85,
+          first_seen_at: nowIso,
+          last_seen_at: nowIso,
+        },
+        ...secondary.map((item) => ({
           project_id: projectId,
           article_id: article.id,
           entity_type: article.entity_type,
           competitor_id: article.competitor_id,
-          keyword: secondary,
-          normalized_keyword: normalizeKeywordKey(secondary),
+          keyword: item.keyword,
+          normalized_keyword: normalizeKeywordKey(item.keyword),
           keyword_type: "inferred_secondary",
-          source: "content_analysis",
+          source: "keyword_research",
           language_code: article.language_code,
-          confidence: 0.55,
-          first_seen_at: new Date().toISOString(),
-          last_seen_at: new Date().toISOString(),
-        })
-      }
+          search_volume: item.avgMonthlySearches ?? null,
+          competition: item.competitionIndex ?? null,
+          confidence: 0.7,
+          first_seen_at: nowIso,
+          last_seen_at: nowIso,
+        })),
+      ]
 
-      // Enrich volumes via keyword-ideas edge (metrics mode) when available
-      const keywordsToEnrich = [
-        candidates.primary,
-        ...candidates.secondary,
-      ].filter((k): k is string => Boolean(k))
+      const { error: insertError } = await service
+        .from("project_competitive_article_keywords")
+        .insert(rows)
+      if (insertError) throw new Error(`insert keywords: ${insertError.message}`)
 
-      if (keywordsToEnrich.length > 0) {
-        try {
-          const metricsRes = await fetch(`${SUPABASE_URL}/functions/v1/keyword-ideas`, {
-            method: "POST",
-            headers: {
-              Authorization: `Bearer ${SUPABASE_SERVICE_ROLE_KEY}`,
-              apikey: SUPABASE_SERVICE_ROLE_KEY,
-              "Content-Type": "application/json",
-            },
-            body: JSON.stringify({
-              keywords: keywordsToEnrich,
-              mode: "metrics",
-              pageSize: keywordsToEnrich.length,
-            }),
-            signal: AbortSignal.timeout(20_000),
-          })
-          if (metricsRes.ok) {
-            const metricsJson = await metricsRes.json()
-            const results = Array.isArray(metricsJson?.results) ? metricsJson.results : []
-            const byKey = new Map<string, { avgMonthlySearches?: number; competitionIndex?: number }>()
-            for (const item of results) {
-              if (item?.keyword) {
-                byKey.set(normalizeKeywordKey(String(item.keyword)), item)
-              }
-            }
-            for (const row of rows) {
-              const metrics = byKey.get(String(row.normalized_keyword))
-              if (metrics) {
-                row.search_volume = metrics.avgMonthlySearches ?? null
-                row.competition = metrics.competitionIndex ?? null
-                row.source = "keyword_research"
-              }
-            }
-          }
-        } catch (error) {
-          console.warn("keyword metrics enrich failed", error)
-        }
-      }
-
-      if (rows.length > 0) {
-        await service.from("project_competitive_article_keywords").insert(rows)
-      }
-
-      await service
+      const { error: updateError } = await service
         .from("project_competitive_content_articles")
         .update({
-          primary_keyword: candidates.primary,
-          keywords_extracted_at: new Date().toISOString(),
-          updated_at: new Date().toISOString(),
+          primary_keyword: primary.keyword,
+          keywords_extracted_at: nowIso,
+          updated_at: nowIso,
         })
         .eq("id", article.id)
+      if (updateError) throw new Error(`update article: ${updateError.message}`)
 
       processed += 1
     } catch (error) {
-      console.warn("keyword extract failed", article.id, error)
+      const message = error instanceof Error ? error.message : String(error)
+      console.warn("keyword extract failed", article.id, pageUrl, message)
+      errors.push(`article ${article.id}: ${message.slice(0, 180)}`)
       failed += 1
     }
   }
 
-  return { processed, failed }
+  return { processed, failed, errors: errors.slice(0, 5) }
 }
 
 async function getProjectGoogleRefreshToken(

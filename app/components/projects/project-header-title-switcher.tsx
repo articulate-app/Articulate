@@ -7,9 +7,8 @@ import { createClientComponentClient } from "@supabase/auth-helpers-nextjs"
 import { Check, ChevronDown, Loader2 } from "lucide-react"
 
 import { cn } from "@/lib/utils"
-import { buildCenterPaneSelectionSearchParams } from "../../lib/center-pane-selection-url"
-import { buildRightPaneSelectionSearchParams } from "../../lib/right-pane-selection-url"
-import { shallowReplaceSearchParams } from "../../lib/tasks-shallow-nav"
+import { openWorkspaceView } from "../../lib/open-workspace-view"
+import { useWorkspaceHostPane } from "../workspace/workspace-host-pane-context"
 import { useCenterPaneTabsStore } from "../../store/center-pane-tabs"
 import { Command, CommandEmpty, CommandGroup, CommandInput, CommandItem, CommandList } from "../ui/command"
 import { Popover, PopoverContent, PopoverTrigger } from "../ui/popover"
@@ -31,6 +30,7 @@ export function ProjectHeaderTitleSwitcher({
 }) {
   const pathname = usePathname()
   const router = useRouter()
+  const hostPane = useWorkspaceHostPane()
   const upsertTab = useCenterPaneTabsStore((s) => s.upsertTab)
   const supabase = useMemo(() => createClientComponentClient(), [])
   const [open, setOpen] = useState(false)
@@ -78,33 +78,31 @@ export function ProjectHeaderTitleSwitcher({
         return
       }
 
-      if (hasRightProject && !hasCenterProject) {
-        const next = buildRightPaneSelectionSearchParams({
-          currentSearchParams: base,
-          entity: "project",
-          id: nextProjectId,
-          tab: currentTab && currentTab !== "overview" ? currentTab : null,
+      if (hostPane === "middle") {
+        upsertTab({
+          kind: "project",
+          id: String(nextProjectId),
+          title: nextName,
         })
-        setOpen(false)
-        shallowReplaceSearchParams(pathname, next, "project-header-switch")
-        return
       }
-
-      upsertTab({
-        kind: "project",
-        id: String(nextProjectId),
-        title: nextName,
-      })
-      const next = buildCenterPaneSelectionSearchParams({
-        currentSearchParams: base,
-        entity: "project",
-        id: nextProjectId,
-        tab: currentTab && currentTab !== "overview" ? currentTab : null,
-      })
+      openWorkspaceView(
+        {
+          type: "project",
+          projectId: nextProjectId,
+          id: nextProjectId,
+          title: nextName,
+          params:
+            currentTab && currentTab !== "overview" ? { tab: currentTab } : undefined,
+        },
+        {
+          pane: hostPane,
+          pathname,
+          source: "project-header-switch",
+        },
+      )
       setOpen(false)
-      shallowReplaceSearchParams(pathname, next, "project-header-switch")
     },
-    [pathname, projectId, router, upsertTab],
+    [hostPane, pathname, projectId, router, upsertTab],
   )
 
   return (

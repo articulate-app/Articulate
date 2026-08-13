@@ -2,7 +2,7 @@
 
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react"
 import { useSearchParams } from "next/navigation"
-import { Clock, Bookmark, Lightbulb, Sparkles, X } from "lucide-react"
+import { Clock, Lightbulb, Loader2, Search, Sparkles, X } from "lucide-react"
 import { cn } from "@/lib/utils"
 import { Button } from "./ui/button"
 import { Input } from "./ui/input"
@@ -27,12 +27,17 @@ import {
   RESEARCH_REGION_PARAM,
   type ResearchTab,
 } from "../lib/center-pane-selection-url"
-import {
-  TASK_PANE_HEADER_ROW_CLASS,
-  TASK_PANE_HEADER_SHELL_CLASS,
-} from "./tasks/pane-header-tokens"
+import { TASK_DETAILS_HEADER_ROW_CLASS } from "./tasks/pane-header-tokens"
 import { useKeywordListsApi } from "../store/keyword-lists-api"
 import { usePromptSearchHistory } from "../hooks/usePromptSearchHistory"
+
+type ResearchScope = ResearchTab | "both"
+
+const RESEARCH_SCOPE_OPTIONS: Array<{ id: ResearchScope; label: string }> = [
+  { id: "keywords", label: "Keywords" },
+  { id: "prompts", label: "Prompts" },
+  { id: "both", label: "Keywords + Prompts" },
+]
 
 const ANY_VALUE = "__any__"
 
@@ -113,16 +118,27 @@ export function ResearchPane({
     [searchParams],
   )
 
-  const [activeTab, setActiveTab] = useState<ResearchTab>(seedTab)
+  const [researchScope, setResearchScope] = useState<ResearchScope>(seedTab)
+  const [resultsTab, setResultsTab] = useState<ResearchTab>(seedTab)
+  const [hasSearched, setHasSearched] = useState(false)
   const [sharedQuery, setSharedQuery] = useState(seedQuery)
   const [sharedRegionId, setSharedRegionId] = useState(seedRegion)
   const [sharedLanguageId, setSharedLanguageId] = useState("")
   const [isHistoryOpen, setIsHistoryOpen] = useState(false)
   const [isListsOpen, setIsListsOpen] = useState(false)
+  const [isSearching, setIsSearching] = useState(false)
   const [keywordAutoSearchKey, setKeywordAutoSearchKey] = useState(0)
+  const [promptAutoSearchKey, setPromptAutoSearchKey] = useState(0)
   const lastSeededQueryRef = useRef<string | null>(null)
+  const lastAppliedSeedTabRef = useRef<ResearchTab | null>(null)
   const queryFieldRef = useRef<HTMLDivElement>(null)
   const queryInputRef = useRef<HTMLInputElement>(null)
+
+  const includesKeywords = researchScope === "keywords" || researchScope === "both"
+  const includesPrompts = researchScope === "prompts" || researchScope === "both"
+  const activeResultsTab: ResearchTab =
+    researchScope === "both" ? resultsTab : researchScope
+  const listsTab: ResearchTab = activeResultsTab
 
   const { searchHistory: keywordHistory, fetchSearchHistory } = useKeywordListsApi()
   const {
@@ -138,8 +154,16 @@ export function ResearchPane({
   }, [isOpen, seedQuery])
 
   useEffect(() => {
-    if (!isOpen) return
-    setActiveTab(seedTab)
+    if (!isOpen) {
+      lastAppliedSeedTabRef.current = null
+      return
+    }
+    // Only adopt URL/tab seeds when they actually change — never reset local
+    // "both" (or an in-progress choice) just because `onTabChange` identity changed.
+    if (lastAppliedSeedTabRef.current === seedTab) return
+    lastAppliedSeedTabRef.current = seedTab
+    setResearchScope((prev) => (prev === "both" ? prev : seedTab))
+    setResultsTab(seedTab)
   }, [isOpen, seedTab])
 
   useEffect(() => {
@@ -159,7 +183,7 @@ export function ResearchPane({
     if (!isOpen || !queryInputRef.current) return
     const timer = window.setTimeout(() => queryInputRef.current?.focus(), 80)
     return () => window.clearTimeout(timer)
-  }, [isOpen, activeTab])
+  }, [isOpen, researchScope])
 
   useEffect(() => {
     if (!isHistoryOpen) return
@@ -187,11 +211,26 @@ export function ResearchPane({
     return () => document.removeEventListener("keydown", onKeyDown)
   }, [isHistoryOpen, isOpen, onClose, variant])
 
-  const selectTab = useCallback(
-    (tab: ResearchTab) => {
-      setActiveTab(tab)
-      onTabChange?.(tab)
+  const selectScope = useCallback(
+    (scope: ResearchScope) => {
+      setResearchScope(scope)
       setIsHistoryOpen(false)
+      if (scope === "both") {
+        // "both" is local UI state only — keep the current results tab / URL seed.
+        return
+      }
+      lastAppliedSeedTabRef.current = scope
+      setResultsTab(scope)
+      onTabChange?.(scope)
+    },
+    [onTabChange],
+  )
+
+  const selectResultsTab = useCallback(
+    (tab: ResearchTab) => {
+      lastAppliedSeedTabRef.current = tab
+      setResultsTab(tab)
+      onTabChange?.(tab)
     },
     [onTabChange],
   )
@@ -199,10 +238,22 @@ export function ResearchPane({
   const requestActiveSearch = useCallback(() => {
     const q = sharedQuery.trim()
     if (!q) return
-    // Prompts only run when the user clicks "Get AI results".
-    if (activeTab === "prompts") return
-    setKeywordAutoSearchKey((key) => key + 1)
-  }, [activeTab, sharedQuery])
+    setHasSearched(true)
+    setIsSearching(true)
+    if (includesKeywords) {
+      setKeywordAutoSearchKey((key) => key + 1)
+    }
+    if (includesPrompts) {
+      setPromptAutoSearchKey((key) => key + 1)
+    }
+    if (researchScope === "both") {
+      setResultsTab((prev) => prev || "keywords")
+    } else {
+      setResultsTab(researchScope)
+      onTabChange?.(researchScope)
+    }
+    window.setTimeout(() => setIsSearching(false), 600)
+  }, [includesKeywords, includesPrompts, onTabChange, researchScope, sharedQuery])
 
   const historySuggestions = useMemo(() => {
     const query = sharedQuery.trim().toLowerCase()
@@ -246,16 +297,16 @@ export function ResearchPane({
       return true
     }
 
-    if (activeTab === "keywords") {
+    if (includesKeywords) {
       for (const item of keywordHistory) {
         if (pushKeyword(item) && items.length >= 8) break
       }
-    } else {
+    }
+    if (includesPrompts && items.length < 8) {
       for (const item of promptHistory) {
         if (pushPrompt(item) && items.length >= 8) break
       }
-      // If the typed query filters everything out, still show recent prompts on focus.
-      if (items.length === 0 && query) {
+      if (items.length === 0 && query && !includesKeywords) {
         seen.clear()
         for (const item of promptHistory) {
           const term = typeof item.term === "string" ? item.term.trim() : ""
@@ -273,7 +324,7 @@ export function ResearchPane({
       }
     }
     return items
-  }, [activeTab, keywordHistory, promptHistory, sharedQuery])
+  }, [includesKeywords, includesPrompts, keywordHistory, promptHistory, sharedQuery])
 
   const selectedRegionLabel = useMemo(() => {
     const match = regions.find((r) => r.id === sharedRegionId)
@@ -287,6 +338,21 @@ export function ResearchPane({
     return match.name
   }, [sharedLanguageId])
 
+  const selectedScopeLabel =
+    RESEARCH_SCOPE_OPTIONS.find((option) => option.id === researchScope)?.label ||
+    "Keywords"
+
+  const queryLabel =
+    researchScope === "prompts"
+      ? "Prompt"
+      : researchScope === "both"
+        ? "Query"
+        : "Keyword"
+
+  const regionLabel = includesPrompts && !includesKeywords ? "Market" : "Country"
+  const canSearch = sharedQuery.trim().length > 0
+  const showResultTabs = researchScope === "both" && hasSearched
+
   if (!isOpen) return null
 
   const shellClass =
@@ -296,71 +362,24 @@ export function ResearchPane({
 
   return (
     <div className={shellClass}>
-      <div className={cn(TASK_PANE_HEADER_SHELL_CLASS, "border-b-0")}>
-        <div className={TASK_PANE_HEADER_ROW_CLASS}>
-          <div className="mr-4 min-w-0 flex-1">
-            <h1 className="truncate text-base font-semibold text-gray-900">Research</h1>
-          </div>
-          {variant === "overlay" ? (
-            <Button
-              type="button"
-              variant="ghost"
-              size="sm"
-              className="h-8 w-8 p-0"
-              onClick={onClose}
-              aria-label="Close"
-            >
-              <X className="h-4 w-4" />
-            </Button>
-          ) : null}
+      <div className={cn(TASK_DETAILS_HEADER_ROW_CLASS, "sticky top-0 z-30")}>
+        <div className="flex min-w-0 flex-1 items-center gap-2">
+          <h1 className="min-w-0 truncate text-[13px] font-medium text-gray-800">
+            Research
+          </h1>
         </div>
-      </div>
-
-      <div className="border-b border-gray-100 px-4">
-        <div className="flex items-center justify-between gap-2">
-          <div className="flex min-w-0 gap-1" role="tablist" aria-label="Research type">
-            <button
-              type="button"
-              role="tab"
-              aria-selected={activeTab === "keywords"}
-              className={cn(
-                "inline-flex items-center gap-1.5 border-b-2 px-3 py-2 text-sm font-medium transition-colors",
-                activeTab === "keywords"
-                  ? "border-gray-900 text-gray-900"
-                  : "border-transparent text-gray-500 hover:text-gray-800",
-              )}
-              onClick={() => selectTab("keywords")}
-            >
-              <Lightbulb className="h-3.5 w-3.5" />
-              Keywords
-            </button>
-            <button
-              type="button"
-              role="tab"
-              aria-selected={activeTab === "prompts"}
-              className={cn(
-                "inline-flex items-center gap-1.5 border-b-2 px-3 py-2 text-sm font-medium transition-colors",
-                activeTab === "prompts"
-                  ? "border-gray-900 text-gray-900"
-                  : "border-transparent text-gray-500 hover:text-gray-800",
-              )}
-              onClick={() => selectTab("prompts")}
-            >
-              <Sparkles className="h-3.5 w-3.5" />
-              Prompts
-            </button>
-          </div>
+        {variant === "overlay" ? (
           <Button
             type="button"
             variant="ghost"
             size="sm"
-            className="h-8 shrink-0 px-2 text-xs text-gray-600"
-            onClick={() => setIsListsOpen(true)}
+            className="h-7 w-7 p-0 text-gray-600 hover:bg-gray-100 hover:text-gray-900"
+            onClick={onClose}
+            aria-label="Close"
           >
-            <Bookmark className="mr-1 h-3.5 w-3.5" />
-            Lists
+            <X className="h-4 w-4" />
           </Button>
-        </div>
+        ) : null}
       </div>
 
       <div className="relative z-20 overflow-visible px-4 pt-3 pb-0">
@@ -369,7 +388,7 @@ export function ResearchPane({
             className="self-center justify-self-start text-left text-sm font-normal text-gray-400"
             htmlFor="research-shared-query"
           >
-            {activeTab === "keywords" ? "Keyword" : "Prompt"}
+            {queryLabel}
           </label>
           <div ref={queryFieldRef} className="relative min-w-0">
             <div className="relative">
@@ -391,17 +410,17 @@ export function ResearchPane({
                   }
                 }}
                 placeholder={
-                  activeTab === "keywords"
-                    ? "Enter keyword…"
-                    : "e.g. melhores bancos privados em portugal"
+                  includesPrompts && !includesKeywords
+                    ? "e.g. melhores bancos privados em portugal"
+                    : "Enter keyword or topic…"
                 }
                 className={cn(
                   "h-10 min-h-10 w-full min-w-0 rounded-md border-gray-200 text-sm",
-                  activeTab === "prompts" && "pr-10",
+                  includesPrompts && "pr-10",
                 )}
                 autoComplete="off"
               />
-              {activeTab === "prompts" ? (
+              {includesPrompts ? (
                 <div className="absolute inset-y-0 right-1 flex items-center">
                   <SavePromptListPopover
                     prompt={sharedQuery}
@@ -426,9 +445,6 @@ export function ResearchPane({
                         setIsHistoryOpen(false)
                         requestAnimationFrame(() => {
                           queryInputRef.current?.focus()
-                          if (activeTab === "keywords") {
-                            setKeywordAutoSearchKey((key) => key + 1)
-                          }
                         })
                       }}
                     >
@@ -452,9 +468,47 @@ export function ResearchPane({
 
           <label
             className="self-center justify-self-start text-left text-sm font-normal text-gray-400"
+            htmlFor="research-shared-scope"
+          >
+            Type
+          </label>
+          <Select
+            value={researchScope}
+            onValueChange={(value) => selectScope(value as ResearchScope)}
+          >
+            <SelectTrigger id="research-shared-scope" className={selectTriggerClassName}>
+              <SelectValue>
+                <span className="flex min-w-0 items-center gap-2">
+                  {researchScope === "prompts" ? (
+                    <Sparkles className="h-3.5 w-3.5 shrink-0 text-gray-500" />
+                  ) : (
+                    <Lightbulb className="h-3.5 w-3.5 shrink-0 text-gray-500" />
+                  )}
+                  <span className="truncate">{selectedScopeLabel}</span>
+                </span>
+              </SelectValue>
+            </SelectTrigger>
+            <SelectContent className="w-[min(90vw,24rem)] max-w-full">
+              {RESEARCH_SCOPE_OPTIONS.map((option) => (
+                <SelectItem key={option.id} value={option.id}>
+                  <span className="flex items-center gap-2">
+                    {option.id === "prompts" ? (
+                      <Sparkles className="h-3.5 w-3.5 text-gray-500" />
+                    ) : (
+                      <Lightbulb className="h-3.5 w-3.5 text-gray-500" />
+                    )}
+                    <span>{option.label}</span>
+                  </span>
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+
+          <label
+            className="self-center justify-self-start text-left text-sm font-normal text-gray-400"
             htmlFor="research-shared-region"
           >
-            {activeTab === "prompts" ? "Market" : "Country"}
+            {regionLabel}
           </label>
           <Select
             value={toSelectValue(sharedRegionId)}
@@ -484,7 +538,7 @@ export function ResearchPane({
             </SelectContent>
           </Select>
 
-          {activeTab === "keywords" ? (
+          {includesKeywords ? (
             <>
               <label
                 className="self-center justify-self-start text-left text-sm font-normal text-gray-400"
@@ -521,38 +575,115 @@ export function ResearchPane({
               </Select>
             </>
           ) : null}
+
+          <div className="col-span-2 pt-2">
+            <Button
+              type="button"
+              variant="outline"
+              disabled={!canSearch || isSearching}
+              className="h-9 w-full border-gray-200 bg-white px-3 text-sm font-medium text-gray-700 hover:bg-gray-50 hover:text-gray-900"
+              onClick={() => {
+                setIsHistoryOpen(false)
+                requestActiveSearch()
+              }}
+            >
+              {isSearching ? (
+                <>
+                  <Loader2 className="mr-1.5 h-3.5 w-3.5 animate-spin" />
+                  Getting ideas…
+                </>
+              ) : (
+                <>
+                  <Search className="mr-1.5 h-3.5 w-3.5" />
+                  Get ideas
+                </>
+              )}
+            </Button>
+            <div className="mt-2 flex items-center justify-center">
+              <button
+                type="button"
+                className="text-xs text-gray-400 transition-colors hover:text-gray-600"
+                onClick={() => setIsListsOpen(true)}
+              >
+                View lists
+              </button>
+            </div>
+          </div>
         </div>
+
+        {showResultTabs ? (
+          <div className="mt-3 flex min-w-0 gap-1 border-b border-gray-100" role="tablist" aria-label="Research results">
+            <button
+              type="button"
+              role="tab"
+              aria-selected={resultsTab === "keywords"}
+              className={cn(
+                "inline-flex items-center gap-1.5 border-b-2 px-3 py-2 text-sm font-medium transition-colors",
+                resultsTab === "keywords"
+                  ? "border-gray-900 text-gray-900"
+                  : "border-transparent text-gray-500 hover:text-gray-800",
+              )}
+              onClick={() => selectResultsTab("keywords")}
+            >
+              <Lightbulb className="h-3.5 w-3.5" />
+              Keywords
+            </button>
+            <button
+              type="button"
+              role="tab"
+              aria-selected={resultsTab === "prompts"}
+              className={cn(
+                "inline-flex items-center gap-1.5 border-b-2 px-3 py-2 text-sm font-medium transition-colors",
+                resultsTab === "prompts"
+                  ? "border-gray-900 text-gray-900"
+                  : "border-transparent text-gray-500 hover:text-gray-800",
+              )}
+              onClick={() => selectResultsTab("prompts")}
+            >
+              <Sparkles className="h-3.5 w-3.5" />
+              Prompts
+            </button>
+          </div>
+        ) : null}
       </div>
 
       <div className="w-full">
-        {activeTab === "keywords" ? (
-          <KeywordPlannerPane
-            isOpen={isOpen}
-            onClose={onClose}
-            variant="inline"
-            embedded
-            sharedQuery={sharedQuery}
-            sharedRegionId={sharedRegionId}
-            sharedLanguageId={sharedLanguageId}
-            hideSharedControls
-            hideListsButton
-            autoSearchKey={keywordAutoSearchKey}
-          />
-        ) : (
-          <PromptResearchPane
-            isOpen={isOpen}
-            onClose={onClose}
-            variant="inline"
-            embedded
-            sharedQuery={sharedQuery}
-            onSharedQueryChange={setSharedQuery}
-            sharedRegionId={sharedRegionId}
-            hideSharedControls
-          />
-        )}
+        {includesKeywords ? (
+          <div className={activeResultsTab === "keywords" ? "block" : "hidden"}>
+            <KeywordPlannerPane
+              isOpen={isOpen}
+              onClose={onClose}
+              variant="inline"
+              embedded
+              sharedQuery={sharedQuery}
+              sharedRegionId={sharedRegionId}
+              sharedLanguageId={sharedLanguageId}
+              hideSharedControls
+              hideListsButton
+              hideSubmitButton
+              autoSearchKey={keywordAutoSearchKey}
+            />
+          </div>
+        ) : null}
+        {includesPrompts ? (
+          <div className={activeResultsTab === "prompts" ? "block" : "hidden"}>
+            <PromptResearchPane
+              isOpen={isOpen}
+              onClose={onClose}
+              variant="inline"
+              embedded
+              sharedQuery={sharedQuery}
+              onSharedQueryChange={setSharedQuery}
+              sharedRegionId={sharedRegionId}
+              hideSharedControls
+              hideSubmitButton
+              autoSearchKey={promptAutoSearchKey}
+            />
+          </div>
+        ) : null}
       </div>
 
-      {activeTab === "keywords" ? (
+      {listsTab === "keywords" ? (
         <SavedKeywordsModal isOpen={isListsOpen} onClose={() => setIsListsOpen(false)} />
       ) : (
         <SavedPromptsModal isOpen={isListsOpen} onClose={() => setIsListsOpen(false)} />

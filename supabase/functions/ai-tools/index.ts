@@ -672,6 +672,25 @@ function brandLayoutTemplatesSummary(projectRow: { brand_kit?: unknown } | null 
   };
 }
 
+function approvedImageBanksSummary(projectRow: { brand_kit?: unknown } | null | undefined) {
+  const kit = brandKitForAiFromProject(projectRow);
+  const banks = kit?.approved_image_banks ?? [];
+  return {
+    count: banks.length,
+    note:
+      banks.length > 0
+        ? "Approved stock / image libraries for this project. Prefer these when sourcing photography."
+        : "No approved image banks configured on this project yet.",
+    banks: banks.map((bank) => ({
+      id: bank.id,
+      provider: bank.provider,
+      label: bank.label,
+      url: bank.url,
+      notes: bank.notes,
+    })),
+  };
+}
+
 function withBrandKitForAi(projectRow: any) {
   if (!projectRow) return projectRow;
   const brand_kit = brandKitForAiFromProject(projectRow);
@@ -679,6 +698,7 @@ function withBrandKitForAi(projectRow: any) {
     ...projectRow,
     brand_kit,
     brand_layout_templates: brandLayoutTemplatesSummary(projectRow),
+    approved_image_banks: approvedImageBanksSummary(projectRow),
   };
 }
 
@@ -933,6 +953,7 @@ function decorateArtifactPayload(data: any) {
 
   const out: any = { ...data };
   if (Array.isArray(out.artifacts)) out.artifacts = out.artifacts.map((item: any) => decorateArtifact(item));
+  if (Array.isArray(out.rows)) out.rows = out.rows.map((item: any) => decorateArtifact(item));
   if (out.snapshot && typeof out.snapshot === "object") {
     out.snapshot = decorateArtifact({
       ...out.snapshot,
@@ -943,6 +964,62 @@ function decorateArtifactPayload(data: any) {
   if (out.artifact && typeof out.artifact === "object") out.artifact = decorateArtifact(out.artifact);
   if (out.artifact_id && !out.app_link) Object.assign(out, decorateArtifact({ ...out, id: out.artifact_id }));
   return out;
+}
+
+/** Decorated artifact links from a freshly created/updated artifact build. */
+function extractDecoratedArtifactsFromBuildStart(data: any, fallbackSpecs: any[] = []) {
+  const planArtifacts = Array.isArray(data?.build?.plan?.artifacts)
+    ? data.build.plan.artifacts
+    : [];
+  const handleMap =
+    data?.handle_map && typeof data.handle_map === "object" && !Array.isArray(data.handle_map)
+      ? data.handle_map
+      : (data?.build?.plan?.handle_map && typeof data.build.plan.handle_map === "object"
+        ? data.build.plan.handle_map
+        : {});
+
+  const rows = planArtifacts.length > 0
+    ? planArtifacts
+    : (Array.isArray(fallbackSpecs) ? fallbackSpecs : []).map((spec: any) => {
+      const handle = typeof spec?.handle === "string" ? spec.handle : "";
+      const mappedId = handle && handleMap?.[handle] != null ? String(handleMap[handle]) : null;
+      return {
+        ...spec,
+        artifact_id: cleanUuidOrNull(spec?.artifact_id) ?? cleanUuidOrNull(mappedId),
+      };
+    });
+
+  const decorated = rows
+    .map((row: any) => {
+      const id = cleanUuidOrNull(row?.artifact_id ?? row?.id);
+      if (!id) return null;
+      return decorateArtifact({
+        id,
+        title: typeof row?.title === "string" && row.title.trim()
+          ? row.title.trim()
+          : `Artifact ${id.slice(0, 8)}`,
+        version_number: row?.expected_version ?? row?.version_number ?? row?.current_version,
+      });
+    })
+    .filter(Boolean);
+
+  if (decorated.length > 0) return decorated;
+
+  // Last resort: unit_key = artifact:<uuid>
+  const units = Array.isArray(data?.units) ? data.units : [];
+  return units
+    .map((unit: any) => {
+      const key = String(unit?.unit_key ?? "");
+      const match = key.match(/^artifact:([0-9a-f-]{36})$/i);
+      const id = cleanUuidOrNull(match?.[1] ?? unit?.input_snapshot?.artifact_id);
+      if (!id) return null;
+      const title =
+        typeof unit?.input_snapshot?.artifact_spec?.title === "string"
+          ? unit.input_snapshot.artifact_spec.title.trim()
+          : null;
+      return decorateArtifact({ id, title: title || `Artifact ${id.slice(0, 8)}` });
+    })
+    .filter(Boolean);
 }
 
 
@@ -1645,6 +1722,33 @@ if (toolName === "ai_list_ai_thread_artifacts") {
     return finalize({ name: toolName, ok: !error && data?.ok !== false, error: error?.message ?? data?.error ?? null, data: decorateArtifactPayload(data) });
   }
 
+if (toolName === "ai_search_artifacts") {
+    const query = String(rawArgs.query ?? rawArgs.q ?? "").trim();
+    if (query.length < 2) {
+      return finalize({ name: toolName, ok: false, error: "query_required", data: null });
+    }
+    const artifactTypes = Array.isArray(rawArgs.artifact_types)
+      ? rawArgs.artifact_types
+          .map((value: unknown) => String(value ?? "").trim())
+          .filter((value: string) => value.length > 0)
+          .slice(0, 20)
+      : null;
+    const { data, error } = await db.rpc("ai_search_artifacts_v1", {
+      p_q: query.slice(0, 200),
+      p_limit: Math.max(1, Math.min(Number(rawArgs.limit ?? 8) || 8, 50)),
+      p_task_id: positiveInt(rawArgs.task_id),
+      p_project_id: positiveInt(rawArgs.project_id),
+      p_ai_thread_id: cleanUuidOrNull(rawArgs.ai_thread_id),
+      p_artifact_types: artifactTypes && artifactTypes.length > 0 ? artifactTypes : null,
+    });
+    return finalize({
+      name: toolName,
+      ok: !error && data?.ok !== false,
+      error: error?.message ?? data?.error ?? null,
+      data: decorateArtifactPayload(data),
+    });
+  }
+
 if (toolName === "ai_list_artifact_versions") {
     const artifactId = cleanUuidOrNull(rawArgs.artifact_id);
     if (!artifactId) return finalize({ name: toolName, ok: false, error: "artifact_id_required", data: null });
@@ -1699,8 +1803,10 @@ if (toolName === "ai_start_artifact_build") {
       artifactSpecs = (Array.isArray(rawArgs.artifacts) ? rawArgs.artifacts : []).slice(0, 100).map((raw: any, index: number) => {
         const handle = String(raw?.handle ?? `artifact_${index + 1}`).trim().slice(0, 100);
         const operation = allowedOperations.has(String(raw?.operation ?? "")) ? String(raw.operation) : (cleanUuidOrNull(raw?.artifact_id) ? "update" : "create");
-        // Ownership is tag-driven for ambient panes. Model-supplied project_id is allowed when
-        // the project is visible (e.g. after read_project for a named brand), without requiring a tag.
+        // Tags win when present. Explicit model task_id/project_id is also accepted when the
+        // model resolved a named target (e.g. read_task / read_project) — visibility is checked
+        // below. Do not require @-tags for creates; that previously orphaned task-targeted
+        // artifacts even after a successful read_task.
         const modelTaskId = Object.prototype.hasOwnProperty.call(raw ?? {}, "task_id")
           ? positiveInt(raw?.task_id)
           : null;
@@ -1709,24 +1815,22 @@ if (toolName === "ai_start_artifact_build") {
           : null;
         let taskId: number | null = null;
         let projectId: number | null = null;
-        if (operation === "create" || operation === "generate") {
-          if (modelTaskId != null && taggedTaskIds.includes(modelTaskId)) taskId = modelTaskId;
-          else if (taggedTaskIds.length === 1) taskId = taggedTaskIds[0] ?? null;
-          if (modelProjectId != null && taggedProjectIds.includes(modelProjectId)) projectId = modelProjectId;
-          else if (taskId == null && taggedProjectIds.length === 1) projectId = taggedProjectIds[0] ?? null;
-          else if (taskId == null && modelProjectId != null) projectId = modelProjectId; // validated for visibility below
-        } else {
-          // Updates may keep an explicit model task/project when already attached, or use a single tag.
-          if (modelTaskId != null && (taggedTaskIds.length === 0 || taggedTaskIds.includes(modelTaskId))) {
-            taskId = modelTaskId;
-          } else if (taggedTaskIds.length === 1) {
-            taskId = taggedTaskIds[0] ?? null;
-          }
-          if (modelProjectId != null && (taggedProjectIds.length === 0 || taggedProjectIds.includes(modelProjectId))) {
-            projectId = modelProjectId;
-          } else if (taskId == null && taggedProjectIds.length === 1) {
-            projectId = taggedProjectIds[0] ?? null;
-          }
+        if (modelTaskId != null && (taggedTaskIds.length === 0 || taggedTaskIds.includes(modelTaskId))) {
+          taskId = modelTaskId;
+        } else if (taggedTaskIds.length === 1) {
+          taskId = taggedTaskIds[0] ?? null;
+        }
+        if (modelProjectId != null && (taggedProjectIds.length === 0 || taggedProjectIds.includes(modelProjectId))) {
+          projectId = modelProjectId;
+        } else if (taskId == null && taggedProjectIds.length === 1) {
+          projectId = taggedProjectIds[0] ?? null;
+        } else if (
+          taskId == null
+          && modelProjectId != null
+          && (operation === "create" || operation === "generate")
+        ) {
+          // Creates may attach a visible project without a tag (brand creatives).
+          projectId = modelProjectId;
         }
         const title = String(raw?.title ?? "").trim().slice(0, 240);
         const artifactType = String(raw?.artifact_type ?? "document").trim().slice(0, 100);
@@ -2015,7 +2119,10 @@ if (toolName === "ai_start_artifact_build") {
         artifacts: artifactSpecs,
       },
       p_idempotency_key: `run:${ctx.ai_run_id}:artifact-build`,
-      p_concurrency_limit: Math.max(1, Math.min(Number(rawArgs.concurrency_limit ?? 4) || 4, 8)),
+      // Optimistic parallel start. If a worker hits WORKER_RESOURCE_LIMIT (546),
+      // the orchestrator degrades concurrency_limit → 1 and requeues the unit
+      // so the remaining queue drains sequentially.
+      p_concurrency_limit: Math.max(1, Math.min(Number(rawArgs.concurrency_limit ?? 3) || 3, 8)),
     });
     if (error || data?.ok === false) {
       const failMessage = error?.message ?? data?.error ?? "build_creation_failed";
@@ -2053,6 +2160,12 @@ if (toolName === "ai_start_artifact_build") {
       console.error("ai_start_artifact_build initial dispatch failed", { build_id: buildId, error: dispatchError });
     }
 
+    const artifacts = extractDecoratedArtifactsFromBuildStart(data, artifactSpecs);
+    const primaryArtifact = artifacts[0] ?? null;
+    const artifactLinksMarkdown = artifacts
+      .map((row: any) => row?.markdown_link)
+      .filter((link: any) => typeof link === "string" && link.trim())
+      .join("\n");
     return finalize({
       name: toolName,
       ok: true,
@@ -2060,7 +2173,14 @@ if (toolName === "ai_start_artifact_build") {
       data: {
         ...data,
         build_id: buildId,
-        app_link: `app://ai-build/${buildId}`,
+        // Prefer artifact deep-links so the model can cite the deliverable by name.
+        // Keep build_app_link for diagnostics; do not paste it into user-facing replies.
+        app_link: primaryArtifact?.app_link ?? `app://ai-build/${buildId}`,
+        markdown_link: primaryArtifact?.markdown_link ?? null,
+        // Ready-to-paste block: one markdown chip per artifact (multi-artifact builds).
+        artifact_links_markdown: artifactLinksMarkdown || null,
+        build_app_link: `app://ai-build/${buildId}`,
+        artifacts,
         dispatch_started: dispatchError == null,
         dispatch_error: dispatchError,
         artifact_count: artifactSpecs.length,
@@ -2703,12 +2823,26 @@ if (toolName === "ai_update_task_fields") {
       return finalize({ name: toolName, ok: false, error: "No supported task fields were provided to update.", data: decorateTask(task) });
     }
 
-    const { data, error } = await db
-      .from("tasks")
-      .update(updatePayload)
-      .eq("id", Number(task.id))
-      .select(TASK_SELECT_FOR_WRITE)
-      .single();
+    const isStatementTimeout = (message: unknown) =>
+      /statement timeout|canceling statement/i.test(String(message ?? ""));
+
+    let data: any = null;
+    let error: any = null;
+    // Contended task rows (AI build + SEO field writes) can hit statement_timeout;
+    // retry a couple of times before surfacing the failure to the model.
+    for (let attempt = 0; attempt < 3; attempt++) {
+      const result = await db
+        .from("tasks")
+        .update(updatePayload)
+        .eq("id", Number(task.id))
+        .select(TASK_SELECT_FOR_WRITE)
+        .single();
+      data = result.data;
+      error = result.error;
+      if (!error && data) break;
+      if (!isStatementTimeout(error?.message) || attempt === 2) break;
+      await new Promise((resolve) => setTimeout(resolve, 250 * (attempt + 1)));
+    }
 
     return finalize({
       name: toolName,
@@ -2825,10 +2959,13 @@ if (toolName === "ai_create_task") {
     if (fieldBuild.errors.length) return finalize({ name: toolName, ok: false, error: fieldBuild.errors.join(" "), data: null });
     const payload = fieldBuild.payload;
 
+    const isStatementTimeout = (message: unknown) =>
+      /statement timeout|canceling statement/i.test(String(message ?? ""));
+
     if (projectId) {
       const { data: existingRows, error: existingError } = await db
         .from("tasks")
-        .select(TASK_SELECT_FOR_WRITE)
+        .select("id,title")
         .eq("project_id_int", projectId)
         .eq("title", title)
         .eq("is_deleted", false)
@@ -2841,36 +2978,67 @@ if (toolName === "ai_create_task") {
           ok: false,
           error: "existing_task_confirmation_required",
           data: {
-            candidates: rows.map(decorateTask),
+            candidates: rows.map((row: any) => ({ id: row.id, title: row.title })),
             instruction: "The task already exists. Ask whether to update it or create a distinct task.",
           },
         });
       }
     }
 
-    const { data: created, error } = await db.rpc("create_task_minimal", {
-      p_project_id: projectId,
-      p_title: title,
-      p_briefing: payload.briefing ?? null,
-      p_project_status_id: payload.project_status_id ?? null,
-      p_assigned_to_id: payload.assigned_to_id ?? null,
-      p_content_type_id: payload.content_type_id ?? null,
-      p_production_type_id: payload.production_type_id ?? null,
-      p_language_id: payload.language_id ?? null,
-      p_delivery_date: payload.delivery_date ?? null,
-      p_publication_date: payload.publication_date ?? null,
-      p_channel_ids: uniqueInts(rawArgs.channel_ids),
-      p_watcher_user_ids: uniqueInts(rawArgs.watcher_user_ids),
-    });
-    if (error || !created?.task_id) return finalize({ name: toolName, ok: false, error: error?.message ?? "task_creation_failed", data: null });
+    let created: any = null;
+    let error: any = null;
+    // Contended create paths (watchers/notifications/triggers) can hit statement_timeout.
+    for (let attempt = 0; attempt < 3; attempt++) {
+      const result = await db.rpc("create_task_minimal", {
+        p_project_id: projectId,
+        p_title: title,
+        p_briefing: payload.briefing ?? null,
+        p_project_status_id: payload.project_status_id ?? null,
+        p_assigned_to_id: payload.assigned_to_id ?? null,
+        p_content_type_id: payload.content_type_id ?? null,
+        p_production_type_id: payload.production_type_id ?? null,
+        p_language_id: payload.language_id ?? null,
+        p_delivery_date: payload.delivery_date ?? null,
+        p_publication_date: payload.publication_date ?? null,
+        p_channel_ids: uniqueInts(rawArgs.channel_ids),
+        p_watcher_user_ids: uniqueInts(rawArgs.watcher_user_ids),
+      });
+      created = result.data;
+      error = result.error;
+      if (!error && created?.task_id) break;
+      if (!isStatementTimeout(error?.message) || attempt === 2) break;
+      await new Promise((resolve) => setTimeout(resolve, 300 * (attempt + 1)));
+    }
+    if (error || !created?.task_id) {
+      return finalize({
+        name: toolName,
+        ok: false,
+        error: error?.message ?? "task_creation_failed",
+        data: null,
+      });
+    }
 
     const postCreateUpdate: Record<string, any> = {};
     for (const field of ["notes", "keyword", "meta_title", "meta_description", "h1", "h2", "alt_text", "filename", "internal_links", "tags", "category", "secondary_keywords", "source_urls"]) {
       if (Object.prototype.hasOwnProperty.call(payload, field)) postCreateUpdate[field] = payload[field];
     }
     if (Object.keys(postCreateUpdate).length > 0) {
-      const { error: updateError } = await db.from("tasks").update(postCreateUpdate).eq("id", created.task_id);
-      if (updateError) return finalize({ name: toolName, ok: false, error: updateError.message, data: { ...created, task_created: true } });
+      let updateError: any = null;
+      for (let attempt = 0; attempt < 3; attempt++) {
+        const result = await db.from("tasks").update(postCreateUpdate).eq("id", created.task_id);
+        updateError = result.error;
+        if (!updateError) break;
+        if (!isStatementTimeout(updateError?.message) || attempt === 2) break;
+        await new Promise((resolve) => setTimeout(resolve, 250 * (attempt + 1)));
+      }
+      if (updateError) {
+        return finalize({
+          name: toolName,
+          ok: false,
+          error: updateError.message,
+          data: { ...created, task_created: true },
+        });
+      }
     }
 
     return finalize({ name: toolName, ok: true, error: null, data: { ...created, action: "created_task" } });
@@ -3238,13 +3406,15 @@ if (toolName === "keyword_research") {
     }
 
     const pageSize = Math.max(1, Math.min(Number(rawArgs.pageSize ?? 10) || 10, 25));
-
+    // keyword-ideas accepts mode "seed" | "url" only (not "metrics"/"ideas").
+    // Pass singular `keyword` and/or `keywords[]` — never invent invalid mode values.
     const response = await invokeJsonEdgeFunction("keyword-ideas", {
-      keywords,
+      keyword: keywords[0],
+      keywords: keywords.length > 1 ? keywords : undefined,
       regionId: normalizeKeywordRegionId(rawArgs.regionId ?? rawArgs.region_id),
       languageId: rawArgs.languageId ?? rawArgs.language_id ?? undefined,
       pageSize,
-      mode: keywords.length > 1 || pageSize === 1 ? "metrics" : "ideas",
+      mode: "seed",
       taskId: canonicalTaskId,
       channelId: canonicalChannelId,
     }, 20000, ctx?.request_auth_header, ctx?.ai_run_id);
@@ -3258,47 +3428,39 @@ if (toolName === "keyword_research") {
       ]),
     );
 
-    const data = keywords.map((keyword) => {
-      const exact = rowsByKeyword.get(keyword.toLowerCase());
+    const relatedKeywords = rows.slice(0, pageSize).map((row: any) => ({
+      keyword: row?.keyword ?? null,
+      avgMonthlySearches: row?.avgMonthlySearches ?? null,
+      competitionIndex: row?.competitionIndex ?? null,
+    }));
 
-      if (exact) {
+    const data = keywords.map((keyword, index) => {
+      const exact = rowsByKeyword.get(keyword.toLowerCase());
+      const base = {
+        keyword,
+        avgMonthlySearches: exact?.avgMonthlySearches ?? null,
+        competitionIndex: exact?.competitionIndex ?? null,
+        relatedKeywords: [] as typeof relatedKeywords,
+        ideas: [] as typeof relatedKeywords,
+        recommendedKeywords: [] as typeof relatedKeywords,
+      };
+
+      // Attach related ideas on the primary seed (and on single-keyword lookups).
+      if (index === 0 && relatedKeywords.length > 0) {
         return {
-          keyword,
-          avgMonthlySearches: exact?.avgMonthlySearches ?? null,
-          competitionIndex: exact?.competitionIndex ?? null,
-          relatedKeywords: [],
-          ideas: [],
-          recommendedKeywords: [],
+          ...base,
+          avgMonthlySearches:
+            base.avgMonthlySearches ?? relatedKeywords[0]?.avgMonthlySearches ?? null,
+          competitionIndex:
+            base.competitionIndex ?? relatedKeywords[0]?.competitionIndex ?? null,
+          relatedKeywords,
+          ideas: relatedKeywords,
+          recommendedKeywords: relatedKeywords.slice(0, 8),
         };
       }
 
-      return {
-        keyword,
-        avgMonthlySearches: null,
-        competitionIndex: null,
-        relatedKeywords: [],
-        ideas: [],
-        recommendedKeywords: [],
-      };
+      return base;
     });
-
-    // If this was an ideas lookup for a single seed, preserve related ideas.
-    if (keywords.length === 1 && rows.length > 0 && response?.mode === "ideas") {
-      const relatedKeywords = rows.slice(0, pageSize).map((row: any) => ({
-        keyword: row?.keyword ?? null,
-        avgMonthlySearches: row?.avgMonthlySearches ?? null,
-        competitionIndex: row?.competitionIndex ?? null,
-      }));
-
-      data[0] = {
-        keyword: keywords[0],
-        avgMonthlySearches: relatedKeywords[0]?.avgMonthlySearches ?? null,
-        competitionIndex: relatedKeywords[0]?.competitionIndex ?? null,
-        relatedKeywords,
-        ideas: relatedKeywords,
-        recommendedKeywords: relatedKeywords.slice(0, 8),
-      };
-    }
 
     return finalize({
       name: toolName,
@@ -3333,11 +3495,234 @@ if (toolName === "google_top_results") {
     }
   }
 
+if (toolName === "list_project_social_profiles") {
+  const namedLookup = String(
+    rawArgs.project_name ?? rawArgs.projectName ?? rawArgs.query ?? rawArgs.name ?? "",
+  ).trim();
+  const resolved = await resolveVisibleProjectTarget({
+    db,
+    projectId: rawArgs.project_id ?? rawArgs.projectId,
+    projectName: namedLookup || null,
+    allowScopeFallbackIds: namedLookup
+      ? []
+      : [
+          Number(thread?.project_id ?? 0),
+          Number(ctx?.project_id ?? 0),
+        ].filter((id) => Number.isFinite(id) && id > 0),
+  });
+  if (!resolved.ok) {
+    return finalize({
+      name: toolName,
+      ok: false,
+      error: resolved.error,
+      data: {
+        needs_clarification: resolved.needs_clarification,
+        candidates: resolved.candidates ?? [],
+      },
+    });
+  }
+
+  const projectId = resolved.project.id;
+  const [brandRes, competitorRes, profilesRes] = await Promise.all([
+    db
+      .from("project_brand_social_profiles")
+      .select("id,network,profile_url,is_active,last_sync_status,last_synced_at,last_sync_error")
+      .eq("project_id", projectId)
+      .order("network", { ascending: true }),
+    db
+      .from("project_competitors")
+      .select("id,name,website_url,is_active")
+      .eq("project_id", projectId)
+      .order("name", { ascending: true }),
+    db
+      .from("project_competitor_social_profiles")
+      .select("id,competitor_id,network,profile_url,is_active,last_sync_status,last_synced_at,last_sync_error")
+      .eq("project_id", projectId)
+      .order("network", { ascending: true }),
+  ]);
+
+  if (brandRes.error || competitorRes.error || profilesRes.error) {
+    return finalize({
+      name: toolName,
+      ok: false,
+      error:
+        brandRes.error?.message
+        ?? competitorRes.error?.message
+        ?? profilesRes.error?.message
+        ?? "failed_to_load_social_profiles",
+      data: null,
+    });
+  }
+
+  const profilesByCompetitor = new Map<number, any[]>();
+  for (const row of profilesRes.data ?? []) {
+    const list = profilesByCompetitor.get(row.competitor_id) ?? [];
+    list.push({
+      id: row.id,
+      network: row.network,
+      profile_url: row.profile_url,
+      is_active: row.is_active !== false,
+      last_sync_status: row.last_sync_status ?? null,
+      last_synced_at: row.last_synced_at ?? null,
+      last_sync_error: row.last_sync_error ?? null,
+    });
+    profilesByCompetitor.set(row.competitor_id, list);
+  }
+
+  return finalize({
+    name: toolName,
+    ok: true,
+    error: null,
+    data: {
+      project_id: projectId,
+      project_name: resolved.project.name,
+      brand_profiles: (brandRes.data ?? []).map((row: any) => ({
+        id: row.id,
+        network: row.network,
+        profile_url: row.profile_url,
+        is_active: row.is_active !== false,
+        last_sync_status: row.last_sync_status ?? null,
+        last_synced_at: row.last_synced_at ?? null,
+        last_sync_error: row.last_sync_error ?? null,
+      })),
+      competitors: (competitorRes.data ?? []).map((row: any) => ({
+        id: row.id,
+        name: row.name,
+        website_url: row.website_url ?? null,
+        is_active: row.is_active !== false,
+        social_profiles: profilesByCompetitor.get(row.id) ?? [],
+      })),
+    },
+  });
+}
+
+if (toolName === "read_project_social_stats") {
+  const namedLookup = String(
+    rawArgs.project_name ?? rawArgs.projectName ?? rawArgs.query ?? rawArgs.name ?? "",
+  ).trim();
+  const resolved = await resolveVisibleProjectTarget({
+    db,
+    projectId: rawArgs.project_id ?? rawArgs.projectId,
+    projectName: namedLookup || null,
+    allowScopeFallbackIds: namedLookup
+      ? []
+      : [
+          Number(thread?.project_id ?? 0),
+          Number(ctx?.project_id ?? 0),
+        ].filter((id) => Number.isFinite(id) && id > 0),
+  });
+  if (!resolved.ok) {
+    return finalize({
+      name: toolName,
+      ok: false,
+      error: resolved.error,
+      data: {
+        needs_clarification: resolved.needs_clarification,
+        candidates: resolved.candidates ?? [],
+      },
+    });
+  }
+
+  const projectId = resolved.project.id;
+  const allowedNetworks = new Set([
+    "linkedin",
+    "instagram",
+    "facebook",
+    "youtube",
+    "tiktok",
+    "x",
+  ]);
+  const networks = Array.isArray(rawArgs.networks)
+    ? [...new Set(
+        rawArgs.networks
+          .map((value: any) => String(value ?? "").trim().toLowerCase())
+          .filter((value: string) => allowedNetworks.has(value)),
+      )]
+    : [];
+
+  const includeTimeseries = rawArgs.include_timeseries === true
+    || rawArgs.includeTimeseries === true;
+  const includeTopPosts = rawArgs.include_top_posts === true
+    || rawArgs.includeTopPosts === true;
+
+  let dateFrom = String(rawArgs.date_from ?? rawArgs.dateFrom ?? "").trim() || null;
+  let dateTo = String(rawArgs.date_to ?? rawArgs.dateTo ?? "").trim() || null;
+  if (!dateFrom && !dateTo) {
+    const end = new Date();
+    const start = new Date(end);
+    start.setUTCDate(start.getUTCDate() - 29);
+    dateFrom = start.toISOString();
+    dateTo = end.toISOString();
+  }
+
+  const { data, error } = await db.rpc("fn_get_project_social_competitive_summary", {
+    p_project_id: projectId,
+    p_date_from: dateFrom,
+    p_date_to: dateTo,
+    p_networks: networks.length ? networks : null,
+    p_entity_ids: null,
+  });
+
+  if (error) {
+    return finalize({ name: toolName, ok: false, error: error.message, data: null });
+  }
+
+  const record = data && typeof data === "object" && !Array.isArray(data) ? data : {};
+  const entities = Array.isArray(record.entities) ? record.entities : [];
+
+  return finalize({
+    name: toolName,
+    ok: true,
+    error: null,
+    data: {
+      project_id: projectId,
+      project_name: resolved.project.name,
+      date_from: record.date_from ?? dateFrom,
+      date_to: record.date_to ?? dateTo,
+      networks: networks.length ? networks : null,
+      totals: record.totals ?? null,
+      entities: entities.map((entity: any) => {
+        const row = entity && typeof entity === "object" ? entity : {};
+        return {
+          entity_id: row.entity_id ?? null,
+          entity_name: row.entity_name ?? null,
+          entity_type: row.entity_type ?? null,
+          is_owned: row.is_owned === true,
+          posts_count: row.posts_count ?? 0,
+          interactions_total: row.interactions_total ?? null,
+          interactions_avg: row.interactions_avg ?? null,
+          interactions_median: row.interactions_median ?? null,
+          reactions_total: row.reactions_total ?? null,
+          comments_total: row.comments_total ?? null,
+          shares_total: row.shares_total ?? null,
+          views_total: row.views_total ?? null,
+          share_of_posts_pct: row.share_of_posts_pct ?? null,
+          share_of_interactions_pct: row.share_of_interactions_pct ?? null,
+          followers_latest: row.followers_latest ?? null,
+          followers_start: row.followers_start ?? null,
+          followers_delta: row.followers_delta ?? null,
+          followers_delta_pct: row.followers_delta_pct ?? null,
+          networks: Array.isArray(row.networks) ? row.networks : [],
+          top_posts: includeTopPosts && Array.isArray(row.top_posts)
+            ? row.top_posts.slice(0, 5)
+            : undefined,
+        };
+      }),
+      post_timeseries: includeTimeseries && Array.isArray(record.post_timeseries)
+        ? record.post_timeseries
+        : undefined,
+      follower_timeseries: includeTimeseries && Array.isArray(record.follower_timeseries)
+        ? record.follower_timeseries
+        : undefined,
+    },
+  });
+}
+
   return null;
 }
 
 async function executeSourceTool(runtime: any) {
-  const { db, ctx, thread, toolName, rawArgs, finalize } = runtime;
+  const { db, ctx, thread, toolName, rawArgs, finalize, supabaseService } = runtime;
 
   if (toolName === 'ai_create_source') {
     const sourceType = String(rawArgs.source_type ?? 'other');
@@ -3387,6 +3772,33 @@ async function executeSourceTool(runtime: any) {
       p_source_id: sourceId,
       p_version_number: positiveInt(rawArgs.version_number),
     });
+    // Sign extracted PDF images so the model can put real <img src> URLs in HTML.
+    try {
+      const source = data?.source
+      const meta = source?.metadata && typeof source.metadata === "object" ? source.metadata : {}
+      const images = Array.isArray(meta.extracted_images) ? meta.extracted_images : []
+      if (!error && data?.ok !== false && images.length && supabaseService) {
+        const extracted_images = []
+        for (const img of images.slice(0, 24)) {
+          const filePath = String(img?.file_path ?? "").replace(/^attachments\//, "")
+          let url: string | null = null
+          if (filePath) {
+            const signed = await supabaseService.storage
+              .from("attachments")
+              .createSignedUrl(filePath, 60 * 60 * 6)
+            url = signed.data?.signedUrl ?? null
+          }
+          extracted_images.push({ ...img, url })
+        }
+        data.source = {
+          ...source,
+          extracted_images,
+          metadata: { ...meta, extracted_images, extracted_image_count: extracted_images.length },
+        }
+      }
+    } catch (signError) {
+      console.warn("ai_read_source image sign failed", String(signError))
+    }
     return finalize({ name: toolName, ok: !error && data?.ok !== false, error: error?.message ?? data?.error ?? null, data });
   }
 
@@ -3461,6 +3873,757 @@ async function executeAgentTool(runtime: any) {
   return null;
 }
 
+async function executePublishingTool(runtime: any) {
+  const { toolName, rawArgs, finalize, ctx, thread } = runtime;
+  const auth = ctx?.request_auth_header ?? null;
+  const runId = ctx?.ai_run_id ?? null;
+  const threadId = cleanUuidOrNull(thread?.id ?? ctx?.thread_id);
+
+  if (toolName === "list_publishing_destinations") {
+    const projectId =
+      positiveInt(rawArgs.project_id) ??
+      positiveInt(ctx?.project_id) ??
+      positiveInt(thread?.project_id);
+    try {
+      const payloads: any[] = [];
+      if (projectId != null) {
+        payloads.push(
+          await invokeJsonEdgeFunction(
+            "agentic-publishing",
+            { action: "list_destinations", project_id: projectId },
+            30000,
+            auth,
+            runId,
+          ),
+        );
+      }
+      // Always include personal destinations so semantic resolution can see full candidates.
+      payloads.push(
+        await invokeJsonEdgeFunction(
+          "agentic-publishing",
+          { action: "list_destinations", owner_scope: true },
+          30000,
+          auth,
+          runId,
+        ),
+      );
+      const byId = new Map<string, any>();
+      for (const data of payloads) {
+        for (const row of Array.isArray(data?.destinations) ? data.destinations : []) {
+          if (row?.id) byId.set(String(row.id), row);
+        }
+      }
+      const destinations = Array.from(byId.values());
+      return finalize({
+        name: toolName,
+        ok: true,
+        error: null,
+        data: {
+          destinations: destinations.map((row: any) => ({
+            id: row.id,
+            name: row.name,
+            start_url: row.start_url,
+            status: row.status,
+            project_id: row.project_id ?? null,
+            memory: row.memory ?? {},
+            guidance: row.memory?.guidance ?? null,
+            entry_points: row.memory?.entry_points ?? null,
+            last_successful_publication_url: row.memory?.last_successful_publication_url ?? null,
+          })),
+          count: destinations.length,
+        },
+      });
+    } catch (error: any) {
+      return finalize({
+        name: toolName,
+        ok: false,
+        error: error?.message ?? String(error),
+        data: null,
+      });
+    }
+  }
+
+  if (toolName === "configure_publishing_destination") {
+    const projectId =
+      positiveInt(rawArgs.project_id) ??
+      positiveInt(ctx?.project_id) ??
+      positiveInt(thread?.project_id);
+    const pendingPublication =
+      rawArgs.pending_publication &&
+      typeof rawArgs.pending_publication === "object" &&
+      !Array.isArray(rawArgs.pending_publication)
+        ? rawArgs.pending_publication
+        : null;
+    const pendingArtifactId = cleanUuidOrNull(pendingPublication?.artifact_id);
+    const pendingContent =
+      pendingPublication?.content &&
+      typeof pendingPublication.content === "object" &&
+      !Array.isArray(pendingPublication.content)
+        ? pendingPublication.content
+        : null;
+    const hasPendingPublication = Boolean(pendingArtifactId || pendingContent);
+    // When a publication will start immediately, let start_publication own the auth browser
+    // so we do not open two Browser Use sessions for the same objective.
+    const connect =
+      hasPendingPublication
+        ? false
+        : rawArgs.connect === false
+          ? false
+          : true;
+    try {
+      const configured = await invokeJsonEdgeFunction(
+        "agentic-publishing",
+        {
+          action: "configure_destination",
+          ...(projectId != null ? { project_id: projectId } : {}),
+          ...(cleanUuidOrNull(rawArgs.destination_id)
+            ? { destination_id: cleanUuidOrNull(rawArgs.destination_id) }
+            : {}),
+          ...(typeof rawArgs.name === "string" ? { name: rawArgs.name.trim() } : {}),
+          ...(typeof rawArgs.project_name === "string"
+            ? { project_name: rawArgs.project_name.trim() }
+            : {}),
+          ...(typeof rawArgs.service_or_platform === "string"
+            ? { service_or_platform: rawArgs.service_or_platform.trim() }
+            : typeof rawArgs.platform === "string"
+              ? { service_or_platform: rawArgs.platform.trim() }
+              : {}),
+          ...(typeof rawArgs.start_url === "string"
+            ? { start_url: rawArgs.start_url.trim() }
+            : typeof rawArgs.url === "string"
+              ? { start_url: rawArgs.url.trim() }
+              : {}),
+          ...(typeof rawArgs.purpose === "string" ? { purpose: rawArgs.purpose.trim() } : {}),
+          ...(typeof rawArgs.content_type === "string"
+            ? { content_type: rawArgs.content_type.trim() }
+            : {}),
+          ...(typeof rawArgs.guidance === "string" ? { guidance: rawArgs.guidance.trim() } : {}),
+          connect,
+          ...(threadId ? { ai_thread_id: threadId } : {}),
+        },
+        120000,
+        auth,
+        runId,
+      );
+      const destination = configured?.destination ?? null;
+      const destinationId = cleanUuidOrNull(configured?.destination_id ?? destination?.id);
+      if (!destinationId) {
+        return finalize({
+          name: toolName,
+          ok: false,
+          error: configured?.error?.message ?? "configure_destination_failed",
+          data: configured ?? null,
+        });
+      }
+
+      let publication: any = null;
+      if (hasPendingPublication) {
+        const publishMode =
+          String(pendingPublication?.publish_mode ?? pendingPublication?.mode ?? "")
+            .trim()
+            .toLowerCase() === "scheduled"
+            ? "scheduled"
+            : "now";
+        const scheduledAt =
+          typeof pendingPublication?.scheduled_at === "string"
+            ? pendingPublication.scheduled_at.trim()
+            : null;
+        const timezone =
+          typeof pendingPublication?.timezone === "string"
+            ? pendingPublication.timezone.trim()
+            : null;
+        publication = await invokeJsonEdgeFunction(
+          "agentic-publishing",
+          {
+            action: "start_publication",
+            destination_id: destinationId,
+            publish_mode: publishMode,
+            ...(pendingArtifactId ? { artifact_id: pendingArtifactId } : {}),
+            ...(pendingContent ? { content: pendingContent } : {}),
+            ...(threadId ? { ai_thread_id: threadId } : {}),
+            ...(scheduledAt ? { scheduled_at: scheduledAt } : {}),
+            ...(timezone ? { timezone } : {}),
+          },
+          120000,
+          auth,
+          runId,
+        );
+      }
+
+      const run = publication?.run ?? null;
+      const needsAuth = Boolean(
+        publication?.needs_authentication || configured?.needs_authentication,
+      );
+      const liveViewUrl =
+        publication?.live_view_url ??
+        run?.live_view_url ??
+        configured?.live_view_url ??
+        null;
+      const continuingPublication = Boolean(run?.id);
+      return finalize({
+        name: toolName,
+        ok: true,
+        error: null,
+        data: {
+          destination_id: destinationId,
+          destination_name: destination?.name ?? null,
+          destination_status: destination?.status ?? null,
+          start_url: destination?.start_url ?? null,
+          created: Boolean(configured?.created),
+          reused_existing: Boolean(configured?.reused_existing),
+          connecting: Boolean(configured?.connecting),
+          already_connected: Boolean(configured?.already_connected),
+          needs_authentication: needsAuth,
+          publication_run_id: run?.id ?? null,
+          connect_run_id: configured?.connect_run_id ?? null,
+          status: run?.status ?? destination?.status ?? null,
+          live_view_url: liveViewUrl,
+          show_browser_preview: Boolean(liveViewUrl) || continuingPublication,
+          open_browser_tab: false,
+          continuing_publication: continuingPublication,
+          message: continuingPublication
+            ? needsAuth
+              ? "Destination configured. A browser preview appears in chat — sign in there; publication resumes after login. Do not share Live View URLs as external links."
+              : "Destination configured. Continuing the original publication…"
+            : needsAuth
+              ? "Destination configured. A browser preview appears in chat — sign in there, then say when you are done. Do not share Live View URLs as external links."
+              : configured?.message ?? "Destination configured.",
+        },
+      });
+    } catch (error: any) {
+      return finalize({
+        name: toolName,
+        ok: false,
+        error: error?.message ?? String(error),
+        data: null,
+      });
+    }
+  }
+
+  if (toolName === "publish_content") {
+    const destinationId = cleanUuidOrNull(rawArgs.destination_id);
+    const artifactId = cleanUuidOrNull(rawArgs.artifact_id);
+    const content =
+      rawArgs.content && typeof rawArgs.content === "object" && !Array.isArray(rawArgs.content)
+        ? rawArgs.content
+        : null;
+    const publishMode =
+      String(rawArgs.publish_mode ?? rawArgs.mode ?? "").trim().toLowerCase() === "scheduled"
+        ? "scheduled"
+        : "now";
+    const scheduledAt =
+      typeof rawArgs.scheduled_at === "string" && rawArgs.scheduled_at.trim()
+        ? rawArgs.scheduled_at.trim()
+        : typeof rawArgs.scheduledAt === "string" && rawArgs.scheduledAt.trim()
+          ? rawArgs.scheduledAt.trim()
+          : null;
+    const timezone =
+      typeof rawArgs.timezone === "string" && rawArgs.timezone.trim()
+        ? rawArgs.timezone.trim()
+        : typeof rawArgs.schedule_timezone === "string" && rawArgs.schedule_timezone.trim()
+          ? rawArgs.schedule_timezone.trim()
+          : null;
+    const scheduleStrategy =
+      String(rawArgs.schedule_strategy ?? "").trim().toLowerCase() === "internal"
+        ? "internal"
+        : String(rawArgs.schedule_strategy ?? "").trim().toLowerCase() === "external"
+          ? "external"
+          : null;
+    if (!destinationId) {
+      return finalize({ name: toolName, ok: false, error: "destination_id_required", data: null });
+    }
+    if (!artifactId && !content) {
+      return finalize({
+        name: toolName,
+        ok: false,
+        error: "artifact_id_or_content_required",
+        data: null,
+      });
+    }
+    if (publishMode === "scheduled" && !scheduledAt) {
+      return finalize({
+        name: toolName,
+        ok: false,
+        error: "scheduled_at_required",
+        data: null,
+      });
+    }
+    try {
+      const data = await invokeJsonEdgeFunction(
+        "agentic-publishing",
+        {
+          action: "start_publication",
+          destination_id: destinationId,
+          publish_mode: publishMode,
+          ...(artifactId ? { artifact_id: artifactId } : {}),
+          ...(content ? { content } : {}),
+          ...(threadId ? { ai_thread_id: threadId } : {}),
+          ...(scheduledAt ? { scheduled_at: scheduledAt } : {}),
+          ...(timezone ? { timezone } : {}),
+          ...(scheduleStrategy ? { schedule_strategy: scheduleStrategy } : {}),
+        },
+        120000,
+        auth,
+        runId,
+      );
+      const run = data?.run ?? null;
+      const needsAuth = Boolean(data?.needs_authentication);
+      const userQuestion = run?.metadata?.user_question ?? null;
+      const isScheduledPark = run?.status === "scheduled";
+      return finalize({
+        name: toolName,
+        ok: Boolean(run?.id),
+        error: run?.id ? null : (data?.error?.message ?? "publication_start_failed"),
+        data: {
+          publication_run_id: run?.id ?? null,
+          status: run?.status ?? null,
+          live_view_url: data?.live_view_url ?? run?.live_view_url ?? null,
+          destination_id: run?.destination_id ?? destinationId,
+          destination_name: run?.metadata?.destination_name ?? null,
+          artifact_id: run?.artifact_id ?? artifactId,
+          source_type: run?.source_type ?? (artifactId ? "artifact" : "inline"),
+          publish_mode: run?.publish_mode ?? publishMode,
+          scheduled_at: run?.scheduled_at ?? scheduledAt,
+          schedule_timezone: run?.schedule_timezone ?? timezone,
+          schedule_strategy: run?.schedule_strategy ?? data?.schedule_strategy ?? null,
+          scheduled_at_display: run?.scheduled_at_display ?? null,
+          needs_authentication: needsAuth,
+          user_question: userQuestion,
+          open_browser_tab: false,
+          show_browser_preview: !isScheduledPark,
+          preferred_start_url: run?.metadata?.preferred_start_url ?? null,
+          message: isScheduledPark
+            ? (data?.message ?? "Publication scheduled.")
+            : needsAuth
+              ? "Publication created and waiting for destination sign-in. A browser preview appears in chat — after login, verification resumes the publication automatically."
+              : publishMode === "scheduled"
+                ? "Scheduling started. A browser preview appears in chat while the agent prepares native scheduling when available."
+                : "Publication started. A compact browser preview appears in chat. The publishing agent will stop before the final irreversible publish action.",
+        },
+      });
+    } catch (error: any) {
+      return finalize({
+        name: toolName,
+        ok: false,
+        error: error?.message ?? String(error),
+        data: null,
+      });
+    }
+  }
+
+  if (toolName === "list_scheduled_publications") {
+    try {
+      const data = await invokeJsonEdgeFunction(
+        "agentic-publishing",
+        {
+          action: "list_publications",
+          scheduled_only: true,
+          mine_only: true,
+          ...(positiveInt(rawArgs.project_id) ? { project_id: positiveInt(rawArgs.project_id) } : {}),
+        },
+        30000,
+        auth,
+        runId,
+      );
+      const runs = Array.isArray(data?.runs) ? data.runs : [];
+      return finalize({
+        name: toolName,
+        ok: true,
+        error: null,
+        data: {
+          publications: runs.map((run: any) => ({
+            publication_run_id: run.id,
+            status: run.status,
+            destination_id: run.destination_id,
+            destination_name: run.metadata?.destination_name ?? null,
+            artifact_id: run.artifact_id,
+            title: run.metadata?.artifact_title ?? null,
+            scheduled_at: run.scheduled_at,
+            schedule_timezone: run.schedule_timezone,
+            scheduled_at_display: run.scheduled_at_display,
+            schedule_strategy: run.schedule_strategy,
+          })),
+          count: runs.length,
+        },
+      });
+    } catch (error: any) {
+      return finalize({
+        name: toolName,
+        ok: false,
+        error: error?.message ?? String(error),
+        data: null,
+      });
+    }
+  }
+
+  if (toolName === "reschedule_publication") {
+    const publicationRunId = cleanUuidOrNull(rawArgs.publication_run_id ?? rawArgs.run_id);
+    const scheduledAt =
+      typeof rawArgs.scheduled_at === "string" ? rawArgs.scheduled_at.trim() : "";
+    if (!publicationRunId || !scheduledAt) {
+      return finalize({
+        name: toolName,
+        ok: false,
+        error: "publication_run_id_and_scheduled_at_required",
+        data: null,
+      });
+    }
+    try {
+      const data = await invokeJsonEdgeFunction(
+        "agentic-publishing",
+        {
+          action: "reschedule_publication",
+          run_id: publicationRunId,
+          scheduled_at: scheduledAt,
+          ...(typeof rawArgs.timezone === "string" ? { timezone: rawArgs.timezone } : {}),
+        },
+        60000,
+        auth,
+        runId,
+      );
+      const run = data?.run ?? null;
+      return finalize({
+        name: toolName,
+        ok: Boolean(run?.id),
+        error: run?.id ? null : (data?.error?.message ?? "reschedule_failed"),
+        data: {
+          publication_run_id: run?.id ?? publicationRunId,
+          status: run?.status ?? null,
+          scheduled_at: run?.scheduled_at ?? null,
+          scheduled_at_display: run?.scheduled_at_display ?? null,
+          requires_external_reschedule: Boolean(data?.requires_external_reschedule),
+          message: run?.id
+            ? `Rescheduled to ${run.scheduled_at_display ?? run.scheduled_at}.`
+            : null,
+        },
+      });
+    } catch (error: any) {
+      return finalize({
+        name: toolName,
+        ok: false,
+        error: error?.message ?? String(error),
+        data: null,
+      });
+    }
+  }
+
+  if (toolName === "cancel_scheduled_publication") {
+    const publicationRunId = cleanUuidOrNull(rawArgs.publication_run_id ?? rawArgs.run_id);
+    if (!publicationRunId) {
+      return finalize({ name: toolName, ok: false, error: "publication_run_id_required", data: null });
+    }
+    try {
+      const data = await invokeJsonEdgeFunction(
+        "agentic-publishing",
+        {
+          action: "cancel_publication",
+          run_id: publicationRunId,
+          ...(rawArgs.confirm_external_cancel === true || rawArgs.confirm === true
+            ? { confirm_external_cancel: true }
+            : {}),
+        },
+        120000,
+        auth,
+        runId,
+      );
+      const run = data?.run ?? null;
+      return finalize({
+        name: toolName,
+        ok: Boolean(run?.id) || Boolean(data?.requires_confirmation),
+        error: data?.error?.message ?? (run?.id ? null : "cancel_failed"),
+        data: {
+          publication_run_id: run?.id ?? publicationRunId,
+          status: run?.status ?? null,
+          requires_confirmation: Boolean(data?.requires_confirmation),
+          cancelled_locally: Boolean(data?.cancelled_locally),
+          external_cancel_started: Boolean(data?.external_cancel_started),
+          show_browser_preview: Boolean(data?.external_cancel_started),
+          live_view_url: run?.live_view_url ?? null,
+          message: data?.requires_confirmation
+            ? "External schedule cancellation needs explicit confirmation. Call again with confirm_external_cancel=true after the user confirms."
+            : "Scheduled publication cancelled.",
+        },
+      });
+    } catch (error: any) {
+      return finalize({
+        name: toolName,
+        ok: false,
+        error: error?.message ?? String(error),
+        data: null,
+      });
+    }
+  }
+
+  if (toolName === "publish_scheduled_now") {
+    const publicationRunId = cleanUuidOrNull(rawArgs.publication_run_id ?? rawArgs.run_id);
+    if (!publicationRunId) {
+      return finalize({ name: toolName, ok: false, error: "publication_run_id_required", data: null });
+    }
+    try {
+      const data = await invokeJsonEdgeFunction(
+        "agentic-publishing",
+        { action: "publish_scheduled_now", run_id: publicationRunId },
+        120000,
+        auth,
+        runId,
+      );
+      const run = data?.run ?? null;
+      return finalize({
+        name: toolName,
+        ok: Boolean(run?.id),
+        error: run?.id ? null : (data?.error?.message ?? "publish_now_failed"),
+        data: {
+          publication_run_id: run?.id ?? publicationRunId,
+          status: run?.status ?? null,
+          live_view_url: run?.live_view_url ?? null,
+          show_browser_preview: Boolean(run?.live_view_url),
+          executed_now: Boolean(data?.executed_now),
+          requires_external_publish_now: Boolean(data?.requires_external_publish_now),
+          message: data?.executed_now
+            ? "Scheduled publication claimed and started now."
+            : (data?.error?.message ?? "Could not publish scheduled item now."),
+        },
+      });
+    } catch (error: any) {
+      return finalize({
+        name: toolName,
+        ok: false,
+        error: error?.message ?? String(error),
+        data: null,
+      });
+    }
+  }
+
+  if (toolName === "get_publication_state") {
+    const publicationRunId = cleanUuidOrNull(rawArgs.publication_run_id ?? rawArgs.run_id);
+    try {
+      if (publicationRunId) {
+        const data = await invokeJsonEdgeFunction(
+          "agentic-publishing",
+          { action: "sync_publication", run_id: publicationRunId },
+          60000,
+          auth,
+          runId,
+        );
+        const run = data?.run ?? null;
+        return finalize({
+          name: toolName,
+          ok: Boolean(run?.id),
+          error: run?.id ? null : "publication_not_found",
+          data: {
+            run,
+            user_question: run?.metadata?.user_question ?? null,
+            awaiting_publish_confirmation: run?.status === "awaiting_publish_confirmation",
+            needs_user: run?.status === "needs_user",
+          },
+        });
+      }
+      // Prefer user/thread-scoped active runs over a single project filter so personal
+      // destinations remain visible alongside project ones.
+      const data = await invokeJsonEdgeFunction(
+        "agentic-publishing",
+        {
+          action: "list_publications",
+          mine_only: true,
+          active_only: rawArgs.active_only !== false,
+          ...(threadId ? { ai_thread_id: threadId } : {}),
+          ...(positiveInt(rawArgs.project_id)
+            ? { project_id: positiveInt(rawArgs.project_id) }
+            : {}),
+        },
+        30000,
+        auth,
+        runId,
+      );
+      const runs = Array.isArray(data?.runs) ? data.runs : [];
+      const primary = runs[0] ?? null;
+      return finalize({
+        name: toolName,
+        ok: true,
+        error: null,
+        data: {
+          runs,
+          active_run: primary,
+          count: runs.length,
+          user_question: primary?.metadata?.user_question ?? null,
+          awaiting_publish_confirmation: primary?.status === "awaiting_publish_confirmation",
+          needs_user: primary?.status === "needs_user",
+        },
+      });
+    } catch (error: any) {
+      return finalize({
+        name: toolName,
+        ok: false,
+        error: error?.message ?? String(error),
+        data: null,
+      });
+    }
+  }
+
+  if (toolName === "continue_publication") {
+    const publicationRunId = cleanUuidOrNull(rawArgs.publication_run_id ?? rawArgs.run_id);
+    const instruction = String(rawArgs.instruction ?? rawArgs.message ?? "").trim();
+    if (!publicationRunId) {
+      return finalize({ name: toolName, ok: false, error: "publication_run_id_required", data: null });
+    }
+    try {
+      // If the run is waiting on destination sign-in, complete connect (auto-resumes publication).
+      const current = await invokeJsonEdgeFunction(
+        "agentic-publishing",
+        { action: "get_publication", run_id: publicationRunId },
+        30000,
+        auth,
+        runId,
+      );
+      const currentRun = current?.run ?? null;
+      const awaitingAuth = Boolean(currentRun?.metadata?.awaiting_destination_auth);
+      const destinationId = cleanUuidOrNull(currentRun?.destination_id);
+      if (awaitingAuth && destinationId) {
+        const verified = await invokeJsonEdgeFunction(
+          "agentic-publishing",
+          {
+            action: "complete_destination_connect",
+            destination_id: destinationId,
+            publication_run_id: publicationRunId,
+          },
+          120000,
+          auth,
+          runId,
+        );
+        const run = verified?.run ?? null;
+        return finalize({
+          name: toolName,
+          ok: Boolean(verified?.authenticated || run?.id),
+          error: verified?.authenticated || run?.id
+            ? null
+            : (verified?.message ?? "destination_connect_incomplete"),
+          data: {
+            publication_run_id: run?.id ?? publicationRunId,
+            status: run?.status ?? null,
+            live_view_url: verified?.live_view_url ?? run?.live_view_url ?? null,
+            destination_id: destinationId,
+            destination_name: run?.metadata?.destination_name ?? null,
+            needs_authentication: verified?.authenticated === false,
+            resumed_publication: Boolean(verified?.resumed_publication),
+            show_browser_preview: true,
+            message:
+              verified?.message ??
+              (verified?.authenticated
+                ? "Destination connected. Continuing publication…"
+                : "Sign-in could not be confirmed yet."),
+          },
+        });
+      }
+
+      const data = await invokeJsonEdgeFunction(
+        "agentic-publishing",
+        {
+          action: "continue_after_user",
+          run_id: publicationRunId,
+          ...(instruction ? { message: instruction } : {}),
+        },
+        120000,
+        auth,
+        runId,
+      );
+      const run = data?.run ?? null;
+      return finalize({
+        name: toolName,
+        ok: Boolean(run?.id),
+        error: run?.id ? null : (data?.error?.message ?? "continue_failed"),
+        data: {
+          publication_run_id: run?.id ?? publicationRunId,
+          status: run?.status ?? null,
+          live_view_url: run?.live_view_url ?? null,
+          show_browser_preview: true,
+          message: instruction
+            ? "Continued the publication with the user's instruction."
+            : "Continued the publication from the current browser state.",
+        },
+      });
+    } catch (error: any) {
+      return finalize({
+        name: toolName,
+        ok: false,
+        error: error?.message ?? String(error),
+        data: null,
+      });
+    }
+  }
+
+  if (toolName === "confirm_publication") {
+    const publicationRunId = cleanUuidOrNull(rawArgs.publication_run_id ?? rawArgs.run_id);
+    if (!publicationRunId) {
+      return finalize({ name: toolName, ok: false, error: "publication_run_id_required", data: null });
+    }
+    try {
+      const data = await invokeJsonEdgeFunction(
+        "agentic-publishing",
+        { action: "confirm_publication", run_id: publicationRunId },
+        120000,
+        auth,
+        runId,
+      );
+      const run = data?.run ?? null;
+      return finalize({
+        name: toolName,
+        ok: Boolean(run?.id),
+        error: run?.id ? null : (data?.error?.message ?? "confirm_failed"),
+        data: {
+          publication_run_id: run?.id ?? publicationRunId,
+          status: run?.status ?? null,
+          live_view_url: run?.live_view_url ?? null,
+          show_browser_preview: true,
+          message: "Final publish confirmed for this publication run.",
+        },
+      });
+    } catch (error: any) {
+      return finalize({
+        name: toolName,
+        ok: false,
+        error: error?.message ?? String(error),
+        data: null,
+      });
+    }
+  }
+
+  if (toolName === "cancel_publication") {
+    const publicationRunId = cleanUuidOrNull(rawArgs.publication_run_id ?? rawArgs.run_id);
+    if (!publicationRunId) {
+      return finalize({ name: toolName, ok: false, error: "publication_run_id_required", data: null });
+    }
+    try {
+      const data = await invokeJsonEdgeFunction(
+        "agentic-publishing",
+        { action: "cancel_publication", run_id: publicationRunId },
+        60000,
+        auth,
+        runId,
+      );
+      const run = data?.run ?? null;
+      return finalize({
+        name: toolName,
+        ok: Boolean(run?.id),
+        error: run?.id ? null : (data?.error?.message ?? "cancel_failed"),
+        data: {
+          publication_run_id: run?.id ?? publicationRunId,
+          status: run?.status ?? null,
+          message: "Publication cancelled.",
+        },
+      });
+    } catch (error: any) {
+      return finalize({
+        name: toolName,
+        ok: false,
+        error: error?.message ?? String(error),
+        data: null,
+      });
+    }
+  }
+
+  return null;
+}
+
 const TOOL_HANDLER_BY_NAME = new Map<string, (runtime: any) => Promise<any>>([
   ["ai_save_build_artifact_internal", executeArtifactTool],
 
@@ -3479,6 +4642,7 @@ const TOOL_HANDLER_BY_NAME = new Map<string, (runtime: any) => Promise<any>>([
   ["ai_list_project_artifacts", executeArtifactTool],
   ["ai_read_artifact", executeArtifactTool],
   ["ai_list_ai_thread_artifacts", executeArtifactTool],
+  ["ai_search_artifacts", executeArtifactTool],
   ["ai_list_artifact_versions", executeArtifactTool],
   ["ai_restore_artifact_version", executeArtifactTool],
   ["ai_attach_artifact_to_task", executeArtifactTool],
@@ -3525,6 +4689,20 @@ const TOOL_HANDLER_BY_NAME = new Map<string, (runtime: any) => Promise<any>>([
   ["search_project_site_pages", executeResearchTool],
   ["keyword_research", executeResearchTool],
   ["google_top_results", executeResearchTool],
+  ["list_project_social_profiles", executeResearchTool],
+  ["read_project_social_stats", executeResearchTool],
+
+  ["list_publishing_destinations", executePublishingTool],
+  ["configure_publishing_destination", executePublishingTool],
+  ["publish_content", executePublishingTool],
+  ["get_publication_state", executePublishingTool],
+  ["continue_publication", executePublishingTool],
+  ["confirm_publication", executePublishingTool],
+  ["cancel_publication", executePublishingTool],
+  ["list_scheduled_publications", executePublishingTool],
+  ["reschedule_publication", executePublishingTool],
+  ["cancel_scheduled_publication", executePublishingTool],
+  ["publish_scheduled_now", executePublishingTool],
 ]);
 
 

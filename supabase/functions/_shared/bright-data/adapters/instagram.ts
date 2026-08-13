@@ -1,4 +1,3 @@
-import type { BrightDataClient } from "../client.ts"
 import {
   asRecord,
   normalizeHttpUrl,
@@ -6,9 +5,9 @@ import {
   toNullableFiniteInt,
   toNullableString,
   type FetchPostsArgs,
-  type NetworkAdapter,
   type NormalizedCompetitorPost,
 } from "../types.ts"
+import { createNetworkAdapter } from "./create-adapter.ts"
 
 /** Instagram posts — discover by profile URL. */
 const INSTAGRAM_POSTS_DATASET_ID = "gd_lk5ns7kz21pck8jpis"
@@ -64,16 +63,17 @@ function mapInstagramPost(raw: unknown): NormalizedCompetitorPost | null {
   }
 }
 
-export const instagramAdapter: NetworkAdapter = {
+export const instagramAdapter = createNetworkAdapter({
   network: "instagram",
-  async fetchPosts(args: FetchPostsArgs, client: BrightDataClient) {
+  mapPost: mapInstagramPost,
+  buildRequest(args: FetchPostsArgs) {
     const input: Record<string, unknown> = {
       url: args.profileUrl,
       num_of_posts: args.maxPosts,
     }
     if (args.startDateIso) input.start_date = args.startDateIso
 
-    const { snapshotId, records } = await client.triggerAndCollect({
+    return {
       options: {
         datasetId: INSTAGRAM_POSTS_DATASET_ID,
         type: "discover_new",
@@ -82,21 +82,10 @@ export const instagramAdapter: NetworkAdapter = {
         includeErrors: true,
       },
       input: [input],
-    })
-
-    const posts = records
-      .map(mapInstagramPost)
-      .filter((post): post is NormalizedCompetitorPost => Boolean(post))
-      .slice(0, Math.max(1, args.maxPosts))
-
-    return {
-      posts,
-      snapshotId,
-      rawCount: records.length,
       metadata: {
         dataset_id: INSTAGRAM_POSTS_DATASET_ID,
         discover_by: "url",
       },
     }
   },
-}
+})

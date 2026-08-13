@@ -11,8 +11,8 @@ import { Popover, PopoverContent, PopoverTrigger } from "../ui/popover"
 import { cn } from "@/lib/utils"
 import { getImageUrl } from "../../lib/public-media"
 import { toast } from "../ui/use-toast"
-import { buildCenterPaneSelectionSearchParams } from "../../lib/center-pane-selection-url"
-import { shallowReplaceSearchParams } from "../../lib/tasks-shallow-nav"
+import { openWorkspaceView } from "../../lib/open-workspace-view"
+import { useWorkspaceHostPane } from "../workspace/workspace-host-pane-context"
 import {
   getProjectWatcherCandidates,
   getProjectWatchersCurrent,
@@ -28,6 +28,7 @@ interface ProjectHeaderWatchersProps {
 export function ProjectHeaderWatchers({ projectId }: ProjectHeaderWatchersProps) {
   const queryClient = useQueryClient()
   const pathname = usePathname()
+  const hostPane = useWorkspaceHostPane()
   const [isOpen, setIsOpen] = useState(false)
 
   const { data, isLoading } = useQuery({
@@ -97,20 +98,16 @@ export function ProjectHeaderWatchers({ projectId }: ProjectHeaderWatchersProps)
   const handleOpenProfile = useCallback(
     (userId: number) => {
       setIsOpen(false)
-      const base = new URLSearchParams(
-        typeof window !== "undefined" ? window.location.search : "",
+      openWorkspaceView(
+        { type: "user", id: userId },
+        {
+          pane: hostPane,
+          pathname,
+          source: "project-header-watcher-open",
+        },
       )
-      const next = buildCenterPaneSelectionSearchParams({
-        currentSearchParams: base,
-        entity: "user",
-        id: userId,
-      })
-      next.delete("stackTaskId")
-      next.delete("stackUserId")
-      next.delete("stackTeamId")
-      shallowReplaceSearchParams(pathname, next, "project-header-watcher-open")
     },
-    [pathname],
+    [hostPane, pathname],
   )
 
   if (isLoading && currentWatchers.length === 0) {

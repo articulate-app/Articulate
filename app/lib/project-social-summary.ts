@@ -53,6 +53,8 @@ export type SocialCompetitiveSummary = {
   totals: {
     posts_count: number
     interactions_total: number | null
+    /** Impressions/views, only reported by some networks. */
+    views_total?: number | null
     entities_count: number
   }
   entities: SocialSummaryEntityMetrics[]
@@ -232,6 +234,282 @@ export function buildCompetitiveNarrative(
   }
 
   return lines
+}
+
+function pluralize(count: number, singular: string): string {
+  return count === 1 ? singular : `${singular}s`
+}
+
+function joinList(items: string[]): string {
+  if (items.length <= 1) return items[0] ?? ""
+  if (items.length === 2) return `${items[0]} and ${items[1]}`
+  return `${items.slice(0, -1).join(", ")} and ${items[items.length - 1]}`
+}
+
+/** "2.4×" when the lead is meaningful, otherwise null. */
+function ratioLabel(value: number, reference: number): string | null {
+  if (!Number.isFinite(value) || !Number.isFinite(reference)) return null
+  if (reference <= 0 || value <= reference * 1.15) return null
+  return `${(value / reference).toFixed(1)}×`
+}
+
+export type CompetitiveOverviewInsights = {
+  /** One-sentence framing of the period. */
+  headline: string
+  /** Short prose insights, already ordered by usefulness. */
+  points: string[]
+}
+
+/**
+ * Rule-based competitive read-out for the overview: who is winning the period,
+ * where the gaps are and what is worth reacting to — rather than an inventory
+ * of how many posts were collected.
+ */
+export function buildCompetitiveOverviewInsights(
+  summary: SocialCompetitiveSummary,
+): CompetitiveOverviewInsights {
+  const entities = summary.entities ?? []
+  const totalPosts = summary.totals?.posts_count ?? 0
+
+  if (totalPosts === 0 || entities.length === 0) {
+    return {
+      headline: "No tracked posts in this period.",
+      points: [
+        "Connect your brand profiles, add competitors and run a sync to see how you compare.",
+      ],
+    }
+  }
+
+  const owned = entities.find((row) => row.is_owned) ?? null
+  const activeEntities = entities.filter((row) => row.posts_count > 0)
+  const competitors = activeEntities.filter((row) => !row.is_owned)
+  const totalInteractions = summary.totals?.interactions_total ?? null
+  const points: string[] = []
+
+  const shareOfEngagement = (
+    entity: SocialSummaryEntityMetrics | null,
+  ): number | null => {
+    if (!entity || entity.interactions_total == null) return null
+    if (totalInteractions == null || totalInteractions <= 0) return null
+    return (entity.interactions_total / totalInteractions) * 100
+  }
+
+  const byInteractions = activeEntities
+    .filter((row) => row.interactions_total != null)
+    .sort((a, b) => (b.interactions_total ?? 0) - (a.interactions_total ?? 0))
+  const leader = byInteractions[0] ?? null
+  const runnerUp = byInteractions[1] ?? null
+
+  const headline = buildHeadline({
+    totalPosts,
+    activeEntities,
+    competitors,
+    owned,
+    leader,
+    runnerUp,
+    leaderShare: shareOfEngagement(leader),
+    ownedShare: shareOfEngagement(owned),
+  })
+
+  const bestPerPost = competitors
+    .filter((row) => row.interactions_median != null)
+    .sort((a, b) => (b.interactions_median ?? 0) - (a.interactions_median ?? 0))[0]
+
+  if (owned?.interactions_median != null && bestPerPost?.interactions_median != null) {
+    const ownedMedian = owned.interactions_median
+    const rivalMedian = bestPerPost.interactions_median
+    if (ownedMedian >= rivalMedian) {
+      const ratio = ratioLabel(ownedMedian, rivalMedian)
+      points.push(
+        `Your posts convert best: a median of ${formatInt(
+          ownedMedian,
+        )} interactions against ${formatInt(rivalMedian)} for ${displayName(
+          bestPerPost,
+        )}${ratio ? ` — ${ratio} their rate` : ""}.`,
+      )
+    } else {
+      const ratio = ratioLabel(rivalMedian, ownedMedian)
+      points.push(
+        `${displayName(
+          bestPerPost,
+        )} converts best per post with a median of ${formatInt(
+          rivalMedian,
+        )} interactions${ratio ? `, ${ratio} your ${formatInt(ownedMedian)}` : ` vs ${formatInt(ownedMedian)} for you`}.`,
+      )
+    }
+  } else if (owned == null) {
+    points.push(
+      "Connect your brand's social profiles to see how you compare against these competitors.",
+    )
+  }
+
+  const busiest = [...competitors].sort((a, b) => b.posts_count - a.posts_count)[0]
+  if (owned && busiest) {
+    const ownedMedian = owned.interactions_median
+    const rivalMedian = busiest.interactions_median
+    if (busiest.posts_count > owned.posts_count) {
+      const qualifier =
+        ownedMedian != null && rivalMedian != null && ownedMedian > rivalMedian
+          ? " — their lead is volume, not per-post quality"
+          : ownedMedian != null && rivalMedian != null && rivalMedian > ownedMedian
+            ? " — they out-publish and out-convert you"
+            : ""
+      points.push(
+        `${displayName(busiest)} publishes most, ${formatInt(
+          busiest.posts_count,
+        )} ${pluralize(busiest.posts_count, "post")} to your ${formatInt(
+          owned.posts_count,
+        )}${qualifier}.`,
+      )
+    } else if (owned.posts_count > busiest.posts_count) {
+      const qualifier =
+        ownedMedian != null && rivalMedian != null && ownedMedian < rivalMedian
+          ? " — extra volume is not converting into engagement"
+          : ""
+      points.push(
+        `You out-publish the field with ${formatInt(owned.posts_count)} ${pluralize(
+          owned.posts_count,
+          "post",
+        )} against ${formatInt(busiest.posts_count)} for ${displayName(
+          busiest,
+        )}${qualifier}.`,
+      )
+    }
+  }
+
+  const byFollowers = entities
+    .filter((row) => (row.followers_latest ?? 0) > 0)
+    .sort((a, b) => (b.followers_latest ?? 0) - (a.followers_latest ?? 0))
+  const audienceLeader = byFollowers[0]
+  if (audienceLeader && owned && !audienceLeader.is_owned && owned.followers_latest) {
+    const ratio = ratioLabel(
+      audienceLeader.followers_latest ?? 0,
+      owned.followers_latest,
+    )
+    points.push(
+      `Audience gap: ${displayName(audienceLeader)} reaches ${formatInt(
+        audienceLeader.followers_latest,
+      )} followers${
+        ratio
+          ? `, ${ratio} your ${formatInt(owned.followers_latest)}`
+          : ` vs ${formatInt(owned.followers_latest)} for you`
+      }.`,
+    )
+  } else if (audienceLeader?.is_owned) {
+    points.push(
+      `You hold the largest tracked audience at ${formatInt(
+        audienceLeader.followers_latest,
+      )} followers.`,
+    )
+  }
+
+  const fastestGrowing = entities
+    .filter(
+      (row) =>
+        row.followers_delta_pct != null &&
+        (row.follower_snapshot_days ?? 0) >= 2 &&
+        row.followers_delta_pct > 0,
+    )
+    .sort((a, b) => (b.followers_delta_pct ?? 0) - (a.followers_delta_pct ?? 0))[0]
+  if (fastestGrowing?.followers_delta_pct != null) {
+    points.push(
+      `Fastest audience growth: ${displayName(fastestGrowing)} at +${formatPct(
+        fastestGrowing.followers_delta_pct,
+      )} over the period.`,
+    )
+  }
+
+  if (owned) {
+    const ownedNetworks = new Set(
+      owned.networks.filter((row) => row.posts_count > 0).map((row) => row.network),
+    )
+    const missingNetworks = [
+      ...new Set(
+        competitors.flatMap((row) =>
+          row.networks.filter((net) => net.posts_count > 0).map((net) => net.network),
+        ),
+      ),
+    ].filter((network) => !ownedNetworks.has(network))
+    if (missingNetworks.length > 0) {
+      points.push(
+        `Coverage gap: competitors are publishing on ${joinList(
+          missingNetworks.map(networkLabel),
+        )} where ${displayName(owned)} has no tracked posts.`,
+      )
+    }
+  }
+
+  const benchmark = entities
+    .flatMap((entity) =>
+      (entity.top_posts ?? [])
+        .filter((post) => post.interactions != null)
+        .map((post) => ({ entity, post })),
+    )
+    .sort((a, b) => (b.post.interactions ?? 0) - (a.post.interactions ?? 0))[0]
+  if (benchmark) {
+    points.push(
+      `Post to beat: ${displayName(benchmark.entity)} on ${networkLabel(
+        benchmark.post.network,
+      )} with ${formatInt(benchmark.post.interactions)} interactions.`,
+    )
+  }
+
+  if (owned && competitors.length === 0) {
+    points.push("Add competitors to unlock side-by-side comparisons.")
+  }
+
+  return { headline, points: points.slice(0, 5) }
+}
+
+function buildHeadline(args: {
+  totalPosts: number
+  activeEntities: SocialSummaryEntityMetrics[]
+  competitors: SocialSummaryEntityMetrics[]
+  owned: SocialSummaryEntityMetrics | null
+  leader: SocialSummaryEntityMetrics | null
+  runnerUp: SocialSummaryEntityMetrics | null
+  leaderShare: number | null
+  ownedShare: number | null
+}): string {
+  const { leader, runnerUp, owned, competitors, activeEntities, leaderShare } = args
+
+  if (!leader) {
+    return `${formatInt(args.totalPosts)} tracked ${pluralize(
+      args.totalPosts,
+      "post",
+    )}, but no public engagement metrics came back for this period.`
+  }
+
+  const leaderVolume =
+    leaderShare != null
+      ? `${formatPct(leaderShare)} of all tracked engagement`
+      : `${formatInt(leader.interactions_total)} interactions`
+
+  if (competitors.length === 0) {
+    return `${displayName(leader)} drove ${leaderVolume} this period, with no active competitors to compare against.`
+  }
+
+  if (leader.is_owned) {
+    return runnerUp
+      ? `You are winning the period with ${leaderVolume}, ahead of ${displayName(
+          runnerUp,
+        )} at ${formatInt(runnerUp.interactions_total)} interactions.`
+      : `You are winning the period with ${leaderVolume}.`
+  }
+
+  if (owned) {
+    return args.ownedShare != null
+      ? `${displayName(
+          leader,
+        )} is setting the pace with ${leaderVolume}, against ${formatPct(
+          args.ownedShare,
+        )} for you.`
+      : `${displayName(leader)} is setting the pace with ${leaderVolume}, ahead of you.`
+  }
+
+  return `${displayName(leader)} leads a field of ${formatInt(
+    activeEntities.length,
+  )} ${pluralize(activeEntities.length, "brand")} with ${leaderVolume}.`
 }
 
 export function rankEntitiesByEngagement(

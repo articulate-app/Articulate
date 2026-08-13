@@ -1,16 +1,28 @@
 "use client"
 
-import type { ReactNode } from "react"
+import { useState, type ReactNode } from "react"
 import { AtSign, Bot, FileText, FolderKanban, ListTodo, Search, User, Users } from "lucide-react"
 import type { LucideIcon } from "lucide-react"
 import { UserAvatar } from "@/components/UserAvatar"
 import { cn, formatCompactDateDisplay } from "@/lib/utils"
+import { getImageUrl } from "../../lib/public-media"
 import {
   type GlobalSearchDocument,
   type GlobalSearchDisplayPayload,
   type GlobalSearchItemEntityType,
 } from "../../lib/global-search-types"
 import { getPublicAssetUrl } from "../../../utils/storage"
+
+function resolveAssetUrl(value: string | null | undefined): string | null {
+  return getImageUrl(value) ?? getPublicAssetUrl(value)
+}
+
+function firstNonEmptyString(...values: unknown[]): string | null {
+  for (const value of values) {
+    if (typeof value === "string" && value.trim()) return value.trim()
+  }
+  return null
+}
 
 const ENTITY_TYPE_ICONS: Partial<Record<GlobalSearchItemEntityType, LucideIcon>> = {
   task: ListTodo,
@@ -179,74 +191,123 @@ function getFacetAvatars(raw: Record<string, unknown>): Array<{ id: string; name
     .filter(Boolean) as Array<{ id: string; name: string | null; photo: string | null }>
 }
 
-function LeftVisual({
+export function LeftVisual({
   payload,
+  raw,
   isProject = false,
+  isUser = false,
   compact = false,
 }: {
   payload: GlobalSearchDisplayPayload
+  raw?: Record<string, unknown>
   isProject?: boolean
+  isUser?: boolean
   compact?: boolean
 }) {
+  const [imageFailed, setImageFailed] = useState(false)
   const left = payload.left
-  const label = left?.label ?? payload.title
-  const photoUrl = getPublicAssetUrl(left?.photo ?? payload.photo)
-  const logoUrl = getPublicAssetUrl(left?.logo ?? payload.logo)
-  const color = left?.color ?? payload.color
-  const boxClass = compact ? "h-8 w-8" : "h-9 w-9"
+  const rawLeft = raw && typeof raw.left === "object" && raw.left && !Array.isArray(raw.left)
+    ? (raw.left as Record<string, unknown>)
+    : null
+  const label =
+    firstNonEmptyString(left?.label, payload.title, raw?.title, raw?.full_name, raw?.name) ?? "Untitled"
+  const photoPath = firstNonEmptyString(
+    left?.photo,
+    payload.photo,
+    rawLeft?.photo,
+    raw?.photo,
+    raw?.user_photo,
+  )
+  const logoPath = firstNonEmptyString(
+    left?.logo,
+    payload.logo,
+    rawLeft?.logo,
+    raw?.logo,
+    raw?.project_logo,
+  )
+  const color =
+    firstNonEmptyString(left?.color, payload.color, rawLeft?.color, raw?.color, raw?.project_color) ??
+    null
+  const photoUrl = resolveAssetUrl(photoPath)
+  const logoUrl = resolveAssetUrl(logoPath)
+  const boxClass = compact ? "h-5 w-5" : "h-9 w-9"
+  const radiusClass = compact ? "rounded-md" : "rounded-lg"
 
-  if (photoUrl) {
-    return <UserAvatar name={label} photoUrl={photoUrl} size={compact ? "xs" : "sm"} />
+  // Users: photo first, then initials avatar.
+  if (isUser) {
+    return <UserAvatar name={label} photoUrl={imageFailed ? null : photoUrl} size="xs" />
   }
 
-  if (logoUrl) {
-    return (
-      <img
-        src={logoUrl}
-        alt={label}
-        className={cn(boxClass, "rounded-lg border border-gray-200 object-cover")}
-      />
-    )
-  }
-
-  // Projects without a logo get a minimal, lightweight color dot. It stays centered within the same
-  // footprint as the logo so text alignment and row height remain consistent across project rows.
+  // Projects: logo, else a small color dot (same footprint as logo/avatar).
   if (isProject) {
-    return (
-      <div className={cn("flex items-center justify-center", boxClass)}>
+    if (logoUrl && !imageFailed) {
+      return (
         <span
-          className="h-2.5 w-2.5 rounded-full"
+          title={label}
+          className={cn(
+            boxClass,
+            radiusClass,
+            "inline-flex shrink-0 items-center justify-center overflow-hidden border border-gray-200 bg-white",
+          )}
+        >
+          {/* eslint-disable-next-line @next/next/no-img-element */}
+          <img
+            src={logoUrl}
+            alt=""
+            onError={() => setImageFailed(true)}
+            className="h-full w-full object-cover"
+          />
+        </span>
+      )
+    }
+    return (
+      <span title={label} className={cn("inline-flex shrink-0 items-center justify-center", boxClass)}>
+        <span
+          className={cn("rounded-full", compact ? "h-1.5 w-1.5" : "h-2 w-2")}
           style={{ backgroundColor: color || "#d1d5db" }}
           aria-hidden="true"
         />
-      </div>
+      </span>
+    )
+  }
+
+  if (photoUrl && !imageFailed) {
+    return <UserAvatar name={label} photoUrl={photoUrl} size="xs" />
+  }
+
+  if (logoUrl && !imageFailed) {
+    return (
+      // eslint-disable-next-line @next/next/no-img-element
+      <img
+        src={logoUrl}
+        alt={label}
+        onError={() => setImageFailed(true)}
+        className={cn(boxClass, radiusClass, "shrink-0 border border-gray-200 object-cover")}
+      />
     )
   }
 
   if (color) {
     return (
-      <div
-        className={cn(boxClass, "rounded-lg")}
+      <span
+        className={cn(boxClass, "inline-block shrink-0", radiusClass)}
         style={{ backgroundColor: color }}
         aria-hidden="true"
       />
     )
   }
 
-  return (
-    <div className={cn("flex items-center justify-center rounded-lg bg-gray-100 text-gray-500", boxClass)}>
-      <Search className="h-4 w-4" />
-    </div>
-  )
+  return <UserAvatar name={label} photoUrl={null} size="xs" />
 }
 
 function ProjectMarker({ payload }: { payload: GlobalSearchDisplayPayload }) {
-  const logoUrl = getPublicAssetUrl(payload.left?.logo ?? payload.logo)
+  const logoUrl = resolveAssetUrl(payload.left?.logo ?? payload.logo)
   const color = payload.left?.color ?? payload.color
   const projectName = payload.left?.label?.trim() || "Project"
 
   if (logoUrl) {
     return (
+      // eslint-disable-next-line @next/next/no-img-element
       <img
         src={logoUrl}
         alt=""
@@ -414,22 +475,20 @@ export function SearchResultRow({
   const aiDateLabel = isAiThread
     ? formatRelativeTime(getMetaValueByLabel(payload, "last_message_at") ?? getMetaValueByLabel(payload, "created_at"))
     : null
-  // Preview: drop the type tag; use a left icon when there is no avatar/logo visual.
-  const showLeftVisual = isPreview
-    ? isProject || isUser
-    : !(isTask || isMention || isAiThread)
-  const showTypeIcon = isAiThread || (isPreview && !showLeftVisual && !isMention && !isTask)
+  // Simple lists: projects/users show logo/photo (color/avatar fallback). Mentions keep sender avatar.
+  const showLeftVisual = isProject || isUser
+  const showTypeIcon = isPreview && !showLeftVisual && !isMention && !isTask
   const mentionSenderAvatar = isMention
     ? (payload.avatars?.[0] ?? null)
     : null
-  const showMeta = !isPreview && !isUser
-  const showBadges = !isPreview
+  const showMeta = false
+  const showBadges = false
   // Tasks use the compact row layout (marker + title | avatar + date) — never subtitle/meta text.
-  // Users: name + avatar only (hide email subtitle).
+  // Users: name only (hide email subtitle).
   // AI chats: title only (or response snippet when the title is generic).
-  const showSubtitle = !(isPreview && isProject) && !isProject && !isMention && !isTask && !isUser && !isAiThread
-  // Home: hide thread participant stacks; mentions show sender on the left instead.
-  const showRightAvatarStack = !(isMention || isTask || isUser || isAiThread)
+  const showSubtitle = false
+  // Keep lists quiet — no watcher stacks on the right.
+  const showRightAvatarStack = false
 
   if (isPreview) {
     const previewLeft = isTask ? (
@@ -446,7 +505,13 @@ export function SearchResultRow({
       </PreviewLeftSlot>
     ) : showLeftVisual ? (
       <PreviewLeftSlot>
-        <LeftVisual payload={payload} isProject={isProject} compact />
+        <LeftVisual
+          payload={payload}
+          raw={item.raw}
+          isProject={isProject}
+          isUser={isUser}
+          compact
+        />
       </PreviewLeftSlot>
     ) : (
       <EntityTypeIcon entityType={item.entity_type} className="h-8 w-8" />
@@ -457,17 +522,33 @@ export function SearchResultRow({
         type="button"
         onClick={() => onSelect(item)}
         className={cn(
-          "flex h-10 w-full items-center gap-3 px-3 text-left transition hover:bg-gray-50",
+          "relative flex h-10 w-full items-center gap-3 px-3 text-left transition hover:bg-gray-50",
+          isUnread && "bg-blue-50/70 hover:bg-blue-50",
           className,
         )}
       >
+        {isUnread ? (
+          <span
+            className="absolute inset-y-2 left-0 w-0.5 rounded-full bg-blue-500"
+            aria-hidden="true"
+          />
+        ) : null}
         {previewLeft}
         <div className="min-w-0 flex-1">
           <div className="flex min-w-0 items-center gap-2">
-            {isUnread ? <span className="h-2 w-2 shrink-0 rounded-full bg-blue-500" aria-hidden="true" /> : null}
-            <div className="min-w-0 flex-1 truncate text-sm font-normal text-gray-900">
+            <div
+              className={cn(
+                "min-w-0 flex-1 truncate text-sm text-gray-900",
+                isUnread ? "font-medium" : "font-normal",
+              )}
+            >
               {previewTitle}
             </div>
+            {isUnread ? (
+              <span className="shrink-0 rounded-full bg-blue-500 px-1.5 py-0.5 text-[10px] font-medium leading-none text-white">
+                New
+              </span>
+            ) : null}
             {isTask && taskDateLabel ? (
               <span
                 className={cn(
@@ -507,7 +588,7 @@ export function SearchResultRow({
       >
         <div className="flex min-w-0 flex-1 items-center gap-2">
           <ProjectMarker payload={payload} />
-          <span className="block min-w-0 flex-1 truncate text-sm font-medium text-gray-900">
+          <span className="block min-w-0 flex-1 truncate text-xs font-normal text-gray-900">
             {previewTitle}
           </span>
         </div>
@@ -516,8 +597,8 @@ export function SearchResultRow({
           {taskDateLabel ? (
             <span
               className={cn(
-                "whitespace-nowrap text-xs",
-                taskDateOverdue ? "font-medium text-red-600" : "text-gray-500",
+                "whitespace-nowrap text-[11px] font-normal",
+                taskDateOverdue ? "text-red-600" : "text-gray-500",
               )}
             >
               {taskDateLabel}
@@ -533,11 +614,17 @@ export function SearchResultRow({
       type="button"
       onClick={() => onSelect(item)}
       className={cn(
-        "flex w-full items-center gap-3 px-4 text-left transition hover:bg-gray-50",
-        isProject ? "py-1.5" : "py-2",
+        "relative flex h-8 w-full items-center gap-2 px-3 text-left transition hover:bg-gray-50",
+        isUnread && "bg-blue-50/70 hover:bg-blue-50",
         className,
       )}
     >
+      {isUnread ? (
+        <span
+          className="absolute inset-y-1.5 left-0 w-0.5 rounded-full bg-blue-500"
+          aria-hidden="true"
+        />
+      ) : null}
       {isMention ? (
         <div className="shrink-0">
           <UserAvatar
@@ -548,30 +635,40 @@ export function SearchResultRow({
         </div>
       ) : showLeftVisual ? (
         <div className="shrink-0">
-          <LeftVisual payload={payload} isProject={isProject} />
+          <LeftVisual
+            payload={payload}
+            raw={item.raw}
+            isProject={isProject}
+            isUser={isUser}
+            compact
+          />
         </div>
       ) : showTypeIcon ? (
-        <EntityTypeIcon entityType={item.entity_type} />
+        <EntityTypeIcon entityType={item.entity_type} className="h-5 w-5 rounded-md" />
       ) : null}
       <div className="min-w-0 flex-1">
         <div className="flex min-w-0 items-center gap-2">
-          {isUnread ? <span className="h-2 w-2 shrink-0 rounded-full bg-blue-500" aria-hidden="true" /> : null}
           <div
             className={cn(
-              "truncate text-sm text-gray-900",
-              isMention ? "font-normal" : "font-medium",
-              isUnread && !isMention && "font-semibold",
+              "truncate text-xs text-gray-900",
+              isUnread ? "font-medium" : "font-normal",
             )}
           >
             {previewTitle}
           </div>
-          {mentionDateLabel ? <div className="shrink-0 whitespace-nowrap text-xs text-gray-500">{mentionDateLabel}</div> : null}
+          {isUnread ? (
+            <span className="shrink-0 rounded-full bg-blue-500 px-1.5 py-0.5 text-[10px] font-medium leading-none text-white">
+              New
+            </span>
+          ) : null}
+          {mentionDateLabel ? (
+            <div className="shrink-0 whitespace-nowrap text-[11px] font-normal text-gray-500">
+              {mentionDateLabel}
+            </div>
+          ) : null}
         </div>
         {showSubtitle && previewSubtitle ? (
-          <div className="truncate text-xs text-gray-500">{previewSubtitle}</div>
-        ) : null}
-        {payload.preview && !isMention && !isAiThread && !isProject && (!isMention || !isPreview) ? (
-          <div className="mt-1 line-clamp-1 text-xs text-gray-500">{payload.preview}</div>
+          <div className="truncate text-[11px] text-gray-500">{previewSubtitle}</div>
         ) : null}
         {showBadges && !isAiThread ? <BadgesLine payload={payload} /> : null}
         {showMeta && !isAiThread ? (
@@ -580,11 +677,13 @@ export function SearchResultRow({
           </div>
         ) : null}
       </div>
-      <div className="shrink-0 flex items-center gap-2">
+      <div className="flex shrink-0 items-center gap-2">
         {showRightAvatarStack ? (
           <AvatarStack payload={payload} raw={item.raw} max={isProject || isAiThread ? 5 : 3} />
         ) : null}
-        {isAiThread && aiDateLabel ? <span className="whitespace-nowrap text-xs text-gray-500">{aiDateLabel}</span> : null}
+        {isAiThread && aiDateLabel ? (
+          <span className="whitespace-nowrap text-[11px] font-normal text-gray-500">{aiDateLabel}</span>
+        ) : null}
       </div>
     </button>
   )

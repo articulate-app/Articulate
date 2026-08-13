@@ -747,7 +747,8 @@ export function OrchestratedBuildCard({
     for (const row of Object.values(artifactPreviewEntries)) {
       if (row.buildId !== buildId) continue
       if (
-        row.phase !== "preview"
+        row.phase !== "started"
+        && row.phase !== "preview"
         && row.phase !== "saved"
         && row.phase !== "media"
         && row.phase !== "failed"
@@ -812,8 +813,6 @@ export function OrchestratedBuildCard({
           <ArtifactLivePreviewCards
             preview={preview}
             allowAttachToTask
-            defaultTaskId={taskId ?? preview.taskId}
-            defaultChannelId={activeChannelId ?? preview.channelId}
             onOpenArtifact={(artifactId) => {
               openArtifactCenterTab({
                 artifactId,

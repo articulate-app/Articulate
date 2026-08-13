@@ -36,6 +36,9 @@ describe("artifact preview store", () => {
       title: "Campaign brief",
       content_text: "Hello",
       before_content_text: "Old hello",
+      before_content_json: {
+        blocks: [{ id: "body", type: "rich_text", html: "<p>Old hello</p>" }],
+      },
       content_json: {
         blocks: [
           { id: "h1", type: "heading", text: "Hello", level: 1 },
@@ -51,9 +54,44 @@ describe("artifact preview store", () => {
     expect(parsed.title).toBe("Campaign brief")
     expect(parsed.contentText).toBe("Hello")
     expect(parsed.beforeContentText).toBe("Old hello")
+    expect(extractArtifactBlocks(parsed.beforeContentJson)).toHaveLength(1)
     expect(extractArtifactBlocks(parsed.contentJson)).toHaveLength(2)
     expect(parsed.assetData?.assets?.[0]?.attachment_id).toBe("22222222-2222-4222-8222-222222222222")
     expect(parsed.currentVersion).toBe(2)
+  })
+
+  it("keeps beforeContentJson from version_saved across later events", () => {
+    const store = useAiBuildArtifactPreviewStore.getState()
+    store.upsertFromEvent({
+      buildId: "b1",
+      unitId: "u1",
+      artifactId: "a1",
+      sequence: 1,
+      eventType: "artifact.started",
+      beforeContentText: "Before body",
+      title: "Article",
+    })
+    store.upsertFromEvent({
+      buildId: "b1",
+      unitId: "u1",
+      artifactId: "a1",
+      sequence: 2,
+      eventType: "artifact.version_saved",
+      beforeContentText: "Before body",
+      beforeContentJson: {
+        blocks: [{ id: "body", type: "rich_text", html: "<h2>Keep</h2><p>Before body</p>" }],
+      },
+      contentText: "After body",
+      contentJson: {
+        blocks: [{ id: "body", type: "rich_text", html: "<h2>Keep</h2><p>After body</p>" }],
+      },
+      currentVersion: 3,
+    })
+    const entry = Object.values(useAiBuildArtifactPreviewStore.getState().previews)[0]
+    expect(entry.phase).toBe("saved")
+    expect(entry.beforeContentJson?.blocks?.[0]).toMatchObject({
+      html: "<h2>Keep</h2><p>Before body</p>",
+    })
   })
 
   it("keeps beforeContentText across streaming preview updates", () => {

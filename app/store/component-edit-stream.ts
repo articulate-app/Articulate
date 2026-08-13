@@ -653,6 +653,16 @@ export const useComponentEditStreamStore = create<ComponentEditStreamState>((set
         return state
       }
 
+      // Idempotent history hydrate: same message already has a terminal snapshot.
+      const existingArtifact = prev.chatArtifactsByAssistantId[args.messageId]
+      if (
+        existingArtifact
+        && existingArtifact.phase === args.phase
+        && !isLiveComponentEditStreamPhase(args.phase)
+      ) {
+        return state
+      }
+
       const resolvedTitle = (args.componentTitle ?? prev.componentTitle).trim()
       const draft: ComponentEditStreamEntry = {
         ...prev,

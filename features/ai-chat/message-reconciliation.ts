@@ -28,6 +28,18 @@ function readBuildDisplayFields(contentJson: unknown): {
 function userPendingMatchesServerMessage(pending: AiMessage, server: AiMessage): boolean {
   if (pending.role !== "user" || server.role !== "user") return false
 
+  // Never treat an older history row with the same text as "this" optimistic send.
+  // That race drops the temp bubble before the new persisted row lands.
+  const pendingCreatedMs = Date.parse(pending.created_at)
+  const serverCreatedMs = Date.parse(server.created_at)
+  if (
+    Number.isFinite(pendingCreatedMs)
+    && Number.isFinite(serverCreatedMs)
+    && serverCreatedMs < pendingCreatedMs - 60_000
+  ) {
+    return false
+  }
+
   const pendingContent = (pending.content ?? "").trim()
   const serverContent = (server.content ?? "").trim()
   if (pendingContent && pendingContent === serverContent) return true
@@ -93,10 +105,16 @@ function enrichServerMessagesWithPendingUserMetadata(
       ?? (displayMessage && serverContent && serverContent !== displayMessage ? serverContent : undefined)
 
     const hasDisplayMerge = hasUserDisplayMetadata(matchingPending.content_json)
-    if (!hasDisplayMerge && !displayMessage) return message
+    const stableClientId = message.client_id ?? matchingPending.client_id ?? matchingPending.id
+    if (!hasDisplayMerge && !displayMessage) {
+      if (message.client_id === stableClientId) return message
+      return { ...message, client_id: stableClientId }
+    }
 
     return {
       ...message,
+      // Keep React list keys stable across temp → persisted handoff.
+      client_id: stableClientId,
       content_json: {
         ...existing,
         ...(hasDisplayMerge ? pendingParsed : {}),
@@ -138,7 +156,7 @@ function hasMatchingPersistedMessage(messages: AiMessage[], pending: AiMessage):
 }
 
 export function prunePendingMessagesAgainstServer(messages: AiMessage[], pending: AiMessage[]): AiMessage[] {
-  return pending.filter((message) => {
+  const next = pending.filter((message) => {
     if (message.role === "assistant" && (message as InFlightAssistantMessage).status === "streaming") {
       return true
     }
@@ -147,6 +165,15 @@ export function prunePendingMessagesAgainstServer(messages: AiMessage[], pending
     }
     return !hasMatchingPersistedMessage(messages, message)
   })
+  // Preserve referential equality when nothing was pruned — avoids cascading
+  // allMessages rememo + layout-effect hydrates on every server snapshot tick.
+  if (
+    next.length === pending.length
+    && next.every((message, index) => message === pending[index])
+  ) {
+    return pending
+  }
+  return next
 }
 
 export function buildRenderableMessages(messages: AiMessage[], pending: AiMessage[]): AiMessage[] {

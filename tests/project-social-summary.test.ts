@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest"
 import {
   buildCompetitiveNarrative,
+  buildCompetitiveOverviewInsights,
   buildCompetitiveRadarData,
   buildEntitySummaryBullets,
   rankEntitiesByEngagement,
@@ -161,6 +162,138 @@ describe("project-social-summary templates", () => {
     expect(postsAxis?.[rivalKey!]).toBe(100)
     expect(postsAxis?.[ownedKey!]).toBe(50)
     expect(postsAxis?.raw[ownedKey!]).toBe(5)
+  })
+
+  it("writes prose insights covering engagement, audience and cadence", () => {
+    const summary: SocialCompetitiveSummary = {
+      project_id: 1,
+      date_from: null,
+      date_to: null,
+      totals: { posts_count: 16, interactions_total: 1300, entities_count: 2 },
+      entities: [
+        entity({
+          entity_id: "owned:1",
+          entity_name: "Brand",
+          is_owned: true,
+          posts_count: 6,
+          interactions_total: 300,
+          interactions_median: 40,
+          followers_latest: 1200,
+          networks: [
+            {
+              network: "linkedin",
+              posts_count: 6,
+              interactions_total: 300,
+              interactions_median: 40,
+            },
+          ],
+        }),
+        entity({
+          entity_id: "competitor:2",
+          entity_name: "Rival",
+          is_owned: false,
+          posts_count: 10,
+          interactions_total: 1000,
+          interactions_median: 80,
+          followers_latest: 5000,
+          networks: [
+            {
+              network: "linkedin",
+              posts_count: 6,
+              interactions_total: 600,
+              interactions_median: 80,
+            },
+            {
+              network: "instagram",
+              posts_count: 4,
+              interactions_total: 400,
+              interactions_median: 90,
+            },
+          ],
+        }),
+      ],
+    }
+
+    const { headline, points } = buildCompetitiveOverviewInsights(summary)
+    expect(headline).toContain("Rival is setting the pace")
+    expect(headline).toContain("76.9% of all tracked engagement")
+    expect(headline).toContain("23.1% for you")
+    expect(
+      points.some((line) => /Rival converts best per post.*2\.0×/.test(line)),
+    ).toBe(true)
+    expect(
+      points.some((line) => /Rival publishes most, 10 posts to your 6/.test(line)),
+    ).toBe(true)
+    expect(points.some((line) => /Audience gap: Rival reaches 5,000/.test(line))).toBe(
+      true,
+    )
+    expect(
+      points.some((line) => /Coverage gap.*Instagram/.test(line)),
+    ).toBe(true)
+  })
+
+  it("credits the owned brand when it leads engagement and per-post conversion", () => {
+    const { headline, points } = buildCompetitiveOverviewInsights({
+      project_id: 1,
+      date_from: null,
+      date_to: null,
+      totals: { posts_count: 12, interactions_total: 1000, entities_count: 2 },
+      entities: [
+        entity({
+          entity_id: "owned:1",
+          entity_name: "Brand",
+          is_owned: true,
+          posts_count: 4,
+          interactions_total: 800,
+          interactions_median: 200,
+          followers_latest: 9000,
+          networks: [
+            {
+              network: "linkedin",
+              posts_count: 4,
+              interactions_total: 800,
+              interactions_median: 200,
+            },
+          ],
+        }),
+        entity({
+          entity_id: "competitor:2",
+          entity_name: "Rival",
+          is_owned: false,
+          posts_count: 8,
+          interactions_total: 200,
+          interactions_median: 25,
+          followers_latest: 1000,
+          networks: [
+            {
+              network: "linkedin",
+              posts_count: 8,
+              interactions_total: 200,
+              interactions_median: 25,
+            },
+          ],
+        }),
+      ],
+    })
+
+    expect(headline).toContain("You are winning the period")
+    expect(points.some((line) => /Your posts convert best/.test(line))).toBe(true)
+    expect(
+      points.some((line) => /their lead is volume, not per-post quality/.test(line)),
+    ).toBe(true)
+    expect(points.some((line) => /largest tracked audience/.test(line))).toBe(true)
+  })
+
+  it("falls back to a setup prompt when nothing is tracked", () => {
+    const insights = buildCompetitiveOverviewInsights({
+      project_id: 1,
+      date_from: null,
+      date_to: null,
+      totals: { posts_count: 0, interactions_total: null, entities_count: 0 },
+      entities: [],
+    })
+    expect(insights.headline).toContain("No tracked posts")
+    expect(insights.points).toHaveLength(1)
   })
 
   it("marks radar empty when there are no posts", () => {

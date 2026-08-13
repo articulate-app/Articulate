@@ -20,6 +20,7 @@ import {
 import { AiTokenLimitsSettingsPanel } from "./ai-token-limits-settings";
 import { SettingsBillingPanel } from "./settings-billing-panel";
 import { SettingsTeamsPanel, type SettingsTeamsDetailState } from "./settings-teams-panel";
+import { BrowserHelperDevicesSettings } from "./browser-helper-devices-settings";
 import { UserProjectsSettingsSection } from "../users/user-projects-settings-section";
 import { UserSkillsSettingsSection } from "../users/user-skills-settings-section";
 import { cn } from "@/lib/utils";
@@ -350,6 +351,7 @@ export function SettingsPanel({ open, onClose }: SettingsPanelProps) {
           Update password
         </Button>
       </div>
+      <BrowserHelperDevicesSettings />
     </div>
   );
 

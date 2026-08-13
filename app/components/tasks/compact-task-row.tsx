@@ -117,7 +117,7 @@ export function CompactRowContent({
     <div className="flex w-full min-w-0 items-center gap-2">
       <div className="flex min-w-0 flex-1 items-center gap-2 text-left">
         <CompactProjectMarker task={task} isSuggestion={isSuggestion} />
-        <span className="block min-w-0 flex-1 truncate text-sm">{title}</span>
+        <span className="block min-w-0 flex-1 truncate text-xs font-normal text-gray-900">{title}</span>
         {showToggle ? (
           <button
             type="button"
@@ -146,7 +146,7 @@ export function CompactRowContent({
             className={cn(
               COMPACT_DATE_TEXT_CLASS,
               'whitespace-nowrap',
-              isOverdue ? 'font-medium text-red-600' : 'text-gray-500',
+              isOverdue ? 'text-red-600' : 'text-gray-500',
             )}
           >
             {displayDate}

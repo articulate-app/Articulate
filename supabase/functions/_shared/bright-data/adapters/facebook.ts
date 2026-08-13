@@ -1,4 +1,3 @@
-import type { BrightDataClient } from "../client.ts"
 import {
   asRecord,
   extractFacebookUsername,
@@ -7,9 +6,9 @@ import {
   toNullableFiniteInt,
   toNullableString,
   type FetchPostsArgs,
-  type NetworkAdapter,
   type NormalizedCompetitorPost,
 } from "../types.ts"
+import { createNetworkAdapter } from "./create-adapter.ts"
 
 /** Facebook page posts — discover by username. */
 const FACEBOOK_PAGE_POSTS_DATASET_ID = "gd_lkaxegm826bjpoo9m5"
@@ -79,9 +78,10 @@ function mapFacebookPost(raw: unknown): NormalizedCompetitorPost | null {
   }
 }
 
-export const facebookAdapter: NetworkAdapter = {
+export const facebookAdapter = createNetworkAdapter({
   network: "facebook",
-  async fetchPosts(args: FetchPostsArgs, client: BrightDataClient) {
+  mapPost: mapFacebookPost,
+  buildRequest(args: FetchPostsArgs) {
     const profileUrl = normalizeHttpUrl(args.profileUrl) ?? args.profileUrl
     const username = extractFacebookUsername(profileUrl)
 
@@ -91,24 +91,13 @@ export const facebookAdapter: NetworkAdapter = {
     const input: Record<string, unknown> = { url: profileUrl }
     if (args.startDateIso) input.start_date = args.startDateIso
 
-    const { snapshotId, records } = await client.triggerAndCollect({
+    return {
       options: {
         datasetId: FACEBOOK_PAGE_POSTS_DATASET_ID,
         format: "json",
         includeErrors: true,
       },
       input: [input],
-    })
-
-    const posts = records
-      .map(mapFacebookPost)
-      .filter((post): post is NormalizedCompetitorPost => Boolean(post))
-      .slice(0, Math.max(1, args.maxPosts))
-
-    return {
-      posts,
-      snapshotId,
-      rawCount: records.length,
       metadata: {
         dataset_id: FACEBOOK_PAGE_POSTS_DATASET_ID,
         input_mode: "url",
@@ -116,4 +105,4 @@ export const facebookAdapter: NetworkAdapter = {
       },
     }
   },
-}
+})

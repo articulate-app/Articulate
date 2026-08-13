@@ -16,16 +16,29 @@ import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuSepara
 import { Dialog, DialogContent, DialogTitle, DialogFooter } from "../../app/components/ui/dialog"
 import { Button } from "../../app/components/ui/button"
 import { toast } from "../../app/components/ui/use-toast"
-import { COMPACT_PANE_HEADER_ROW_CLASS } from "../../app/components/tasks/pane-header-tokens"
+import {
+  PANE_CHROME_ICON_BUTTON_CLASS,
+  PANE_CHROME_ICON_CLASS,
+} from "../../app/components/tasks/pane-header-tokens"
 import { useQueryClient } from "@tanstack/react-query"
 import { invokeEdgeFunctionFetch } from "@/lib/edge-functions"
-import { resolveAutoThreadSelection } from "./thread-selection-guards"
+import { resolveAutoThreadSelection, shouldWriteActiveThreadToUrl } from "./thread-selection-guards"
 import { logAiChatDebug } from "./debug"
-import { AI_PANE_TAB_ACTIVE_CLASS, AI_PANE_TAB_FILLER_CLASS, AI_PANE_TAB_INACTIVE_CLASS, AI_PANE_TAB_STRIP_CLASS } from "./tab-strip-tokens"
+import {
+  AI_PANE_TAB_ACTIVE_CLASS,
+  AI_PANE_TAB_CHIP_CLASS,
+  AI_PANE_TAB_CHROME_CLASS,
+  AI_PANE_TAB_FILLER_CLASS,
+  AI_PANE_TAB_INACTIVE_CLASS,
+  AI_PANE_TAB_ROW_CLASS,
+  AI_PANE_TAB_SCROLL_CLASS,
+  AI_PANE_TAB_STRIP_CLASS,
+} from "./tab-strip-tokens"
 import { toPersistedAiThreadId, isPersistedAiThreadId } from "./thread-id"
 import { isPlaceholderAiThreadTitle } from "./ai-thread-title"
 import type { AiActiveFieldContext } from "./active-field-context"
 import { AiPaneThreadLibraryMenus } from "./AiPaneThreadLibraryMenus"
+import { useAiPaneChromeStore, type AiChromeTab, type AiPaneChromeHandlers } from "./ai-pane-chrome-store"
 
 interface AiPaneProps {
   isOpen: boolean
@@ -36,6 +49,11 @@ interface AiPaneProps {
   projectId?: number
   taskId?: number
   inline?: boolean // New prop to render inline instead of as modal
+  /**
+   * When true, AI is a peer tab under the shared right-pane tab strip.
+   * Hide the duplicate AI thread tab row; keep History / New Chat controls.
+   */
+  hideOuterTabStrip?: boolean
   contentTypeTitle?: string // Content type context for AI generation
   activeChannelId?: number | null // Active channel ID for task context
   activeFieldContext?: AiActiveFieldContext
@@ -44,6 +62,11 @@ interface AiPaneProps {
   isExpanded?: boolean
   forceNewThread?: boolean
   onForceNewThreadConsumed?: () => void
+  /**
+   * When set, overrides URL-based "AI is the active workspace view" detection.
+   * Prefer this over assuming AI lives in the right pane (`rightView=ai`).
+   */
+  isActiveWorkspaceView?: boolean
 }
 
 function useSyncedTasksSearchParams(nextSearch: ReturnType<typeof useSearchParams>) {
@@ -77,7 +100,6 @@ type AiPaneTabStripProps = {
   onRename: (threadId: string) => void
   onTitleKeyDown: (e: React.KeyboardEvent) => void
   onCloseTab: (threadId: string) => void
-  onDeleteClick: (threadId: string) => void
 }
 
 type OptimisticThreadTab = {
@@ -107,7 +129,6 @@ function AiPaneTabStrip({
   onRename,
   onTitleKeyDown,
   onCloseTab,
-  onDeleteClick,
 }: AiPaneTabStripProps) {
   const scrollRef = useRef<HTMLDivElement>(null)
   const allTabs = useMemo<AiPaneTab[]>(() => {
@@ -146,10 +167,7 @@ function AiPaneTabStrip({
 
   return (
     <div className="flex min-h-0 min-w-0 flex-1 items-stretch">
-      <div
-        ref={scrollRef}
-        className="ai-chat-tabs-scroll min-h-0 min-w-0 overflow-x-auto overflow-y-hidden"
-      >
+      <div ref={scrollRef} className={AI_PANE_TAB_SCROLL_CLASS}>
         <div className={AI_PANE_TAB_STRIP_CLASS}>
           {allTabs.map((tab) => {
             const isOptimistic = isOptimisticThreadTab(tab)
@@ -160,7 +178,7 @@ function AiPaneTabStrip({
             return (
             <div
               key={isOptimistic ? `optimistic-${tab.optimisticId}` : tab.id}
-              className={`flex h-full min-h-0 shrink-0 cursor-pointer self-stretch border-r border-gray-200 bg-white ${
+              className={`${AI_PANE_TAB_CHIP_CLASS} ${
                 isActive ? AI_PANE_TAB_ACTIVE_CLASS : AI_PANE_TAB_INACTIVE_CLASS
               }`}
               onClick={() => {
@@ -172,86 +190,49 @@ function AiPaneTabStrip({
                 onStartEdit(tab)
               }}
             >
-              <div className="flex h-full min-h-0 min-w-0 flex-1 items-center gap-1 px-3">
-                {editingTabId === tabId && !isOptimistic ? (
-                  <input
-                    type="text"
-                    value={editTitle}
-                    onChange={(e) => setEditTitle(e.target.value)}
-                    onKeyDown={onTitleKeyDown}
-                    onBlur={() => onRename(tabId)}
-                    className="text-sm bg-transparent border-none outline-none px-1 py-0.5 border border-gray-300 rounded min-w-0 flex-1"
-                    autoFocus
-                    onClick={(e) => e.stopPropagation()}
-                  />
-                ) : (
-                  <>
-                    {(() => {
-                      const persistedDisplayTitle = isOptimistic
-                        ? null
-                        : displayTitleByThreadId?.[tab.id]
-                      const displayTitle = persistedDisplayTitle ?? tab.title
-                      const fallbackTitle = "New chat"
-                      return (
-                        <span
-                          className="text-sm truncate max-w-20 flex-1"
-                          title={displayTitle || fallbackTitle}
-                        >
-                          {displayTitle || fallbackTitle}
-                        </span>
-                      )
-                    })()}
-                    {!isOptimistic ? (
-                    <DropdownMenu modal={false}>
-                      <DropdownMenuTrigger asChild>
-                        <button
-                          type="button"
-                          onClick={(e) => e.stopPropagation()}
-                          className="p-0.5 rounded text-gray-500 hover:bg-gray-100 hover:text-gray-900"
-                          title="More options"
-                        >
-                          <MoreHorizontal className="w-3 h-3" />
-                        </button>
-                      </DropdownMenuTrigger>
-                      <DropdownMenuContent align="end">
-                        <DropdownMenuItem
-                          onClick={(e) => {
-                            e.stopPropagation()
-                            onStartEdit(tab)
-                          }}
-                        >
-                          <Edit2 className="w-3 h-3 mr-2" />
-                          Rename
-                        </DropdownMenuItem>
-                        <DropdownMenuItem
-                          onClick={(e) => {
-                            e.stopPropagation()
-                            onDeleteClick(tab.id)
-                          }}
-                          className="text-red-600"
-                        >
-                          <Trash2 className="w-3 h-3 mr-2" />
-                          Delete
-                        </DropdownMenuItem>
-                      </DropdownMenuContent>
-                    </DropdownMenu>
-                    ) : null}
-                    {!isOptimistic ? (
+              {editingTabId === tabId && !isOptimistic ? (
+                <input
+                  type="text"
+                  value={editTitle}
+                  onChange={(e) => setEditTitle(e.target.value)}
+                  onKeyDown={onTitleKeyDown}
+                  onBlur={() => onRename(tabId)}
+                  className="min-w-0 flex-1 rounded border border-gray-300 bg-transparent px-1 py-0.5 text-[13px] outline-none"
+                  autoFocus
+                  onClick={(e) => e.stopPropagation()}
+                />
+              ) : (
+                <>
+                  {(() => {
+                    const persistedDisplayTitle = isOptimistic
+                      ? null
+                      : displayTitleByThreadId?.[tab.id]
+                    const displayTitle = persistedDisplayTitle ?? tab.title
+                    const fallbackTitle = "New chat"
+                    return (
+                      <span
+                        className="min-w-0 flex-1 truncate"
+                        title={displayTitle || fallbackTitle}
+                      >
+                        {displayTitle || fallbackTitle}
+                      </span>
+                    )
+                  })()}
+                  {!isOptimistic ? (
                     <button
                       type="button"
                       onClick={(e) => {
                         e.stopPropagation()
                         onCloseTab(tabId)
                       }}
-                      className="p-0.5 rounded text-gray-500 hover:bg-gray-100 hover:text-gray-900"
+                      className="rounded p-0.5 text-gray-400 opacity-70 hover:bg-black/5 hover:text-gray-700 hover:opacity-100"
                       title="Close tab"
                     >
-                      <XIcon className="w-3 h-3" />
+                      <XIcon className="h-3 w-3" />
                     </button>
-                    ) : null}
-                  </>
-                )}
-              </div>
+                  ) : null}
+                </>
+              )}
             </div>
           )})}
         </div>
@@ -266,7 +247,7 @@ export function AiPane(props: AiPaneProps) {
   return <AiPaneInner {...props} />
 }
 
-function AiPaneInner({ isOpen, onClose, onExpand, initialScope = 'global', projectId, taskId, inline = false, contentTypeTitle, activeChannelId, activeFieldContext, externalThreadId, disableUrlSync = false, isExpanded = false, forceNewThread = false, onForceNewThreadConsumed }: AiPaneProps) {
+function AiPaneInner({ isOpen, onClose, onExpand, initialScope = 'global', projectId, taskId, inline = false, hideOuterTabStrip = false, contentTypeTitle, activeChannelId, activeFieldContext, externalThreadId, disableUrlSync = false, isExpanded = false, forceNewThread = false, onForceNewThreadConsumed, isActiveWorkspaceView }: AiPaneProps) {
   const nextSearchParams = useSearchParams()
   const searchParams = useSyncedTasksSearchParams(nextSearchParams)
 
@@ -453,8 +434,13 @@ function AiPaneInner({ isOpen, onClose, onExpand, initialScope = 'global', proje
       null
     )
     const rightView = windowParams?.get("rightView") ?? searchParams.get("rightView")
+    const centerView = windowParams?.get("centerView") ?? searchParams.get("centerView")
     const taskAiOpen = (windowParams?.get("taskAiOpen") ?? searchParams.get("taskAiOpen")) === "true"
-    const isAiPaneMode = rightView === "ai" && taskAiOpen
+    // AI identity is the thread — not the pane. Active when hosted in right OR middle.
+    const isAiPaneMode =
+      typeof isActiveWorkspaceView === "boolean"
+        ? isActiveWorkspaceView
+        : (rightView === "ai" && taskAiOpen) || centerView === "ai"
     const shouldCreateThread = isAiPaneMode && !urlRequestedThreadId && !externalThreadId
     const selectionResolution = resolveAutoThreadSelection({
       isOpen,
@@ -524,7 +510,7 @@ function AiPaneInner({ isOpen, onClose, onExpand, initialScope = 'global', proje
       // For task scope or other cases, create new chat.
       handleNewChat()
     }
-  }, [isOpen, active?.id, isCreating, searchParams, openTabs, effectiveScope, effectiveProjectId, externalThreadId, disableUrlSync, forceNewThread, onForceNewThreadConsumed])
+  }, [isOpen, active?.id, isCreating, searchParams, openTabs, effectiveScope, effectiveProjectId, externalThreadId, disableUrlSync, forceNewThread, onForceNewThreadConsumed, isActiveWorkspaceView])
 
   useEffect(() => {
     if (!isOpen) {
@@ -639,20 +625,27 @@ function AiPaneInner({ isOpen, onClose, onExpand, initialScope = 'global', proje
         typeof window !== "undefined"
           ? new URLSearchParams(window.location.search).get("aiThreadId")
           : searchParams.get("aiThreadId")
-      // Only update URL if it's different from current active thread
-      // This prevents loops while still keeping URL in sync
-      if (liveThreadId !== active.id) {
+      // Only update URL when active is ahead of the address bar.
+      // If the URL already requests a different persisted thread (search open),
+      // leave it alone so the URL→state effect can switch selection.
+      if (
+        shouldWriteActiveThreadToUrl({
+          activeThreadId: active.id,
+          liveThreadId,
+          isPersistedThreadId: isPersistedAiThreadId,
+        })
+      ) {
         isUpdatingFromStateRef.current = true
         previousActiveIdRef.current = active.id
         navigateToThreadId(active.id, "active-thread-effect")
-        
+
         // Reset flag after URL update completes
         // Use requestAnimationFrame for immediate next frame, minimal delay
         requestAnimationFrame(() => {
           isUpdatingFromStateRef.current = false
         })
       } else {
-        // URL is already in sync, just update the ref
+        // URL is already in sync (or intentionally ahead), just update the ref
         previousActiveIdRef.current = active.id
       }
     }
@@ -1021,12 +1014,136 @@ function AiPaneInner({ isOpen, onClose, onExpand, initialScope = 'global', proje
     })
   }, [active?.id, openTabs.length, searchParams])
 
+  // Peer right-pane mode: publish open AI chats into the shared tab strip.
+  useEffect(() => {
+    if (!hideOuterTabStrip) return
+    const tabs: AiChromeTab[] = [
+      ...openTabs.map((tab) => ({
+        id: tab.id,
+        title: streamingThreadTitlesById[tab.id] ?? tab.title ?? "New chat",
+      })),
+      ...(optimisticTab
+        ? [
+            {
+              id: optimisticTab.optimisticId,
+              title: optimisticTab.title ?? "New chat",
+              isOptimistic: true,
+            },
+          ]
+        : []),
+    ]
+    useAiPaneChromeStore.getState().sync({
+      tabs,
+      activeThreadId: active?.id ?? optimisticTab?.optimisticId ?? null,
+      editingTabId,
+      editTitle,
+      activeVisibility: active?.visibility ?? null,
+      activeProjectId: active?.project_id ?? null,
+      isExpanded,
+      isCreating,
+    })
+  }, [
+    hideOuterTabStrip,
+    openTabs,
+    optimisticTab,
+    active,
+    editingTabId,
+    editTitle,
+    streamingThreadTitlesById,
+    isExpanded,
+    isCreating,
+  ])
+
+  // Peer right/left/middle chrome owns the AI tab strip — publish stable handlers once
+  // while `hideOuterTabStrip` is on. Use a ref so callback identity changes do not
+  // re-enter setHandlers → store update → parent re-render → infinite loop.
+  const chromeHandlersRef = useRef<AiPaneChromeHandlers | null>(null)
+  chromeHandlersRef.current = {
+    selectThread: (threadId) => {
+      const tab = openTabs.find((item) => item.id === threadId)
+      if (tab) handleTabClick(tab)
+    },
+    closeThread: (threadId) => handleCloseTab(threadId),
+    newChat: () => {
+      void handleNewChat()
+    },
+    startEdit: (threadId) => {
+      const tab = openTabs.find((item) => item.id === threadId)
+      if (tab) handleStartEdit(tab)
+    },
+    rename: (threadId) => {
+      void handleRename(threadId)
+    },
+    setEditTitle,
+    titleKeyDown: handleTitleKeyDown,
+    selectFromHistory: handleSelectThread,
+    renameActive: () => {
+      if (!active) return
+      const next = window.prompt("Rename chat", active.title || "New chat")
+      if (next == null) return
+      setEditTitle(next)
+      setEditingTabId(active.id)
+      window.setTimeout(() => {
+        void (async () => {
+          try {
+            setOpenTabs((prev) =>
+              prev.map((tab) => (tab.id === active.id ? { ...tab, title: next } : tab)),
+            )
+            setActive((prev) => (prev?.id === active.id ? { ...prev, title: next } : prev))
+            await renameThread(active.id, next)
+            setEditingTabId(null)
+            setEditTitle("")
+          } catch (error) {
+            console.error("Failed to rename thread:", error)
+          }
+        })()
+      }, 0)
+    },
+    deleteActive: () => {
+      if (active) handleDeleteClick(active.id)
+    },
+    setVisibility: (visibility) => {
+      void handleSetVisibility(visibility)
+    },
+    closeAllAiTabs: handleCloseAllTabs,
+    copyLink: handleCopyLink,
+    expand: onExpand,
+  }
+
+  useEffect(() => {
+    if (!hideOuterTabStrip) {
+      useAiPaneChromeStore.getState().setHandlers(null)
+      return
+    }
+    const stableHandlers: AiPaneChromeHandlers = {
+      selectThread: (threadId) => chromeHandlersRef.current?.selectThread(threadId),
+      closeThread: (threadId) => chromeHandlersRef.current?.closeThread(threadId),
+      newChat: () => chromeHandlersRef.current?.newChat(),
+      startEdit: (threadId) => chromeHandlersRef.current?.startEdit(threadId),
+      rename: (threadId) => chromeHandlersRef.current?.rename(threadId),
+      setEditTitle: (title) => chromeHandlersRef.current?.setEditTitle(title),
+      titleKeyDown: (event) => chromeHandlersRef.current?.titleKeyDown(event),
+      selectFromHistory: (thread) => chromeHandlersRef.current?.selectFromHistory(thread),
+      renameActive: () => chromeHandlersRef.current?.renameActive(),
+      deleteActive: () => chromeHandlersRef.current?.deleteActive(),
+      setVisibility: (visibility) => chromeHandlersRef.current?.setVisibility(visibility),
+      closeAllAiTabs: () => chromeHandlersRef.current?.closeAllAiTabs(),
+      copyLink: () => chromeHandlersRef.current?.copyLink(),
+      expand: () => chromeHandlersRef.current?.expand?.(),
+    }
+    useAiPaneChromeStore.getState().setHandlers(stableHandlers)
+    return () => {
+      useAiPaneChromeStore.getState().setHandlers(null)
+    }
+  }, [hideOuterTabStrip])
+
   // Inline mode - render without modal overlay
   if (inline) {
     return (
       <div className="h-full flex flex-col bg-white">
-        {/* Simplified header with tabs on left, controls on right */}
-        <div className={`${COMPACT_PANE_HEADER_ROW_CLASS} !items-stretch shrink-0 border-b border-gray-200 bg-white pl-0 pr-3`}>
+        {/* Peer right-pane mode: shared RightPaneTabBar owns AI chat + Browser tabs. */}
+        {hideOuterTabStrip ? null : (
+        <div className={`${AI_PANE_TAB_ROW_CLASS} shrink-0`}>
           {/* Left side: Tabs */}
           <div className="flex min-h-0 min-w-0 flex-1 items-stretch">
             <AiPaneTabStrip
@@ -1043,36 +1160,57 @@ function AiPaneInner({ isOpen, onClose, onExpand, initialScope = 'global', proje
               onRename={handleRename}
               onTitleKeyDown={handleTitleKeyDown}
               onCloseTab={handleCloseTab}
-              onDeleteClick={handleDeleteClick}
             />
           </div>
           
           {/* Right side: Essential controls only */}
-          <div className="flex items-center gap-2 self-stretch">
+          <div className={AI_PANE_TAB_CHROME_CLASS}>
             <HistoryDropdown 
               onSelectThread={handleSelectThread}
               activeThreadId={active?.id}
             />
             <button
+              type="button"
               onClick={handleNewChat}
               disabled={isCreating}
-              className="p-2 hover:bg-gray-100 rounded-md transition-colors disabled:opacity-50"
+              className={PANE_CHROME_ICON_BUTTON_CLASS}
               title="New Chat"
             >
-              <Plus className="w-5 h-5" />
+              <Plus className={PANE_CHROME_ICON_CLASS} />
             </button>
             
             {/* More options menu */}
             <DropdownMenu>
               <DropdownMenuTrigger asChild>
                 <button
-                  className="p-2 hover:bg-gray-100 rounded-md transition-colors"
+                  type="button"
+                  className={PANE_CHROME_ICON_BUTTON_CLASS}
                   title="More options"
                 >
-                  <MoreHorizontal className="w-5 h-5" />
+                  <MoreHorizontal className={PANE_CHROME_ICON_CLASS} />
                 </button>
               </DropdownMenuTrigger>
               <DropdownMenuContent align="end" className="min-w-[180px]">
+                <DropdownMenuItem
+                  disabled={!active}
+                  onClick={() => {
+                    if (active) handleStartEdit(active)
+                  }}
+                >
+                  <Edit2 className="mr-2 h-4 w-4" />
+                  Rename
+                </DropdownMenuItem>
+                <DropdownMenuItem
+                  disabled={!active}
+                  className="text-red-600"
+                  onClick={() => {
+                    if (active) handleDeleteClick(active.id)
+                  }}
+                >
+                  <Trash2 className="mr-2 h-4 w-4" />
+                  Delete
+                </DropdownMenuItem>
+                <DropdownMenuSeparator />
                 <AiPaneThreadLibraryMenus threadId={toPersistedAiThreadId(active?.id)} />
                 <DropdownMenuSeparator />
                 <DropdownMenuSub>
@@ -1121,23 +1259,28 @@ function AiPaneInner({ isOpen, onClose, onExpand, initialScope = 'global', proje
             <button
               type="button"
               onClick={() => onExpand?.()}
-              className="p-2 hover:bg-gray-100 rounded-md transition-colors"
+              className={PANE_CHROME_ICON_BUTTON_CLASS}
               title={isExpanded ? "Collapse" : "Expand"}
             >
-              {isExpanded ? <Minimize2 className="w-5 h-5" /> : <Maximize2 className="w-5 h-5" />}
+              {isExpanded ? (
+                <Minimize2 className={PANE_CHROME_ICON_CLASS} />
+              ) : (
+                <Maximize2 className={PANE_CHROME_ICON_CLASS} />
+              )}
             </button>
             {onClose && (
               <button
                 type="button"
                 onClick={onClose}
-                className="p-2 hover:bg-gray-100 rounded-md transition-colors"
+                className={PANE_CHROME_ICON_BUTTON_CLASS}
                 title="Close"
               >
-                <X className="w-5 h-5" />
+                <X className={PANE_CHROME_ICON_CLASS} />
               </button>
             )}
           </div>
         </div>
+        )}
         
         {/* Main chat area */}
         <div className="flex-1 min-h-0">
@@ -1192,116 +1335,141 @@ function AiPaneInner({ isOpen, onClose, onExpand, initialScope = 'global', proje
       >
         <div className="h-full flex flex-col">
           {/* Simplified header with tabs on left, controls on right */}
-          <div className={`${COMPACT_PANE_HEADER_ROW_CLASS} !items-stretch shrink-0 border-b border-gray-200 bg-white pl-0 pr-3`}>
+          <div className={`${AI_PANE_TAB_ROW_CLASS} shrink-0`}>
             {/* Left side: Tabs */}
             <div className="flex min-h-0 min-w-0 flex-1 items-stretch">
-              <AiPaneTabStrip
-                openTabs={openTabs}
-                active={active}
-                optimisticTab={optimisticTab}
-                activeOptimisticId={optimisticTab?.optimisticId ?? null}
-                displayTitleByThreadId={streamingThreadTitlesById}
-                editingTabId={editingTabId}
-                editTitle={editTitle}
-                setEditTitle={setEditTitle}
-                onTabClick={handleTabClick}
-                onStartEdit={handleStartEdit}
-                onRename={handleRename}
-                onTitleKeyDown={handleTitleKeyDown}
-                onCloseTab={handleCloseTab}
-                onDeleteClick={handleDeleteClick}
-              />
-            </div>
-            
-            {/* Right side: Essential controls only */}
-            <div className="flex items-center gap-2 self-stretch">
-              <HistoryDropdown 
-                onSelectThread={handleSelectThread}
-                activeThreadId={active?.id}
-              />
-              <button
-                onClick={handleNewChat}
-                disabled={isCreating}
-                className="p-2 hover:bg-gray-100 rounded-md transition-colors disabled:opacity-50"
-                title="New Chat"
-              >
-                <Plus className="w-5 h-5" />
-              </button>
-              
-              {/* More options menu */}
-              <DropdownMenu>
-                <DropdownMenuTrigger asChild>
-                  <button
-                    className="p-2 hover:bg-gray-100 rounded-md transition-colors"
-                    title="More options"
-                  >
-                    <MoreHorizontal className="w-5 h-5" />
-                  </button>
-                </DropdownMenuTrigger>
-                <DropdownMenuContent align="end" className="min-w-[180px]">
-                  <AiPaneThreadLibraryMenus threadId={toPersistedAiThreadId(active?.id)} />
-                  <DropdownMenuSeparator />
-                  <DropdownMenuSub>
-                    <DropdownMenuSubTrigger className="gap-2" disabled={!active}>
-                      <Users className="w-4 h-4" />
-                      Share chat
-                      {active?.visibility ? (
-                        <span className="ml-auto text-[10px] capitalize text-muted-foreground">
-                          {active.visibility}
-                        </span>
-                      ) : null}
-                    </DropdownMenuSubTrigger>
-                    <DropdownMenuSubContent className="min-w-[180px]">
-                      <DropdownMenuItem
-                        onClick={() => void handleSetVisibility("private")}
-                        disabled={active?.visibility === "private"}
-                      >
-                        Private (only you)
-                      </DropdownMenuItem>
-                      <DropdownMenuItem
-                        onClick={() => void handleSetVisibility("project")}
-                        disabled={!active?.project_id || active?.visibility === "project"}
-                      >
-                        Project members
-                      </DropdownMenuItem>
-                      <DropdownMenuItem
-                        onClick={() => void handleSetVisibility("team")}
-                        disabled={active?.visibility === "team"}
-                      >
-                        Team members
-                      </DropdownMenuItem>
-                    </DropdownMenuSubContent>
-                  </DropdownMenuSub>
-                  <DropdownMenuSeparator />
-                  <DropdownMenuItem onClick={handleCloseAllTabs}>
-                    <XCircle className="w-4 h-4 mr-2" />
-                    Close all tabs
-                  </DropdownMenuItem>
-                  <DropdownMenuItem onClick={handleCopyLink} disabled={!active}>
-                    <Copy className="w-4 h-4 mr-2" />
-                    Copy link
-                  </DropdownMenuItem>
-                </DropdownMenuContent>
-              </DropdownMenu>
-              
-              <button
-                type="button"
-                onClick={() => onExpand?.()}
-                className="p-2 hover:bg-gray-100 rounded-md transition-colors"
-                title={isExpanded ? "Collapse" : "Expand"}
-              >
-                {isExpanded ? <Minimize2 className="w-5 h-5" /> : <Maximize2 className="w-5 h-5" />}
-              </button>
-              <button
-                type="button"
-                onClick={onClose}
-                className="p-2 hover:bg-gray-100 rounded-md transition-colors"
-                title="Close"
-              >
-                <X className="w-5 h-5" />
-              </button>
-            </div>
+            <AiPaneTabStrip
+              openTabs={openTabs}
+              active={active}
+              optimisticTab={optimisticTab}
+              activeOptimisticId={optimisticTab?.optimisticId ?? null}
+              displayTitleByThreadId={streamingThreadTitlesById}
+              editingTabId={editingTabId}
+              editTitle={editTitle}
+              setEditTitle={setEditTitle}
+              onTabClick={handleTabClick}
+              onStartEdit={handleStartEdit}
+              onRename={handleRename}
+              onTitleKeyDown={handleTitleKeyDown}
+              onCloseTab={handleCloseTab}
+            />
           </div>
+          
+          {/* Right side: Essential controls only */}
+          <div className={AI_PANE_TAB_CHROME_CLASS}>
+            <HistoryDropdown 
+              onSelectThread={handleSelectThread}
+              activeThreadId={active?.id}
+            />
+            <button
+              type="button"
+              onClick={handleNewChat}
+              disabled={isCreating}
+              className={PANE_CHROME_ICON_BUTTON_CLASS}
+              title="New Chat"
+            >
+              <Plus className={PANE_CHROME_ICON_CLASS} />
+            </button>
+            
+            {/* More options menu */}
+            <DropdownMenu>
+              <DropdownMenuTrigger asChild>
+                <button
+                  type="button"
+                  className={PANE_CHROME_ICON_BUTTON_CLASS}
+                  title="More options"
+                >
+                  <MoreHorizontal className={PANE_CHROME_ICON_CLASS} />
+                </button>
+              </DropdownMenuTrigger>
+              <DropdownMenuContent align="end" className="min-w-[180px]">
+                <DropdownMenuItem
+                  disabled={!active}
+                  onClick={() => {
+                    if (active) handleStartEdit(active)
+                  }}
+                >
+                  <Edit2 className="mr-2 h-4 w-4" />
+                  Rename
+                </DropdownMenuItem>
+                <DropdownMenuItem
+                  disabled={!active}
+                  className="text-red-600"
+                  onClick={() => {
+                    if (active) handleDeleteClick(active.id)
+                  }}
+                >
+                  <Trash2 className="mr-2 h-4 w-4" />
+                  Delete
+                </DropdownMenuItem>
+                <DropdownMenuSeparator />
+                <AiPaneThreadLibraryMenus threadId={toPersistedAiThreadId(active?.id)} />
+                <DropdownMenuSeparator />
+                <DropdownMenuSub>
+                  <DropdownMenuSubTrigger className="gap-2" disabled={!active}>
+                    <Users className="w-4 h-4" />
+                    Share chat
+                    {active?.visibility ? (
+                      <span className="ml-auto text-[10px] capitalize text-muted-foreground">
+                        {active.visibility}
+                      </span>
+                    ) : null}
+                  </DropdownMenuSubTrigger>
+                  <DropdownMenuSubContent className="min-w-[180px]">
+                    <DropdownMenuItem
+                      onClick={() => void handleSetVisibility("private")}
+                      disabled={active?.visibility === "private"}
+                    >
+                      Private (only you)
+                    </DropdownMenuItem>
+                    <DropdownMenuItem
+                      onClick={() => void handleSetVisibility("project")}
+                      disabled={!active?.project_id || active?.visibility === "project"}
+                    >
+                      Project members
+                    </DropdownMenuItem>
+                    <DropdownMenuItem
+                      onClick={() => void handleSetVisibility("team")}
+                      disabled={active?.visibility === "team"}
+                    >
+                      Team members
+                    </DropdownMenuItem>
+                  </DropdownMenuSubContent>
+                </DropdownMenuSub>
+                <DropdownMenuSeparator />
+                <DropdownMenuItem onClick={handleCloseAllTabs}>
+                  <XCircle className="w-4 h-4 mr-2" />
+                  Close all tabs
+                </DropdownMenuItem>
+                <DropdownMenuItem onClick={handleCopyLink} disabled={!active}>
+                  <Copy className="w-4 h-4 mr-2" />
+                  Copy link
+                </DropdownMenuItem>
+              </DropdownMenuContent>
+            </DropdownMenu>
+            
+            <button
+              type="button"
+              onClick={() => onExpand?.()}
+              className={PANE_CHROME_ICON_BUTTON_CLASS}
+              title={isExpanded ? "Collapse" : "Expand"}
+            >
+              {isExpanded ? (
+                <Minimize2 className={PANE_CHROME_ICON_CLASS} />
+              ) : (
+                <Maximize2 className={PANE_CHROME_ICON_CLASS} />
+              )}
+            </button>
+            <button
+              type="button"
+              onClick={onClose}
+              className={PANE_CHROME_ICON_BUTTON_CLASS}
+              title="Close"
+            >
+              <X className={PANE_CHROME_ICON_CLASS} />
+            </button>
+          </div>
+        </div>
           
           {/* Main chat area */}
           <div className="flex-1 min-h-0">

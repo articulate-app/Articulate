@@ -26,9 +26,10 @@ import { useGlobalSearchContext } from "../../contexts/global-search-context"
 import { buildObjectRoute, type SearchObjectRoute } from "../../lib/search-routing"
 import { mergeWorkspaceUrlState, parseWorkspaceUrlState } from "../../lib/workspace-url-state"
 import { type GlobalSearchResultTab } from "../../lib/global-search-types"
-import { buildRightPaneSelectionSearchParams } from "../../lib/right-pane-selection-url"
-import { buildCenterPaneSelectionSearchParams } from "../../lib/center-pane-selection-url"
-import { applyAiThreadOpenParams, buildNewAiThreadParams } from "../../lib/ai-thread-route"
+import {
+  openWorkspaceView,
+  resolveFocusedWorkspacePane,
+} from "../../lib/open-workspace-view"
 import { getImageUrl } from "../../lib/public-media"
 import { UserAvatar } from "../UserAvatar"
 import { useCurrentUserStore } from "../../store/current-user"
@@ -45,11 +46,14 @@ import {
   DropdownMenuItem,
   DropdownMenuTrigger,
 } from "./dropdown-menu"
+import { useTasksSidebar } from "../../contexts/tasks-sidebar-context"
 
 interface SidebarProps {
   isCollapsed: boolean
   isMobileMenuOpen?: boolean
   onClose?: () => void
+  /** Desktop: open the ChatGPT-style global search modal. */
+  onOpenSearch?: () => void
 }
 
 type OpenNewUserModalDetail = {
@@ -61,6 +65,7 @@ export function Sidebar({
   isCollapsed,
   isMobileMenuOpen = false,
   onClose,
+  onOpenSearch,
 }: SidebarProps) {
   const CREATE_NEW_TEAM_OPTION = "__create_new_team__";
   const pathname = usePathname();
@@ -69,6 +74,8 @@ export function Sidebar({
   const queryClient = useQueryClient();
   const supabase = createClientComponentClient();
   const globalSearch = useGlobalSearchContext();
+  const tasksSidebar = useTasksSidebar();
+  const onSidebarToggle = tasksSidebar?.onSidebarToggle;
 
   // Current-user identity (same source as TaskHeaderBar account menu).
   const fullName = useCurrentUserStore((s) => s.fullName);
@@ -240,27 +247,17 @@ export function Sidebar({
     entityType: "project" | "team" | "user",
     entityId: number,
   ) => {
-    const targetObject: SearchObjectRoute = entityType === "project" ? "project" : entityType === "team" ? "team" : "user"
-    const currentParams = new URLSearchParams(searchParams.toString())
-    const routeWithObject = buildObjectRoute(targetObject, currentParams)
-    const baseParams = new URLSearchParams(routeWithObject.searchParams.toString())
-    const isAiRightPane = currentParams.get("rightView") === "ai"
-    const next = isAiRightPane
-      ? buildCenterPaneSelectionSearchParams({
-          currentSearchParams: baseParams,
-          entity: entityType === "project" ? "project" : entityType === "team" ? "team" : "user",
-          id: String(entityId),
-          tab: null,
-        })
-      : buildRightPaneSelectionSearchParams({
-          currentSearchParams: baseParams,
-          entity: entityType === "project" ? "project" : entityType === "team" ? "team" : "user",
-          id: String(entityId),
-          tab: null,
-        })
-    const query = next.toString()
-    router.push(query ? `/?${query}` : "/", { scroll: false })
-  }, [router, searchParams]);
+    // Pane-neutral: open in the focused workspace pane (fallback: middle).
+    // Do not rewrite left-pane object= routes — sidebar lists are navigation only.
+    openWorkspaceView(
+      { type: entityType, id: entityId },
+      {
+        pane: resolveFocusedWorkspacePane(),
+        pathname: "/",
+        source: "sidebar-entity-open",
+      },
+    )
+  }, []);
 
   const handleProjectClick = (projectId: number) => {
     openSidebarSearchResult("project", projectId);
@@ -271,57 +268,130 @@ export function Sidebar({
   };
 
   const handleTaskClick = useCallback((taskId: number) => {
-    const currentParams = new URLSearchParams(searchParams.toString())
-    const next = buildCenterPaneSelectionSearchParams({
-      currentSearchParams: currentParams,
-      entity: "task",
-      id: taskId,
-    })
-    const query = next.toString()
-    router.push(query ? `/?${query}` : "/", { scroll: false })
+    openWorkspaceView(
+      { type: "task", taskId, id: taskId },
+      {
+        pane: resolveFocusedWorkspacePane(),
+        pathname: "/",
+        source: "sidebar-task-open",
+      },
+    )
     bumpAndInvalidateHomeSidebarRecent(queryClient, "tasks", {
       id: String(taskId),
       title: `Task ${taskId}`,
     })
     void trackGlobalObjectOpen({ entityType: "task", entityId: String(taskId) }).catch(() => {})
     onClose?.()
-  }, [onClose, queryClient, router, searchParams])
+  }, [onClose, queryClient])
 
   const handleMentionClick = useCallback((args: { threadId: string; mentionId?: string | null }) => {
-    const currentParams = new URLSearchParams(searchParams.toString())
-    const next = buildCenterPaneSelectionSearchParams({
-      currentSearchParams: currentParams,
-      entity: "thread",
-      id: args.threadId,
-      mentionId: args.mentionId ?? null,
-    })
-    const query = next.toString()
-    router.push(query ? `/?${query}` : "/", { scroll: false })
+    openWorkspaceView(
+      {
+        type: "thread",
+        id: args.threadId,
+        params: { mentionId: args.mentionId ?? null },
+      },
+      {
+        pane: resolveFocusedWorkspacePane(),
+        pathname: "/",
+        source: "sidebar-thread-open",
+      },
+    )
     onClose?.()
-  }, [onClose, router, searchParams])
+  }, [onClose])
 
   const handleAiChatClick = useCallback((threadId: string) => {
-    const currentParams = new URLSearchParams(searchParams.toString())
-    const next = applyAiThreadOpenParams(currentParams, threadId)
-    const query = next.toString()
-    router.push(query ? `/?${query}` : "/", { scroll: false })
+    openWorkspaceView(
+      { type: "ai", aiThreadId: threadId },
+      {
+        pane: "left",
+        pathname: "/",
+        source: "sidebar-ai-open",
+      },
+    )
     onClose?.()
-  }, [onClose, router, searchParams])
+  }, [onClose])
 
   const handleCreateAiChat = useCallback(() => {
-    const currentParams = new URLSearchParams(searchParams.toString())
-    const next = buildNewAiThreadParams(currentParams)
-    const query = next.toString()
-    router.push(query ? `/?${query}` : "/", { scroll: false })
+    openWorkspaceView(
+      { type: "ai", params: { forceNewAiThread: true } },
+      {
+        pane: "left",
+        pathname: "/",
+        source: "sidebar-ai-create",
+      },
+    )
     onClose?.()
-  }, [onClose, router, searchParams])
+  }, [onClose])
 
-  const handleNavigateObject = useCallback(
+  const handleOpenTaskList = useCallback(() => {
+    openWorkspaceView(
+      { type: "task-list", title: "Tasks" },
+      {
+        pane: "left",
+        pathname: "/",
+        source: "sidebar-task-list-open",
+      },
+    )
+    onClose?.()
+  }, [onClose])
+
+  const handleOpenListView = useCallback(
     (object: SearchObjectRoute) => {
-      navigateTo("/", object)
+      const listByObject: Partial<
+        Record<
+          SearchObjectRoute,
+          | "task-list"
+          | "project-list"
+          | "mention-list"
+          | "user-list"
+          | "ai-thread-list"
+          | "artifact-list"
+        >
+      > = {
+        task: "task-list",
+        project: "project-list",
+        mention: "mention-list",
+        user: "user-list",
+        ai_thread: "ai-thread-list",
+        artifact: "artifact-list",
+      }
+      const listType = listByObject[object]
+      if (!listType) {
+        navigateTo("/", object)
+        return
+      }
+      openWorkspaceView(
+        { type: listType },
+        {
+          pane: "left",
+          pathname: "/",
+          source: `sidebar-list-open:${listType}`,
+        },
+      )
       onClose?.()
     },
     [navigateTo, onClose],
+  )
+
+  const handleNavigateObject = useCallback(
+    (object: SearchObjectRoute) => {
+      // Object lists open as left-pane workspace tabs (no reserved left-home switcher).
+      if (
+        object === "task" ||
+        object === "project" ||
+        object === "mention" ||
+        object === "user" ||
+        object === "ai_thread" ||
+        object === "artifact"
+      ) {
+        handleOpenListView(object)
+        return
+      }
+      navigateTo("/", object)
+      onClose?.()
+    },
+    [handleOpenListView, navigateTo, onClose],
   )
 
   const handleProjectDefinitions = useCallback((projectId: number) => {
@@ -604,6 +674,7 @@ export function Sidebar({
       isObjectActive={isObjectActive}
       hasUnseenMentions={hasUnseenMentions}
       onNavigateObject={handleNavigateObject}
+      onOpenTaskList={handleOpenTaskList}
       onOpenProject={(projectId) => {
         handleProjectClick(projectId)
         onClose?.()
@@ -617,6 +688,8 @@ export function Sidebar({
       }}
       onOpenAiChat={handleAiChatClick}
       onCreateAiChat={handleCreateAiChat}
+      onSidebarToggle={onSidebarToggle}
+      onOpenSearch={onOpenSearch}
     />
   )
 
@@ -639,10 +712,10 @@ export function Sidebar({
         </div>
       )}
 
-      {/* Desktop Sidebar */}
+      {/* Desktop Sidebar — logo/search/create stay sticky; feed scrolls underneath */}
       <TooltipProvider delayDuration={120}>
         <nav className="relative z-30 hidden h-full md:flex md:flex-col">
-          <div className="flex h-full min-h-0 flex-col px-1 pt-2">
+          <div className="flex h-full min-h-0 flex-col">
             {objectFeed}
             {accountMenu}
           </div>

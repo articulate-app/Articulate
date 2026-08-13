@@ -105,7 +105,7 @@ export function TaskGroupHeaderLabel({
       <TaskStatusPill
         name={label}
         color={resolveStatusColor(label, groupKey, editFields)}
-        className="font-semibold"
+        className="font-normal"
       />
     )
   }
@@ -113,7 +113,7 @@ export function TaskGroupHeaderLabel({
   if (groupBy === 'project') {
     const project = resolveProjectMeta(groupKey, label, editFields)
     return (
-      <span className="min-w-0 font-semibold">
+      <span className="min-w-0 text-xs font-normal">
         <ProjectMarker
           name={project.name}
           logo={project.logo}
@@ -124,7 +124,7 @@ export function TaskGroupHeaderLabel({
     )
   }
 
-  return <span className="truncate font-semibold">{label}</span>
+  return <span className="truncate text-xs font-normal text-gray-700">{label}</span>
 }
 
 export function FilterOptionVisual({

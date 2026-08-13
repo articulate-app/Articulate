@@ -52,6 +52,92 @@ function collectSchemaTypes(value: unknown, out: Set<string>) {
   for (const nested of Object.values(record)) collectSchemaTypes(nested, out)
 }
 
+/** Pull datePublished / dateModified from JSON-LD graphs Firecrawl nests in metadata. */
+function extractJsonLdDate(
+  value: unknown,
+  keys: string[],
+): string | null {
+  if (!value) return null
+  if (Array.isArray(value)) {
+    for (const item of value) {
+      const found = extractJsonLdDate(item, keys)
+      if (found) return found
+    }
+    return null
+  }
+  if (typeof value === "string") {
+    const trimmed = value.trim()
+    if (!trimmed) return null
+    // Firecrawl sometimes returns JSON-LD as a raw string.
+    if (trimmed.startsWith("{") || trimmed.startsWith("[")) {
+      try {
+        return extractJsonLdDate(JSON.parse(trimmed), keys)
+      } catch {
+        return null
+      }
+    }
+    return null
+  }
+  const record = asRecord(value)
+  if (!record) return null
+  for (const key of keys) {
+    const direct = asString(record[key])
+    if (direct) return direct
+  }
+  for (const nested of Object.values(record)) {
+    const found = extractJsonLdDate(nested, keys)
+    if (found) return found
+  }
+  return null
+}
+
+/** Fallback when Firecrawl metadata omits JSON-LD (common on Squarespace). */
+function extractDateFromHtml(html: string | null, keys: string[]): string | null {
+  if (!html) return null
+
+  for (const key of keys) {
+    const itemprop = html.match(
+      new RegExp(
+        `<meta[^>]+itemprop=["']${key}["'][^>]+content=["']([^"']+)["']`,
+        "i",
+      ),
+    )?.[1]
+    if (itemprop) return itemprop
+
+    const itempropAlt = html.match(
+      new RegExp(
+        `<meta[^>]+content=["']([^"']+)["'][^>]+itemprop=["']${key}["']`,
+        "i",
+      ),
+    )?.[1]
+    if (itempropAlt) return itempropAlt
+
+    const property = html.match(
+      new RegExp(
+        `<meta[^>]+(?:property|name)=["'](?:article:)?${key.replace("date", "").replace("Published", "published_time").replace("Modified", "modified_time")}["'][^>]+content=["']([^"']+)["']`,
+        "i",
+      ),
+    )?.[1]
+    if (property) return property
+  }
+
+  const scriptBlocks = html.matchAll(
+    /<script[^>]*type=["']application\/ld\+json["'][^>]*>([\s\S]*?)<\/script>/gi,
+  )
+  for (const match of scriptBlocks) {
+    const raw = match[1]?.trim()
+    if (!raw) continue
+    try {
+      const found = extractJsonLdDate(JSON.parse(raw), keys)
+      if (found) return found
+    } catch {
+      // ignore invalid JSON-LD chunks
+    }
+  }
+
+  return null
+}
+
 export class FirecrawlClient {
   constructor(
     private readonly apiKey: string,
@@ -156,14 +242,33 @@ export class FirecrawlClient {
       publishedAt:
         asString(metadata.publishedTime) ??
         asString(metadata.articlePublishedTime) ??
-        asString(metadata.published_at),
+        asString(metadata["article:published_time"]) ??
+        asString(metadata.datePublished) ??
+        asString(metadata.published_at) ??
+        extractJsonLdDate(metadata.jsonld ?? metadata["json-ld"] ?? metadata.schema, [
+          "datePublished",
+          "dateCreated",
+          "uploadDate",
+        ]) ??
+        extractDateFromHtml(asString(data.html), [
+          "datePublished",
+          "dateCreated",
+          "uploadDate",
+        ]),
       modifiedAt:
         asString(metadata.modifiedTime) ??
         asString(metadata.articleModifiedTime) ??
-        asString(metadata.modified_at),
+        asString(metadata["article:modified_time"]) ??
+        asString(metadata.dateModified) ??
+        asString(metadata.modified_at) ??
+        extractJsonLdDate(metadata.jsonld ?? metadata["json-ld"] ?? metadata.schema, [
+          "dateModified",
+        ]) ??
+        extractDateFromHtml(asString(data.html), ["dateModified"]),
       author: asString(metadata.author) ?? asString(metadata["article:author"]),
       imageUrl:
         asString(metadata.ogImage) ??
+        asString(metadata["og:image"]) ??
         asString(metadata.image) ??
         asString(metadata.twitterImage),
       schemaTypes: [...schemaTypes],

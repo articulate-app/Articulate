@@ -6,6 +6,7 @@ import { format, subDays } from "date-fns"
 import { getPreviousPeriodRange } from "@/lib/competition-previous-period"
 import {
   AlertCircle,
+  Download,
   ExternalLink,
   Loader2,
   Pencil,
@@ -16,7 +17,6 @@ import { Button } from "../ui/button"
 import { Card } from "../ui/card"
 import { Input } from "../ui/input"
 import { Label } from "../ui/label"
-import { DateRangePicker } from "../ui/date-range-picker"
 import {
   Select,
   SelectContent,
@@ -48,11 +48,8 @@ import {
 import {
   PROJECT_BRAND_SOCIAL_PROFILES_QUERY_KEY,
   PROJECT_SOCIAL_POSTS_QUERY_KEY,
-  createBrandSocialProfile,
-  deleteBrandSocialProfile,
   listProjectBrandSocialProfiles,
   listProjectSocialPosts,
-  updateBrandSocialProfile,
   type ProjectBrandSocialProfile,
 } from "@/lib/services/project-brand-social"
 import {
@@ -67,14 +64,17 @@ import {
   getOwnedContentPerformance,
   getProjectCompetitiveContentSummary,
   getProjectKeywordGap,
-  listProjectCompetitiveArticles,
+  listProjectCompetitiveArticlesImpact,
+  type ArticleImpactSort,
 } from "@/lib/services/project-competitive-content"
 import {
   AddCompetitorCard,
   BrandSocialConnectCard,
   DiscoverCompetitorSocialButton,
 } from "./competition-connect-cards"
+import { ProjectCompetitorSuggestions } from "./project-competitor-suggestions"
 import { CompetitionOverviewPanel } from "./competition-overview-panel"
+import { CompetitionPeriodSelect } from "./competition-period-select"
 import { CompetitionPostsFeed } from "./competition-posts-feed"
 import { CompetitionCompareDashboard } from "./competition-compare-dashboard"
 import { CompetitionArticlesFeed } from "./competition-articles-feed"
@@ -84,6 +84,7 @@ import {
   ChartPreviewDateRangeButton,
   ChartPreviewHoverActions,
 } from "./chart-preview-hover-actions"
+import { exportSocialFollowersCsv } from "@/lib/export-social-followers"
 
 type DateRangeValue = {
   from?: Date
@@ -151,6 +152,7 @@ export function ProjectCompetitorsTab({
   const [filterEntityId, setFilterEntityId] = useState<string>("all")
   const [filterNetwork, setFilterNetwork] = useState<string>("all")
   const [filterSourceType, setFilterSourceType] = useState<string>("all")
+  const [articlesSort, setArticlesSort] = useState<ArticleImpactSort>("recent")
   const [isSyncing, setIsSyncing] = useState(false)
 
   // Manage-only state
@@ -290,6 +292,11 @@ export function ProjectCompetitorsTab({
   const sourceTypeFilter =
     filterSourceType === "all" ? null : [filterSourceType]
 
+  const metricDateFrom = dateRange.from
+    ? format(dateRange.from, "yyyy-MM-dd")
+    : null
+  const metricDateTo = dateRange.to ? format(dateRange.to, "yyyy-MM-dd") : null
+
   const {
     data: articles = [],
     isLoading: articlesLoading,
@@ -297,23 +304,37 @@ export function ProjectCompetitorsTab({
   } = useQuery({
     queryKey: [
       PROJECT_COMPETITIVE_ARTICLES_QUERY_KEY,
+      "impact",
       projectId,
       filterEntityId,
       filterSourceType,
+      articlesSort,
       fromIso,
       toIso,
+      metricDateFrom,
+      metricDateTo,
     ],
     queryFn: () =>
-      listProjectCompetitiveArticles({
+      listProjectCompetitiveArticlesImpact({
         projectId,
         dateFrom: fromIso,
         dateTo: toIso,
+        metricDateFrom,
+        metricDateTo,
         entityIds: entityFilter,
         sourceTypes: sourceTypeFilter,
+        sort: articlesSort,
         limit: 100,
       }),
-    enabled: showAnalytics && activeTab === "articles",
+    enabled:
+      showAnalytics
+      && (activeTab === "articles" || activeTab === "overview" || isPreview),
   })
+
+  const overviewArticles = useMemo(
+    () => articles.slice(0, isPreview ? 6 : 12),
+    [articles, isPreview],
+  )
 
   const {
     data: contentSummary,
@@ -471,6 +492,7 @@ export function ProjectCompetitorsTab({
 
       let succeeded = 0
       let failed = 0
+      let pending = 0
       let lastError: string | undefined
 
       for (const job of jobs) {
@@ -482,7 +504,8 @@ export function ProjectCompetitorsTab({
           entityType: job.entityType ?? "all",
           trigger: "manual",
         })
-        if (result.ok) succeeded += result.profiles_succeeded ?? 1
+        pending += result.profiles_pending ?? 0
+        if (result.ok) succeeded += result.profiles_succeeded ?? 0
         else {
           failed += Math.max(1, result.profiles_failed ?? 1)
           lastError = result.error
@@ -501,8 +524,11 @@ export function ProjectCompetitorsTab({
         return
       }
       toast({
-        title: "Sync complete",
-        description: `${succeeded} profile(s) updated.`,
+        title: pending > 0 && succeeded === 0 ? "Sync running" : "Sync complete",
+        description:
+          pending > 0
+            ? `${succeeded} profile(s) updated, ${pending} still scraping — posts appear within a few minutes.`
+            : `${succeeded} profile(s) updated.`,
       })
       await Promise.all([
         refetchCompetitors(),
@@ -558,16 +584,28 @@ export function ProjectCompetitorsTab({
     const hasCompetitors = competitors.length > 0
     const setupCards =
       hasBrandProfiles && hasCompetitors ? null : (
-        <div className="grid gap-3 md:grid-cols-2">
-          {hasBrandProfiles ? null : (
-            <BrandSocialConnectCard
-              projectId={projectId}
-              onDone={() => void refetchBrandProfiles()}
-            />
-          )}
+        <div className="space-y-3">
+          <div className="grid gap-3 md:grid-cols-2">
+            {hasBrandProfiles ? null : (
+              <BrandSocialConnectCard
+                projectId={projectId}
+                onDone={() => void refetchBrandProfiles()}
+              />
+            )}
+            {hasCompetitors ? null : (
+              <AddCompetitorCard
+                projectId={projectId}
+                onDone={() => void refetchCompetitors()}
+              />
+            )}
+          </div>
           {hasCompetitors ? null : (
-            <AddCompetitorCard
+            <ProjectCompetitorSuggestions
               projectId={projectId}
+              existingNames={competitors.map((competitor) => competitor.name)}
+              existingWebsites={competitors
+                .map((competitor) => competitor.website_url)
+                .filter((url): url is string => Boolean(url))}
               onDone={() => void refetchCompetitors()}
             />
           )}
@@ -595,8 +633,23 @@ export function ProjectCompetitorsTab({
           recentPosts={overviewPosts}
           recentPostsLoading={postsLoading}
           recentPostsError={postsError as Error | null}
+          recentArticles={overviewArticles}
+          recentArticlesLoading={articlesLoading}
+          recentArticlesError={articlesError as Error | null}
+          articlesSort={articlesSort}
+          onArticlesSortChange={setArticlesSort}
           ownedEntityId={ownedEntity}
           competitors={competitors}
+          previousSummary={previousSummary}
+          previousSummaryLoading={previousSummaryLoading}
+          comparePreviousPeriod={comparePreviousPeriod}
+          onComparePreviousPeriodChange={setComparePreviousPeriod}
+          dateRange={dateRange}
+          onDateRangeChange={(range) =>
+            setDateRange(range.from && range.to ? range : getDefaultDateRange())
+          }
+          filterNetwork={filterNetwork}
+          onFilterNetworkChange={setFilterNetwork}
         />
       </ChartPreviewHoverActions>
     )
@@ -650,13 +703,13 @@ export function ProjectCompetitorsTab({
             Compare your brand and competitors across social posts, articles, and SEO.
           </p>
         </div>
-        <div className="flex flex-wrap items-center gap-2">
-          <div className="min-w-[11rem] w-44">
-            <DateRangePicker
-              value={dateRange}
-              onChange={(range) => setDateRange(range ?? getDefaultDateRange())}
-            />
-          </div>
+        <div className="flex flex-wrap items-center gap-3">
+          <CompetitionPeriodSelect
+            value={dateRange}
+            onChange={(range) =>
+              setDateRange(range.from && range.to ? range : getDefaultDateRange())
+            }
+          />
           {activeTab === "overview" || activeTab === "posts" || activeTab === "compare" ? (
             <Select value={filterNetwork} onValueChange={setFilterNetwork}>
               <SelectTrigger className="w-[140px]">
@@ -672,6 +725,32 @@ export function ProjectCompetitorsTab({
               </SelectContent>
             </Select>
           ) : null}
+          <Button
+            variant="outline"
+            onClick={() => {
+              if (!summary) {
+                toast({
+                  title: "Nothing to export yet",
+                  description: "Wait for social stats to load, then try again.",
+                })
+                return
+              }
+              const projectName =
+                summary.entities.find((entity) => entity.is_owned)?.entity_name
+                ?? `project-${projectId}`
+              const ok = exportSocialFollowersCsv({ projectName, summary })
+              if (!ok) {
+                toast({
+                  title: "No follower rows",
+                  description: "Sync brand and competitor profiles first.",
+                })
+              }
+            }}
+            disabled={!summary || summary.entities.length === 0}
+          >
+            <Download className="mr-2 h-4 w-4" />
+            Export
+          </Button>
           <Button onClick={() => void handleSync()} disabled={isSyncing || !canSync}>
             {isSyncing ? (
               <Loader2 className="mr-2 h-4 w-4 animate-spin" />
@@ -701,12 +780,25 @@ export function ProjectCompetitorsTab({
             recentPosts={overviewPosts}
             recentPostsLoading={postsLoading}
             recentPostsError={postsError as Error | null}
+            recentArticles={overviewArticles}
+            recentArticlesLoading={articlesLoading}
+            recentArticlesError={articlesError as Error | null}
+            articlesSort={articlesSort}
+            onArticlesSortChange={setArticlesSort}
             ownedEntityId={ownedEntity}
             competitors={competitors}
             previousSummary={previousSummary}
             previousSummaryLoading={previousSummaryLoading}
             comparePreviousPeriod={comparePreviousPeriod}
             onComparePreviousPeriodChange={setComparePreviousPeriod}
+            onSeeAllPosts={() => setActiveTab("posts")}
+            onSeeAllArticles={() => setActiveTab("articles")}
+            dateRange={dateRange}
+            onDateRangeChange={(range) =>
+              setDateRange(range.from && range.to ? range : getDefaultDateRange())
+            }
+            filterNetwork={filterNetwork}
+            onFilterNetworkChange={setFilterNetwork}
           />
         </TabsContent>
 
@@ -736,6 +828,10 @@ export function ProjectCompetitorsTab({
             isLoading={summaryLoading}
             error={summaryError as Error | null}
             onRetry={() => void refetchSummary()}
+            dateRange={dateRange}
+            onDateRangeChange={(range) =>
+              setDateRange(range.from && range.to ? range : getDefaultDateRange())
+            }
           />
         </TabsContent>
 
@@ -751,6 +847,8 @@ export function ProjectCompetitorsTab({
             onFilterEntityIdChange={setFilterEntityId}
             filterSourceType={filterSourceType}
             onFilterSourceTypeChange={setFilterSourceType}
+            sort={articlesSort}
+            onSortChange={setArticlesSort}
           />
         </TabsContent>
 
@@ -812,83 +910,11 @@ function CompetitionManageContent(props: ManageContentProps) {
   const {
     projectId,
     competitors,
-    brandProfiles,
     canSync,
     isSyncing,
     syncingProfileId,
-    syncingBrandProfileId,
     onSync,
   } = props
-
-  const brandNetworkOptions = unusedNetworks(
-    brandProfiles.map((profile) => profile.network),
-  )
-  const brandNetwork = brandNetworkOptions.includes(props.brandDraft.network)
-    ? props.brandDraft.network
-    : brandNetworkOptions[0] ?? props.brandDraft.network
-
-  const handleAddBrandProfile = async () => {
-    if (!props.brandDraft.profileUrl.trim()) {
-      toast({
-        title: "Profile URL required",
-        description: "Paste your public brand profile or page URL.",
-        variant: "destructive",
-      })
-      return
-    }
-    props.setIsSavingBrandProfile(true)
-    try {
-      await createBrandSocialProfile({
-        projectId,
-        network: brandNetwork,
-        profileUrl: props.brandDraft.profileUrl,
-      })
-      props.setBrandDraft({ network: "linkedin", profileUrl: "" })
-      await props.refetchBrandProfiles()
-      toast({ title: "Brand social profile added" })
-    } catch (error: any) {
-      toast({
-        title: "Could not add brand profile",
-        description: error?.message || "Please try again.",
-        variant: "destructive",
-      })
-    } finally {
-      props.setIsSavingBrandProfile(false)
-    }
-  }
-
-  const handleToggleBrandProfile = async (profile: ProjectBrandSocialProfile) => {
-    try {
-      await updateBrandSocialProfile({
-        profileId: profile.id,
-        isActive: !profile.is_active,
-      })
-      await props.refetchBrandProfiles()
-    } catch (error: any) {
-      toast({
-        title: "Could not update brand profile",
-        description: error?.message || "Please try again.",
-        variant: "destructive",
-      })
-    }
-  }
-
-  const handleDeleteBrandProfile = async (profileId: number) => {
-    if (!window.confirm("Remove this brand social profile and its synced posts?")) {
-      return
-    }
-    try {
-      await deleteBrandSocialProfile(profileId)
-      await props.invalidateAll()
-      toast({ title: "Brand profile removed" })
-    } catch (error: any) {
-      toast({
-        title: "Delete failed",
-        description: error?.message || "Please try again.",
-        variant: "destructive",
-      })
-    }
-  }
 
   return (
     <div className="min-w-0 space-y-6">
@@ -896,8 +922,8 @@ function CompetitionManageContent(props: ManageContentProps) {
         <div className="min-w-0">
           <h2 className="text-base font-semibold text-gray-900">Competition</h2>
           <p className="mt-1 text-sm text-gray-500">
-            Paste a website URL for your brand and each competitor — we link their
-            social profiles and track their content.
+            Competitors, their social profiles and editorial content. Your own brand
+            profiles and Google connections live under Details.
           </p>
         </div>
         <Button
@@ -913,168 +939,6 @@ function CompetitionManageContent(props: ManageContentProps) {
           Sync social
         </Button>
       </div>
-
-      <section className="space-y-3">
-        <div className="flex flex-wrap items-center justify-between gap-2">
-          <div>
-            <h3 className="text-sm font-medium text-gray-900">Our brand</h3>
-            <p className="text-xs text-gray-500">
-              Your project&apos;s own social profiles — not a competitor.
-            </p>
-          </div>
-          <Button
-            size="sm"
-            variant="ghost"
-            onClick={() => void onSync({ entityType: "owned" })}
-            disabled={isSyncing || brandProfiles.every((p) => !p.is_active)}
-          >
-            <RefreshCw className="mr-1.5 h-3.5 w-3.5" />
-            Sync brand
-          </Button>
-        </div>
-
-        {brandProfiles.length === 0 ? (
-          <BrandSocialConnectCard
-            projectId={projectId}
-            onDone={() => void props.refetchBrandProfiles()}
-          />
-        ) : (
-          <div className="space-y-2">
-            {brandProfiles.map((profile) => (
-              <Card
-                key={profile.id}
-                className="flex min-w-0 flex-col gap-2 p-3 sm:flex-row sm:items-start sm:justify-between"
-              >
-                <div className="min-w-0 flex-1">
-                  <div className="flex flex-wrap items-center gap-2 text-sm">
-                    <span className="rounded bg-sky-50 px-1.5 py-0.5 text-[11px] font-medium text-sky-700">
-                      Our brand
-                    </span>
-                    <span className="font-medium text-gray-900">
-                      {COMPETITOR_NETWORK_LABELS[profile.network]}
-                    </span>
-                    <span
-                      className={cn(
-                        "rounded px-1.5 py-0.5 text-[11px]",
-                        profile.is_active
-                          ? "bg-emerald-50 text-emerald-700"
-                          : "bg-gray-100 text-gray-500",
-                      )}
-                    >
-                      {profile.is_active ? "Active" : "Inactive"}
-                    </span>
-                    <span className="text-xs text-gray-500">
-                      {syncStatusLabel(profile.last_sync_status)}
-                      {profile.last_synced_at
-                        ? ` · ${format(
-                            new Date(profile.last_synced_at),
-                            "dd MMM yyyy HH:mm",
-                          )}`
-                        : ""}
-                    </span>
-                  </div>
-                  <a
-                    href={profile.profile_url}
-                    target="_blank"
-                    rel="noreferrer"
-                    className="mt-0.5 block break-all text-xs text-blue-600 hover:underline sm:truncate sm:break-normal"
-                  >
-                    {profile.profile_url}
-                  </a>
-                  {profile.last_sync_error ? (
-                    <p className="mt-1 text-xs text-red-600">{profile.last_sync_error}</p>
-                  ) : null}
-                </div>
-                <div className="flex flex-wrap items-center gap-1">
-                  <Button
-                    size="sm"
-                    variant="ghost"
-                    disabled={syncingBrandProfileId === profile.id}
-                    onClick={() =>
-                      void onSync({
-                        brandSocialProfileId: profile.id,
-                        entityType: "owned",
-                      })
-                    }
-                  >
-                    {syncingBrandProfileId === profile.id ? (
-                      <Loader2 className="h-4 w-4 animate-spin" />
-                    ) : (
-                      <RefreshCw className="h-4 w-4" />
-                    )}
-                  </Button>
-                  <Button
-                    size="sm"
-                    variant="ghost"
-                    onClick={() => void handleToggleBrandProfile(profile)}
-                  >
-                    {profile.is_active ? "Deactivate" : "Activate"}
-                  </Button>
-                  <Button
-                    size="sm"
-                    variant="ghost"
-                    className="text-red-600"
-                    onClick={() => void handleDeleteBrandProfile(profile.id)}
-                  >
-                    <Trash2 className="h-4 w-4" />
-                  </Button>
-                </div>
-              </Card>
-            ))}
-          </div>
-        )}
-
-        <details className="text-xs text-gray-500">
-          <summary className="cursor-pointer text-gray-600">
-            Advanced: add a profile URL manually
-          </summary>
-          <div className="mt-2 grid min-w-0 gap-2 sm:grid-cols-[minmax(0,160px)_minmax(0,1fr)_auto]">
-            <Select
-              value={brandNetwork}
-              disabled={brandNetworkOptions.length === 0}
-              onValueChange={(value) =>
-                props.setBrandDraft((prev) => ({
-                  ...prev,
-                  network: value as CompetitorSocialNetwork,
-                }))
-              }
-            >
-              <SelectTrigger className="w-full min-w-0">
-                <SelectValue placeholder="Network" />
-              </SelectTrigger>
-              <SelectContent>
-                {brandNetworkOptions.map((network) => (
-                  <SelectItem key={network} value={network}>
-                    {COMPETITOR_NETWORK_LABELS[network]}
-                  </SelectItem>
-                ))}
-              </SelectContent>
-            </Select>
-            <Input
-              className="min-w-0"
-              value={props.brandDraft.profileUrl}
-              disabled={brandNetworkOptions.length === 0}
-              onChange={(event) =>
-                props.setBrandDraft((prev) => ({
-                  ...prev,
-                  profileUrl: event.target.value,
-                }))
-              }
-              placeholder="https://www.linkedin.com/company/…"
-            />
-            <Button
-              className="w-full sm:w-auto"
-              onClick={() => void handleAddBrandProfile()}
-              disabled={props.isSavingBrandProfile || brandNetworkOptions.length === 0}
-            >
-              {props.isSavingBrandProfile ? (
-                <Loader2 className="mr-2 h-4 w-4 animate-spin" />
-              ) : null}
-              Add brand profile
-            </Button>
-          </div>
-        </details>
-      </section>
 
       <section className="space-y-3">
         <h3 className="text-sm font-medium text-gray-900">Competitors</h3>
@@ -1476,10 +1340,21 @@ function CompetitionManageContent(props: ManageContentProps) {
           </div>
         )}
 
-        <AddCompetitorCard
-          projectId={projectId}
-          onDone={() => void props.refetchCompetitors()}
-        />
+        <div className="flex flex-wrap items-start gap-3">
+          <AddCompetitorCard
+            projectId={projectId}
+            onDone={() => void props.refetchCompetitors()}
+            className="min-w-0 flex-1"
+          />
+          <ProjectCompetitorSuggestions
+            projectId={projectId}
+            existingNames={competitors.map((competitor) => competitor.name)}
+            existingWebsites={competitors
+              .map((competitor) => competitor.website_url)
+              .filter((url): url is string => Boolean(url))}
+            onDone={() => void props.refetchCompetitors()}
+          />
+        </div>
       </section>
 
       <CompetitionContentSourcesPanel

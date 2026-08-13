@@ -1,5 +1,13 @@
 import { normalizeMixedRichText } from "../../app/lib/rich-text-normalization"
 import { getAssistantContentBlocks } from "./assistant-content-blocks"
+import {
+  collapseRedundantAppEntityLinkLines,
+  decorateAppEntityAnchorsAsChips,
+  htmlContainsRawAppEntityMarkdownLink,
+  linkifyBareAppEntityUrls,
+  stripListMarkersFromAppEntityOnlyLines,
+} from "./assistant-app-entity-links"
+import { assistantMarked } from "./assistant-marked"
 import { htmlToPlainTextForReparse, markdownFromRenderableBlocks } from "./text-to-output-blocks"
 
 function hasHtmlMarkup(value: string): boolean {
@@ -36,21 +44,56 @@ type MarkdownBlockLike = {
 
 /**
  * Convert assistant plain text / markdown / mixed HTML into rich HTML with paragraph spacing.
+ * Bare `app://…` URLs become clickable entity chips (same visual language as composer tags).
  */
-export function formatAssistantContentForDisplay(content: string | null | undefined): string {
+function prepareAssistantMarkdownForDisplay(
+  markdown: string,
+  labels: Record<string, string> | null,
+): string {
+  return linkifyBareAppEntityUrls(
+    stripListMarkersFromAppEntityOnlyLines(
+      collapseRedundantAppEntityLinkLines(markdown.replace(/\n{3,}/g, "\n\n")),
+    ),
+    labels,
+  )
+}
+
+export function formatAssistantContentForDisplay(
+  content: string | null | undefined,
+  options?: { appLinkLabels?: Record<string, string> | null },
+): string {
   const raw = stripLeakedAiStreamMarkers(String(content ?? "").replace(/\r\n/g, "\n"))
   if (!raw.trim()) return ""
+
+  const labels = options?.appLinkLabels ?? null
+
+  // Prefer plain-text → assistantMarked when the payload still has raw
+  // `[label](app://…)` (including multilabel breaks). This avoids marked/HTML
+  // paths leaving the brackets visible.
+  const plainSource = hasHtmlMarkup(raw) ? htmlToPlainTextForReparse(raw) : raw
+  if (
+    plainSource.trim()
+    && (/\]\s*\(\s*app:\/\//i.test(plainSource) || /app:\/\/(?:artifact|ai-build)\//i.test(plainSource))
+  ) {
+    const prepared = prepareAssistantMarkdownForDisplay(plainSource, labels)
+    const parsed = String(assistantMarked.parse(prepared))
+    const chipped = decorateAppEntityAnchorsAsChips(parsed)
+    if (!htmlContainsRawAppEntityMarkdownLink(chipped)) return chipped
+  }
 
   if (hasHtmlMarkup(raw)) {
     const plain = htmlToPlainTextForReparse(raw)
     if (plain.trim()) {
-      return normalizeMixedRichText(plain.replace(/\n{3,}/g, "\n\n"))
+      const linked = prepareAssistantMarkdownForDisplay(plain, labels)
+      return decorateAppEntityAnchorsAsChips(normalizeMixedRichText(linked))
     }
-    return normalizeMixedRichText(raw)
+    return decorateAppEntityAnchorsAsChips(
+      normalizeMixedRichText(prepareAssistantMarkdownForDisplay(raw, labels)),
+    )
   }
 
-  const normalized = raw.replace(/\n{3,}/g, "\n\n")
-  return normalizeMixedRichText(normalized)
+  const normalized = prepareAssistantMarkdownForDisplay(raw, labels)
+  return decorateAppEntityAnchorsAsChips(normalizeMixedRichText(normalized))
 }
 
 export function markdownFromAssistantBlocks(blocks: MarkdownBlockLike[]): string {
@@ -64,9 +107,12 @@ export function markdownFromAssistantBlocks(blocks: MarkdownBlockLike[]): string
   )
 }
 
-export function formatAssistantBlocksForDisplay(blocks: MarkdownBlockLike[]): string {
+export function formatAssistantBlocksForDisplay(
+  blocks: MarkdownBlockLike[],
+  options?: { appLinkLabels?: Record<string, string> | null },
+): string {
   const markdown = markdownFromAssistantBlocks(blocks)
-  return formatAssistantContentForDisplay(markdown)
+  return formatAssistantContentForDisplay(markdown, options)
 }
 
 export function extractAssistantMarkdownFromMessage(args: {

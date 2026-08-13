@@ -77,3 +77,62 @@ export function dedupeCrossNetworkPosts(posts: ProjectSocialPost[]): DedupedSoci
     return bTime - aTime
   })
 }
+
+/** Metrics a post feed can be ranked by ("top performers"). */
+export const SOCIAL_POST_SORT_METRICS = [
+  { key: "interactions", label: "Interactions" },
+  { key: "reactions", label: "Likes" },
+  { key: "comments", label: "Comments" },
+  { key: "shares", label: "Shares" },
+  { key: "views", label: "Impressions" },
+] as const
+
+export type SocialPostSortMetric =
+  (typeof SOCIAL_POST_SORT_METRICS)[number]["key"]
+
+export function postMetricValue(
+  post: ProjectSocialPost,
+  metric: SocialPostSortMetric,
+): number | null {
+  switch (metric) {
+    case "reactions":
+      return post.reactions_count ?? null
+    case "comments":
+      return post.comments_count ?? null
+    case "shares":
+      return post.shares_count ?? null
+    case "views":
+      return post.views_count ?? null
+    case "interactions":
+      return computePublicInteractions({
+        reactionsCount: post.reactions_count,
+        commentsCount: post.comments_count,
+        sharesCount: post.shares_count,
+      })
+  }
+}
+
+/**
+ * Rank posts by an absolute metric, highest first. Posts without the metric
+ * sink to the bottom so an unreported network never outranks a real number.
+ */
+export function sortPostsByMetric<T extends ProjectSocialPost>(
+  posts: T[],
+  metric: SocialPostSortMetric,
+): T[] {
+  return [...posts].sort((a, b) => {
+    const aValue = postMetricValue(a, metric)
+    const bValue = postMetricValue(b, metric)
+    if (aValue == null && bValue == null) {
+      const aTime = a.published_at ? new Date(a.published_at).getTime() : 0
+      const bTime = b.published_at ? new Date(b.published_at).getTime() : 0
+      return bTime - aTime
+    }
+    if (aValue == null) return 1
+    if (bValue == null) return -1
+    if (bValue !== aValue) return bValue - aValue
+    const aTime = a.published_at ? new Date(a.published_at).getTime() : 0
+    const bTime = b.published_at ? new Date(b.published_at).getTime() : 0
+    return bTime - aTime
+  })
+}

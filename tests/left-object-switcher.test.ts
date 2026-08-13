@@ -43,7 +43,7 @@ describe('getAdaptiveObjectSwitcherState', () => {
     expect(state.visibleObjects.length + state.overflowObjects.length).toBe(LEFT_PANE_OBJECTS.length)
   })
 
-  it('narrow: preserves the compact dropdown (no visible pills, everything in overflow)', () => {
+  it('very narrow: preserves the compact dropdown (no visible pills, everything in overflow)', () => {
     const state = getAdaptiveObjectSwitcherState({
       containerWidth: NARROW,
       activeObject: 'tasks',
@@ -54,26 +54,38 @@ describe('getAdaptiveObjectSwitcherState', () => {
     expect(state.overflowObjects).toEqual([...LEFT_PANE_OBJECTS])
   })
 
-  it('task view stays lean: at most 3 object pills even when wide, protecting task controls', () => {
+  it('typical left-pane width (~280px) still shows hybrid pills, not the compact dropdown', () => {
+    const state = getAdaptiveObjectSwitcherState({
+      containerWidth: 280,
+      activeObject: 'tasks',
+      isTaskView: true,
+    })
+    expect(state.mode).toBe('hybrid')
+    expect(state.visibleObjects.length).toBeGreaterThan(1)
+    expect(state.visibleObjects[0]).toBe('tasks')
+  })
+
+  it('task view with space shows every object pill (no artificial cap)', () => {
     const wideTask = getAdaptiveObjectSwitcherState({
       containerWidth: WIDE,
       activeObject: 'tasks',
       isTaskView: true,
     })
-    expect(wideTask.visibleObjects).toEqual(['tasks', 'projects', 'users'])
-    // The remaining objects stay reachable via overflow rather than crowding task controls.
-    expect(wideTask.overflowObjects).toContain('mentions')
-    expect(wideTask.overflowObjects).toContain('ai_chats')
+    expect(wideTask.visibleObjects).toEqual(OBJECT_PILL_VISIBLE_PRIORITY)
+    expect(wideTask.overflowObjects).toEqual([])
   })
 
-  it('task view narrower than wideMin shows only the two leanest pills', () => {
+  it('task view with limited space greedily fits pills, rest overflow', () => {
     const narrowTask = getAdaptiveObjectSwitcherState({
       containerWidth: ADAPTIVE_OBJECT_SWITCHER_BREAKPOINTS.wideMin - 1,
       activeObject: 'tasks',
       isTaskView: true,
     })
-    expect(narrowTask.visibleObjects).toEqual(['tasks', 'projects'])
-    expect(narrowTask.overflowObjects).toContain('users')
+    expect(narrowTask.visibleObjects[0]).toBe('tasks')
+    expect(narrowTask.visibleObjects.length).toBeGreaterThan(0)
+    expect(narrowTask.visibleObjects.length + narrowTask.overflowObjects.length).toBe(
+      LEFT_PANE_OBJECTS.length,
+    )
   })
 
   describe('the active object is always represented', () => {
@@ -87,17 +99,15 @@ describe('getAdaptiveObjectSwitcherState', () => {
       expect(state.overflowObjects).not.toContain('users')
     })
 
-    it('leaves an off-priority active object in overflow when space is limited, but indicates it on the trigger', () => {
-      // Task view caps visible pills; Mentions stays in overflow even when wide.
+    it('surfaces a lower-priority active object as a visible pill when there is room', () => {
       const state = getAdaptiveObjectSwitcherState({
         containerWidth: WIDE,
-        activeObject: 'mentions',
+        activeObject: 'artifacts',
         isTaskView: true,
       })
-      expect(state.visibleObjects).not.toContain('mentions')
-      expect(state.overflowObjects).toContain('mentions')
-      // Overflow trigger reflects the selected object instead of the generic "More".
-      expect(overflowTriggerLabel(state, 'mentions')).toBe('Mentions')
+      expect(state.visibleObjects).toContain('artifacts')
+      expect(state.overflowObjects).not.toContain('artifacts')
+      expect(overflowTriggerLabel(state, 'artifacts')).toBe('More')
     })
 
     it('never loses or duplicates an object across visible + overflow', () => {

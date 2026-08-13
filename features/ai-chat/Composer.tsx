@@ -4,7 +4,9 @@ import React, { useCallback, useMemo, useRef, useState, useEffect, useReducer, t
 import { createPortal } from "react-dom"
 import { getSupabaseBrowser } from "../../lib/supabase-browser"
 import type { AiAttachmentMeta } from "./types"
-import { ArrowUp, BookOpen, FileText, FolderKanban, LayoutTemplate, ListTodo, Paperclip, Plus, Square, User, X } from "lucide-react"
+import { ArrowUp, BookOpen, ChevronDown, ChevronUp, FileText, FolderKanban, LayoutTemplate, ListTodo, Paperclip, Plus, Square, User, X } from "lucide-react"
+import { AttachmentFileChip } from "./AttachmentFileChip"
+import { ArtifactContextChip } from "./artifact-context-chip"
 import {
   selectQueuedMessagesForThread,
   useAiChatMessageQueueStore,
@@ -170,9 +172,11 @@ const SOURCE_FILE_EXTENSIONS = new Set([
   "json",
   "html",
   "htm",
+  "xlsx",
+  "xls",
 ])
 const ATTACHMENTS_ACCEPT =
-  ".png,.jpg,.jpeg,.webp,.gif,.pdf,.docx,.doc,.txt,.md,.csv,.json,.html,.htm,image/png,image/jpeg,image/webp,image/gif,application/pdf"
+  ".png,.jpg,.jpeg,.webp,.gif,.pdf,.docx,.doc,.txt,.md,.csv,.json,.html,.htm,.xlsx,.xls,image/png,image/jpeg,image/webp,image/gif,application/pdf,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,application/vnd.ms-excel"
 
 function isSupportedImageAttachment(file: File): boolean {
   const mime = (file.type || "").toLowerCase()
@@ -193,7 +197,10 @@ function isSupportedComposerAttachment(file: File): boolean {
     mime === "application/json" ||
     mime === "text/html" ||
     mime.includes("wordprocessingml") ||
-    mime.includes("msword")
+    mime.includes("msword") ||
+    mime.includes("spreadsheetml") ||
+    mime === "application/vnd.ms-excel" ||
+    mime === "application/vnd.ms-excel.sheet.macroenabled.12"
   ) {
     return true
   }
@@ -549,9 +556,15 @@ export function Composer({
     useCallback((state) => selectQueuedMessagesForThread(state, threadId), [threadId]),
   )
   const enqueueQueuedMessage = useAiChatMessageQueueStore((state) => state.enqueue)
+  const prependQueuedMessage = useAiChatMessageQueueStore((state) => state.prepend)
   const removeQueuedMessage = useAiChatMessageQueueStore((state) => state.remove)
+  const moveQueuedMessage = useAiChatMessageQueueStore((state) => state.move)
+  const peekNextQueuedMessage = useAiChatMessageQueueStore((state) => state.peekNext)
   const shiftNextQueuedMessage = useAiChatMessageQueueStore((state) => state.shiftNext)
   const drainingQueueRef = useRef(false)
+  /** After a failed drain, skip auto-retry of the same item until the queue changes. */
+  const skipAutoDrainItemIdRef = useRef<string | null>(null)
+  const [queueRetryNonce, setQueueRetryNonce] = useState(0)
   const isComposerBusy = isSending || isAssistantStreaming
   const [mentionQuery, setMentionQuery] = useState<string | null>(null)
   const [projectOptions, setProjectOptions] = useState<ProjectMention[]>([])
@@ -679,16 +692,23 @@ export function Composer({
       if (!text) return null
       return { text, tooltip: chipLabelForSelection(pendingTextSelection.context) }
     }
-    if (pendingArtifactSelection) {
-      const context = pendingArtifactSelection.context
-      const text =
-        context.selected_text?.trim()
-        || context.title?.trim()
-        || chipLabelForArtifactSelection(context)
-      return { text, tooltip: chipLabelForArtifactSelection(context) }
-    }
+    // Artifact context uses AttachmentFileChip-style card above the editor (not an inline pill).
     return null
-  }, [pendingArtifactSelection, pendingTextSelection])
+  }, [pendingTextSelection])
+
+  const pendingArtifactChip = useMemo(() => {
+    if (!pendingArtifactSelection) return null
+    const context = pendingArtifactSelection.context
+    const title = context.title?.trim() || "Artifact"
+    const full = chipLabelForArtifactSelection(context)
+    const subtitle =
+      full === title
+        ? "Artifact"
+        : full.startsWith(`${title} · `)
+          ? full.slice(title.length + 3)
+          : full
+    return { title, subtitle }
+  }, [pendingArtifactSelection])
 
   // Keep an inline chip (styled like an @-mention) at the very top of the composer input,
   // mirroring the store. The passage itself travels as selected_text_context /
@@ -754,7 +774,7 @@ export function Composer({
     }
     if (rejected.length > 0) {
       setAttachmentError(
-        "Unsupported attachment type. Allowed: images, PDF, DOCX, TXT, MD, CSV, JSON, HTML.",
+        "Unsupported attachment type. Allowed: images, PDF, DOCX, XLSX, TXT, MD, CSV, JSON, HTML.",
       )
     } else {
       setAttachmentError(null)
@@ -779,7 +799,7 @@ export function Composer({
     }
     if (rejected.length > 0) {
       setAttachmentError(
-        "Unsupported attachment type. Allowed: images, PDF, DOCX, TXT, MD, CSV, JSON, HTML.",
+        "Unsupported attachment type. Allowed: images, PDF, DOCX, XLSX, TXT, MD, CSV, JSON, HTML.",
       )
     } else {
       setAttachmentError(null)
@@ -922,12 +942,12 @@ export function Composer({
       messageTags: AiContextTag[]
       messageSegments: AiMessageSegment[]
       clearComposerInput: boolean
-    }) => {
+    }): Promise<boolean> => {
       const { messageText, messageFiles, messageTags, messageSegments, clearComposerInput } = args
       const trimmed = messageText.trim()
-      if (!trimmed && messageFiles.length === 0) return
-      if (isSending) return
-      if (isSendBlockedByUsage) return
+      if (!trimmed && messageFiles.length === 0) return false
+      if (isSending) return false
+      if (isSendBlockedByUsage) return false
       setAttachmentError(null)
 
       const selectedTextForSend = pendingTextSelection?.context ?? null
@@ -950,6 +970,35 @@ export function Composer({
         tagged_brand_template_refs: taggedBrandTemplateRefs,
       } = buildAiChatTaggedRefs(messageTags)
       const optimisticUserTempId = `temp-${Date.now()}`
+      const selectionPills = buildSelectionPillsFromContexts({
+        artifactContext: selectedArtifactForSend,
+        artifactTooltip: selectedArtifactForSend
+          ? chipLabelForArtifactSelection(selectedArtifactForSend)
+          : null,
+        textContext: selectedTextForSend,
+        textTooltip: selectedTextForSend
+          ? chipLabelForSelection(selectedTextForSend)
+          : null,
+      })
+      const initialUserContentJson = buildUserMessageContentJson({
+        tags: messageTags,
+        segments: messageSegments,
+        selectionPills,
+      })
+      // Show the user bubble immediately — before upload / network — so clearing the
+      // composer never leaves a visible gap in the chat history.
+      onOptimistic?.({
+        id: optimisticUserTempId,
+        content: trimmed,
+        attachments: messageFiles.map((file, index) => ({
+          id: `local-${optimisticUserTempId}-${index}`,
+          file_name: file.name,
+          file_path: "",
+          mime_type: file.type || "application/octet-stream",
+          size: file.size,
+        })),
+        content_json: initialUserContentJson,
+      })
 
       if (clearComposerInput) {
         setFiles([])
@@ -1041,21 +1090,12 @@ export function Composer({
               projectId: ref.project_id ?? undefined,
             })),
         ]
-        const selectionPills = buildSelectionPillsFromContexts({
-          artifactContext: selectedArtifactForSend,
-          artifactTooltip: selectedArtifactForSend
-            ? chipLabelForArtifactSelection(selectedArtifactForSend)
-            : null,
-          textContext: selectedTextForSend,
-          textTooltip: selectedTextForSend
-            ? chipLabelForSelection(selectedTextForSend)
-            : null,
-        })
         const userContentJson = buildUserMessageContentJson({
           tags: messageTagsWithUploads,
           segments: messageSegments,
           selectionPills,
         })
+        // Refresh the same optimistic row with uploaded attachment metadata.
         onOptimistic?.({
           id: optimisticUserTempId,
           content: trimmed,
@@ -1205,6 +1245,15 @@ export function Composer({
           onRunTerminalState,
           onUsageUpdate,
         })
+        if (inFlightTurnRef?.current?.terminalState?.kind === "failed") {
+          const code = inFlightTurnRef.current.terminalState.code
+          setAttachmentError(
+            code === "thread_not_found" || code === "thread_access_denied"
+              ? "Could not reach this chat thread. The message stayed in the queue — try again."
+              : "Failed to send message. Please try again.",
+          )
+          return false
+        }
         onClarificationFollowUpSent?.()
         if (userContentJson) {
           await persistUserMessageMentionMetadata({
@@ -1213,9 +1262,11 @@ export function Composer({
             contentJson: userContentJson,
           })
         }
+        return true
       } catch (e) {
         console.error("send failed", e)
         setAttachmentError("Failed to send message or upload attachments. Please try again.")
+        return false
       } finally {
         if (streamAbortRef) streamAbortRef.current = null
         setIsSending(false)
@@ -1312,6 +1363,7 @@ export function Composer({
     // While a turn is in flight, queue the next message instead of dropping it.
     if (isComposerBusy) {
       if (isSendBlockedByUsage) return
+      skipAutoDrainItemIdRef.current = null
       enqueueQueuedMessage({
         threadId,
         messageText,
@@ -1350,6 +1402,10 @@ export function Composer({
     if (isSendBlockedByUsage) return
     if (queuedMessages.length === 0) return
 
+    const peeked = peekNextQueuedMessage(threadId)
+    if (!peeked) return
+    if (skipAutoDrainItemIdRef.current === peeked.id) return
+
     const next = shiftNextQueuedMessage(threadId)
     if (!next) return
 
@@ -1360,18 +1416,31 @@ export function Composer({
       messageTags: next.messageTags,
       messageSegments: next.messageSegments,
       clearComposerInput: false,
-    }).finally(() => {
-      drainingQueueRef.current = false
     })
+      .then((ok) => {
+        // Keep failed drains in the queue so they are not silently dropped.
+        if (!ok) {
+          prependQueuedMessage(next)
+          skipAutoDrainItemIdRef.current = next.id
+          return
+        }
+        skipAutoDrainItemIdRef.current = null
+      })
+      .finally(() => {
+        drainingQueueRef.current = false
+      })
   }, [
     variant,
     onSubmitOverride,
     isComposerBusy,
     isSendBlockedByUsage,
     queuedMessages.length,
+    peekNextQueuedMessage,
     shiftNextQueuedMessage,
+    prependQueuedMessage,
     threadId,
     runSend,
+    queueRetryNonce,
   ])
 
   useEffect(() => {
@@ -2546,36 +2615,24 @@ export function Composer({
 
   return (
     <div className={variant === "inlineEdit" ? "" : "pt-2"}>
-      {files.length > 0 ? (
-        <div className="mb-2 flex flex-wrap gap-2">
-          {files.map((file, index) => (
-            <div
-              key={`${file.name}-${file.size}-${index}`}
-              className="inline-flex items-center gap-2 rounded border bg-gray-50 px-2 py-1 text-xs text-gray-700"
-            >
-              <Paperclip className="h-3 w-3 text-gray-500" />
-              <span className="max-w-[180px] truncate" title="Attached files become sources when you send">
-                {file.name}
-              </span>
-              <button
-                type="button"
-                onClick={() => removePendingFile(index)}
-                className="text-gray-400 hover:text-gray-700"
-                aria-label={`Remove ${file.name}`}
-                title={`Remove ${file.name}`}
-              >
-                <X className="h-3 w-3" />
-              </button>
-            </div>
-          ))}
-        </div>
-      ) : null}
       {variant !== "inlineEdit" && queuedMessages.length > 0 ? (
         <div className="mb-2 space-y-1.5 rounded-md border border-gray-200 bg-white p-2 shadow-sm">
-          <div className="flex items-center justify-between px-0.5">
+          <div className="flex items-center justify-between gap-2 px-0.5">
             <span className="text-[11px] font-medium uppercase tracking-wide text-gray-500">
               Queued ({queuedMessages.length})
             </span>
+            <button
+              type="button"
+              onClick={() => {
+                skipAutoDrainItemIdRef.current = null
+                setQueueRetryNonce((n) => n + 1)
+              }}
+              disabled={isComposerBusy}
+              className="text-[11px] font-medium text-gray-500 hover:text-gray-800 disabled:opacity-40"
+              title="Send the next queued message now"
+            >
+              Send next
+            </button>
           </div>
           <ul className="max-h-36 space-y-1 overflow-y-auto">
             {queuedMessages.map((item, index) => (
@@ -2587,15 +2644,48 @@ export function Composer({
                 <span className="min-w-0 flex-1 whitespace-pre-wrap break-words">
                   {item.messageText.trim() || "(attachment)"}
                 </span>
-                <button
-                  type="button"
-                  onClick={() => removeQueuedMessage(threadId, item.id)}
-                  className="shrink-0 rounded p-0.5 text-gray-400 hover:bg-gray-200 hover:text-gray-700"
-                  aria-label="Remove queued message"
-                  title="Remove from queue"
-                >
-                  <X className="h-3 w-3" />
-                </button>
+                <div className="flex shrink-0 items-center gap-0.5">
+                  <button
+                    type="button"
+                    onClick={() => {
+                      skipAutoDrainItemIdRef.current = null
+                      moveQueuedMessage(threadId, item.id, -1)
+                    }}
+                    disabled={index === 0}
+                    className="rounded p-0.5 text-gray-400 hover:bg-gray-200 hover:text-gray-700 disabled:pointer-events-none disabled:opacity-30"
+                    aria-label="Move queued message up"
+                    title="Move up"
+                  >
+                    <ChevronUp className="h-3 w-3" />
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      skipAutoDrainItemIdRef.current = null
+                      moveQueuedMessage(threadId, item.id, 1)
+                    }}
+                    disabled={index >= queuedMessages.length - 1}
+                    className="rounded p-0.5 text-gray-400 hover:bg-gray-200 hover:text-gray-700 disabled:pointer-events-none disabled:opacity-30"
+                    aria-label="Move queued message down"
+                    title="Move down"
+                  >
+                    <ChevronDown className="h-3 w-3" />
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      if (skipAutoDrainItemIdRef.current === item.id) {
+                        skipAutoDrainItemIdRef.current = null
+                      }
+                      removeQueuedMessage(threadId, item.id)
+                    }}
+                    className="rounded p-0.5 text-gray-400 hover:bg-gray-200 hover:text-gray-700"
+                    aria-label="Remove queued message"
+                    title="Remove from queue"
+                  >
+                    <X className="h-3 w-3" />
+                  </button>
+                </div>
               </li>
             ))}
           </ul>
@@ -2605,18 +2695,37 @@ export function Composer({
         className={
           variant === "inlineEdit"
             ? "relative bg-transparent px-0 pb-0 pt-0"
-            : "relative rounded border px-2 pb-1 pt-1"
+            : "relative rounded-2xl border border-gray-200 bg-white px-2.5 pb-1.5 pt-2 shadow-[0_1px_2px_rgba(0,0,0,0.03)]"
         }
       >
+        {files.length > 0 || pendingArtifactChip ? (
+          <div className="mb-2 flex flex-wrap gap-2 px-0.5">
+            {pendingArtifactChip ? (
+              <ArtifactContextChip
+                title={pendingArtifactChip.title}
+                subtitle={pendingArtifactChip.subtitle}
+                onRemove={() => clearPendingArtifactSelection()}
+              />
+            ) : null}
+            {files.map((file, index) => (
+              <AttachmentFileChip
+                key={`${file.name}-${file.size}-${index}`}
+                fileName={file.name}
+                mimeType={file.type}
+                onRemove={() => removePendingFile(index)}
+              />
+            ))}
+          </div>
+        ) : null}
         <div className="relative">
           <div
             ref={editorRef}
             role="textbox"
             aria-multiline="true"
-            aria-placeholder="Ask anything, or use @ to reference a task, component, project or user…"
+            aria-placeholder="Ask anything, or use @…"
             contentEditable
             suppressContentEditableWarning
-            data-placeholder="Ask anything, or use @ to reference a task, component, project or user…"
+            data-placeholder="Ask anything, or use @…"
             className="ai-chat-composer-input relative z-10 min-h-[80px] max-h-[400px] w-full overflow-y-auto whitespace-pre-wrap break-words border-0 p-1 text-sm outline-none empty:before:pointer-events-none empty:before:text-gray-400 empty:before:content-[attr(data-placeholder)]"
             onInput={onEditorInput}
             onPaste={onEditorPaste}
@@ -2688,29 +2797,28 @@ export function Composer({
                   }
                   streamAbortRef?.current?.abort()
                 }}
-                className="inline-flex h-6 w-6 shrink-0 items-center justify-center rounded-sm border border-gray-300 bg-white text-gray-800 shadow-sm hover:bg-gray-50"
+                className="inline-flex h-6 w-6 items-center justify-center rounded-full bg-gray-900 text-white hover:bg-gray-800"
                 aria-label="Stop generating"
                 title="Stop generating"
               >
                 <Square className="h-3 w-3 fill-current" />
               </button>
-            ) : null}
-            <button
-              type="button"
-              onClick={() => void send()}
-              disabled={isSendBlockedByUsage || (!isComposerBusy && isSending)}
-              className="inline-flex h-6 w-6 items-center justify-center rounded-full bg-gray-900 text-white disabled:opacity-50"
-              aria-label={isComposerBusy ? "Queue message" : "Send"}
-              title={
-                isSendBlockedByUsage
-                  ? "Daily AI token limit reached"
-                  : isComposerBusy
-                    ? "Add to queue"
+            ) : (
+              <button
+                type="button"
+                onClick={() => void send()}
+                disabled={isSendBlockedByUsage || isSending}
+                className="inline-flex h-6 w-6 items-center justify-center rounded-full bg-gray-900 text-white disabled:opacity-50"
+                aria-label="Send"
+                title={
+                  isSendBlockedByUsage
+                    ? "Daily AI token limit reached"
                     : "Send"
-              }
-            >
-              <ArrowUp className="h-3.5 w-3.5" />
-            </button>
+                }
+              >
+                <ArrowUp className="h-3.5 w-3.5" />
+              </button>
+            )}
           </div>
         </div>
         <input

@@ -123,27 +123,45 @@ async function dispatchWorker(args: {
     });
     const errorCode = `worker_dispatch_http_${response.status}`;
     const errorMessage = detail.slice(0, 1000) || "The worker dispatch did not complete.";
-    // 546 / WORKER_RESOURCE_LIMIT will OOM again on retry — fail terminal.
+    // 546 / WORKER_RESOURCE_LIMIT is usually parallel memory pressure on the
+    // Edge isolate (~256MB), not a permanently fatal unit. Degrade the build
+    // toward sequential dispatch and requeue so the queue can drain safely.
     const isResourceLimit =
       response.status === 546
       || /WORKER_RESOURCE_LIMIT|not having enough compute resources/i.test(detail);
     if (isResourceLimit) {
-      const { error: completeError } = await args.supabase.rpc("ai_complete_build_work_unit_v1", {
+      const { data: degrade, error: degradeError } = await args.supabase.rpc(
+        "ai_degrade_build_concurrency_v1",
+        {
+          p_build_id: args.buildId,
+          p_target: 1,
+          p_reason: "worker_resource_limit",
+        },
+      );
+      if (degradeError) {
+        console.warn("ai-build-orchestrator concurrency degrade skipped", degradeError.message);
+      } else {
+        console.warn("ai-build-orchestrator concurrency degraded for resource limit", {
+          build_id: args.buildId,
+          unit_id: args.unit.id,
+          previous_concurrency_limit: degrade?.previous_concurrency_limit ?? null,
+          concurrency_limit: degrade?.concurrency_limit ?? 1,
+        });
+      }
+
+      const { error: requeueError } = await args.supabase.rpc("ai_requeue_build_work_unit_v1", {
         p_build_id: args.buildId,
         p_unit_id: args.unit.id,
         p_lease_token: args.unit.lease_token,
-        p_status: "failed",
-        p_result: {
-          saved: [],
-          failed: [{ error: errorCode, message: errorMessage }],
-          saved_count: 0,
-          failed_count: 1,
-        },
-        p_usage: {},
         p_error_code: errorCode,
         p_error_message: errorMessage,
+        p_usage: {},
       });
-      if (completeError) console.warn("ai-build-orchestrator resource-limit completion skipped", completeError.message);
+      if (requeueError) {
+        // Lease may already be terminal, or retries exhausted (requeue RPC fails
+        // the unit itself when attempt >= max_attempts).
+        console.warn("ai-build-orchestrator resource-limit requeue skipped", requeueError.message);
+      }
       return;
     }
     const { error: requeueError } = await args.supabase.rpc("ai_requeue_build_work_unit_v1", {

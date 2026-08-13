@@ -59,6 +59,37 @@ function emptyBucket(args: {
   }
 }
 
+/** When a unit succeeds after a memory retry warning, rewrite that warning in place. */
+function clearRetryWarningIfUnitSucceeded(
+  stepsById: Record<string, AiExecutionTraceStep>,
+  event: AiOrchestratedBuildEvent,
+): boolean {
+  const eventType = String(event.event_type ?? "").toLowerCase()
+  const isSuccess =
+    eventType === "work_unit.saved"
+    || eventType === "work_unit.succeeded"
+    || eventType.endsWith(".saved")
+    || eventType.endsWith(".succeeded")
+    || event.phase === "succeeded"
+    || event.phase === "saved"
+  if (!isSuccess) return false
+  const unitId = typeof event.unit_id === "string" ? event.unit_id.trim() : ""
+  if (!unitId) return false
+  const retryStepId = `${unitId}:retry`
+  const previous = stepsById[retryStepId]
+  if (!previous || previous.phase !== "warning") return false
+  stepsById[retryStepId] = {
+    ...previous,
+    phase: "completed",
+    text: "Finished after a lighter-mode retry.",
+    details: {
+      ...(previous.details ?? {}),
+      recovered_from_retry: true,
+    },
+  }
+  return true
+}
+
 function mergeBuckets(
   target: AiExecutionTraceBucket,
   source: AiExecutionTraceBucket,
@@ -121,10 +152,15 @@ export const useAiExecutionTraceStore = create<AiExecutionTraceState>((set, get)
         const mapped = mapBuildEventToExecutionTraceSteps(event)
         if (mapped.length === 0) {
           appliedBuildEventKeys[key] = true
+          // Still clear a prior memory-retry warning when the unit later succeeds.
+          if (clearRetryWarningIfUnitSucceeded(stepsById, event)) changed = true
           continue
         }
         for (const step of mapped) {
           stepsById[step.stepId] = mergeExecutionTraceStep(stepsById[step.stepId] ?? null, step)
+        }
+        if (clearRetryWarningIfUnitSucceeded(stepsById, event)) {
+          // no-op beyond mutation above
         }
         appliedBuildEventKeys[key] = true
         changed = true

@@ -9,15 +9,62 @@ import "jsr:@supabase/functions-js/edge-runtime.d.ts";
  *   accessing a client via a manager. If unset, `GOOGLE_ADS_CUSTOMER_ID` is used (same as Next route).
  * - GOOGLE_ADS_DEVELOPER_TOKEN
  *
- * Matches app/api/keyword-ideas/route.ts Google Ads metrics behavior.
- * Autocomplete expansion for keyword research lives in the Next.js route only;
- * this edge function is used for exact-keyword metric enrichment.
+ * Supports seed mode (keyword) and url mode (urlSeed), aligned with
+ * app/api/keyword-ideas/route.ts / app/lib/keyword-research-input.ts.
  */
 interface KeywordIdeasRequest {
-  keyword: string;
+  /** Single seed keyword (legacy / UI). */
+  keyword?: string;
+  /** Multi-seed keywords from AI `keyword_research` (Google Ads keywordSeed.keywords). */
+  keywords?: string[];
+  url?: string;
+  mode?: "seed" | "url";
+  contentSeedKeyword?: string;
   regionId?: string;
   languageId?: string;
   pageSize?: number;
+}
+
+/** Expand hyphen / diacritic variants — Planner often blanks accented hyphen seeds. */
+function expandKeywordSeedVariants(seed: string): string[] {
+  const base = seed.trim().replace(/\s+/g, " ");
+  if (!base) return [];
+  const seen = new Set<string>();
+  const out: string[] = [];
+  const push = (value: string) => {
+    const trimmed = value.trim().replace(/\s+/g, " ");
+    if (!trimmed) return;
+    const key = trimmed.toLowerCase();
+    if (seen.has(key)) return;
+    seen.add(key);
+    out.push(trimmed);
+  };
+  // ASCII / de-hyphenated first — accented hyphen first can suppress exact matches.
+  const ascii = base.normalize("NFD").replace(/\p{M}/gu, "");
+  push(ascii.replace(/-/g, " "));
+  push(ascii.replace(/-/g, ""));
+  push(ascii);
+  push(base.replace(/-/g, " "));
+  push(base.replace(/-/g, ""));
+  push(base);
+  return out;
+}
+
+function normalizeSeedKeywords(body: KeywordIdeasRequest): string[] {
+  const fromArray = Array.isArray(body.keywords) ? body.keywords : [];
+  const fromSingular = typeof body.keyword === "string" ? [body.keyword] : [];
+  const seen = new Set<string>();
+  const out: string[] = [];
+  for (const value of [...fromSingular, ...fromArray]) {
+    for (const variant of expandKeywordSeedVariants(String(value ?? ""))) {
+      const key = variant.toLowerCase();
+      if (seen.has(key)) continue;
+      seen.add(key);
+      out.push(variant);
+      if (out.length >= 20) return out;
+    }
+  }
+  return out;
 }
 
 interface KeywordMonthlySearchVolume {
@@ -335,28 +382,66 @@ Deno.serve(async (req) => {
   const startTime = Date.now();
 
   try {
-    const clientIP = getClientIP(req);
-    if (isRateLimited(clientIP)) {
-      return json(
-        {
-          error: {
-            code: 429,
-            message:
-              "Rate limit exceeded. Please try again in a few seconds.",
-          },
-        },
-        429,
-      );
-    }
-
     const body = (await req.json()) as KeywordIdeasRequest;
-    const { keyword, regionId, languageId, pageSize = 15 } = body;
+    const {
+      url,
+      contentSeedKeyword,
+      regionId,
+      languageId,
+      pageSize = 15,
+    } = body;
+    const seedKeywords = normalizeSeedKeywords(body);
+    const mode: "seed" | "url" =
+      body.mode === "url" || body.mode === "seed"
+        ? body.mode
+        : (typeof url === "string" && url.trim() && seedKeywords.length === 0
+          ? "url"
+          : "seed");
 
-    if (!keyword || keyword.trim().length === 0) {
+    const trimmedUrl = typeof url === "string" ? url.trim() : "";
+    const trimmedKeyword = seedKeywords[0] ?? "";
+    const trimmedContentSeed =
+      typeof contentSeedKeyword === "string" ? contentSeedKeyword.trim() : "";
+
+    if (mode === "url") {
+      if (!trimmedUrl) {
+        return json(
+          { error: { code: 400, message: "URL is required for url mode" } },
+          400,
+        );
+      }
+    } else if (seedKeywords.length === 0) {
       return json(
         { error: { code: 400, message: "Keyword is required" } },
         400,
       );
+    }
+
+    // Batch URL research (competitive content sync) must not hit the interactive rate limit.
+    const authHeader = req.headers.get("authorization") ?? "";
+    const apiKeyHeader = req.headers.get("apikey") ?? "";
+    const bearer = authHeader.toLowerCase().startsWith("bearer ")
+      ? authHeader.slice(7).trim()
+      : "";
+    const serviceRole = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")?.trim() ?? "";
+    const isServiceRole = Boolean(
+      serviceRole
+      && ((bearer && bearer === serviceRole) || (apiKeyHeader && apiKeyHeader === serviceRole)),
+    );
+    if (!isServiceRole && mode !== "url") {
+      const clientIP = getClientIP(req);
+      if (isRateLimited(clientIP)) {
+        return json(
+          {
+            error: {
+              code: 429,
+              message:
+                "Rate limit exceeded. Please try again in a few seconds.",
+            },
+          },
+          429,
+        );
+      }
     }
 
     const langRes = resolveLanguageConstantId(languageId);
@@ -371,8 +456,9 @@ Deno.serve(async (req) => {
     const resolvedLanguageId = langRes && "id" in langRes ? langRes.id : null;
     const resolvedRegionId = regionRes && "id" in regionRes ? regionRes.id : null;
 
+    const seedKey = seedKeywords.map((k) => k.toLowerCase()).join("|");
     const cacheKey =
-      `${keyword.toLowerCase().trim()}-${resolvedRegionId ?? "any"}-${resolvedLanguageId ?? "any"}-${pageSize}`;
+      `v3-${mode}-${seedKey}-${trimmedUrl}-${trimmedContentSeed.toLowerCase()}-${resolvedRegionId ?? "any"}-${resolvedLanguageId ?? "any"}-${pageSize}`;
 
     const cachedResponse = getCachedResponse(cacheKey);
     if (cachedResponse) {
@@ -388,8 +474,17 @@ Deno.serve(async (req) => {
 
     const accessToken = await getFreshAccessToken();
 
+    const seed: Record<string, unknown> = mode === "url"
+      ? (trimmedContentSeed
+        ? {
+          urlSeed: { url: trimmedUrl },
+          keywordSeed: { keywords: [trimmedContentSeed] },
+        }
+        : { urlSeed: { url: trimmedUrl } })
+      : { keywordSeed: { keywords: seedKeywords } };
+
     const payload: Record<string, unknown> = {
-      keywordSeed: { keywords: [keyword.trim()] },
+      ...seed,
       keywordPlanNetwork: "GOOGLE_SEARCH",
       pageSize: pageSize,
     };
@@ -473,25 +568,23 @@ Deno.serve(async (req) => {
       );
     }
 
+    // Google Ads returns HTTP 200 with `{}` (no `results`) when Keyword Planner
+    // has no ideas for the seed — common for some healthcare terms. Treat as [].
+    const adsRows = Array.isArray(googleAdsData.results)
+      ? googleAdsData.results
+      : [];
     if (!Array.isArray(googleAdsData.results)) {
-      console.error(
-        "Invalid Google Ads response: results is not an array",
-        googleAdsData,
-      );
-      return json(
+      console.warn(
+        "Google Ads returned no results array for seed; treating as empty",
         {
-          error: {
-            code: 500,
-            message: "Invalid response from Google Ads API",
-            details:
-              `Expected results to be an array, got ${typeof googleAdsData.results}`,
-          },
+          keyword: trimmedKeyword || null,
+          seedKeywords,
+          keys: Object.keys(googleAdsData as Record<string, unknown>),
         },
-        500,
       );
     }
 
-    const results: KeywordIdea[] = googleAdsData.results.map((item, index) => {
+    const results: KeywordIdea[] = adsRows.map((item, index) => {
       try {
         if (!item || typeof item !== "object") {
           console.warn(`Invalid keyword item at index ${index}:`, item);

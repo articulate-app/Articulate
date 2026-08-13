@@ -1,4 +1,3 @@
-import type { BrightDataClient } from "../client.ts"
 import {
   asRecord,
   normalizeHttpUrl,
@@ -6,9 +5,9 @@ import {
   toNullableFiniteInt,
   toNullableString,
   type FetchPostsArgs,
-  type NetworkAdapter,
   type NormalizedCompetitorPost,
 } from "../types.ts"
+import { createNetworkAdapter } from "./create-adapter.ts"
 
 /** X (Twitter) posts — discover by profile URL. */
 const X_POSTS_DATASET_ID = "gd_lwxkxvnf1cynvib9co"
@@ -74,13 +73,14 @@ function mapXPost(raw: unknown): NormalizedCompetitorPost | null {
   }
 }
 
-export const xAdapter: NetworkAdapter = {
+export const xAdapter = createNetworkAdapter({
   network: "x",
-  async fetchPosts(args: FetchPostsArgs, client: BrightDataClient) {
+  mapPost: mapXPost,
+  buildRequest(args: FetchPostsArgs) {
     const input: Record<string, unknown> = { url: args.profileUrl }
     if (args.startDateIso) input.start_date = args.startDateIso
 
-    const { snapshotId, records } = await client.triggerAndCollect({
+    return {
       options: {
         datasetId: X_POSTS_DATASET_ID,
         type: "discover_new",
@@ -89,21 +89,10 @@ export const xAdapter: NetworkAdapter = {
         includeErrors: true,
       },
       input: [input],
-    })
-
-    const posts = records
-      .map(mapXPost)
-      .filter((post): post is NormalizedCompetitorPost => Boolean(post))
-      .slice(0, Math.max(1, args.maxPosts))
-
-    return {
-      posts,
-      snapshotId,
-      rawCount: records.length,
       metadata: {
         dataset_id: X_POSTS_DATASET_ID,
         discover_by: "profile_url",
       },
     }
   },
-}
+})

@@ -1,6 +1,6 @@
 "use client"
 
-import { useMemo, useState } from "react"
+import { useEffect, useMemo, useRef, useState } from "react"
 import { useQuery, useQueryClient } from "@tanstack/react-query"
 import {
   AlertCircle,
@@ -28,6 +28,7 @@ import {
   type ContentSourceType,
 } from "@/lib/competitive-content"
 import {
+  PROJECT_COMPETITIVE_ARTICLES_QUERY_KEY,
   PROJECT_COMPETITIVE_SOURCES_QUERY_KEY,
   PROJECT_COMPETITIVE_WEBSITES_QUERY_KEY,
   PROJECT_SEARCH_CONSOLE_QUERY_KEY,
@@ -37,12 +38,14 @@ import {
   listProjectCompetitiveSources,
   listProjectCompetitiveWebsites,
   listSearchConsoleProperties,
+  monitorOwnedWebsiteFromProject,
   syncCompetitiveContent,
   updateContentSource,
   upsertSearchConsoleProperty,
   type ProjectCompetitiveContentSource,
   type ProjectCompetitiveWebsite,
 } from "@/lib/services/project-competitive-content"
+import { getProjectWebsiteUrl } from "@/lib/services/project-brand-social"
 import type { ProjectCompetitorWithProfiles } from "@/lib/services/project-competitors"
 import { faviconUrlForSite } from "@/lib/favicon"
 import { GoogleConnectPanel } from "./google-connect-panel"
@@ -51,9 +54,12 @@ import { isGoogleOAuthConnectEnabledInMainUi } from "@/lib/google-oauth-feature"
 export function CompetitionContentSourcesPanel({
   projectId,
   competitors,
+  showGoogleIntegrations = false,
 }: {
   projectId: number
   competitors: ProjectCompetitorWithProfiles[]
+  /** Google connect lives under Project settings → Details by default. */
+  showGoogleIntegrations?: boolean
 }) {
   const queryClient = useQueryClient()
   const [isDiscovering, setIsDiscovering] = useState(false)
@@ -87,6 +93,19 @@ export function CompetitionContentSourcesPanel({
     queryFn: () => listSearchConsoleProperties(projectId),
   })
 
+  const { data: projectWebsiteUrl = null } = useQuery({
+    queryKey: ["project-website-url", projectId],
+    queryFn: () => getProjectWebsiteUrl(projectId),
+  })
+
+  const ownedWebsite = websites.find((website) => website.entity_type === "owned") ?? null
+  const hasOwnedSource =
+    sources.some((source) => source.entity_type === "owned")
+    || (
+      ownedWebsite != null
+      && sources.some((source) => source.website_id === ownedWebsite.id)
+    )
+
   const competitorNameById = useMemo(() => {
     const map = new Map<number, string>()
     for (const competitor of competitors) map.set(competitor.id, competitor.name)
@@ -102,10 +121,56 @@ export function CompetitionContentSourcesPanel({
         queryKey: [PROJECT_COMPETITIVE_SOURCES_QUERY_KEY, projectId],
       }),
       queryClient.invalidateQueries({
+        queryKey: [PROJECT_COMPETITIVE_ARTICLES_QUERY_KEY, projectId],
+      }),
+      queryClient.invalidateQueries({
         queryKey: [PROJECT_SEARCH_CONSOLE_QUERY_KEY, projectId],
       }),
     ])
   }
+
+  // Our own articles only appear once the project website is tracked *and* has
+  // editorial sections to crawl, so provision both from the project URL instead
+  // of asking the user. An owned website with zero sources yields no articles.
+  const ownedSetupAttemptedRef = useRef(false)
+  const [isSettingUpOwned, setIsSettingUpOwned] = useState(false)
+
+  useEffect(() => {
+    if (websitesLoading || sourcesLoading) return
+    if (hasOwnedSource) return
+    if (!ownedWebsite && !projectWebsiteUrl) return
+    if (ownedSetupAttemptedRef.current) return
+    ownedSetupAttemptedRef.current = true
+
+    let cancelled = false
+    setIsSettingUpOwned(true)
+    void monitorOwnedWebsiteFromProject({
+      projectId,
+      projectUrl: projectWebsiteUrl ?? ownedWebsite?.root_url ?? null,
+    })
+      .then(async () => {
+        if (cancelled) return
+        await invalidateContent()
+      })
+      .catch((error) => {
+        console.warn("Owned website content setup failed", error)
+      })
+      .finally(() => {
+        if (!cancelled) setIsSettingUpOwned(false)
+      })
+
+    return () => {
+      cancelled = true
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [
+    projectId,
+    projectWebsiteUrl,
+    ownedWebsite,
+    hasOwnedSource,
+    websitesLoading,
+    sourcesLoading,
+  ])
 
   async function handleDiscover() {
     setIsDiscovering(true)
@@ -138,6 +203,15 @@ export function CompetitionContentSourcesPanel({
   async function handleSyncArticles() {
     setIsSyncing(true)
     try {
+      if (!hasOwnedSource && (projectWebsiteUrl || ownedWebsite)) {
+        await monitorOwnedWebsiteFromProject({
+          projectId,
+          projectUrl: projectWebsiteUrl ?? ownedWebsite?.root_url ?? null,
+        }).catch((error) => {
+          console.warn("Owned website content setup failed", error)
+          return null
+        })
+      }
       const result = await syncCompetitiveContent({
         projectId,
         runType: "daily",
@@ -240,6 +314,9 @@ export function CompetitionContentSourcesPanel({
   const competitorWebsites = websites.filter(
     (website) => website.entity_type === "competitor",
   )
+  const trackedWebsites = ownedWebsite
+    ? [ownedWebsite, ...competitorWebsites]
+    : competitorWebsites
 
   return (
     <div className="space-y-5">
@@ -271,17 +348,26 @@ export function CompetitionContentSourcesPanel({
       ) : null}
 
       <Card className="space-y-3 p-4">
-        {competitorWebsites.length === 0 ? (
+        {isSettingUpOwned ? (
+          <div className="flex items-center gap-2 text-xs text-gray-500">
+            <Loader2 className="h-3.5 w-3.5 animate-spin" />
+            Setting up your own website so your articles show up too…
+          </div>
+        ) : null}
+
+        {trackedWebsites.length === 0 ? (
           <div className="flex items-start gap-2 text-sm text-gray-500">
             <AlertCircle className="mt-0.5 h-4 w-4 shrink-0" />
             <p>
-              Add a competitor above to start tracking their articles.
+              {projectWebsiteUrl
+                ? "Add a competitor above to compare against your own articles."
+                : "Add the project website in settings, and a competitor above, to start collecting articles."}
             </p>
           </div>
         ) : (
           <>
             <ul className="space-y-2">
-              {competitorWebsites.map((website) => {
+              {trackedWebsites.map((website) => {
                 const favicon = faviconUrlForSite(website.root_url)
                 const sourceCount = sources.filter(
                   (source) => source.website_id === website.id,
@@ -305,9 +391,16 @@ export function CompetitionContentSourcesPanel({
                       <Globe className="h-4 w-4 shrink-0 text-gray-400" />
                     )}
                     <span className="truncate font-medium text-gray-900">
-                      {competitorNameById.get(website.competitor_id ?? -1) ??
-                        website.normalized_domain}
+                      {website.entity_type === "owned"
+                        ? website.normalized_domain
+                        : competitorNameById.get(website.competitor_id ?? -1) ??
+                          website.normalized_domain}
                     </span>
+                    {website.entity_type === "owned" ? (
+                      <span className="shrink-0 rounded bg-sky-50 px-1.5 py-0.5 text-[11px] font-medium text-sky-700">
+                        Our brand
+                      </span>
+                    ) : null}
                     <span className="ml-auto shrink-0 text-xs text-gray-500">
                       {sourceCount} section(s) tracked
                     </span>
@@ -334,79 +427,81 @@ export function CompetitionContentSourcesPanel({
         )}
       </Card>
 
-      <Card className="space-y-3 p-4">
-        <div>
-          <h4 className="text-sm font-medium text-gray-900">Google Search Console & Analytics</h4>
-          <p className="mt-0.5 text-xs text-gray-500">
-            One-click connect with your Google account. Owned-only metrics for this project
-            (not used for competitor rankings).
-          </p>
-        </div>
-        {isGoogleOAuthConnectEnabledInMainUi() ? (
-          <GoogleConnectPanel
-            projectId={projectId}
-            onConnected={() => {
-              void refetchGsc()
-              void invalidateContent()
-            }}
-          />
-        ) : (
-          <p className="text-xs text-amber-700">
-            One-click Google connect is available on the hidden verification route
-            while scopes are under Google review (not exposed in main product UI).
-          </p>
-        )}
-        {gscProperties.length > 0 ? (
-          <ul className="space-y-2">
-            {gscProperties.map((property) => (
-              <li
-                key={property.id}
-                className="flex flex-wrap items-center justify-between gap-2 rounded-md border border-gray-100 px-3 py-2 text-sm"
-              >
-                <div>
-                  <p className="font-medium text-gray-900">{property.property_url}</p>
-                  <p className="text-xs text-gray-500">
-                    {property.last_sync_status ?? "Never synced"}
-                    {property.last_sync_error ? ` · ${property.last_sync_error}` : ""}
-                  </p>
-                </div>
-                <Button
-                  size="sm"
-                  variant="ghost"
-                  onClick={() =>
-                    void deleteSearchConsoleProperty(property.id).then(() => refetchGsc())
-                  }
-                >
-                  Remove
-                </Button>
-              </li>
-            ))}
-          </ul>
-        ) : null}
-        <details className="text-xs text-gray-500">
-          <summary className="cursor-pointer text-gray-600">Advanced: paste property URL</summary>
-          <div className="mt-2 grid gap-2 sm:grid-cols-[1fr_auto]">
-            <div className="space-y-1">
-              <Label className="text-xs text-gray-500">Property URL</Label>
-              <Input
-                value={gscPropertyUrl}
-                onChange={(event) => setGscPropertyUrl(event.target.value)}
-                placeholder="https://www.example.com/ or sc-domain:example.com"
-              />
-            </div>
-            <div className="flex items-end">
-              <Button
-                variant="outline"
-                disabled={isSavingGsc}
-                onClick={() => void handleSaveGsc()}
-              >
-                {isSavingGsc ? <Loader2 className="mr-2 h-3.5 w-3.5 animate-spin" /> : null}
-                Save property
-              </Button>
-            </div>
+      {showGoogleIntegrations ? (
+        <Card className="space-y-3 p-4">
+          <div>
+            <h4 className="text-sm font-medium text-gray-900">Google Search Console & Analytics</h4>
+            <p className="mt-0.5 text-xs text-gray-500">
+              One-click connect with your Google account. Owned-only metrics for this project
+              (not used for competitor rankings).
+            </p>
           </div>
-        </details>
-      </Card>
+          {isGoogleOAuthConnectEnabledInMainUi() ? (
+            <GoogleConnectPanel
+              projectId={projectId}
+              onConnected={() => {
+                void refetchGsc()
+                void invalidateContent()
+              }}
+            />
+          ) : (
+            <p className="text-xs text-amber-700">
+              One-click Google connect is available on the hidden verification route
+              while scopes are under Google review (not exposed in main product UI).
+            </p>
+          )}
+          {gscProperties.length > 0 ? (
+            <ul className="space-y-2">
+              {gscProperties.map((property) => (
+                <li
+                  key={property.id}
+                  className="flex flex-wrap items-center justify-between gap-2 rounded-md border border-gray-100 px-3 py-2 text-sm"
+                >
+                  <div>
+                    <p className="font-medium text-gray-900">{property.property_url}</p>
+                    <p className="text-xs text-gray-500">
+                      {property.last_sync_status ?? "Never synced"}
+                      {property.last_sync_error ? ` · ${property.last_sync_error}` : ""}
+                    </p>
+                  </div>
+                  <Button
+                    size="sm"
+                    variant="ghost"
+                    onClick={() =>
+                      void deleteSearchConsoleProperty(property.id).then(() => refetchGsc())
+                    }
+                  >
+                    Remove
+                  </Button>
+                </li>
+              ))}
+            </ul>
+          ) : null}
+          <details className="text-xs text-gray-500">
+            <summary className="cursor-pointer text-gray-600">Advanced: paste property URL</summary>
+            <div className="mt-2 grid gap-2 sm:grid-cols-[1fr_auto]">
+              <div className="space-y-1">
+                <Label className="text-xs text-gray-500">Property URL</Label>
+                <Input
+                  value={gscPropertyUrl}
+                  onChange={(event) => setGscPropertyUrl(event.target.value)}
+                  placeholder="https://www.example.com/ or sc-domain:example.com"
+                />
+              </div>
+              <div className="flex items-end">
+                <Button
+                  variant="outline"
+                  disabled={isSavingGsc}
+                  onClick={() => void handleSaveGsc()}
+                >
+                  {isSavingGsc ? <Loader2 className="mr-2 h-3.5 w-3.5 animate-spin" /> : null}
+                  Save property
+                </Button>
+              </div>
+            </div>
+          </details>
+        </Card>
+      ) : null}
 
       <div className="flex gap-2">
         <Button

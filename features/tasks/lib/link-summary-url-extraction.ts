@@ -67,14 +67,17 @@ function decodeHtmlEntities(text: string): string {
 function pushUniqueLink(
   results: ExtractedLinkUrl[],
   seen: Set<string>,
+  seenUrls: Set<string>,
   url: string,
   anchorText: string | null,
 ) {
   const trimmed = cleanDetectedUrl(url)
   if (!trimmed || isMediaOrStorageUrl(trimmed)) return
-  const key = `${trimmed.toLowerCase()}::${(anchorText ?? "").trim()}`
+  const urlKey = trimmed.toLowerCase()
+  const key = `${urlKey}::${(anchorText ?? "").trim()}`
   if (seen.has(key)) return
   seen.add(key)
+  seenUrls.add(urlKey)
   results.push({ url: trimmed, anchorText: anchorText?.trim() || null })
 }
 
@@ -88,37 +91,55 @@ export function extractUrlsFromRichTextString(text: string): ExtractedLinkUrl[] 
   const decoded = decodeHtmlEntities(raw)
   const results: ExtractedLinkUrl[] = []
   const seen = new Set<string>()
+  const seenUrls = new Set<string>()
 
   if (typeof DOMParser !== "undefined") {
     const doc = new DOMParser().parseFromString(decoded, "text/html")
     for (const anchorEl of Array.from(doc.querySelectorAll("a[href]"))) {
       const href = String(anchorEl.getAttribute("href") ?? "").trim()
       if (!href) continue
-      pushUniqueLink(results, seen, href, stripHtmlTags(anchorEl.innerHTML || "") || null)
+      pushUniqueLink(
+        results,
+        seen,
+        seenUrls,
+        href,
+        stripHtmlTags(anchorEl.innerHTML || "") || null,
+      )
     }
   } else {
     const htmlAnchorPattern = /<a\b[^>]*\bhref=["']([^"']+)["'][^>]*>([\s\S]*?)<\/a>/gi
     let htmlMatch: RegExpExecArray | null = null
     while ((htmlMatch = htmlAnchorPattern.exec(decoded)) != null) {
-      pushUniqueLink(results, seen, htmlMatch[1], stripHtmlTags(htmlMatch[2] || "") || null)
+      pushUniqueLink(
+        results,
+        seen,
+        seenUrls,
+        htmlMatch[1],
+        stripHtmlTags(htmlMatch[2] || "") || null,
+      )
     }
   }
 
   MARKDOWN_LINK_PATTERN.lastIndex = 0
   let markdownMatch: RegExpExecArray | null = null
-  const urlsWithAnchorText = new Set<string>()
   while ((markdownMatch = MARKDOWN_LINK_PATTERN.exec(decoded)) != null) {
-    const url = cleanDetectedUrl(markdownMatch[2])
-    if (url) urlsWithAnchorText.add(url.toLowerCase())
-    pushUniqueLink(results, seen, markdownMatch[2], markdownMatch[1]?.trim() || null)
+    pushUniqueLink(
+      results,
+      seen,
+      seenUrls,
+      markdownMatch[2],
+      markdownMatch[1]?.trim() || null,
+    )
   }
 
   RAW_URL_PATTERN.lastIndex = 0
   let rawUrlMatch: RegExpExecArray | null = null
   while ((rawUrlMatch = RAW_URL_PATTERN.exec(decoded)) != null) {
     const cleaned = cleanDetectedUrl(rawUrlMatch[0])
-    if (cleaned && urlsWithAnchorText.has(cleaned.toLowerCase())) continue
-    pushUniqueLink(results, seen, rawUrlMatch[0], null)
+    // Skip bare URLs already captured from <a href> / markdown — otherwise the
+    // same link is counted twice (once as anchor, once as raw href text).
+    if (cleaned && seenUrls.has(cleaned.toLowerCase())) continue
+    pushUniqueLink(results, seen, seenUrls, rawUrlMatch[0], null)
   }
 
   return results
@@ -127,12 +148,14 @@ export function extractUrlsFromRichTextString(text: string): ExtractedLinkUrl[] 
 function extractUrlsFromStructuredValue(value: unknown): ExtractedLinkUrl[] {
   const results: ExtractedLinkUrl[] = []
   const seen = new Set<string>()
+  const seenUrls = new Set<string>()
 
   const pushLink = (url: unknown, anchorText?: unknown) => {
     if (typeof url !== "string") return
     pushUniqueLink(
       results,
       seen,
+      seenUrls,
       url,
       typeof anchorText === "string" ? anchorText.trim() || null : null,
     )
@@ -258,6 +281,42 @@ export type OutputContentBlockForLinkExtraction = {
   text?: string
 }
 
+/**
+ * Count how many times a URL appears as an `<a href>` (preferred) or bare URL
+ * in a single rich-text source — avoids double-counting mirrored content fields.
+ */
+export function countUrlOccurrencesInRichText(text: string, url: string): number {
+  const target = cleanDetectedUrl(url).toLowerCase()
+  if (!target || !String(text ?? "").trim()) return 0
+
+  const decoded = decodeHtmlEntities(text)
+  let anchorCount = 0
+
+  if (typeof DOMParser !== "undefined") {
+    const doc = new DOMParser().parseFromString(decoded, "text/html")
+    for (const anchorEl of Array.from(doc.querySelectorAll("a[href]"))) {
+      const href = cleanDetectedUrl(String(anchorEl.getAttribute("href") ?? "")).toLowerCase()
+      if (href === target) anchorCount += 1
+    }
+    if (anchorCount > 0) return anchorCount
+  } else {
+    const htmlAnchorPattern = /<a\b[^>]*\bhref=["']([^"']+)["'][^>]*>/gi
+    let htmlMatch: RegExpExecArray | null = null
+    while ((htmlMatch = htmlAnchorPattern.exec(decoded)) != null) {
+      if (cleanDetectedUrl(htmlMatch[1]).toLowerCase() === target) anchorCount += 1
+    }
+    if (anchorCount > 0) return anchorCount
+  }
+
+  let rawCount = 0
+  RAW_URL_PATTERN.lastIndex = 0
+  let rawUrlMatch: RegExpExecArray | null = null
+  while ((rawUrlMatch = RAW_URL_PATTERN.exec(decoded)) != null) {
+    if (cleanDetectedUrl(rawUrlMatch[0]).toLowerCase() === target) rawCount += 1
+  }
+  return rawCount
+}
+
 export function extractUrlsFromComponentOutputSources(args: {
   output: ComponentOutputForLinkExtraction | null | undefined
   blocks: OutputContentBlockForLinkExtraction[]
@@ -265,14 +324,16 @@ export function extractUrlsFromComponentOutputSources(args: {
   const { output, blocks } = args
   if (!output) return []
 
-  const seen = new Set<string>()
+  // Dedupe by URL (ignore anchor-text variants) so the same href is not listed twice
+  // when it appears in both HTML anchors and plain text / mirrored content_text.
+  const seenUrls = new Set<string>()
   const results: ExtractedLinkUrl[] = []
 
   const append = (entries: ExtractedLinkUrl[]) => {
     for (const entry of entries) {
-      const key = `${entry.url.toLowerCase()}::${(entry.anchorText ?? "").trim()}`
-      if (!key || seen.has(key)) continue
-      seen.add(key)
+      const urlKey = entry.url.toLowerCase()
+      if (!urlKey || seenUrls.has(urlKey)) continue
+      seenUrls.add(urlKey)
       results.push(entry)
     }
   }
@@ -284,13 +345,21 @@ export function extractUrlsFromComponentOutputSources(args: {
     append(extractUrlsFromOutputValue(text))
   }
 
-  if (output.content_text?.trim()) {
+  // Prefer structured JSON over mirrored plain text to avoid counting the same doc twice.
+  const hasJson =
+    output.content_json != null
+    || output.resolved_content_json != null
+    || output.content != null
+  if (hasJson) {
+    append(extractUrlsFromOutputValue(output.content))
+    append(extractUrlsFromOutputValue(output.content_json))
+    append(extractUrlsFromOutputValue(output.resolved_content_json))
+    if (results.length === 0 && output.content_text?.trim()) {
+      append(extractUrlsFromOutputValue(output.content_text))
+    }
+  } else if (output.content_text?.trim()) {
     append(extractUrlsFromOutputValue(output.content_text))
   }
-
-  append(extractUrlsFromOutputValue(output.content))
-  append(extractUrlsFromOutputValue(output.content_json))
-  append(extractUrlsFromOutputValue(output.resolved_content_json))
 
   return results
 }

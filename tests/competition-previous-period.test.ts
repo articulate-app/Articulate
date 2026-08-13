@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest"
 import {
   getPreviousPeriodRange,
   metricDelta,
+  metricDeltaPct,
 } from "../app/lib/competition-previous-period"
 
 describe("getPreviousPeriodRange", () => {
@@ -32,5 +33,23 @@ describe("metricDelta", () => {
     expect(metricDelta(null, 10)).toBeNull()
     expect(metricDelta(10, null)).toBeNull()
     expect(metricDelta(undefined, undefined)).toBeNull()
+  })
+})
+
+describe("metricDeltaPct", () => {
+  it("returns the relative change in percent", () => {
+    expect(metricDeltaPct(120, 100)).toBe(20)
+    expect(metricDeltaPct(80, 100)).toBe(-20)
+    expect(metricDeltaPct(100, 100)).toBe(0)
+  })
+
+  it("has no percentage for growth from zero", () => {
+    expect(metricDeltaPct(10, 0)).toBeNull()
+    expect(metricDeltaPct(0, 0)).toBe(0)
+  })
+
+  it("returns null when either side is missing", () => {
+    expect(metricDeltaPct(null, 10)).toBeNull()
+    expect(metricDeltaPct(10, undefined)).toBeNull()
   })
 })

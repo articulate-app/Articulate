@@ -39,14 +39,12 @@ function hasReviewSummary(reviewData?: ReviewData | null): boolean {
 type TaskOverviewReviewsPreviewProps = {
   taskId: number
   reviewData?: ReviewData | null
-  onViewAll: () => void
   active?: boolean
 }
 
 export function TaskOverviewReviewsPreview({
   taskId,
   reviewData,
-  onViewAll,
   active = true,
 }: TaskOverviewReviewsPreviewProps) {
   const queryClient = useQueryClient()
@@ -75,7 +73,6 @@ export function TaskOverviewReviewsPreview({
     <div ref={ref}>
       <TaskOverviewPreviewSection
         title="Reviews"
-        onViewAll={onViewAll}
         active={shouldLoad}
         isLoading={shouldLoad && reviewsQuery.isLoading && !summaryVisible && !isAddingReview}
         isError={reviewsQuery.isError && !isAddingReview}

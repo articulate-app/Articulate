@@ -193,7 +193,7 @@ export function GroupingDropdown({
       <DropdownMenuTrigger asChild>
         <button type="button" className={cn('gap-2', className)}>
           {selectedGroupBy && current ? `Group by: ${current.label}` : 'Group by'}
-          <ChevronDown className="ml-1 h-4 w-4" />
+          <ChevronDown className="ml-1 h-3.5 w-3.5" />
         </button>
       </DropdownMenuTrigger>
       <DropdownMenuContent align="start" className="min-w-[220px]">

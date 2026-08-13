@@ -224,10 +224,10 @@ export function GlobalSearchAllTabPane({
 
       return (
         <section key={sectionKey} className="space-y-4">
-          <div className={cn("flex min-w-0 items-center gap-2 text-sm font-semibold text-gray-900", OBJECT_PANE_SECTION_X_CLASS)}>
+          <div className={cn("flex min-w-0 items-center gap-2 text-xs font-normal text-gray-500", OBJECT_PANE_SECTION_X_CLASS)}>
             <span className="truncate">{section.label}</span>
             {typeof resolveSectionCount(section, sectionCounts) === "number" ? (
-              <span className="text-sm font-medium text-gray-500">{resolveSectionCount(section, sectionCounts)}</span>
+              <span className="text-xs font-normal text-gray-400">{resolveSectionCount(section, sectionCounts)}</span>
             ) : null}
           </div>
           <div className="space-y-4">{nestedSections.map(renderSection)}</div>
@@ -256,10 +256,10 @@ export function GlobalSearchAllTabPane({
 
     return (
       <section key={sectionKey} className="space-y-3">
-        <div className={cn("flex min-w-0 items-center gap-2 text-sm font-semibold text-gray-900", OBJECT_PANE_SECTION_X_CLASS)}>
+        <div className={cn("flex min-w-0 items-center gap-2 text-xs font-normal text-gray-500", OBJECT_PANE_SECTION_X_CLASS)}>
           <span className="truncate">
             {section.label}
-            {typeof count === "number" ? <span className="text-sm font-medium text-gray-500"> {count}</span> : null}
+            {typeof count === "number" ? <span className="text-xs font-normal text-gray-400"> {count}</span> : null}
           </span>
         </div>
         <GlobalSearchAllSectionCards
@@ -282,10 +282,10 @@ export function GlobalSearchAllTabPane({
         {recentlyOpenedSections.map(renderSection)}
         {isDiscoveryMode && taskGroupTabs.length > 0 ? (
           <section className="space-y-3">
-            <div className={cn("flex min-w-0 items-center gap-2 text-sm font-semibold text-gray-900", OBJECT_PANE_SECTION_X_CLASS)}>
+            <div className={cn("flex min-w-0 items-center gap-2 text-xs font-normal text-gray-500", OBJECT_PANE_SECTION_X_CLASS)}>
               <span className="truncate">Tasks</span>
               {typeof sectionCounts.task === "number" ? (
-                <span className="text-sm font-medium text-gray-500">{sectionCounts.task}</span>
+                <span className="text-xs font-normal text-gray-400">{sectionCounts.task}</span>
               ) : null}
             </div>
             <div className={cn("flex flex-wrap gap-1", OBJECT_PANE_SECTION_X_CLASS)}>
@@ -299,8 +299,8 @@ export function GlobalSearchAllTabPane({
                     onClick={() => setActiveTaskGroupTabType(section.type)}
                     className={
                       isActive
-                        ? "inline-flex items-center gap-1 rounded-full bg-gray-900 px-3 py-1 text-xs font-medium text-white"
-                        : "inline-flex items-center gap-1 rounded-full bg-gray-100 px-3 py-1 text-xs font-medium text-gray-700 hover:bg-gray-200"
+                        ? "inline-flex items-center gap-1 rounded-md bg-gray-900 px-2.5 py-1 text-[11px] font-normal text-white"
+                        : "inline-flex items-center gap-1 rounded-md bg-gray-100 px-2.5 py-1 text-[11px] font-normal text-gray-700 hover:bg-gray-200"
                     }
                   >
                     <span>{section.label}</span>

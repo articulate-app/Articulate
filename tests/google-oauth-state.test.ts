@@ -1,5 +1,6 @@
-import { describe, expect, it } from "vitest"
+import { afterEach, describe, expect, it, vi } from "vitest"
 import { createHmac } from "crypto"
+import { resolveAppOrigin } from "../app/lib/google-oauth"
 
 /**
  * Lightweight unit coverage for OAuth state signing without importing Next env helpers.
@@ -68,5 +69,23 @@ describe("google oauth state", () => {
       secret,
     )
     expect(() => verify(state, secret)).toThrow(/expired/)
+  })
+})
+
+describe("resolveAppOrigin", () => {
+  afterEach(() => {
+    vi.unstubAllEnvs()
+  })
+
+  it("prefers localhost request origin over NEXT_PUBLIC_SITE_URL", () => {
+    vi.stubEnv("NEXT_PUBLIC_SITE_URL", "https://app.whyarticulate.com")
+    const req = new Request("http://localhost:3000/api/auth/google/start?project_id=33")
+    expect(resolveAppOrigin(req)).toBe("http://localhost:3000")
+  })
+
+  it("uses NEXT_PUBLIC_SITE_URL for non-local requests without forwarded host", () => {
+    vi.stubEnv("NEXT_PUBLIC_SITE_URL", "https://app.whyarticulate.com")
+    const req = new Request("https://internal.example/api/auth/google/start")
+    expect(resolveAppOrigin(req)).toBe("https://app.whyarticulate.com")
   })
 })

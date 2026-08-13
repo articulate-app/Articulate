@@ -39,3 +39,18 @@ export function metricDelta(
   if (!Number.isFinite(current) || !Number.isFinite(previous)) return null
   return current - previous
 }
+
+/**
+ * Relative change vs the previous period, in percent.
+ * Growth from zero has no percentage, so it returns null (callers surface it
+ * as "new" rather than an infinite jump).
+ */
+export function metricDeltaPct(
+  current: number | null | undefined,
+  previous: number | null | undefined,
+): number | null {
+  if (current == null || previous == null) return null
+  if (!Number.isFinite(current) || !Number.isFinite(previous)) return null
+  if (previous === 0) return current === 0 ? 0 : null
+  return ((current - previous) / previous) * 100
+}

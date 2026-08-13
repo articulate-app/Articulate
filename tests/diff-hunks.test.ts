@@ -40,4 +40,26 @@ describe("splitDiffIntoHunks", () => {
   it("returns empty when texts match", () => {
     expect(splitDiffIntoHunks(computeLineDiff("Same", "Same"))).toEqual([])
   })
+
+  it("splits oversized hunks by character budget", () => {
+    const before = [
+      "Alpha old paragraph that is fairly long for the test.",
+      "Bridge line stays.",
+      "Omega old paragraph that is also fairly long here.",
+    ].join("\n")
+    const after = [
+      "Alpha new paragraph that is fairly long for the test.",
+      "Bridge line stays.",
+      "Omega new paragraph that is also fairly long here.",
+    ].join("\n")
+    const hunks = splitDiffIntoHunks(computeLineDiff(before, after), {
+      maxUnchangedGap: 0,
+      maxHunkChars: 40,
+      maxHunks: 8,
+    })
+    expect(hunks.length).toBeGreaterThanOrEqual(2)
+    for (const hunk of hunks) {
+      expect(Math.max(hunk.beforeText.length, hunk.afterText.length)).toBeLessThanOrEqual(120)
+    }
+  })
 })

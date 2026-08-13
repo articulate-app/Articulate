@@ -2,7 +2,7 @@
 
 import React, { useEffect, useMemo, useState } from "react"
 import { useQuery } from "@tanstack/react-query"
-import { CheckCircle2, ChevronLeft, Clock3, Plus, Reply, RotateCcw, Trash2 } from "lucide-react"
+import { CheckCircle2, ChevronLeft, Clock3, Plus, Reply, RotateCcw, Trash2, X } from "lucide-react"
 import { UserAvatar } from "../../app/components/UserAvatar"
 import { ThreadParticipantsInline } from "../../app/components/comments-section/thread-participants-inline"
 import { ThreadedRealtimeChat } from "../../app/components/threaded-realtime-chat"
@@ -24,8 +24,20 @@ import {
 import type { TaskArtifact } from "../../app/lib/artifacts/artifact-types"
 import { cn } from "../../app/lib/utils"
 
+export type ArtifactCommentPendingSelection = {
+  quote: string
+  selectionStart?: number | null
+  selectionEnd?: number | null
+  contextBefore?: string | null
+  contextAfter?: string | null
+  versionNumber?: number | null
+}
+
 type ArtifactCommentsDockProps = {
   artifact: TaskArtifact
+  /** Highlighted artifact text to anchor the next comment thread to. */
+  pendingSelection?: ArtifactCommentPendingSelection | null
+  onClearPendingSelection?: () => void
   className?: string
 }
 
@@ -43,7 +55,12 @@ function stripPreview(value: string | null | undefined): string {
  * Pinned artifact comments dock — mirrors task-details comments chrome
  * (thread list, filters, resolve/delete, We'll notify + participants).
  */
-export function ArtifactCommentsDock({ artifact, className }: ArtifactCommentsDockProps) {
+export function ArtifactCommentsDock({
+  artifact,
+  pendingSelection = null,
+  onClearPendingSelection,
+  className,
+}: ArtifactCommentsDockProps) {
   const currentUserId = useCurrentUserStore((s) => s.publicUserId)
   const currentUserName = useCurrentUserStore((s) => s.fullName)
   const currentUserPhoto = useCurrentUserStore((s) => s.photo)
@@ -102,6 +119,15 @@ export function ArtifactCommentsDock({ artifact, className }: ArtifactCommentsDo
     setPendingParticipants(allNotifyUsers)
   }, [isAddingThread, allNotifyUsers, pendingParticipants.length])
 
+  // A fresh text selection always starts a new, selection-anchored thread.
+  useEffect(() => {
+    if (!pendingSelection) return
+    setIsAddingThread(true)
+    setIsThreadView(false)
+    setSelectedThreadId(null)
+    setComposerExpanded(true)
+  }, [pendingSelection])
+
   const selectedThread = useMemo(
     () => threads.find((thread) => thread.threadId === selectedThreadId) ?? null,
     [selectedThreadId, threads],
@@ -134,7 +160,11 @@ export function ArtifactCommentsDock({ artifact, className }: ArtifactCommentsDo
   const isPosting = createComment.isPending || replyComment.isPending
   const canPost = Boolean(draft.trim() && currentUserId && !isPosting)
   const showComposer =
-    composerExpanded || draft.trim() || isAddingThread || (selectedThreadId != null && isThreadView)
+    composerExpanded
+    || draft.trim()
+    || isAddingThread
+    || !!pendingSelection
+    || (selectedThreadId != null && isThreadView)
 
   const handleAddThread = () => {
     setIsAddingThread(true)
@@ -201,12 +231,18 @@ export function ArtifactCommentsDock({ artifact, className }: ArtifactCommentsDo
         taskId: artifact.task_id,
         projectId: artifact.project_id,
         artifactId: artifact.id,
-        artifactVersionNumber: artifact.current_version,
+        artifactVersionNumber: pendingSelection?.versionNumber ?? artifact.current_version,
         comment,
-        anchorType: "document",
+        anchorType: pendingSelection ? "text_range" : "document",
+        anchorQuote: pendingSelection?.quote ?? null,
+        anchorStart: pendingSelection?.selectionStart ?? null,
+        anchorEnd: pendingSelection?.selectionEnd ?? null,
+        anchorContextBefore: pendingSelection?.contextBefore ?? null,
+        anchorContextAfter: pendingSelection?.contextAfter ?? null,
         watcherIds,
         createdBy: currentUserId,
       })
+      onClearPendingSelection?.()
       setSelectedThreadId(threadId)
       setIsAddingThread(false)
       setIsThreadView(true)
@@ -221,231 +257,240 @@ export function ArtifactCommentsDock({ artifact, className }: ArtifactCommentsDo
     stripPreview(selectedThread?.previewComment?.comment)
     || (selectedThreadId != null ? `Thread #${selectedThreadId}` : null)
 
+  const hasComments = threads.length > 0
+  // Keep filters / thread list chrome only once there is something to filter.
+  const showThreadChrome = hasComments
+  const showCommentList = hasComments || isThreadView
+
   return (
     <div className={cn("flex shrink-0 flex-col border-t border-gray-100 bg-white", className)}>
-      <div className="flex items-center justify-between gap-2 border-b border-gray-50 px-4 py-1.5">
-        <div className="flex items-center gap-1">
-          {(["all", "open", "resolved"] as const).map((value) => (
-            <Button
-              key={value}
-              type="button"
-              variant="ghost"
-              size="sm"
-              className={cn(
-                "h-7 px-2 text-xs capitalize",
-                statusFilter === value && "bg-gray-100 text-gray-900",
-              )}
-              onClick={() => setStatusFilter(value)}
-            >
-              {value}
-            </Button>
-          ))}
-        </div>
-        <div className="flex items-center gap-1">
-          <Popover open={isThreadSelectorOpen} onOpenChange={setIsThreadSelectorOpen}>
-            <PopoverTrigger asChild>
+      {showThreadChrome ? (
+        <div className="flex items-center justify-between gap-2 border-b border-gray-50 px-4 py-1.5">
+          <div className="flex items-center gap-1">
+            {(["all", "open", "resolved"] as const).map((value) => (
               <Button
+                key={value}
                 type="button"
                 variant="ghost"
                 size="sm"
                 className={cn(
-                  "h-7 w-7 p-0 text-gray-500",
-                  selectedThreadId != null && !isAddingThread && "bg-gray-100 text-gray-900",
+                  "h-7 px-2 text-xs capitalize",
+                  statusFilter === value && "bg-gray-100 text-gray-900",
                 )}
-                title="Filter by thread"
-                aria-label="Filter by thread"
+                onClick={() => setStatusFilter(value)}
               >
-                <Clock3 className="h-4 w-4" />
+                {value}
               </Button>
-            </PopoverTrigger>
-            <PopoverContent align="end" side="top" className="w-[min(92vw,360px)] p-1">
-              <div className="max-h-72 overflow-y-auto">
-                <button
-                  type="button"
-                  className={cn(
-                    "flex w-full items-center gap-2 rounded-md px-2 py-2 text-left text-sm hover:bg-gray-50",
-                    selectedThreadId == null && !isAddingThread && "bg-gray-50 font-medium",
-                  )}
-                  onClick={() => handleSelectThread(null)}
-                >
-                  <span className="min-w-0 flex-1 truncate text-gray-800">All threads</span>
-                </button>
-                {filteredThreads.map((thread) => {
-                  const isActive = selectedThreadId === thread.threadId
-                  return (
-                    <button
-                      key={thread.threadId}
-                      type="button"
-                      className={cn(
-                        "flex w-full items-center gap-2 rounded-md px-2 py-2 text-left hover:bg-gray-50",
-                        isActive && "bg-gray-50",
-                      )}
-                      onClick={() => handleSelectThread(thread.threadId, true)}
-                    >
-                      <div className="min-w-0 flex-1">
-                        <div className={cn("truncate text-sm text-gray-800", isActive && "font-medium")}>
-                          {stripPreview(thread.previewComment?.comment) || `Thread #${thread.threadId}`}
-                        </div>
-                        <div className="mt-0.5 text-[11px] text-muted-foreground">
-                          {getActivityRelativeTimeLabel(thread.latestComment?.created_at ?? thread.createdAt)}
-                          {thread.resolvedAt ? " · Resolved" : ""}
-                        </div>
-                      </div>
-                    </button>
-                  )
-                })}
-                {filteredThreads.length === 0 ? (
-                  <div className="px-2 py-3 text-xs text-muted-foreground">No threads yet.</div>
-                ) : null}
-              </div>
-            </PopoverContent>
-          </Popover>
-          <Button
-            type="button"
-            variant="outline"
-            size="sm"
-            className="h-7 px-2 text-xs"
-            onClick={handleAddThread}
-            title="Start thread"
-          >
-            <Plus className="mr-1 h-3.5 w-3.5" />
-            Thread
-          </Button>
-        </div>
-      </div>
-
-      <div className="max-h-56 min-h-0 overflow-y-auto px-4 py-2">
-        {isThreadView && selectedThreadId != null ? (
-          <div className="space-y-2">
-            <div className="flex items-center justify-between gap-2">
-              <button
-                type="button"
-                onClick={() => {
-                  setIsThreadView(false)
-                  setSelectedThreadId(null)
-                }}
-                className="inline-flex items-center gap-1 text-sm text-muted-foreground hover:text-foreground"
-              >
-                <ChevronLeft className="h-4 w-4" />
-                Back
-              </button>
-              <div className="flex items-center gap-1">
-                {selectedThread ? (
-                  <Button
-                    type="button"
-                    variant="ghost"
-                    size="sm"
-                    className="h-7 px-2 text-xs"
-                    disabled={resolvingIds.has(selectedThread.threadId)}
-                    onClick={() => void handleToggleResolved(selectedThread)}
-                  >
-                    {selectedThread.resolvedAt ? (
-                      <>
-                        <RotateCcw className="mr-1 h-3.5 w-3.5" />
-                        Reopen
-                      </>
-                    ) : (
-                      <>
-                        <CheckCircle2 className="mr-1 h-3.5 w-3.5" />
-                        Resolve
-                      </>
-                    )}
-                  </Button>
-                ) : null}
-              </div>
-            </div>
-            {currentUserId != null ? (
-              <ThreadedRealtimeChat
-                key={String(selectedThreadId)}
-                threadId={selectedThreadId}
-                currentUserId={currentUserId}
-                currentUserName={currentUserName || undefined}
-                currentUserAvatar={currentUserPhoto || undefined}
-                currentUserEmail={undefined}
-                currentPublicUserId={currentUserId}
-                hideInput
-                initialMessages={selectedThread?.mentions ?? []}
-              />
-            ) : null}
+            ))}
           </div>
-        ) : flatMentions.length > 0 ? (
-          <ul className="flex flex-col">
-            {flatMentions.map(({ mention, thread }) => {
-              const author = mention.users
-              const displayName = String(author?.full_name || author?.email || "Unknown user")
-              const authorPhoto = getImageUrl(author?.photo ?? null)
-              const plainPreview = stripPreview(mention.comment)
-              return (
-                <li key={mention.id} className="group flex items-start gap-2.5 py-2">
-                  <UserAvatar
-                    name={displayName}
-                    photoUrl={authorPhoto}
-                    size="xs"
-                    className="mt-0.5 !h-5 !w-5 !min-h-5 !min-w-5 text-[9px]"
-                  />
-                  <div className="min-w-0 flex-1">
-                    <div className="flex items-center gap-2">
-                      <div className="flex min-w-0 flex-1 items-center gap-1.5">
-                        <button
-                          type="button"
-                          onClick={() => handleSelectThread(thread.threadId, true)}
-                          className="truncate text-left text-sm font-medium leading-5 text-gray-900"
-                        >
-                          {displayName}
-                        </button>
-                        <span className="shrink-0 text-gray-300" aria-hidden>
-                          ·
-                        </span>
-                        <ActivityRowTimestamp value={mention.created_at} />
-                        {thread.resolvedAt ? (
-                          <span className="rounded-full bg-emerald-50 px-1.5 py-0.5 text-[10px] text-emerald-700">
-                            Resolved
-                          </span>
-                        ) : null}
-                      </div>
+          <div className="flex items-center gap-1">
+            <Popover open={isThreadSelectorOpen} onOpenChange={setIsThreadSelectorOpen}>
+              <PopoverTrigger asChild>
+                <Button
+                  type="button"
+                  variant="ghost"
+                  size="sm"
+                  className={cn(
+                    "h-7 w-7 p-0 text-gray-500",
+                    selectedThreadId != null && !isAddingThread && "bg-gray-100 text-gray-900",
+                  )}
+                  title="Filter by thread"
+                  aria-label="Filter by thread"
+                >
+                  <Clock3 className="h-4 w-4" />
+                </Button>
+              </PopoverTrigger>
+              <PopoverContent align="end" side="top" className="w-[min(92vw,360px)] p-1">
+                <div className="max-h-72 overflow-y-auto">
+                  <button
+                    type="button"
+                    className={cn(
+                      "flex w-full items-center gap-2 rounded-md px-2 py-2 text-left text-sm hover:bg-gray-50",
+                      selectedThreadId == null && !isAddingThread && "bg-gray-50 font-medium",
+                    )}
+                    onClick={() => handleSelectThread(null)}
+                  >
+                    <span className="min-w-0 flex-1 truncate text-gray-800">All threads</span>
+                  </button>
+                  {filteredThreads.map((thread) => {
+                    const isActive = selectedThreadId === thread.threadId
+                    return (
                       <button
+                        key={thread.threadId}
                         type="button"
-                        className="inline-flex h-5 w-5 shrink-0 items-center justify-center rounded text-gray-500 hover:bg-gray-100 hover:text-gray-700 md:opacity-0 md:group-hover:opacity-100"
-                        aria-label="Reply in thread"
-                        title="Reply in thread"
+                        className={cn(
+                          "flex w-full items-center gap-2 rounded-md px-2 py-2 text-left hover:bg-gray-50",
+                          isActive && "bg-gray-50",
+                        )}
                         onClick={() => handleSelectThread(thread.threadId, true)}
                       >
-                        <Reply className="h-3.5 w-3.5" />
+                        <div className="min-w-0 flex-1">
+                          <div className={cn("truncate text-sm text-gray-800", isActive && "font-medium")}>
+                            {stripPreview(thread.previewComment?.comment) || `Thread #${thread.threadId}`}
+                          </div>
+                          <div className="mt-0.5 text-[11px] text-muted-foreground">
+                            {getActivityRelativeTimeLabel(thread.latestComment?.created_at ?? thread.createdAt)}
+                            {thread.resolvedAt ? " · Resolved" : ""}
+                          </div>
+                        </div>
                       </button>
+                    )
+                  })}
+                  {filteredThreads.length === 0 ? (
+                    <div className="px-2 py-3 text-xs text-muted-foreground">No threads yet.</div>
+                  ) : null}
+                </div>
+              </PopoverContent>
+            </Popover>
+            <Button
+              type="button"
+              variant="outline"
+              size="sm"
+              className="h-7 px-2 text-xs"
+              onClick={handleAddThread}
+              title="Start thread"
+            >
+              <Plus className="mr-1 h-3.5 w-3.5" />
+              Thread
+            </Button>
+          </div>
+        </div>
+      ) : null}
+
+      {showCommentList ? (
+        <div className="max-h-56 min-h-0 overflow-y-auto px-4 py-2">
+          {isThreadView && selectedThreadId != null ? (
+            <div className="space-y-2">
+              <div className="flex items-center justify-between gap-2">
+                <button
+                  type="button"
+                  onClick={() => {
+                    setIsThreadView(false)
+                    setSelectedThreadId(null)
+                  }}
+                  className="inline-flex items-center gap-1 text-sm text-muted-foreground hover:text-foreground"
+                >
+                  <ChevronLeft className="h-4 w-4" />
+                  Back
+                </button>
+                <div className="flex items-center gap-1">
+                  {selectedThread ? (
+                    <Button
+                      type="button"
+                      variant="ghost"
+                      size="sm"
+                      className="h-7 px-2 text-xs"
+                      disabled={resolvingIds.has(selectedThread.threadId)}
+                      onClick={() => void handleToggleResolved(selectedThread)}
+                    >
+                      {selectedThread.resolvedAt ? (
+                        <>
+                          <RotateCcw className="mr-1 h-3.5 w-3.5" />
+                          Reopen
+                        </>
+                      ) : (
+                        <>
+                          <CheckCircle2 className="mr-1 h-3.5 w-3.5" />
+                          Resolve
+                        </>
+                      )}
+                    </Button>
+                  ) : null}
+                </div>
+              </div>
+              {currentUserId != null ? (
+                <ThreadedRealtimeChat
+                  key={String(selectedThreadId)}
+                  threadId={selectedThreadId}
+                  currentUserId={currentUserId}
+                  currentUserName={currentUserName || undefined}
+                  currentUserAvatar={currentUserPhoto || undefined}
+                  currentUserEmail={undefined}
+                  currentPublicUserId={currentUserId}
+                  hideInput
+                  initialMessages={selectedThread?.mentions ?? []}
+                />
+              ) : null}
+            </div>
+          ) : flatMentions.length > 0 ? (
+            <ul className="flex flex-col">
+              {flatMentions.map(({ mention, thread }) => {
+                const author = mention.users
+                const displayName = String(author?.full_name || author?.email || "Unknown user")
+                const authorPhoto = getImageUrl(author?.photo ?? null)
+                const plainPreview = stripPreview(mention.comment)
+                return (
+                  <li key={mention.id} className="group flex items-start gap-2.5 py-2">
+                    <UserAvatar
+                      name={displayName}
+                      photoUrl={authorPhoto}
+                      size="xs"
+                      className="mt-0.5 !h-5 !w-5 !min-h-5 !min-w-5 text-[9px]"
+                    />
+                    <div className="min-w-0 flex-1">
+                      <div className="flex items-center gap-2">
+                        <div className="flex min-w-0 flex-1 items-center gap-1.5">
+                          <button
+                            type="button"
+                            onClick={() => handleSelectThread(thread.threadId, true)}
+                            className="truncate text-left text-sm font-medium leading-5 text-gray-900"
+                          >
+                            {displayName}
+                          </button>
+                          <span className="shrink-0 text-gray-300" aria-hidden>
+                            ·
+                          </span>
+                          <ActivityRowTimestamp value={mention.created_at} />
+                          {thread.resolvedAt ? (
+                            <span className="rounded-full bg-emerald-50 px-1.5 py-0.5 text-[10px] text-emerald-700">
+                              Resolved
+                            </span>
+                          ) : null}
+                        </div>
+                        <button
+                          type="button"
+                          className="inline-flex h-5 w-5 shrink-0 items-center justify-center rounded text-gray-500 hover:bg-gray-100 hover:text-gray-700 md:opacity-0 md:group-hover:opacity-100"
+                          aria-label="Reply in thread"
+                          title="Reply in thread"
+                          onClick={() => handleSelectThread(thread.threadId, true)}
+                        >
+                          <Reply className="h-3.5 w-3.5" />
+                        </button>
+                        <button
+                          type="button"
+                          className="inline-flex h-5 w-5 shrink-0 items-center justify-center rounded text-gray-500 hover:bg-gray-100 hover:text-gray-700 md:opacity-0 md:group-hover:opacity-100"
+                          aria-label={thread.resolvedAt ? "Reopen thread" : "Resolve thread"}
+                          title={thread.resolvedAt ? "Reopen thread" : "Resolve thread"}
+                          disabled={resolvingIds.has(thread.threadId)}
+                          onClick={() => void handleToggleResolved(thread)}
+                        >
+                          {thread.resolvedAt ? (
+                            <RotateCcw className="h-3.5 w-3.5" />
+                          ) : (
+                            <CheckCircle2 className="h-3.5 w-3.5" />
+                          )}
+                        </button>
+                      </div>
                       <button
                         type="button"
-                        className="inline-flex h-5 w-5 shrink-0 items-center justify-center rounded text-gray-500 hover:bg-gray-100 hover:text-gray-700 md:opacity-0 md:group-hover:opacity-100"
-                        aria-label={thread.resolvedAt ? "Reopen thread" : "Resolve thread"}
-                        title={thread.resolvedAt ? "Reopen thread" : "Resolve thread"}
-                        disabled={resolvingIds.has(thread.threadId)}
-                        onClick={() => void handleToggleResolved(thread)}
+                        onClick={() => handleSelectThread(thread.threadId, true)}
+                        className="mt-1 w-full text-left text-sm leading-5 text-gray-700"
+                        style={{ wordBreak: "break-word" }}
                       >
-                        {thread.resolvedAt ? (
-                          <RotateCcw className="h-3.5 w-3.5" />
-                        ) : (
-                          <CheckCircle2 className="h-3.5 w-3.5" />
-                        )}
+                        {plainPreview || "Empty comment"}
                       </button>
                     </div>
-                    <button
-                      type="button"
-                      onClick={() => handleSelectThread(thread.threadId, true)}
-                      className="mt-1 w-full text-left text-sm leading-5 text-gray-700"
-                      style={{ wordBreak: "break-word" }}
-                    >
-                      {plainPreview || "Empty comment"}
-                    </button>
-                  </div>
-                </li>
-              )
-            })}
-          </ul>
-        ) : (
-          <div className="py-4 text-center text-sm text-muted-foreground">No comments yet.</div>
-        )}
-      </div>
+                  </li>
+                )
+              })}
+            </ul>
+          ) : (
+            <div className="py-4 text-center text-sm text-muted-foreground">No comments yet.</div>
+          )}
+        </div>
+      ) : null}
 
-      <div className="px-4 pt-1">
+      <div className={cn("px-4", showCommentList ? "pt-1" : "pt-3")}>
         <div className="flex w-full items-start gap-2">
           <UserAvatar
             name={currentUserName || "You"}
@@ -456,6 +501,22 @@ export function ArtifactCommentsDock({ artifact, className }: ArtifactCommentsDo
           <div className="min-w-0 flex-1">
             {showComposer ? (
               <div className="space-y-2">
+                {pendingSelection?.quote ? (
+                  <div className="flex items-start gap-2 rounded-md border border-amber-200 bg-amber-50 px-2.5 py-1.5">
+                    <blockquote className="min-w-0 flex-1 border-l-2 border-amber-300 pl-2 text-xs leading-5 text-amber-900 line-clamp-3">
+                      {pendingSelection.quote}
+                    </blockquote>
+                    <button
+                      type="button"
+                      className="mt-0.5 inline-flex h-4 w-4 shrink-0 items-center justify-center rounded text-amber-700 hover:bg-amber-100"
+                      aria-label="Remove highlighted excerpt"
+                      title="Remove highlighted excerpt"
+                      onClick={() => onClearPendingSelection?.()}
+                    >
+                      <X className="h-3 w-3" />
+                    </button>
+                  </div>
+                ) : null}
                 {selectedThreadId != null && isThreadView ? (
                   <p className="text-[11px] text-muted-foreground">
                     Replying in thread #{selectedThreadId}

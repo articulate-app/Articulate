@@ -1,4 +1,3 @@
-import type { BrightDataClient } from "../client.ts"
 import {
   asRecord,
   normalizeHttpUrl,
@@ -6,9 +5,9 @@ import {
   toNullableFiniteInt,
   toNullableString,
   type FetchPostsArgs,
-  type NetworkAdapter,
   type NormalizedCompetitorPost,
 } from "../types.ts"
+import { createNetworkAdapter } from "./create-adapter.ts"
 
 /** LinkedIn posts dataset — discover by profile URL. */
 const LINKEDIN_POSTS_DATASET_ID = "gd_lyy3tktm25m4avu764"
@@ -69,18 +68,28 @@ function mapLinkedInPost(raw: unknown): NormalizedCompetitorPost | null {
   }
 }
 
-export const linkedinAdapter: NetworkAdapter = {
+/**
+ * Company pages and Showcase pages both publish as org feeds. Bright Data's
+ * `company_url` discover works for `/company/` and `/showcase/`; treating a
+ * showcase as a person `profile_url` returns empty/error rows (posts_found=0).
+ */
+export function isLinkedInOrganizationUrl(profileUrl: string): boolean {
+  return /linkedin\.com\/(company|showcase)\//i.test(profileUrl)
+}
+
+export const linkedinAdapter = createNetworkAdapter({
   network: "linkedin",
-  async fetchPosts(args: FetchPostsArgs, client: BrightDataClient) {
-    const isCompany = /linkedin\.com\/company\//i.test(args.profileUrl)
-    const discoverBy = isCompany ? "company_url" : "profile_url"
+  mapPost: mapLinkedInPost,
+  buildRequest(args: FetchPostsArgs) {
+    const isOrganization = isLinkedInOrganizationUrl(args.profileUrl)
+    const discoverBy = isOrganization ? "company_url" : "profile_url"
     const input: Record<string, unknown> = {
       url: args.profileUrl,
     }
-    if (!isCompany) input.only_authored_posts = true
+    if (!isOrganization) input.only_authored_posts = true
     if (args.startDateIso) input.start_date = args.startDateIso
 
-    const { snapshotId, records } = await client.triggerAndCollect({
+    return {
       options: {
         datasetId: LINKEDIN_POSTS_DATASET_ID,
         type: "discover_new",
@@ -89,21 +98,10 @@ export const linkedinAdapter: NetworkAdapter = {
         includeErrors: true,
       },
       input: [input],
-    })
-
-    const posts = records
-      .map(mapLinkedInPost)
-      .filter((post): post is NormalizedCompetitorPost => Boolean(post))
-      .slice(0, Math.max(1, args.maxPosts))
-
-    return {
-      posts,
-      snapshotId,
-      rawCount: records.length,
       metadata: {
         dataset_id: LINKEDIN_POSTS_DATASET_ID,
         discover_by: discoverBy,
       },
     }
   },
-}
+})

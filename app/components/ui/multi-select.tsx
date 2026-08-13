@@ -1,7 +1,7 @@
 "use client"
 
 import * as React from "react"
-import { Check, ChevronsUpDown, X } from "lucide-react"
+import { Check, ChevronDown, ChevronsUpDown, X } from "lucide-react"
 import { cn } from "@/lib/utils"
 import { Button } from "@/components/ui/button"
 import {
@@ -36,6 +36,8 @@ export interface MultiSelectProps {
   placeholder?: string
   className?: string
   singleSelect?: boolean
+  /** Quiet text + chevron trigger (overview analytics / settings-style). */
+  variant?: "default" | "quiet"
 }
 
 export function MultiSelect({
@@ -46,6 +48,7 @@ export function MultiSelect({
   placeholder = "Select items...",
   className,
   singleSelect = false,
+  variant = "default",
 }: MultiSelectProps) {
   const [open, setOpen] = React.useState(false)
   const [search, setSearch] = React.useState("")
@@ -196,23 +199,45 @@ export function MultiSelect({
     )
   }
 
+  const quietLabel =
+    selectedOptions.length === 0
+      ? placeholder
+      : selectedOptions.length === 1
+        ? selectedOptions[0]?.label ?? placeholder
+        : `${selectedOptions.length} selected`
+
   return (
     <Popover open={open} onOpenChange={setOpen}>
       <PopoverTrigger asChild>
-        <Button
-          type="button"
-          variant="outline"
-          role="combobox"
-          aria-expanded={open}
-          className={cn(
-            "w-full justify-between min-w-[220px]",
-            !safeValue.length && "text-muted-foreground",
-            className
-          )}
-        >
-          <div className="flex flex-wrap gap-1">{renderSelectedContent()}</div>
-          <ChevronsUpDown className="ml-2 h-4 w-4 shrink-0 opacity-50" />
-        </Button>
+        {variant === "quiet" ? (
+          <button
+            type="button"
+            role="combobox"
+            aria-expanded={open}
+            className={cn(
+              "group inline-flex max-w-full items-center gap-1 rounded-sm text-sm text-gray-700 transition-colors hover:text-gray-900 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-gray-300",
+              className,
+            )}
+          >
+            <span className="truncate">{quietLabel}</span>
+            <ChevronDown className="h-3.5 w-3.5 shrink-0 text-gray-400 transition-colors group-hover:text-gray-600" />
+          </button>
+        ) : (
+          <Button
+            type="button"
+            variant="outline"
+            role="combobox"
+            aria-expanded={open}
+            className={cn(
+              "w-full justify-between min-w-[220px]",
+              !safeValue.length && "text-muted-foreground",
+              className
+            )}
+          >
+            <div className="flex flex-wrap gap-1">{renderSelectedContent()}</div>
+            <ChevronsUpDown className="ml-2 h-4 w-4 shrink-0 opacity-50" />
+          </Button>
+        )}
       </PopoverTrigger>
       <PopoverContent 
         ref={popoverContentRef}

@@ -125,6 +125,13 @@ import {
   discoverOrchestratedBuildsFromMessageContentJson,
   isOrchestratedBuildChangePreview,
 } from "./discover-orchestrated-build"
+import {
+  discoverPublishContentFromMessageContentJson,
+  mergeAssistantContentJsonPreservingMeta,
+  publishingPreviewToToolResult,
+} from "./discover-publish-content"
+import { openBrowserTabForPublication } from "../artifacts/open-browser-tab-for-publication"
+import { PublicationBrowserPreviewCard } from "./PublicationBrowserPreviewCard"
 import { useOrchestratedBuildPoll } from "./use-orchestrated-build-poll"
 import { ComponentPlanTraceCards } from "./ComponentPlanTraceCards"
 import { RequestPlanCard } from "./RequestPlanCard"
@@ -158,7 +165,7 @@ import { isGenericComponentPreviewTitle } from "./component-edit-preview-guards"
 import { dispatchTasksShallowNavigation } from "../../app/lib/tasks-shallow-nav"
 import { usePathname } from "next/navigation"
 import { isPlaceholderAiThreadTitle } from "./ai-thread-title"
-import { useChatScrollFollow } from "./use-chat-scroll-follow"
+import { ensureChatScrollRoom, useChatScrollFollow } from "./use-chat-scroll-follow"
 
 interface ChatWindowProps {
   thread: AiThread
@@ -573,6 +580,7 @@ export function ChatWindow({
   const chatEndRef = useRef<HTMLDivElement>(null)
   const scrollContainerRef = useRef<HTMLDivElement>(null)
   const latestUserMessageRef = useRef<HTMLDivElement>(null)
+  const prevLastUserMessageIdRef = useRef<string | null>(null)
   const userMessageScrollAnchorUntilRef = useRef(0)
   const ignoreUserScrollReleaseUntilRef = useRef(0)
   // State (not only a ref) so we can keep bottom scroll-room padding while the
@@ -585,6 +593,7 @@ export function ChatWindow({
     scrollUserMessageIntoView,
     markNewContentBelow,
     jumpToBottom,
+    clearJumpToBottom,
     scrollToBottomOnce,
   } = useChatScrollFollow({ scrollContainerRef })
   const prevMessageCountRef = useRef(0)
@@ -801,10 +810,11 @@ export function ChatWindow({
     content_json?: unknown
   }) => {
     console.debug("[ai-chat] optimistic user append requested", { tempId: temp.id, contentLength: temp.content.length })
-    setPendingMsgs((prev) => [
-      ...prev,
-      {
+    setPendingMsgs((prev) => {
+      const existingIndex = prev.findIndex((row) => row.id === temp.id || row.client_id === temp.id)
+      const nextRow: AiMessage = {
         id: temp.id,
+        client_id: temp.id,
         thread_id: thread.id,
         role: "user",
         content: temp.content,
@@ -812,8 +822,18 @@ export function ChatWindow({
         attachments: temp.attachments,
         status: "pending",
         created_at: new Date().toISOString(),
-      },
-    ])
+      }
+      if (existingIndex >= 0) {
+        const copy = [...prev]
+        copy[existingIndex] = {
+          ...copy[existingIndex],
+          ...nextRow,
+          created_at: copy[existingIndex].created_at,
+        }
+        return copy
+      }
+      return [...prev, nextRow]
+    })
   }
 
   useEffect(() => {
@@ -1080,19 +1100,10 @@ export function ChatWindow({
           content.trim().length > 0
             ? (buildAssistantContentJsonFromMarkdown(content, existingBlocks) as StreamingBlock[])
             : existingBlocks
-        const existingClarification =
-          message.content_json
-          && typeof message.content_json === "object"
-          && !Array.isArray(message.content_json)
-          && (message.content_json as Record<string, unknown>).clarification_request
-            ? (message.content_json as Record<string, unknown>).clarification_request
-            : null
-        const contentJson = existingClarification
-          ? {
-              blocks: contentBlocks,
-              clarification_request: existingClarification,
-            }
-          : contentBlocks
+        const contentJson = mergeAssistantContentJsonPreservingMeta(
+          message.content_json,
+          contentBlocks,
+        )
         const existingTerminal = (message as InFlightAssistantMessage).terminal_state ?? terminalState
         const nextStatus =
           existingTerminal?.kind === "failed"
@@ -1109,6 +1120,11 @@ export function ChatWindow({
       })
     )
     setAssistantActivity((prev) => (prev?.tempId === tempId ? null : prev))
+    // Ensure history refetch brings durable content_json.tool_results (realtime can lag).
+    void queryClient.invalidateQueries({
+      queryKey: ["ai-messages", thread.id],
+      refetchType: "active",
+    })
     // message.completed must not clear clarification cards — only alias temp → persisted id.
     if (payload.messageId) {
       const persistedMessageId = payload.messageId
@@ -1358,6 +1374,58 @@ export function ChatWindow({
         assistantMessageId: tempId,
         payload: event,
       })
+      // Attach publishing preview as soon as the tool finishes — do not wait for
+      // message_output / history refetch (those previously dropped tool_results).
+      const preview =
+        event.details
+        && typeof event.details === "object"
+        && !Array.isArray(event.details)
+        && (event.details as Record<string, unknown>).publishing_preview
+        && typeof (event.details as Record<string, unknown>).publishing_preview === "object"
+          ? ((event.details as Record<string, unknown>).publishing_preview as Record<string, unknown>)
+          : null
+      if (preview && (event.phase === "completed" || event.phase === "warning")) {
+        const toolRow = publishingPreviewToToolResult(preview)
+        setPendingMsgs((prev) =>
+          prev.map((message) => {
+            if (message.id !== tempId || message.role !== "assistant") return message
+            const existing =
+              message.content_json
+              && typeof message.content_json === "object"
+              && !Array.isArray(message.content_json)
+                ? (message.content_json as Record<string, unknown>)
+                : { blocks: normalizeAiRenderableBlocks(message.content_json) }
+            const existingTools = Array.isArray(existing.tool_results)
+              ? [...(existing.tool_results as unknown[])]
+              : []
+            const runId =
+              typeof (toolRow.data_summary as Record<string, unknown> | undefined)
+                ?.publication_run_id === "string"
+                ? String(
+                    (toolRow.data_summary as Record<string, unknown>).publication_run_id,
+                  )
+                : null
+            const already = existingTools.some((row) => {
+              if (!row || typeof row !== "object") return false
+              const summary = (row as Record<string, unknown>).data_summary
+              if (!summary || typeof summary !== "object") return false
+              return (
+                runId != null
+                && (summary as Record<string, unknown>).publication_run_id === runId
+              )
+            })
+            if (already) return message
+            return {
+              ...message,
+              content_json: {
+                ...existing,
+                publishing_preview: preview,
+                tool_results: [...existingTools, toolRow],
+              },
+            }
+          }),
+        )
+      }
       // Specific timeline facts replace generic activity copy for this turn.
       setAssistantActivity((prev) => {
         if (!prev || prev.tempId !== tempId) return prev
@@ -1857,10 +1925,24 @@ export function ChatWindow({
           contentText && contentText.trim()
             ? (buildAssistantContentJsonFromMarkdown(contentText, hydratedBlocks) as StreamingBlock[])
             : (enhanceBlocksWithMarkdownTables(hydratedBlocks, contentText) as StreamingBlock[])
+        const payloadContentJson =
+          payload.content_json
+          && typeof payload.content_json === "object"
+          && !Array.isArray(payload.content_json)
+            ? (payload.content_json as Record<string, unknown>)
+            : null
+        const nextBlocks =
+          resolvedBlocks.length > 0
+            ? resolvedBlocks
+            : normalizeAiRenderableBlocks(message.content_json)
         return {
           ...message,
           content: contentText ?? "",
-          content_json: resolvedBlocks.length > 0 ? resolvedBlocks : message.content_json ?? [],
+          content_json: mergeAssistantContentJsonPreservingMeta(
+            message.content_json,
+            nextBlocks,
+            payloadContentJson,
+          ),
           attachments: mergedAttachments,
           status: "complete",
           reconciled_message_id: messageId ?? (message as InFlightAssistantMessage).reconciled_message_id ?? null,
@@ -2115,6 +2197,7 @@ export function ChatWindow({
     async (args: {
       editedMessage: AiMessage
       newContent: string
+      newContentJson?: unknown
       attachments: AiAttachmentMeta[]
       taggedTaskIds: number[]
       taggedProjectIds: number[]
@@ -2126,20 +2209,21 @@ export function ChatWindow({
       setPendingMsgs([])
       setAssistantActivity(null)
       const cutoff = args.editedMessage.created_at
-      const editedId = args.editedMessage.id
+      // Must match useMessages queryKey (includes publicUserId).
       queryClient.setQueryData(
-        ["ai-messages", thread.id, MESSAGES_PAGE_SIZE_DEFAULT],
+        ["ai-messages", thread.id, MESSAGES_PAGE_SIZE_DEFAULT, publicUserId],
         (old: AiMessage[] | undefined) => {
           if (!old) return []
-          return old
-            .filter((m) => m.id === editedId || m.created_at < cutoff)
-            .map((m) => (m.id === editedId ? { ...m, content: args.newContent } : m))
-        }
+          return old.filter((m) => m.created_at < cutoff)
+        },
       )
 
       await sendConversationAiChatStream({
         threadId: thread.id,
         message: args.newContent,
+        ...(args.newContentJson && typeof args.newContentJson === "object"
+          ? { userMessageContentJson: args.newContentJson as Record<string, unknown> }
+          : {}),
         attachments: args.attachments,
         activeChannelId: activeChannelId ?? null,
         taggedTaskIds: args.taggedTaskIds,
@@ -2154,7 +2238,8 @@ export function ChatWindow({
         modelKey,
         autoRun: false,
         stream: true,
-        includeOptimisticUser: false,
+        includeOptimisticUser: true,
+        onOptimistic: handleOptimistic,
         onAssistantStreamStart: handleAssistantStreamStart,
         onAssistantStreamChunk: handleAssistantStreamChunk,
         onAssistantStreamReset: handleAssistantStreamReset,
@@ -2177,11 +2262,13 @@ export function ChatWindow({
     [
       queryClient,
       thread.id,
+      publicUserId,
       activeChannelId,
       ambientContext,
       modelKey,
       chatContext?.mode,
       chatContext?.componentId,
+      handleOptimistic,
       handleAssistantStreamStart,
       handleAssistantStreamChunk,
       handleAssistantStreamReset,
@@ -2458,6 +2545,7 @@ export function ChatWindow({
     () => buildRenderableMessages(messages || [], pendingMsgs),
     [messages, pendingMsgs]
   )
+  const isChatEmpty = !isMessagesLoading && allMessages.length === 0
 
   const activeClarification = useMemo(() => {
     const candidate = pendingClarification ?? resolveActiveClarificationFromMessages(allMessages)
@@ -2750,6 +2838,53 @@ export function ChatWindow({
     }
   }, [allMessages, thread.id])
 
+  const openedPublishRunsRef = useRef<Set<string>>(new Set())
+  useEffect(() => {
+    for (const message of allMessages) {
+      if (message.role !== "assistant") continue
+      const discovered = discoverPublishContentFromMessageContentJson(message.content_json)
+      for (const item of discovered) {
+        if (openedPublishRunsRef.current.has(item.publicationRunId)) continue
+        openedPublishRunsRef.current.add(item.publicationRunId)
+        // Associate the peer Browser tab without stealing focus from AI.
+        // Explicit open_browser_tab=true (legacy) still activates the full pane.
+        openBrowserTabForPublication({
+          publicationRunId: item.publicationRunId,
+          liveViewUrl: item.liveViewUrl,
+          destinationId: item.destinationId,
+          destinationName: item.destinationName,
+          artifactId: item.artifactId,
+          activate: item.openBrowserTab === true,
+          phase: item.status,
+        })
+      }
+    }
+  }, [allMessages])
+
+  const publicationPreviewsByAssistantId = useMemo(() => {
+    const map = new Map<string, ReturnType<typeof discoverPublishContentFromMessageContentJson>>()
+    const remember = (
+      messageId: string | null | undefined,
+      discovered: ReturnType<typeof discoverPublishContentFromMessageContentJson>,
+    ) => {
+      if (!messageId || discovered.length === 0) return
+      const existing = map.get(messageId) ?? []
+      const byRun = new Map(existing.map((item) => [item.publicationRunId, item]))
+      for (const item of discovered) byRun.set(item.publicationRunId, item)
+      map.set(messageId, Array.from(byRun.values()))
+    }
+    for (const message of allMessages) {
+      if (message.role !== "assistant") continue
+      const discovered = discoverPublishContentFromMessageContentJson(message.content_json).filter(
+        (item) => item.showBrowserPreview,
+      )
+      remember(message.id, discovered)
+      const reconciledId = (message as InFlightAssistantMessage).reconciled_message_id
+      remember(reconciledId, discovered)
+    }
+    return map
+  }, [allMessages])
+
   const orchestratedBuildIdsByAssistantId = useMemo(() => {
     const map = new Map<string, string[]>()
     const push = (messageId: string, buildId: string) => {
@@ -3009,19 +3144,43 @@ export function ChatWindow({
 
     if (!addedMessages) return
 
-    const last = allMessages[nextCount - 1]
-    if (last?.role !== "user") return
+    // The optimistic user message and the assistant streaming placeholder are
+    // appended in the SAME React commit, so the last message is usually the
+    // assistant. Anchor on the last USER message instead of the tail.
+    let lastUser: (typeof allMessages)[number] | null = null
+    for (let index = nextCount - 1; index >= 0; index -= 1) {
+      if (allMessages[index]?.role === "user") {
+        lastUser = allMessages[index]
+        break
+      }
+    }
+    if (!lastUser) return
 
     const isNewlySubmittedUserMessage =
-      last.status === "pending"
-      || pendingMsgs.some((message) => message.role === "user" && message.id === last.id)
-    if (!isNewlySubmittedUserMessage) return
+      lastUser.status === "pending"
+      || pendingMsgs.some((message) => message.role === "user" && message.id === lastUser.id)
+      // Persist/reconcile can clear pending in the same tick as append; still pin
+      // when this user message is brand new at the end of a growing thread.
+      // prevCount > 0 keeps initial thread hydration on the scroll-to-bottom path.
+      || (prevCount > 0 && lastUser.id !== prevLastUserMessageIdRef.current)
+    if (!isNewlySubmittedUserMessage) {
+      prevLastUserMessageIdRef.current = lastUser.id
+      return
+    }
+    prevLastUserMessageIdRef.current = lastUser.id
 
     // Keep scroll-room padding long enough that builds/previews can mount
     // after a short assistant ack — otherwise the bubble can't reach the top.
     userMessageScrollAnchorUntilRef.current = performance.now() + 20000
     ignoreUserScrollReleaseUntilRef.current = performance.now() + 2800
+    // Imperative padding BEFORE measuring scroll — React class toggle lags one paint
+    // and is the main reason long threads fail to pin the new user message at top.
+    ensureChatScrollRoom(scrollContainerRef.current, true)
     setKeepUserMessageScrollRoom(true)
+    // Comfort-view pins the user message near the top with bottom padding, so
+    // the viewport is intentionally not "near bottom". Hide the jump chip —
+    // it is only for catching up after scrolling away from live content.
+    clearJumpToBottom()
 
     // Same layout pass as padding: avoid rAF-only scroll that races paint.
     scrollLatestUserMessageIntoComfortView("auto")
@@ -3034,6 +3193,7 @@ export function ChatWindow({
     const releaseTimer = window.setTimeout(() => {
       if (performance.now() >= userMessageScrollAnchorUntilRef.current) {
         setKeepUserMessageScrollRoom(false)
+        ensureChatScrollRoom(scrollContainerRef.current, false)
       }
     }, 20200)
 
@@ -3041,7 +3201,13 @@ export function ChatWindow({
       for (const timer of delayedTimers) window.clearTimeout(timer)
       window.clearTimeout(releaseTimer)
     }
-  }, [allMessages, pendingMsgs, scrollLatestUserMessageIntoComfortView])
+  }, [
+    allMessages,
+    pendingMsgs,
+    scrollLatestUserMessageIntoComfortView,
+    scrollContainerRef,
+    clearJumpToBottom,
+  ])
 
   // Re-anchor after padding mounts / content below the user message grows
   // (assistant stream, preview cards, build cards). Padding alone is what makes
@@ -3049,8 +3215,9 @@ export function ChatWindow({
   useLayoutEffect(() => {
     if (!keepUserMessageScrollRoom) return
     if (performance.now() >= userMessageScrollAnchorUntilRef.current) return
+    clearJumpToBottom()
     scrollLatestUserMessageIntoComfortView("auto")
-  }, [keepUserMessageScrollRoom, scrollLatestUserMessageIntoComfortView])
+  }, [keepUserMessageScrollRoom, scrollLatestUserMessageIntoComfortView, clearJumpToBottom])
 
   useEffect(() => {
     if (streamScrollSignature === prevStreamSignatureRef.current) return
@@ -3059,6 +3226,7 @@ export function ChatWindow({
     const isAnchored = performance.now() < userMessageScrollAnchorUntilRef.current
     if (isAnchored) {
       // Keep pinned while previews/builds grow — even if the text stream already ended.
+      clearJumpToBottom()
       scrollLatestUserMessageIntoComfortView("auto")
       return
     }
@@ -3070,6 +3238,7 @@ export function ChatWindow({
     isAssistantStreaming,
     markNewContentBelow,
     scrollLatestUserMessageIntoComfortView,
+    clearJumpToBottom,
   ])
 
   useEffect(() => {
@@ -3182,15 +3351,23 @@ export function ChatWindow({
           Drop files to attach
         </div>
       ) : null}
-      <div className="relative flex min-h-0 flex-1 flex-col">
+      <div
+        className={
+          isChatEmpty
+            ? "relative flex min-h-0 flex-1 flex-col justify-center"
+            : "relative flex min-h-0 flex-1 flex-col"
+        }
+      >
+        {!isChatEmpty ? (
+          <>
         <div
-          ref={scrollContainerRef}
-          className={`flex-1 overflow-x-hidden overflow-y-auto p-4 space-y-4 min-h-0 min-w-0 max-w-full${
-            keepUserMessageScrollRoom || isAssistantStreaming
-              ? " pb-[70vh] md:pb-[60vh]"
-              : ""
-          }`}
-        >
+        ref={scrollContainerRef}
+        className={`flex-1 overflow-x-hidden overflow-y-auto p-4 space-y-4 min-h-0 min-w-0 max-w-full${
+          keepUserMessageScrollRoom || isAssistantStreaming
+            ? " pb-[70vh] md:pb-[60vh]"
+            : ""
+        }`}
+      >
         {allMessages.map((m, messageIndex) => {
           const editPreviewKeys = (m.role === "assistant"
             ? editStreamKeysByAssistantId.get(m.id) ?? []
@@ -3325,7 +3502,7 @@ export function ChatWindow({
             suppressMutationProgress ? [] : changePreviewGroups
           return (
             <div
-              key={m.id}
+              key={m.client_id ?? m.id}
               ref={messageIndex === latestUserMessageIndex ? latestUserMessageRef : undefined}
               className="w-full min-w-0 max-w-full scroll-mt-4"
             >
@@ -3405,6 +3582,35 @@ export function ChatWindow({
                     </div>
                   ) : null
                 }
+                publicationPreview={(() => {
+                  const reconciledId = (m as InFlightAssistantMessage).reconciled_message_id
+                  const items = [
+                    ...(publicationPreviewsByAssistantId.get(m.id) ?? []),
+                    ...((reconciledId
+                      ? publicationPreviewsByAssistantId.get(reconciledId)
+                      : null) ?? []),
+                  ].filter(
+                    (item, index, all) =>
+                      all.findIndex((row) => row.publicationRunId === item.publicationRunId)
+                      === index,
+                  )
+                  if (items.length === 0) return null
+                  return (
+                    <div className="space-y-2 w-full min-w-0 max-w-full">
+                      {items.map((item) => (
+                        <PublicationBrowserPreviewCard
+                          key={`${m.id}:${item.publicationRunId}`}
+                          publicationRunId={item.publicationRunId}
+                          liveViewUrl={item.liveViewUrl}
+                          destinationId={item.destinationId}
+                          destinationName={item.destinationName}
+                          artifactId={item.artifactId}
+                          initialStatus={item.status}
+                        />
+                      ))}
+                    </div>
+                  )
+                })()}
                 changePreview={
                   !hasExecutionTimeline && visibleChangePreviewGroups.length > 0 ? (
                     <div className="space-y-2 w-full min-w-0 max-w-full">
@@ -3510,7 +3716,7 @@ export function ChatWindow({
         })()}
         <div ref={chatEndRef} />
         </div>
-        {showJumpToBottom ? (
+        {showJumpToBottom && !keepUserMessageScrollRoom ? (
           <button
             type="button"
             onClick={jumpToBottom}
@@ -3524,13 +3730,26 @@ export function ChatWindow({
             </span>
           </button>
         ) : null}
-      </div>
-      <div className="p-4 flex-shrink-0">
+          </>
+        ) : null}
+      <div className={isChatEmpty ? "w-full shrink-0 px-4 pb-4 pt-2" : "p-4 flex-shrink-0"}>
         {hasPersistedThreadId && isUsageSendBlocked(threadUsage) ? (
           <AiChatUsageLimitCard usage={threadUsage} canReviewLimits={canReviewLimits} />
         ) : null}
-        {!hasPersistedThreadId ? (
-          <p className="mb-2 text-[11px] text-muted-foreground">Preparing chat…</p>
+        {isChatEmpty ? (
+          <div className="mb-4 text-center">
+            <h2 className="text-lg font-medium tracking-tight text-gray-900">
+              {(() => {
+                if (!isPlaceholderAiThreadTitle(thread.title) && thread.title?.trim()) {
+                  return thread.title.trim()
+                }
+                const firstName = (fullName || "").trim().split(/\s+/)[0]
+                return firstName
+                  ? `What do you want to build, ${firstName}?`
+                  : "What do you want to build?"
+              })()}
+            </h2>
+          </div>
         ) : null}
         <Composer
           threadId={thread.id}
@@ -3582,6 +3801,7 @@ export function ChatWindow({
           streamAbortRef={streamAbortRef}
           isAssistantStreaming={isAssistantStreaming}
         />
+      </div>
       </div>
       <SelectionAskAiMenu
         containerSelector='[data-ai-selectable="chat-message"]'

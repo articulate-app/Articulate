@@ -4,6 +4,11 @@ import { ChevronDown } from "lucide-react"
 import { useState } from "react"
 import { cn } from "@/lib/utils"
 import {
+  AI_PANE_TAB_ACTIVE_CLASS,
+  AI_PANE_TAB_CHIP_CLASS,
+  AI_PANE_TAB_INACTIVE_CLASS,
+} from "../../../features/ai-chat/tab-strip-tokens"
+import {
   LEFT_PANE_OBJECTS,
   getAdaptiveObjectSwitcherState,
   leftPaneObjectLabel,
@@ -18,11 +23,6 @@ import {
 } from "../ui/dropdown-menu"
 import { IconTooltip } from "../ui/icon-tooltip"
 
-const pillBase =
-  "inline-flex h-8 shrink-0 items-center gap-1.5 rounded-full border px-3 text-sm font-medium transition focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-gray-400"
-const pillActive = "border-transparent bg-gray-100 text-gray-900 hover:bg-gray-200"
-const pillInactive = "border-gray-200 bg-white text-gray-900 hover:bg-gray-50"
-
 export function LeftObjectSwitcher({
   value,
   onChange,
@@ -36,17 +36,26 @@ export function LeftObjectSwitcher({
   className?: string
   /** Available horizontal space (px) for the switcher; drives the adaptive pill/overflow layout. */
   containerWidth?: number | null
-  /** When the left pane is showing tasks, object pills collapse earlier to protect task controls. */
+  /** Kept for call-site compatibility; pills greedily fit available width on all views. */
   isTaskView?: boolean
   /** Force the compact single-dropdown layout regardless of width (e.g. mobile header). */
   forceCompact?: boolean
 }) {
   const [open, setOpen] = useState(false)
 
-  const state: AdaptiveObjectSwitcherState =
-    forceCompact || containerWidth == null
-      ? { mode: "dropdown", visibleObjects: [], overflowObjects: [...LEFT_PANE_OBJECTS] }
-      : getAdaptiveObjectSwitcherState({ containerWidth, activeObject: value, isTaskView })
+  // Prefer measured width from the parent. Treat 0 / null as "unknown" so we don't lock into the
+  // compact dropdown when the row hasn't been laid out yet (or was measured while shrink-wrapped).
+  const hasMeasuredWidth = typeof containerWidth === "number" && containerWidth > 0
+  const state: AdaptiveObjectSwitcherState = forceCompact
+    ? { mode: "dropdown", visibleObjects: [], overflowObjects: [...LEFT_PANE_OBJECTS] }
+    : hasMeasuredWidth
+      ? getAdaptiveObjectSwitcherState({ containerWidth, activeObject: value, isTaskView })
+      : // Optimistic hybrid until measurement arrives — avoids a sticky "Tasks ▾" that never expands.
+        {
+          mode: "hybrid",
+          visibleObjects: [...LEFT_PANE_OBJECTS],
+          overflowObjects: [],
+        }
 
   const activeInOverflow = state.overflowObjects.includes(value)
   // Overflow trigger shows the active object's label when the selection lives inside the menu, so the
@@ -59,7 +68,12 @@ export function LeftObjectSwitcher({
         <DropdownMenuTrigger asChild>
           <button
             type="button"
-            className={cn(pillBase, activeInOverflow ? pillActive : pillInactive)}
+            className={cn(
+              AI_PANE_TAB_CHIP_CLASS,
+              "max-w-none",
+              activeInOverflow ? AI_PANE_TAB_ACTIVE_CLASS : AI_PANE_TAB_INACTIVE_CLASS,
+              "font-normal",
+            )}
             aria-label={
               state.mode === "dropdown"
                 ? "Switch left pane object"
@@ -69,8 +83,10 @@ export function LeftObjectSwitcher({
             aria-expanded={open}
             aria-current={activeInOverflow ? "true" : undefined}
           >
-            <span>{state.mode === "dropdown" ? leftPaneObjectLabel(value) : overflowLabel}</span>
-            <ChevronDown className="h-4 w-4 opacity-70 stroke-[1.75]" />
+            <span className="truncate">
+              {state.mode === "dropdown" ? leftPaneObjectLabel(value) : overflowLabel}
+            </span>
+            <ChevronDown className="h-3.5 w-3.5 shrink-0 opacity-70" />
           </button>
         </DropdownMenuTrigger>
       </IconTooltip>
@@ -84,7 +100,7 @@ export function LeftObjectSwitcher({
               setOpen(false)
             }}
             aria-current={option === value ? "true" : undefined}
-            className={cn(option === value && "bg-muted font-semibold")}
+            className={cn(option === value && "bg-muted font-medium")}
           >
             {leftPaneObjectLabel(option)}
           </DropdownMenuItem>
@@ -98,12 +114,12 @@ export function LeftObjectSwitcher({
     return <div className={cn("inline-flex items-center", className)}>{overflowMenu}</div>
   }
 
-  // Hybrid: visible primary pills + an overflow dropdown for the remaining object types.
+  // Hybrid: visible primary chips + an overflow dropdown for the remaining object types.
   return (
     <div
       role="group"
       aria-label="Switch left pane object"
-      className={cn("inline-flex items-center gap-1", className)}
+      className={cn("inline-flex items-center gap-0.5", className)}
     >
       {state.visibleObjects.map((option) => {
         const isActive = option === value
@@ -113,9 +129,14 @@ export function LeftObjectSwitcher({
             type="button"
             onClick={() => onChange(option)}
             aria-current={isActive ? "true" : undefined}
-            className={cn(pillBase, isActive ? pillActive : pillInactive)}
+            className={cn(
+              AI_PANE_TAB_CHIP_CLASS,
+              "max-w-none",
+              isActive ? AI_PANE_TAB_ACTIVE_CLASS : AI_PANE_TAB_INACTIVE_CLASS,
+              "font-normal",
+            )}
           >
-            {leftPaneObjectLabel(option)}
+            <span className="truncate">{leftPaneObjectLabel(option)}</span>
           </button>
         )
       })}

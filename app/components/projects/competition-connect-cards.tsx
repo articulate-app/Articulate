@@ -6,7 +6,6 @@ import { Loader2, Plus, Sparkles } from "lucide-react"
 import { Button } from "../ui/button"
 import { Card } from "../ui/card"
 import { Input } from "../ui/input"
-import { Label } from "../ui/label"
 import { toast } from "../ui/use-toast"
 import { cn } from "@/lib/utils"
 import {
@@ -15,8 +14,10 @@ import {
   getProjectWebsiteUrl,
 } from "@/lib/services/project-brand-social"
 import {
+  COMPETITOR_NETWORK_LABELS,
   PROJECT_COMPETITORS_QUERY_KEY,
   discoverCompetitorSocialProfilesFromWebsite,
+  type DiscoverSocialProfilesResult,
 } from "@/lib/services/project-competitors"
 import {
   PROJECT_COMPETITIVE_SOURCES_QUERY_KEY,
@@ -38,9 +39,43 @@ function hostLabel(url: string | null | undefined): string | null {
   }
 }
 
+function networkList(result: DiscoverSocialProfilesResult): string {
+  return result.createdNetworks
+    .map((network) => COMPETITOR_NETWORK_LABELS[network])
+    .join(", ")
+}
+
+/** One toast that answers both "what did you find?" and "is it syncing?". */
+function discoveryToast(result: DiscoverSocialProfilesResult) {
+  if (result.created === 0) {
+    const alreadyLinked = result.candidates.length > 0
+    return {
+      title: alreadyLinked ? "Profiles already linked" : "No social profiles found",
+      description: alreadyLinked
+        ? "Every profile on the website is already connected."
+        : "We could not find social links on that website. Add a profile URL manually below.",
+      variant: (alreadyLinked ? "default" : "destructive") as "default" | "destructive",
+    }
+  }
+
+  const found = `${result.created} profile(s) connected: ${networkList(result)}.`
+  if (!result.sync.started) {
+    return {
+      title: "Profiles connected — sync not started",
+      description: `${found} ${result.sync.error ?? "Start the sync from Settings."}`,
+      variant: "destructive" as const,
+    }
+  }
+  return {
+    title: `${result.created} profile(s) connected`,
+    description: `${found} Posts are syncing now and appear within a few minutes.`,
+    variant: "default" as const,
+  }
+}
+
 /**
  * Empty-state CTA for the project's own social presence: read the project
- * website once and link every profile it advertises.
+ * website once, link every profile it advertises and start syncing them.
  */
 export function BrandSocialConnectCard({
   projectId,
@@ -82,24 +117,7 @@ export function BrandSocialConnectCard({
         queryKey: [PROJECT_BRAND_SOCIAL_PROFILES_QUERY_KEY, projectId],
       })
       onDone?.()
-      if (result.created === 0) {
-        toast({
-          title:
-            result.candidates.length > 0
-              ? "Profiles already linked"
-              : "No social profiles found",
-          description:
-            result.candidates.length > 0
-              ? "Every profile on the website is already connected."
-              : "We could not find social links on that website. Add a profile URL manually below.",
-          variant: result.candidates.length > 0 ? "default" : "destructive",
-        })
-        return
-      }
-      toast({
-        title: `${result.created} profile(s) connected`,
-        description: "Posts start syncing on the next run — or sync now.",
-      })
+      toast(discoveryToast(result))
     } catch (error) {
       toast({
         title: "Could not read that website",
@@ -174,7 +192,6 @@ export function AddCompetitorCard({
 }) {
   const queryClient = useQueryClient()
   const [websiteUrl, setWebsiteUrl] = useState("")
-  const [name, setName] = useState("")
   const [isAdding, setIsAdding] = useState(false)
 
   const handleAdd = async () => {
@@ -191,10 +208,8 @@ export function AddCompetitorCard({
       const result = await addCompetitorFromUrl({
         projectId,
         websiteUrl: websiteUrl.trim(),
-        competitorName: name.trim() || null,
       })
       setWebsiteUrl("")
-      setName("")
       await Promise.all([
         queryClient.invalidateQueries({
           queryKey: [PROJECT_COMPETITORS_QUERY_KEY, projectId],
@@ -210,7 +225,9 @@ export function AddCompetitorCard({
 
       const socialPart =
         result.socialProfilesCreated > 0
-          ? `${result.socialProfilesCreated} social profile(s) linked. `
+          ? `${result.socialProfilesCreated} social profile(s) linked and ${
+              result.socialSyncStarted ? "syncing" : "waiting for a sync"
+            }. `
           : ""
       if (!result.content.sync.ok || !result.content.discover.ok) {
         toast({
@@ -272,19 +289,6 @@ export function AddCompetitorCard({
           minute.
         </p>
       ) : null}
-      <details className="text-xs text-gray-500">
-        <summary className="cursor-pointer text-gray-600">
-          Advanced: set a display name
-        </summary>
-        <div className="mt-2 space-y-1">
-          <Label className="text-xs text-gray-500">Name</Label>
-          <Input
-            value={name}
-            onChange={(event) => setName(event.target.value)}
-            placeholder="Defaults to the website domain"
-          />
-        </div>
-      </details>
     </Card>
   )
 }
@@ -312,17 +316,7 @@ export function DiscoverCompetitorSocialButton({
         websiteUrl,
       })
       await onDone?.()
-      toast({
-        title:
-          result.created > 0
-            ? `${result.created} profile(s) linked`
-            : "No new profiles found",
-        description:
-          result.created > 0
-            ? "Posts start syncing on the next run."
-            : "We could not find social links on that website.",
-        variant: result.created > 0 ? "default" : "destructive",
-      })
+      toast(discoveryToast(result))
     } catch (error) {
       toast({
         title: "Could not read that website",

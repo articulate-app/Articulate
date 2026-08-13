@@ -1,7 +1,7 @@
 "use client"
 
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react"
-import { useQuery, useQueryClient } from "@tanstack/react-query"
+import { keepPreviousData, useQuery, useQueryClient } from "@tanstack/react-query"
 import debounce from "lodash.debounce"
 import {
   DndContext,
@@ -28,12 +28,23 @@ import {
   Trash2,
 } from "lucide-react"
 import { ArtifactDocumentEditor } from "./artifact-document-editor"
+import { ArtifactRichDiffBody } from "./artifact-rich-diff-body"
 import { openArtifactCenterTab } from "./open-artifact-center-tab"
 import {
   buildArtifactDocumentSelection,
   openArtifactSelectionInAiPane,
 } from "./open-artifact-selection-in-ai-pane"
 import { computeArtifactContentHash } from "./artifact-selection"
+import {
+  progressiveLiveAfterHtml,
+  resolveArtifactChangeSides,
+  resolveArtifactPreviewChangeInput,
+} from "./resolve-artifact-change-diff"
+import {
+  buildHtmlEmailContentJson,
+  isHtmlEmailArtifact,
+} from "./artifact-html-document"
+import { isArtifactLiveEditLocked } from "./artifact-live-edit-lock"
 import {
   deleteArtifact,
   getArtifact,
@@ -147,6 +158,223 @@ function SortableArtifactShell({
   return <>{children({ setNodeRef, style, attributes, listeners, isDragging })}</>
 }
 
+type StackArtifactChangeDiff = {
+  beforeText: string | null
+  beforeContentJson: ArtifactContentJson | null
+  afterText: string | null
+  afterContentJson: ArtifactContentJson | null
+  beforeHtml: string | null
+  afterHtml: string | null
+  baselineContentJson: ArtifactContentJson | null
+  baselineContentText: string | null
+}
+
+function resolveStackArtifactChangeDiff(args: {
+  artifact: TaskArtifact
+  live: LivePreviewEntry | null
+  isLiveBusy: boolean
+}): StackArtifactChangeDiff | null {
+  const { artifact, live, isLiveBusy } = args
+  if (!live) return null
+  const input = resolveArtifactPreviewChangeInput({
+    phase: live.phase,
+    isBusy: isLiveBusy,
+    streaming: live.streaming === true,
+    beforeContentText: live.beforeContentText,
+    beforeContentJson: live.beforeContentJson,
+    contentText: live.contentText,
+    contentJson: live.contentJson,
+    diffContentText: live.diffContentText,
+    sectionHtml: live.sectionHtml,
+    sectionBeforeHtml: live.sectionBeforeHtml,
+    streamSnippet: live.streamSnippet,
+    fallbackAfterText: artifact.content_text,
+    fallbackAfterContentJson: artifact.content_json,
+    baselineContentJson: artifact.content_json,
+    baselineContentText: artifact.content_text,
+  })
+  if (!input) return null
+  return {
+    beforeText: input.beforeText ?? null,
+    beforeContentJson: (input.beforeContentJson as ArtifactContentJson | null) ?? null,
+    afterText: input.afterText ?? null,
+    afterContentJson: (input.afterContentJson as ArtifactContentJson | null) ?? null,
+    beforeHtml: input.beforeHtml ?? null,
+    afterHtml: input.afterHtml ?? null,
+    baselineContentJson: (input.baselineContentJson as ArtifactContentJson | null) ?? null,
+    baselineContentText: input.baselineContentText ?? null,
+  }
+}
+
+function StackArtifactExpandedBody({
+  display,
+  live,
+  isLiveBusy,
+  editorForceKey,
+  mediaSelectHandlers,
+  updateDraft,
+  openFullscreen,
+  showChanges,
+}: {
+  display: TaskArtifact
+  live: LivePreviewEntry | null
+  isLiveBusy: boolean
+  editorForceKey: string
+  mediaSelectHandlers?: {
+    onSelectImagePoint?: (args: {
+      attachmentId: string
+      x: number
+      y: number
+    }) => void
+    onSelectImageRect?: (args: {
+      attachmentId: string
+      x: number
+      y: number
+      width: number
+      height: number
+    }) => void
+    onSelectVideoTime?: (args: { attachmentId: string; timeSeconds: number }) => void
+    onSelectAsset?: (args: { attachmentId: string }) => void
+  }
+  updateDraft: (
+    artifactId: string,
+    patch: Partial<ArtifactDraft>,
+    base: TaskArtifact,
+  ) => void
+  openFullscreen: () => void
+  showChanges: boolean
+}) {
+  const progressiveHtml = live ? progressiveLiveAfterHtml(live) : null
+  const streamedDisplay = useMemo(() => {
+    if (!progressiveHtml || !isLiveBusy) return display
+    const preferHtmlEmail =
+      isHtmlEmailArtifact(display)
+      || /<!doctype\s+html|<html\b|role\s*=\s*["']presentation["']/i.test(progressiveHtml)
+    return {
+      ...display,
+      title: live?.title ?? display.title,
+      content_text: progressiveHtml,
+      content_json: preferHtmlEmail
+        ? buildHtmlEmailContentJson(progressiveHtml, display.content_json)
+        : {
+            ...(typeof display.content_json === "object" && display.content_json
+              ? display.content_json
+              : { version: 1 }),
+            blocks: [
+              {
+                id: "body",
+                type: "rich_text",
+                html: progressiveHtml,
+                text: progressiveHtml.replace(/<[^>]+>/g, " ").replace(/\s+/g, " ").trim().slice(0, 20000),
+              },
+            ],
+          },
+    }
+  }, [display, isLiveBusy, live?.title, progressiveHtml])
+
+  const changeDiff = useMemo(
+    () => resolveStackArtifactChangeDiff({ artifact: display, live, isLiveBusy }),
+    [display, isLiveBusy, live],
+  )
+  const sides = useMemo(() => {
+    if (!changeDiff) return null
+    return resolveArtifactChangeSides({
+      beforeText: changeDiff.beforeText,
+      beforeContentJson: changeDiff.beforeContentJson,
+      afterText: changeDiff.afterText,
+      afterContentJson: changeDiff.afterContentJson,
+      beforeHtml: changeDiff.beforeHtml,
+      afterHtml: changeDiff.afterHtml,
+      baselineContentJson: changeDiff.baselineContentJson,
+      baselineContentText: changeDiff.baselineContentText,
+    })
+  }, [changeDiff])
+
+  const streamForceKey = progressiveHtml
+    ? `${editorForceKey}:stream:${progressiveHtml.length}`
+    : editorForceKey
+
+  return (
+    <div className="min-h-[12rem] max-h-[28rem] resize-y overflow-auto border-t border-gray-100">
+      {showChanges && sides?.hasChanges && !progressiveHtml ? (
+        <ArtifactRichDiffBody
+          beforeHtml={sides.beforeHtml}
+          afterHtml={sides.afterHtml}
+          prebuiltHtml={sides.trackChangesHtml}
+        />
+      ) : (
+        <ArtifactDocumentEditor
+          artifact={streamedDisplay}
+          forceContentKey={streamForceKey}
+          readOnly={isLiveBusy}
+          onContentJsonChange={(contentJson) => {
+            updateDraft(display.id, { contentJson }, display)
+          }}
+          onContentTextChange={(contentText) => {
+            updateDraft(display.id, { contentText }, display)
+          }}
+          onOpenFullscreen={openFullscreen}
+          {...mediaSelectHandlers}
+        />
+      )}
+    </div>
+  )
+}
+
+function StackArtifactChangeToggle({
+  display,
+  live,
+  isLiveBusy,
+  showChanges,
+  onToggle,
+}: {
+  display: TaskArtifact
+  live: LivePreviewEntry | null
+  isLiveBusy: boolean
+  showChanges: boolean
+  onToggle: () => void
+}) {
+  const changeDiff = useMemo(
+    () => resolveStackArtifactChangeDiff({ artifact: display, live, isLiveBusy }),
+    [display, isLiveBusy, live],
+  )
+  const sides = useMemo(() => {
+    if (!changeDiff) return null
+    return resolveArtifactChangeSides({
+      beforeText: changeDiff.beforeText,
+      beforeContentJson: changeDiff.beforeContentJson,
+      afterText: changeDiff.afterText,
+      afterContentJson: changeDiff.afterContentJson,
+      beforeHtml: changeDiff.beforeHtml,
+      afterHtml: changeDiff.afterHtml,
+      baselineContentJson: changeDiff.baselineContentJson,
+      baselineContentText: changeDiff.baselineContentText,
+    })
+  }, [changeDiff])
+  if (!sides?.hasChanges) return null
+  // Same chrome as chat preview cards: only +/− counters (no "Document"/"Changes" label).
+  return (
+    <button
+      type="button"
+      onClick={onToggle}
+      className={cn(
+        "inline-flex h-7 shrink-0 items-center gap-1.5 rounded-md px-1.5 text-xs",
+        showChanges ? "bg-gray-100" : "hover:bg-gray-50",
+      )}
+      aria-pressed={showChanges}
+      aria-label={showChanges ? "Show editable document" : "Show changes"}
+      title={showChanges ? "Show editable document" : "Show changes"}
+    >
+      {sides.stats.added > 0 ? (
+        <span className="font-medium text-emerald-600">+{sides.stats.added}</span>
+      ) : null}
+      {sides.stats.removed > 0 ? (
+        <span className="font-medium text-red-600">−{sides.stats.removed}</span>
+      ) : null}
+    </button>
+  )
+}
+
 /**
  * Renders artifacts for a task, project, or AI chat thread.
  * Live build previews merge in place by build_id + unit_id + artifact_id.
@@ -171,6 +399,7 @@ export function ArtifactWorkspace({
   const [expandedStackIds, setExpandedStackIds] = useState<Set<string>>(() => new Set())
   const [collapsedStackIds, setCollapsedStackIds] = useState<Set<string>>(() => new Set())
   const [collapsedStackTouched, setCollapsedStackTouched] = useState(false)
+  const [stackShowChangesById, setStackShowChangesById] = useState<Record<string, boolean>>({})
   const [draftByArtifactId, setDraftByArtifactId] = useState<Record<string, ArtifactDraft>>({})
   const [titleDraftById, setTitleDraftById] = useState<Record<string, string>>({})
   const [pendingDeleteId, setPendingDeleteId] = useState<string | null>(null)
@@ -193,20 +422,41 @@ export function ArtifactWorkspace({
     useSensor(KeyboardSensor, { coordinateGetter: sortableKeyboardCoordinates }),
   )
 
+  // Metadata-first for a fast title list; full bodies hydrate in the background.
+  const taskMetaQuery = useQuery({
+    queryKey: ["task-artifacts-meta", taskId],
+    queryFn: () => listTaskArtifacts({ taskId: taskId!, includeContent: false }),
+    enabled: taskId != null && taskId > 0,
+    staleTime: 60_000,
+    placeholderData: keepPreviousData,
+  })
+
   const taskQuery = useQuery({
     queryKey: ["task-artifacts", taskId],
     queryFn: () => listTaskArtifacts({ taskId: taskId!, includeContent: true }),
     enabled: taskId != null && taskId > 0,
-    staleTime: 0,
-    refetchOnMount: "always",
+    staleTime: 60_000,
+    placeholderData: keepPreviousData,
+  })
+
+  const projectMetaQuery = useQuery({
+    queryKey: ["project-artifacts-meta", projectId],
+    queryFn: () => listProjectArtifacts({ projectId: projectId!, includeContent: false }),
+    enabled: (taskId == null || taskId <= 0) && projectId != null && projectId > 0,
+    staleTime: 5 * 60_000,
+    refetchOnWindowFocus: false,
+    placeholderData: keepPreviousData,
   })
 
   const projectQuery = useQuery({
     queryKey: ["project-artifacts", projectId],
     queryFn: () => listProjectArtifacts({ projectId: projectId!, includeContent: true }),
+    // Full bodies once; avoid refetch storms when chat history hydrates many builds.
     enabled: (taskId == null || taskId <= 0) && projectId != null && projectId > 0,
-    staleTime: 0,
-    refetchOnMount: "always",
+    staleTime: 5 * 60_000,
+    refetchOnMount: false,
+    refetchOnWindowFocus: false,
+    placeholderData: keepPreviousData,
   })
 
   const threadQuery = useQuery({
@@ -216,7 +466,8 @@ export function ArtifactWorkspace({
       (taskId == null || taskId <= 0) &&
       (projectId == null || projectId <= 0) &&
       !!aiThreadId,
-    staleTime: 0,
+    staleTime: 15_000,
+    placeholderData: keepPreviousData,
   })
 
   useArtifactsRealtime({
@@ -227,13 +478,19 @@ export function ArtifactWorkspace({
   })
 
   const artifacts = useMemo(() => {
-    if (taskId != null && taskId > 0) return taskQuery.data?.artifacts ?? []
-    if (projectId != null && projectId > 0) return projectQuery.data?.artifacts ?? []
+    if (taskId != null && taskId > 0) {
+      return taskQuery.data?.artifacts ?? taskMetaQuery.data?.artifacts ?? []
+    }
+    if (projectId != null && projectId > 0) {
+      return projectQuery.data?.artifacts ?? projectMetaQuery.data?.artifacts ?? []
+    }
     return threadQuery.data?.artifacts ?? []
   }, [
     projectId,
+    projectMetaQuery.data?.artifacts,
     projectQuery.data?.artifacts,
     taskId,
+    taskMetaQuery.data?.artifacts,
     taskQuery.data?.artifacts,
     threadQuery.data?.artifacts,
   ])
@@ -241,6 +498,9 @@ export function ArtifactWorkspace({
   const livePreviews = useAiBuildArtifactPreviewStore((s) => s.previews)
   const pruneConsumedSavedPreviews = useAiBuildArtifactPreviewStore(
     (s) => s.pruneConsumedSavedPreviews,
+  )
+  const ensureBeforeBaseline = useAiBuildArtifactPreviewStore(
+    (s) => s.ensureBeforeBaseline,
   )
   const liveByArtifactId = useMemo(() => {
     const map = new Map<string, LivePreviewEntry>()
@@ -251,6 +511,21 @@ export function ArtifactWorkspace({
     return map
   }, [livePreviews])
 
+  // Freeze rich before JSON from the on-screen artifact so diffs stay HTML↔HTML.
+  useEffect(() => {
+    for (const artifact of artifacts) {
+      const live = liveByArtifactId.get(artifact.id)
+      if (!live) continue
+      if (live.phase === "saved" || live.phase === "failed") continue
+      if (live.beforeContentJson) continue
+      ensureBeforeBaseline({
+        artifactId: artifact.id,
+        contentJson: artifact.content_json,
+        contentText: artifact.content_text,
+      })
+    }
+  }, [artifacts, ensureBeforeBaseline, liveByArtifactId])
+
   // Once the list has caught up to (or passed) a saved preview, drop the overlay
   // so overview/stack cannot pin an older AI body forever.
   useEffect(() => {
@@ -259,7 +534,9 @@ export function ArtifactWorkspace({
     }
   }, [artifacts, pruneConsumedSavedPreviews])
 
-  // Drop local drafts based on an older server version (e.g. AI saved while editing).
+  // Rebase or drop local drafts when the server version moves ahead.
+  // Never wipe a dirty draft that still differs from the server — that is how
+  // keystrokes typed during autosave were getting discarded after invalidate.
   useEffect(() => {
     setDraftByArtifactId((prev) => {
       let changed = false
@@ -267,10 +544,22 @@ export function ArtifactWorkspace({
       for (const artifact of artifacts) {
         const draft = next[artifact.id]
         if (!draft) continue
-        if (draft.baseVersion < (artifact.current_version ?? 0)) {
+        const serverVersion = artifact.current_version ?? 0
+        if (draft.baseVersion >= serverVersion) continue
+
+        const matchesServer =
+          draft.contentText === (artifact.content_text ?? "")
+          && JSON.stringify(draft.contentJson) === JSON.stringify(artifact.content_json)
+
+        if (matchesServer) {
           delete next[artifact.id]
           changed = true
+          continue
         }
+
+        // Keep local edits; rebase so the next save targets the new version.
+        next[artifact.id] = { ...draft, baseVersion: serverVersion }
+        changed = true
       }
       return changed ? next : prev
     })
@@ -281,8 +570,16 @@ export function ArtifactWorkspace({
     const extras: TaskArtifact[] = []
     for (const entry of liveByArtifactId.values()) {
       if (known.has(entry.artifactId)) continue
-      // Task overview: only show live extras that belong to this task.
-      if (taskId != null && taskId > 0 && entry.taskId !== taskId) continue
+      // Task overview: keep live extras for this task. Missing taskId is common on
+      // early build events — still show them here so cards don't blink out.
+      if (
+        taskId != null
+        && taskId > 0
+        && entry.taskId != null
+        && entry.taskId !== taskId
+      ) {
+        continue
+      }
       // Project overview (no task): only show live extras that belong to THIS project.
       // Missing projectId must not leak across project sheets (previews historically omitted it).
       if (
@@ -561,17 +858,24 @@ export function ArtifactWorkspace({
     }
   }, [attachArtifactSelection, displaySelected])
 
+  // Titles can render as soon as the lightweight meta list arrives.
   const isLoading =
     taskId != null
-      ? taskQuery.isLoading
+      ? taskMetaQuery.isLoading && taskQuery.isLoading
       : projectId != null
-        ? projectQuery.isLoading
+        ? projectMetaQuery.isLoading && projectQuery.isLoading
         : threadQuery.isLoading
+  const hasFullContentLoaded =
+    taskId != null
+      ? Boolean(taskQuery.data?.artifacts)
+      : projectId != null
+        ? Boolean(projectQuery.data?.artifacts)
+        : Boolean(threadQuery.data?.artifacts)
   const error =
     taskId != null
-      ? taskQuery.error
+      ? (taskQuery.error ?? taskMetaQuery.error)
       : projectId != null
-        ? projectQuery.error
+        ? (projectQuery.error ?? projectMetaQuery.error)
         : threadQuery.error
 
   const liveByArtifactIdRef = useRef(liveByArtifactId)
@@ -1147,26 +1451,23 @@ export function ArtifactWorkspace({
                     !!live
                     && live.currentVersion != null
                     && live.currentVersion > (artifact.current_version ?? 0)
-                  // Never overlay a saved preview once the list row has caught up —
-                  // that was pinning overview on vN-1 while history showed vN current.
+                  const isLiveBusy = isArtifactLiveEditLocked(live)
+                  // Keep the saved baseline while AI is generating so rich text does not
+                  // disappear. Only overlay a newer saved live snapshot after persist.
                   const useLiveContent =
                     !!live
+                    && !isLiveBusy
                     && !live.streaming
                     && !!live.contentJson
-                    && (
-                      live.phase === "preview"
-                      || (live.phase === "saved" && liveIsNewer)
-                    )
-                  const draftIsStale =
-                    !!draft
-                    && (
-                      liveIsNewer
-                      || draft.baseVersion < (artifact.current_version ?? 0)
-                    )
+                    && live.phase === "saved"
+                    && liveIsNewer
+                  // Only treat draft as stale when a newer AI live snapshot should win.
+                  // Version lag after autosave must keep showing local edits (rebase handles save).
+                  const draftIsStale = !!draft && liveIsNewer
                   const display: TaskArtifact = {
                     ...artifact,
-                    ...(live && live.phase !== "saved" && live.phase !== "failed"
-                      ? { title: live.title ?? artifact.title }
+                    ...(isLiveBusy
+                      ? { title: live!.title ?? artifact.title }
                       : {}),
                     ...(useLiveContent
                       ? {
@@ -1184,13 +1485,18 @@ export function ArtifactWorkspace({
                         }
                       : {}),
                   }
-                  const editorForceKey = `${display.id}:${display.current_version ?? 0}:${
-                    (typeof display.content_text === "string" ? display.content_text.length : 0)
-                  }`
+                  // Force key must NOT include draft length / stream heartbeats —
+                  // sequence+updatedAt remount TipTap on every preview upsert (cards flash).
+                  const editorForceKey = isLiveBusy
+                    ? `${artifact.id}:live:${live?.buildId ?? "building"}`
+                    : `${artifact.id}:v:${artifact.current_version ?? 0}`
                   const effectivelyExpanded = collapsedStackIds.has(artifact.id)
                     ? false
-                    : expandedStackIds.has(artifact.id) || (!collapsedStackTouched && index < 2)
-                  const isLiveBusy = !!live && live.phase !== "saved" && live.phase !== "failed"
+                    : expandedStackIds.has(artifact.id)
+                      || (!collapsedStackTouched && index < 1 && hasFullContentLoaded)
+                  // Default Document (editable). Counters toggle into read-only track-changes.
+                  // Explicit toggles in stackShowChangesById always win.
+                  const showChanges = stackShowChangesById[artifact.id] ?? false
                   return (
                     <SortableArtifactShell
                       key={artifact.id}
@@ -1308,6 +1614,18 @@ export function ArtifactWorkspace({
                                 ) : null}
                               </span>
                             </div>
+                            <StackArtifactChangeToggle
+                              display={display}
+                              live={live}
+                              isLiveBusy={isLiveBusy}
+                              showChanges={showChanges}
+                              onToggle={() => {
+                                setStackShowChangesById((prev) => ({
+                                  ...prev,
+                                  [artifact.id]: !showChanges,
+                                }))
+                              }}
+                            />
                             <button
                               type="button"
                               className="inline-flex h-7 w-7 items-center justify-center rounded-md text-gray-500 hover:bg-gray-100 hover:text-gray-800"
@@ -1333,26 +1651,21 @@ export function ArtifactWorkspace({
                             </button>
                           </div>
                           {effectivelyExpanded ? (
-                            <div className="min-h-[12rem] max-h-[28rem] resize-y overflow-auto border-t border-gray-100">
-                              <ArtifactDocumentEditor
-                                artifact={display}
-                                forceContentKey={editorForceKey}
-                                readOnly={isLiveBusy}
-                                onContentJsonChange={(contentJson) => {
-                                  updateDraft(display.id, { contentJson }, display)
-                                }}
-                                onContentTextChange={(contentText) => {
-                                  updateDraft(display.id, { contentText }, display)
-                                }}
-                                onOpenFullscreen={() => {
-                                  openArtifactCenterTab({
-                                    artifactId: display.id,
-                                    title: display.title,
-                                  })
-                                }}
-                                {...mediaSelectHandlers}
-                              />
-                            </div>
+                            <StackArtifactExpandedBody
+                              display={display}
+                              live={live}
+                              isLiveBusy={isLiveBusy}
+                              editorForceKey={editorForceKey}
+                              mediaSelectHandlers={mediaSelectHandlers}
+                              updateDraft={updateDraft}
+                              showChanges={showChanges}
+                              openFullscreen={() => {
+                                openArtifactCenterTab({
+                                  artifactId: display.id,
+                                  title: display.title,
+                                })
+                              }}
+                            />
                           ) : null}
                         </div>
                       )}
@@ -1489,7 +1802,7 @@ export function ArtifactWorkspace({
                           ;(event.target as HTMLInputElement).blur()
                         }
                       }}
-                      disabled={!!selectedLive && selectedLive.phase !== "saved"}
+                      disabled={!!selectedLive && isArtifactLiveEditLocked(selectedLive)}
                       className="w-full border-0 bg-transparent text-sm font-semibold text-gray-900 outline-none focus-visible:ring-0"
                       placeholder="Untitled artifact"
                       aria-label="Artifact title"
@@ -1523,7 +1836,7 @@ export function ArtifactWorkspace({
                           }
                         />
                       ) : null}
-                      {selectedLive && selectedLive.phase !== "saved"
+                      {selectedLive && isArtifactLiveEditLocked(selectedLive)
                         ? " · live preview"
                         : ""}
                     </p>
@@ -1547,7 +1860,7 @@ export function ArtifactWorkspace({
                       type="button"
                       className="inline-flex h-7 w-7 items-center justify-center rounded-md text-gray-500 hover:bg-red-50 hover:text-red-700"
                       aria-label="Delete artifact"
-                      disabled={!!selectedLive && selectedLive.phase !== "saved"}
+                      disabled={!!selectedLive && isArtifactLiveEditLocked(selectedLive)}
                       onClick={() => setPendingDeleteId(displaySelected.id)}
                     >
                       <Trash2 className="h-3.5 w-3.5" />
@@ -1558,12 +1871,17 @@ export function ArtifactWorkspace({
                 <div className="min-h-0 flex-1 overflow-auto">
                   <ArtifactDocumentEditor
                     artifact={displaySelected}
-                    forceContentKey={`${displaySelected.id}:${displaySelected.current_version ?? 0}:${
-                      (typeof displaySelected.content_text === "string"
-                        ? displaySelected.content_text.length
-                        : 0)
-                    }`}
-                    readOnly={!!selectedLive && selectedLive.phase !== "saved"}
+                    forceContentKey={
+                      selectedLive && isArtifactLiveEditLocked(selectedLive)
+                        ? `${displaySelected.id}:live:${selectedLive.sequence}:${selectedLive.updatedAt}`
+                        : `${displaySelected.id}:v:${
+                            allArtifacts.find((row) => row.id === displaySelected.id)
+                              ?.current_version
+                              ?? displaySelected.current_version
+                              ?? 0
+                          }`
+                    }
+                    readOnly={!!selectedLive && isArtifactLiveEditLocked(selectedLive)}
                     onContentJsonChange={(contentJson) => {
                       updateDraft(displaySelected.id, { contentJson }, displaySelected)
                     }}

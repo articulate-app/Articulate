@@ -25,7 +25,9 @@ import { toast } from "../ui/use-toast"
 import {
   Select,
   SelectContent,
+  SelectGroup,
   SelectItem,
+  SelectLabel,
   SelectTrigger,
   SelectValue,
 } from "../ui/select"
@@ -38,11 +40,16 @@ import {
   ChartPreviewHoverActions,
 } from "./chart-preview-hover-actions"
 import { AddDashedButton } from "../ui/add-dashed-button"
+import { ProjectTrackSuggestions } from "./project-track-suggestions"
 import { cn } from "@/lib/utils"
 import {
   computeAiVisibilityScore,
   formatVisibilityScore,
 } from "../../lib/ai-visibility-score"
+import {
+  groupAiPromptsByPrompt,
+  type AiPromptToolResult,
+} from "../../lib/ai-visibility-prompts"
 
 type DateRangeValue = {
   from?: Date
@@ -118,6 +125,55 @@ const formatShortDateTime = (dateStr: string) => {
   }
 }
 
+/** Networks a prompt runs on, with this run's brand position on each. */
+function PromptToolChips({
+  tools,
+  activeToolId,
+  onSelect,
+  className,
+}: {
+  tools: AiPromptToolResult[]
+  activeToolId: number | null
+  onSelect: (tool: AiPromptToolResult) => void
+  className?: string
+}) {
+  return (
+    <div className={cn("flex flex-wrap items-center gap-1", className)}>
+      {tools.map((tool) => {
+        const isActive = tool.toolId === activeToolId
+        return (
+          <button
+            key={tool.toolId}
+            type="button"
+            onClick={() => onSelect(tool)}
+            title={
+              tool.brandPosition != null
+                ? `${tool.toolName} · position #${tool.brandPosition}`
+                : `${tool.toolName} · not mentioned`
+            }
+            className={cn(
+              "inline-flex items-center gap-1 rounded border px-1.5 py-0.5 text-[10px] transition-colors",
+              isActive
+                ? "border-gray-900 bg-gray-900 text-white"
+                : "border-gray-200 bg-white text-gray-600 hover:border-gray-300 hover:bg-gray-50",
+            )}
+          >
+            <span>{tool.toolName}</span>
+            <span
+              className={cn(
+                "tabular-nums",
+                isActive ? "text-gray-300" : "text-gray-400",
+              )}
+            >
+              {tool.brandPosition != null ? `#${tool.brandPosition}` : "—"}
+            </span>
+          </button>
+        )
+      })}
+    </div>
+  )
+}
+
 export function ProjectAiVisibilityTab({
   projectId,
   variant = "full",
@@ -149,6 +205,12 @@ export function ProjectAiVisibilityTab({
   const dateRange = controlledDateRange ?? uncontrolledDateRange
   const setDateRange = onDateRangeChange ?? setUncontrolledDateRange
   const [selectedRunAt, setSelectedRunAt] = useState<Date | null>(null)
+
+  const selectPromptTool = (promptId: number, tool: AiPromptToolResult) => {
+    setSelectedPromptId(promptId)
+    setSelectedToolId(tool.toolId)
+    setSelectedRunAt(tool.runAt ? new Date(tool.runAt) : null)
+  }
 
   const from = dateRange.from
   const to = dateRange.to
@@ -351,6 +413,73 @@ export function ProjectAiVisibilityTab({
   })
 
   const snapshot = snapshotData && snapshotData.length > 0 ? snapshotData[0] : null
+
+  const handleAddSuggestedPrompts = async (texts: string[]) => {
+    const promptsToAdd = texts.map((text) => text.trim()).filter(Boolean)
+    if (promptsToAdd.length === 0) return
+
+    const toolIds =
+      selectedToolIds.length > 0
+        ? selectedToolIds
+        : (tools ?? []).map((tool) => String(tool.id))
+
+    if (toolIds.length === 0) {
+      toast({
+        title: "Select at least one tool",
+        description: "Choose which AI tools to track before adding suggestions.",
+        variant: "destructive",
+      })
+      throw new Error("No AI tools selected")
+    }
+
+    setIsAdding(true)
+    try {
+      let added = 0
+      for (const promptText of promptsToAdd) {
+        const { data: promptInsert, error: promptError } = await (supabase as any).rpc(
+          "fn_add_project_ai_prompt",
+          {
+            p_project_id: projectId,
+            p_prompt_text: promptText,
+            p_notes: null,
+          },
+        )
+        if (promptError || !promptInsert) {
+          throw promptError || new Error("Failed to create AI prompt.")
+        }
+        const promptId = (promptInsert as { id: number }).id
+        const { error: toolsError } = await (supabase as any)
+          .from("project_ai_prompt_tools")
+          .insert(
+            toolIds.map((id) => ({
+              project_ai_prompt_id: promptId,
+              ai_tool_id: Number(id),
+            })),
+          )
+        if (toolsError) throw toolsError
+        added += 1
+      }
+
+      await refetchPrompts()
+      toast({
+        title: added === 1 ? "Prompt added" : `${added} prompts added`,
+        description: "They will be included the next time you run AI visibility.",
+      })
+      void functionsClient.functions.invoke("sync-project-ai-prompts", {
+        body: { project_id: projectId },
+      })
+    } catch (error: unknown) {
+      toast({
+        title: "Could not add suggestions",
+        description:
+          error instanceof Error ? error.message : "Failed to add prompts.",
+        variant: "destructive",
+      })
+      throw error
+    } finally {
+      setIsAdding(false)
+    }
+  }
 
   const handleAddPrompt = async () => {
     if (!newPrompt.trim()) {
@@ -555,28 +684,16 @@ export function ProjectAiVisibilityTab({
     ? (snapshot!.ranked_entities as RankedEntity[])
     : []
 
-  const promptSelectOptions = useMemo(() => {
-    if (!prompts?.length) return []
-    const seen = new Set<string>()
-    return prompts
-      .map((row) => {
-        const key = `${row.project_ai_prompt_id}:${row.ai_tool_id}`
-        if (seen.has(key)) return null
-        seen.add(key)
-        return {
-          key,
-          promptId: row.project_ai_prompt_id,
-          toolId: row.ai_tool_id,
-          label: `${row.prompt_text} · ${row.ai_tool_name}`,
-        }
-      })
-      .filter(Boolean) as Array<{
-      key: string
-      promptId: number
-      toolId: number
-      label: string
-    }>
-  }, [prompts])
+  // One entry per prompt, with the networks it runs on — the same prompt tracked
+  // on ChatGPT and Gemini is one prompt, not two.
+  const groupedPrompts = useMemo(
+    () => groupAiPromptsByPrompt(prompts ?? []),
+    [prompts],
+  )
+  const groupedFilteredPrompts = useMemo(
+    () => groupAiPromptsByPrompt(filteredPrompts),
+    [filteredPrompts],
+  )
 
   const showPromptChart = !!selectedPromptId && !!selectedToolId
   const chartSeries = showPromptChart ? timeseries : globalChartSeries
@@ -838,6 +955,12 @@ export function ProjectAiVisibilityTab({
     if (!hasPrompts) {
       return (
         <div className="min-w-0 space-y-3">
+          <ProjectTrackSuggestions
+            projectId={projectId}
+            kind="prompts"
+            existingTexts={[]}
+            onAdd={handleAddSuggestedPrompts}
+          />
           {showPreviewAddForm ? (
             previewAddForm
           ) : (
@@ -899,13 +1022,11 @@ export function ProjectAiVisibilityTab({
                 const promptId = Number(promptIdRaw)
                 const toolId = Number(toolIdRaw)
                 if (!Number.isFinite(promptId) || !Number.isFinite(toolId)) return
-                setSelectedPromptId(promptId)
-                setSelectedToolId(toolId)
-                const match = prompts?.find(
-                  (row) =>
-                    row.project_ai_prompt_id === promptId && row.ai_tool_id === toolId,
-                )
-                setSelectedRunAt(match?.run_at ? new Date(match.run_at) : null)
+                const tool = groupedPrompts
+                  .find((group) => group.promptId === promptId)
+                  ?.tools.find((entry) => entry.toolId === toolId)
+                if (!tool) return
+                selectPromptTool(promptId, tool)
               }}
             >
               <SelectTrigger className="h-8 w-full text-xs">
@@ -915,10 +1036,22 @@ export function ProjectAiVisibilityTab({
                 <SelectItem value="global" className="text-xs">
                   Global score (all prompts)
                 </SelectItem>
-                {promptSelectOptions.map((option) => (
-                  <SelectItem key={option.key} value={option.key} className="text-xs">
-                    <span className="line-clamp-1">{option.label}</span>
-                  </SelectItem>
+                {groupedPrompts.map((group) => (
+                  <SelectGroup key={group.promptId}>
+                    <SelectLabel className="pr-2 text-[11px] font-medium text-gray-500">
+                      <span className="line-clamp-2">{group.promptText}</span>
+                    </SelectLabel>
+                    {group.tools.map((tool) => (
+                      <SelectItem
+                        key={tool.toolId}
+                        value={`${group.promptId}:${tool.toolId}`}
+                        className="text-xs"
+                      >
+                        {tool.toolName}
+                        {tool.brandPosition != null ? ` · #${tool.brandPosition}` : ""}
+                      </SelectItem>
+                    ))}
+                  </SelectGroup>
                 ))}
               </SelectContent>
             </Select>
@@ -1038,63 +1171,58 @@ export function ProjectAiVisibilityTab({
 
         <div className="space-y-2">
           <div className="text-[11px] font-medium text-gray-500">Tracked prompts</div>
-          <div className="flex flex-wrap gap-1.5">
-            {prompts!.map((row) => {
-              const isSelected =
-                row.project_ai_prompt_id === selectedPromptId &&
-                row.ai_tool_id === selectedToolId
+          <div className="grid gap-1.5 sm:grid-cols-2">
+            {groupedPrompts.map((group) => {
+              const isSelected = group.promptId === selectedPromptId
               return (
-                <button
-                  key={`${row.project_ai_prompt_id}-${row.ai_tool_id}`}
-                  type="button"
-                  onClick={() => {
-                    setSelectedPromptId(row.project_ai_prompt_id)
-                    setSelectedToolId(row.ai_tool_id)
-                    if (row.run_at) setSelectedRunAt(new Date(row.run_at))
-                  }}
+                <div
+                  key={group.promptId}
                   className={cn(
-                    "max-w-full rounded-md border px-2.5 py-1.5 text-left text-xs transition-colors",
+                    "min-w-0 rounded-md border px-2.5 py-2 transition-colors",
                     isSelected
-                      ? "border-gray-900 bg-gray-900 text-white"
-                      : "border-gray-200 bg-white text-gray-700 hover:border-gray-300 hover:bg-gray-50",
+                      ? "border-gray-900 bg-gray-50"
+                      : "border-gray-200 bg-white",
                   )}
                 >
-                  <span className="line-clamp-2">
-                    {row.prompt_text}
-                    {row.ai_tool_name ? (
-                      <span
-                        className={cn(
-                          "ml-1",
-                          isSelected ? "text-gray-300" : "text-gray-400",
-                        )}
-                      >
-                        · {row.ai_tool_name}
-                      </span>
-                    ) : null}
-                    {row.brand_position != null ? (
-                      <span
-                        className={cn(
-                          "ml-1",
-                          isSelected ? "text-gray-300" : "text-gray-500",
-                        )}
-                      >
-                        #{row.brand_position}
-                      </span>
-                    ) : null}
-                  </span>
-                </button>
+                  <button
+                    type="button"
+                    onClick={() =>
+                      group.tools[0]
+                        ? selectPromptTool(group.promptId, group.tools[0])
+                        : undefined
+                    }
+                    className="block w-full text-left"
+                  >
+                    <span className="line-clamp-2 text-xs text-gray-800">
+                      {group.promptText}
+                    </span>
+                  </button>
+                  <PromptToolChips
+                    className="mt-1.5"
+                    tools={group.tools}
+                    activeToolId={isSelected ? selectedToolId : null}
+                    onSelect={(tool) => selectPromptTool(group.promptId, tool)}
+                  />
+                </div>
               )
             })}
           </div>
-          {showPreviewAddForm ? (
-            previewAddForm
-          ) : (
-            <AddDashedButton
-              label="Add prompt"
-              className="mt-1"
-              onClick={() => setShowPreviewAddForm(true)}
+          <div className="flex flex-wrap items-center gap-2">
+            <ProjectTrackSuggestions
+              projectId={projectId}
+              kind="prompts"
+              existingTexts={(prompts ?? []).map((row) => row.prompt_text)}
+              onAdd={handleAddSuggestedPrompts}
             />
-          )}
+            {showPreviewAddForm ? null : (
+              <AddDashedButton
+                label="Add prompt"
+                className="mt-0"
+                onClick={() => setShowPreviewAddForm(true)}
+              />
+            )}
+          </div>
+          {showPreviewAddForm ? previewAddForm : null}
         </div>
       </div>
     )
@@ -1206,6 +1334,12 @@ export function ProjectAiVisibilityTab({
                 <>Add prompt</>
               )}
             </Button>
+            <ProjectTrackSuggestions
+              projectId={projectId}
+              kind="prompts"
+              existingTexts={(prompts ?? []).map((row) => row.prompt_text)}
+              onAdd={handleAddSuggestedPrompts}
+            />
             <p className="text-[11px] text-gray-500">
               New prompts will be included the next time you run AI visibility.
             </p>
@@ -1233,37 +1367,49 @@ export function ProjectAiVisibilityTab({
           </div>
         ) : (
           <div className="divide-y divide-gray-100 rounded-md border border-gray-100">
-            {filteredPrompts.map((row) => {
-              const isSelected =
-                row.project_ai_prompt_id === selectedPromptId &&
-                row.ai_tool_id === selectedToolId
+            {groupedFilteredPrompts.map((group) => {
+              const isSelected = group.promptId === selectedPromptId
+              const lastRunAt = group.tools
+                .map((tool) => tool.runAt)
+                .filter((value): value is string => Boolean(value))
+                .sort()
+                .at(-1)
               return (
-                <button
-                  key={`${row.project_ai_prompt_id}-${row.ai_tool_id}`}
-                  type="button"
+                <div
+                  key={group.promptId}
                   className={cn(
-                    "flex w-full flex-col gap-1 px-3 py-2.5 text-left transition-colors hover:bg-gray-50 sm:flex-row sm:items-center sm:justify-between",
+                    "flex flex-col gap-2 px-3 py-2.5 transition-colors sm:flex-row sm:items-center sm:justify-between",
                     isSelected && "bg-gray-50",
                   )}
-                  onClick={() => {
-                    setSelectedPromptId(row.project_ai_prompt_id)
-                    setSelectedToolId(row.ai_tool_id)
-                    if (row.run_at) setSelectedRunAt(new Date(row.run_at))
-                  }}
                 >
-                  <div className="min-w-0">
-                    <div className="line-clamp-2 text-xs text-gray-900">{row.prompt_text}</div>
+                  <button
+                    type="button"
+                    className="min-w-0 text-left"
+                    onClick={() =>
+                      group.tools[0]
+                        ? selectPromptTool(group.promptId, group.tools[0])
+                        : undefined
+                    }
+                  >
+                    <div className="line-clamp-2 text-xs text-gray-900">
+                      {group.promptText}
+                    </div>
                     <div className="mt-0.5 text-[11px] text-gray-500">
-                      {row.ai_tool_name || "Tool"}
-                      {row.run_at
-                        ? ` · ${format(new Date(row.run_at), "MMM d, yyyy")}`
+                      {group.tools.length === 1
+                        ? group.tools[0]!.toolName
+                        : `${group.tools.length} networks`}
+                      {lastRunAt
+                        ? ` · ${format(new Date(lastRunAt), "MMM d, yyyy")}`
                         : ""}
                     </div>
-                  </div>
-                  <div className="shrink-0 text-xs text-gray-700">
-                    {row.brand_position != null ? `#${row.brand_position}` : "Not mentioned"}
-                  </div>
-                </button>
+                  </button>
+                  <PromptToolChips
+                    className="shrink-0 sm:justify-end"
+                    tools={group.tools}
+                    activeToolId={isSelected ? selectedToolId : null}
+                    onSelect={(tool) => selectPromptTool(group.promptId, tool)}
+                  />
+                </div>
               )
             })}
           </div>

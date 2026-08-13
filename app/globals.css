@@ -102,6 +102,24 @@
     border-radius: 0.15rem;
     opacity: 0.92;
   }
+  /*
+   * Outside markers paint in the margin, left of the block highlight / inset bar.
+   * Keep bullets inside the painted box for lists and list items.
+   */
+  .artifact-rich-diff-body ul.artifact-diff-block-ins,
+  .artifact-rich-diff-body ol.artifact-diff-block-ins,
+  .artifact-rich-diff-body ul.artifact-diff-block-del,
+  .artifact-rich-diff-body ol.artifact-diff-block-del,
+  .artifact-rich-diff-body .artifact-diff-block-ins ul,
+  .artifact-rich-diff-body .artifact-diff-block-ins ol,
+  .artifact-rich-diff-body .artifact-diff-block-del ul,
+  .artifact-rich-diff-body .artifact-diff-block-del ol,
+  .artifact-rich-diff-body li.artifact-diff-block-ins,
+  .artifact-rich-diff-body li.artifact-diff-block-del,
+  .artifact-rich-diff-body .artifact-diff-block-ins li,
+  .artifact-rich-diff-body .artifact-diff-block-del li {
+    list-style-position: inside;
+  }
   .artifact-rich-diff-body .artifact-diff-block-del,
   .artifact-rich-diff-body .artifact-diff-block-del * {
     text-decoration: line-through;
@@ -215,6 +233,26 @@
 
   .ai-chat-assistant-message .ai-msg-entity-chip {
     text-decoration: none;
+  }
+
+  .ai-chat-assistant-message .ai-msg-artifact-file-chip {
+    vertical-align: middle;
+  }
+
+  /* Entity chips pasted as lone list items should not keep a bullet/number. */
+  .ai-chat-assistant-message li:has(> a.ai-msg-entity-chip:only-child),
+  .ai-chat-assistant-message li:has(> p:only-child > a.ai-msg-entity-chip:only-child) {
+    list-style: none;
+    margin-left: 0;
+    padding-left: 0;
+  }
+
+  .ai-chat-assistant-message ul:has(> li:only-child > a.ai-msg-entity-chip:only-child),
+  .ai-chat-assistant-message ul:has(> li:only-child > p:only-child > a.ai-msg-entity-chip:only-child),
+  .ai-chat-assistant-message ol:has(> li:only-child > a.ai-msg-entity-chip:only-child),
+  .ai-chat-assistant-message ol:has(> li:only-child > p:only-child > a.ai-msg-entity-chip:only-child) {
+    padding-left: 0;
+    margin-left: 0;
   }
 
   .ai-chat-assistant-message table {
@@ -420,7 +458,18 @@
 
 body {
   @apply bg-gray-50;
-} 
+}
+
+/* Artifact Find: yellow marks via CSS Custom Highlight API (does not mutate TipTap DOM). */
+::highlight(artifact-find) {
+  background-color: #fde047;
+  color: inherit;
+}
+
+::highlight(artifact-find-active) {
+  background-color: #facc15;
+  color: inherit;
+}
 
 @layer utilities {
   .slide-in {
