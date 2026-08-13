@@ -5,7 +5,8 @@ import { refreshGoogleAccessToken } from "@/lib/google-oauth"
 import { createServiceRoleClient } from "@/lib/supabase/service-role"
 
 export const dynamic = "force-dynamic"
-export const maxDuration = 300
+// Hobby plan caps Serverless Function duration at 60s.
+export const maxDuration = 60
 
 type SyncBody = {
   projectId?: number
