@@ -1,50 +1,35 @@
 /**
  * Provider-neutral browser session opener for manual / AI / generic Browser tabs.
- * Uses the same Local-first policy as publishing (probe bridge → pair → authorize → open).
+ *
+ * Active resolution:
+ *   Desktop available → articulate_desktop
+ *   else → Browser Use Cloud
+ *
+ * Local Browser Bridge is NOT used for new sessions.
  */
 
 "use client"
 
-import {
-  isLocalBridgeReady,
-  probeLocalBridge,
-  refreshBridgeSession,
-  startBridgeSession,
-  stopBridgeSession,
-  type BridgeSession,
-} from "./local-browser-bridge"
-import {
-  discoverBrowserHelper,
-  getLocalBrowserAccessToken,
-  pairBrowserHelper,
-} from "./browser-helper-client"
-import { detectLocalBridgeStatus } from "./local-publication-driver"
 import { openStandaloneBrowser } from "./services/agentic-publishing"
+import {
+  getArticulateDesktop,
+  isArticulateDesktopAvailable,
+} from "./articulate-desktop"
 
 export type OpenBrowserSessionSource = "manual" | "publishing" | "ai" | "reconnect"
 
 export type OpenedBrowserSession = {
-  provider: "browser_use_local" | "browser_use"
+  provider: "browser_use" | "articulate_desktop"
   browserId: string | null
+  /** @deprecated Always null — Local Bridge is disconnected. */
   bridgeSessionId: string | null
   liveViewUrl: string | null
   startUrl: string
   currentUrl: string | null
   title: string | null
   status: string
-  browserLabel: "Local" | "Cloud"
-  paired?: boolean
-  needsPairing?: boolean
-}
-
-export class BrowserHelperPairingRequiredError extends Error {
-  readonly code = "pairing_required"
-  readonly deviceId: string
-  constructor(deviceId: string) {
-    super("Articulate Browser Helper detected. Connect this computer to use the local browser.")
-    this.name = "BrowserHelperPairingRequiredError"
-    this.deviceId = deviceId
-  }
+  browserLabel: "Cloud" | "Desktop"
+  faviconUrl?: string | null
 }
 
 function friendlyCloudUnavailable(message: string): string {
@@ -53,12 +38,12 @@ function friendlyCloudUnavailable(message: string): string {
     /credit|balance|\$0\.0|payment|billing|quota|insufficient/i.test(lower) ||
     /need at least/i.test(lower)
   ) {
-    return "Local browser is not available and the Cloud browser cannot start because no Cloud credits are available."
+    return "The Cloud browser cannot start because no Cloud credits are available."
   }
   if (/not configured|api key/i.test(lower)) {
-    return "Local browser is not available and the Cloud browser is not configured."
+    return "The Cloud browser is not configured."
   }
-  return "Local browser is not available and the Cloud browser could not start."
+  return "The Cloud browser could not start."
 }
 
 function logBrowserOpen(fields: Record<string, unknown>) {
@@ -66,103 +51,75 @@ function logBrowserOpen(fields: Record<string, unknown>) {
   console.info("[browser]", fields)
 }
 
-async function openLocalWithAuth(args: {
-  startUrl: string
-  source: OpenBrowserSessionSource
-  profileKey?: string | null
-  autoPair?: boolean
-}): Promise<OpenedBrowserSession> {
-  const discovery = await discoverBrowserHelper()
-  if (discovery.state === "missing") {
-    throw new Error("Articulate Browser Helper is not installed or running.")
-  }
-  if (discovery.state === "unauthorized") {
-    throw new Error("Sign in to Articulate to use the local browser.")
-  }
-  if (discovery.state === "unpaired" || discovery.state === "revoked") {
-    if (args.autoPair !== false) {
-      await pairBrowserHelper()
-    } else {
-      throw new BrowserHelperPairingRequiredError(discovery.deviceId)
-    }
-  }
-
-  const token = await getLocalBrowserAccessToken({
-    deviceId: "deviceId" in discovery ? discovery.deviceId : undefined,
-  })
-
-  logBrowserOpen({
-    browser_open_source: args.source,
-    resolved_provider: "browser_use_local",
-    local_bridge_available: true,
-    device_id: "deviceId" in discovery ? discovery.deviceId : null,
-  })
-
-  const started = await startBridgeSession(token, args.startUrl, {
-    profileKey: args.profileKey ?? `manual-${args.source}`,
-  })
-  const session = started.session
-  return {
-    provider: "browser_use_local",
-    browserId: session.id,
-    bridgeSessionId: session.id,
-    liveViewUrl: null,
-    startUrl: args.startUrl,
-    currentUrl: session.currentUrl || args.startUrl,
-    title: session.title || null,
-    status: session.status,
-    browserLabel: "Local",
-    paired: true,
-  }
-}
-
 export type OpenBrowserSessionArgs = {
   startUrl?: string | null
   source?: OpenBrowserSessionSource
   profileKey?: string | null
-  /** When false, unpaired helper throws BrowserHelperPairingRequiredError for UI Connect. */
-  autoPair?: boolean
+  /** Stable Electron browser id (workspace tab id) when running in Articulate Desktop. */
+  desktopBrowserId?: string | null
 }
 
 /**
  * Open a generic browser session (not publication-specific).
- * Helper healthy + paired → Local. Helper healthy + unpaired → pair then Local.
- * Helper missing → Cloud fallback.
+ * Desktop → native WebContentsView. Otherwise → Cloud Live View.
  */
 export async function openBrowserSession(
   args?: OpenBrowserSessionArgs,
 ): Promise<OpenedBrowserSession> {
   const startUrl = (args?.startUrl?.trim() || "https://www.google.com/").replace(/\s+/g, "")
   const source = args?.source ?? "manual"
-  const bridge = await detectLocalBridgeStatus()
 
-  if (bridge.available) {
-    try {
-      return await openLocalWithAuth({
+  if (isArticulateDesktopAvailable()) {
+    const desktop = getArticulateDesktop()
+    const id =
+      (typeof args?.desktopBrowserId === "string" && args.desktopBrowserId.trim()) ||
+      (typeof crypto !== "undefined" && "randomUUID" in crypto
+        ? crypto.randomUUID()
+        : `desktop-${Date.now()}`)
+    logBrowserOpen({
+      browser_open_source: source,
+      resolved_provider: "articulate_desktop",
+      desktop: true,
+    })
+    if (desktop) {
+      const created = await desktop.browser.create({ id, url: startUrl })
+      return {
+        provider: "articulate_desktop",
+        browserId: created.id,
+        bridgeSessionId: null,
+        liveViewUrl: null,
         startUrl,
-        source,
-        profileKey: args?.profileKey,
-        autoPair: args?.autoPair,
-      })
-    } catch (error) {
-      if (error instanceof BrowserHelperPairingRequiredError) throw error
-      // If pairing/auth fails unexpectedly, surface the error (do not silently burn Cloud).
-      throw error
+        currentUrl: created.url || startUrl,
+        title: created.title || null,
+        status: "active",
+        browserLabel: "Desktop",
+        faviconUrl: created.favicon,
+      }
+    }
+    return {
+      provider: "articulate_desktop",
+      browserId: id,
+      bridgeSessionId: null,
+      liveViewUrl: null,
+      startUrl,
+      currentUrl: startUrl,
+      title: null,
+      status: "active",
+      browserLabel: "Desktop",
     }
   }
 
   logBrowserOpen({
     browser_open_source: source,
     resolved_provider: "browser_use",
-    local_bridge_available: false,
-    local_bridge_error: bridge.health.error ?? null,
+    desktop: false,
   })
 
   try {
     const opened = await openStandaloneBrowser({
       startUrl,
       forceCloud: true,
-      localBridgeAvailable: false,
+      desktopAvailable: false,
     })
     return {
       provider: "browser_use",
@@ -205,12 +162,11 @@ export function beginManualBrowserOpen(
     startUrl: args?.startUrl ?? "https://www.google.com/",
     source: args?.source ?? "manual",
     profileKey: args?.profileKey ?? "manual-browser",
-    autoPair: args?.autoPair ?? false,
+    desktopBrowserId: key,
   })
   const entry: ManualOpenEntry = { promise }
   manualBrowserOpens.set(key, entry)
   void promise.finally(() => {
-    // Keep briefly so a late-mounting pane can still claim after resolve.
     const clear = () => {
       if (manualBrowserOpens.get(key) === entry) manualBrowserOpens.delete(key)
     }
@@ -227,37 +183,25 @@ export function claimManualBrowserOpen(tabId: string): Promise<OpenedBrowserSess
   return manualBrowserOpens.get(key)?.promise ?? null
 }
 
-export async function refreshLocalBrowserSession(
-  bridgeSessionId: string,
-): Promise<BridgeSession | null> {
-  if (!bridgeSessionId) return null
-  try {
-    const token = await getLocalBrowserAccessToken()
-    return await refreshBridgeSession(token, bridgeSessionId)
-  } catch {
-    return null
-  }
-}
-
 export async function stopOpenedBrowserSession(session: {
   provider?: string | null
   bridgeSessionId?: string | null
   browserId?: string | null
 }): Promise<void> {
-  if (session.provider === "browser_use_local" || session.bridgeSessionId) {
-    const id = session.bridgeSessionId || session.browserId
-    if (id) {
+  if (session.provider === "articulate_desktop") {
+    const id = session.browserId
+    if (id && isArticulateDesktopAvailable()) {
       try {
-        const token = await getLocalBrowserAccessToken()
-        await stopBridgeSession(token, id)
+        await getArticulateDesktop()?.browser.close(id)
       } catch {
-        // ignore — window may already be closed
+        // ignore
       }
     }
   }
+  // Cloud sessions are stopped via publishing cleanup / control_browser — no local bridge stop.
 }
 
+/** @deprecated Local Bridge is disconnected; always returns false. */
 export async function probeLocalForBrowserOpen(): Promise<boolean> {
-  const health = await probeLocalBridge()
-  return isLocalBridgeReady(health)
+  return false
 }

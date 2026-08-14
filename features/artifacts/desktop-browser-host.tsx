@@ -1,0 +1,124 @@
+"use client"
+
+/**
+ * Transparent host that owns the Browser pane rectangle for Electron WebContentsView.
+ * Does not render page content — only reports geometry to the desktop bridge.
+ */
+
+import { useEffect, useRef } from "react"
+import {
+  getArticulateDesktop,
+  type DesktopBrowserBounds,
+} from "../../app/lib/articulate-desktop"
+
+type DesktopBrowserHostProps = {
+  browserId: string
+  /** When false, Electron hides the native view (tab inactive / unmounted). */
+  active?: boolean
+  className?: string
+  onBoundsChange?: (bounds: DesktopBrowserBounds) => void
+}
+
+function readBounds(el: HTMLElement, visible: boolean): DesktopBrowserBounds {
+  const rect = el.getBoundingClientRect()
+  // getBoundingClientRect is CSS px relative to the viewport.
+  // Electron WebContentsView.setBounds uses DIP relative to the window content area.
+  // With a standard BrowserWindow frame, those spaces align (no DPR multiply).
+  return {
+    x: rect.left,
+    y: rect.top,
+    width: rect.width,
+    height: rect.height,
+    visible: visible && rect.width >= 1 && rect.height >= 1,
+  }
+}
+
+export function DesktopBrowserHost({
+  browserId,
+  active = true,
+  className,
+  onBoundsChange,
+}: DesktopBrowserHostProps) {
+  const hostRef = useRef<HTMLDivElement | null>(null)
+  const lastSentRef = useRef<string>("")
+  const rafRef = useRef<number | null>(null)
+
+  useEffect(() => {
+    const desktop = getArticulateDesktop()
+    const host = hostRef.current
+    if (!desktop || !host || !browserId) return
+
+    const publish = () => {
+      rafRef.current = null
+      const el = hostRef.current
+      if (!el) return
+      const bounds = readBounds(el, active)
+      const key = `${bounds.x}|${bounds.y}|${bounds.width}|${bounds.height}|${bounds.visible}`
+      if (key === lastSentRef.current) return
+      lastSentRef.current = key
+      onBoundsChange?.(bounds)
+      void desktop.browser.setBounds(browserId, bounds)
+    }
+
+    const schedule = () => {
+      if (rafRef.current != null) return
+      rafRef.current = window.requestAnimationFrame(publish)
+    }
+
+    publish()
+
+    const observer = new ResizeObserver(() => schedule())
+    observer.observe(host)
+
+    // Pane dividers / layout shifts can move the host without resizing it.
+    window.addEventListener("resize", schedule)
+    // Capture scroll on ancestors that may offset the pane.
+    window.addEventListener("scroll", schedule, true)
+
+    return () => {
+      observer.disconnect()
+      window.removeEventListener("resize", schedule)
+      window.removeEventListener("scroll", schedule, true)
+      if (rafRef.current != null) {
+        window.cancelAnimationFrame(rafRef.current)
+        rafRef.current = null
+      }
+      lastSentRef.current = ""
+      // Hide on unmount so the native view does not float over other UI.
+      void desktop.browser.setBounds(browserId, {
+        x: 0,
+        y: 0,
+        width: 0,
+        height: 0,
+        visible: false,
+      })
+    }
+  }, [active, browserId, onBoundsChange])
+
+  useEffect(() => {
+    if (!active) {
+      const desktop = getArticulateDesktop()
+      if (!desktop || !browserId) return
+      void desktop.browser.setBounds(browserId, {
+        x: 0,
+        y: 0,
+        width: 0,
+        height: 0,
+        visible: false,
+      })
+      lastSentRef.current = ""
+    }
+  }, [active, browserId])
+
+  return (
+    <div
+      ref={hostRef}
+      className={className}
+      data-articulate-desktop-browser-host={browserId}
+      // Transparent placeholder — Chromium WebContentsView paints above this.
+      // pointer-events:none so any sub-pixel gap does not steal scroll/gesture from Chromium.
+      style={{ background: "transparent", pointerEvents: "none" }}
+      aria-hidden
+    />
+  )
+}

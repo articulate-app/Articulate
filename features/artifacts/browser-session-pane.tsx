@@ -25,19 +25,14 @@ import {
   bumpLocalBrowserHumanControl,
 } from "../../app/lib/local-browser-agent-control"
 import {
-  openBrowserSession,
   claimManualBrowserOpen,
-  refreshLocalBrowserSession,
+  openBrowserSession,
   stopOpenedBrowserSession,
-  BrowserHelperPairingRequiredError,
 } from "../../app/lib/open-browser-session"
-import { pairBrowserHelper } from "../../app/lib/browser-helper-client"
-import {
-  focusBridgeSession,
-} from "../../app/lib/local-browser-bridge"
-import { getLocalBrowserAccessToken } from "../../app/lib/browser-helper-client"
 import { BrowserChromeBar } from "./browser-chrome-bar"
 import { LocalBrowserSurface } from "./local-browser-surface"
+import { DesktopBrowserSurface } from "./desktop-browser-surface"
+import { isArticulateDesktopAvailable } from "../../app/lib/articulate-desktop"
 import type { PublicationRun } from "../../app/lib/publishing/types"
 import {
   isActivePublicationStatus,
@@ -261,10 +256,11 @@ export function BrowserSessionPane({
     }
   }, [browserId, intentionallyStopped, liveViewUrl, publicationRunId])
 
-  // + → Browser (no destination): Local-first via shared openBrowserSession resolver.
+  // + → Browser (no destination): Desktop → Local-first via shared openBrowserSession resolver.
   useEffect(() => {
     if (browser.phase !== "provisioning") return
     if (destinationId || artifactId || publicationRunId || liveViewUrl) return
+    if (browser.provider === "articulate_desktop" && browser.browserId) return
     if (browser.provider === "browser_use_local" && browser.bridgeSessionId) return
     const workspaceTabId = typeof tabId === "string" && tabId.trim() ? tabId.trim() : null
     const provisionKey = `standalone:${workspaceTabId || browserId || "new"}`
@@ -279,7 +275,9 @@ export function BrowserSessionPane({
     void (async () => {
       setIsProvisioning(true)
       setError(null)
-      setStatusNote("Starting browser…")
+      setStatusNote(
+        isArticulateDesktopAvailable() ? "Starting desktop browser…" : "Starting browser…",
+      )
       try {
         if (!isCurrent()) return
         let opened
@@ -290,22 +288,9 @@ export function BrowserSessionPane({
               startUrl: "https://www.google.com/",
               source: "manual",
               profileKey: "manual-browser",
-              autoPair: false,
+              desktopBrowserId: workspaceTabId,
             }))
         } catch (openError) {
-          if (openError instanceof BrowserHelperPairingRequiredError) {
-            if (!isCurrent()) return
-            setPairingNeeded(true)
-            pendingOpenAfterPairRef.current = true
-            setStatusNote(null)
-            setIsProvisioning(false)
-            onBrowserChangeRef.current?.({
-              phase: "needs_pairing",
-              connectMessage:
-                "Articulate Browser Helper detected. Connect this computer to use the local browser.",
-            })
-            return
-          }
           const message = openError instanceof Error ? openError.message : String(openError)
           if (!isConcurrentSessionLimitMessage(message)) throw openError
           setStatusNote("Freeing older cloud browser sessions…")
@@ -315,6 +300,7 @@ export function BrowserSessionPane({
             startUrl: "https://www.google.com/",
             source: "manual",
             profileKey: "manual-browser",
+            desktopBrowserId: workspaceTabId,
           })
         }
         if (!isCurrent()) return
@@ -328,19 +314,16 @@ export function BrowserSessionPane({
           source: "manual",
           currentUrl: opened.currentUrl,
           pageTitle: opened.title,
+          faviconUrl: opened.faviconUrl ?? null,
           intentionallyStopped: false,
-          phase: opened.provider === "browser_use_local" ? "local_ready" : "ready",
+          phase: opened.provider === "articulate_desktop" ? "desktop_ready" : "ready",
           connectMessage:
-            opened.provider === "browser_use_local"
-              ? "Chrome is running on this computer."
-              : null,
+            opened.provider === "articulate_desktop" ? "Native Chromium browser." : null,
           requestedScreenWidth: screen.width,
           requestedScreenHeight: screen.height,
           viewerMode: "fit",
         })
-        setStatusNote(
-          opened.provider === "browser_use_local" ? "Browser · Local" : null,
-        )
+        setStatusNote(opened.provider === "articulate_desktop" ? "Browser · Desktop" : null)
         setNavUrl(opened.currentUrl || "")
       } catch (err) {
         if (!isCurrent()) return
@@ -413,70 +396,55 @@ export function BrowserSessionPane({
           server_run_create_ms: started.diagnostics?.timing_ms?.run_create ?? null,
         })
 
-        // Local-first: drive Chrome on this machine; no Cloud Live View.
-        if (started.local_browser?.required || next.provider === "browser_use_local") {
-          setStatusNote("Browser running locally")
+        // Desktop-first: open native WebContentsView; do not start Local Bridge.
+        if (
+          started.desktop_browser?.required ||
+          next.provider === "articulate_desktop" ||
+          isArticulateDesktopAvailable()
+        ) {
+          const startUrl =
+            started.desktop_browser?.start_url ||
+            "https://www.google.com/"
+          const desktopId =
+            (typeof tabId === "string" && tabId.trim() ? tabId.trim() : null) ||
+            next.id
+          setStatusNote("Browser · Desktop")
           onBrowserChangeRef.current?.({
             liveViewUrl: null,
-            sessionId: null,
+            sessionId: desktopId,
+            browserId: desktopId,
             publicationRunId: next.id,
-            phase: "local_running",
+            provider: "articulate_desktop",
+            phase: "desktop_ready",
+            currentUrl: startUrl,
             destinationName: destinationNameRef.current,
             connectMessage:
               typeof started.message === "string" && !started.message.trim().startsWith("{")
                 ? started.message
-                : "Browser running locally",
+                : "Browser running in Articulate Desktop",
             requestedScreenWidth: screen.width,
             requestedScreenHeight: screen.height,
             viewerMode: "fit",
           })
-          const task =
-            started.local_browser?.task ||
-            (typeof next.metadata === "object" && next.metadata && "local_agent_task" in next.metadata
-              ? String((next.metadata as { local_agent_task?: unknown }).local_agent_task ?? "")
-              : "")
-          const startUrl =
-            started.local_browser?.start_url ||
-            "https://www.google.com/"
-          const driven = await runLocalPublicationDriver(
-            {
-              runId: next.id,
-              startUrl,
-              entryUrl: startUrl,
-              task: task || `Prepare publication on ${destinationNameRef.current}. Stop before Publish.`,
-              profileId: started.local_browser?.profile_id ?? null,
-              destinationName: destinationNameRef.current,
-            },
-            startLocalAgentCallbacks({
-              onStatus: (message) => {
-                if (isCurrent()) setStatusNote(message)
-              },
-              onRun: (updated) => {
-                if (!isCurrent()) return
-                setRun(updated)
-                onBrowserChangeRef.current?.({
-                  publicationRunId: updated.id,
-                  sessionId:
-                    (updated.metadata as { bridge_session_id?: string | null } | undefined)
-                      ?.bridge_session_id ?? updated.provider_session_id ?? null,
-                  phase: updated.status,
-                  connectMessage: humanStatusMessage(updated.metadata?.phase_message) ?? null,
-                })
-              },
-            }),
+          // Open/navigate the same Desktop WebContents the human sees.
+          try {
+            const { getArticulateDesktop } = await import("../../app/lib/articulate-desktop")
+            const desktop = getArticulateDesktop()
+            if (desktop) {
+              await desktop.browser.create({ id: desktopId, url: startUrl })
+            }
+          } catch {
+            // Surface stays on DesktopBrowserSurface mount path.
+          }
+          return
+        }
+
+        // Legacy Local Bridge path — do not start new local sessions.
+        if (started.local_browser?.required || next.provider === "browser_use_local") {
+          setError(
+            "Local Browser Bridge is deprecated. Open Articulate Desktop to publish interactively, or use Cloud.",
           )
-          if (!isCurrent()) return
-          setRun(driven)
-          setStatusNote(humanStatusMessage(driven.metadata?.phase_message) || "Browser: Local")
-          onBrowserChangeRef.current?.({
-            publicationRunId: driven.id,
-            sessionId:
-              (driven.metadata as { bridge_session_id?: string | null } | undefined)
-                ?.bridge_session_id ?? driven.provider_session_id ?? null,
-            phase: driven.status,
-            connectMessage: humanStatusMessage(driven.metadata?.phase_message) ?? null,
-          })
-          reportCloudPublishTiming(timingKey)
+          onBrowserChangeRef.current?.({ phase: "failed", provider: next.provider })
           return
         }
 
@@ -664,12 +632,11 @@ export function BrowserSessionPane({
         source: "reconnect",
         currentUrl: opened.currentUrl,
         pageTitle: opened.title,
+        faviconUrl: opened.faviconUrl ?? null,
         intentionallyStopped: false,
-        phase: opened.provider === "browser_use_local" ? "local_ready" : "ready",
+        phase: opened.provider === "articulate_desktop" ? "desktop_ready" : "ready",
         connectMessage:
-          opened.provider === "browser_use_local"
-            ? "Chrome is running on this computer."
-            : null,
+          opened.provider === "articulate_desktop" ? "Native Chromium browser." : null,
         requestedScreenWidth: screen.width,
         requestedScreenHeight: screen.height,
         viewerMode: "fit",
@@ -684,62 +651,22 @@ export function BrowserSessionPane({
   }
 
   async function handleConnectHelper() {
-    setPairingBusy(true)
-    setError(null)
-    setStatusNote("Connecting Browser Helper…")
-    try {
-      await pairBrowserHelper()
-      setPairingNeeded(false)
-      setStatusNote("Connected ✓")
-      onBrowserChangeRef.current?.({
-        phase: "provisioning",
-        connectMessage: null,
-        intentionallyStopped: false,
-      })
-      provisionGenerationRef.current += 1
-      provisionStartedRef.current = null
-      pendingOpenAfterPairRef.current = false
-      // Re-enter provisioning to open the browser immediately after pair.
-      onBrowserChangeRef.current?.({ phase: "provisioning" })
-    } catch (err) {
-      setError(err instanceof Error ? err.message : "Could not connect Browser Helper")
-    } finally {
-      setPairingBusy(false)
-    }
+    // Local Browser Helper pairing is deprecated — reopen via Desktop/Cloud resolver.
+    setPairingNeeded(false)
+    setStatusNote(null)
+    onBrowserChangeRef.current?.({
+      phase: "provisioning",
+      connectMessage: null,
+      intentionallyStopped: false,
+      provider: null,
+      bridgeSessionId: null,
+    })
+    provisionGenerationRef.current += 1
+    provisionStartedRef.current = null
   }
 
   async function handleFocusLocalBrowser() {
-    const bridgeId = browser.bridgeSessionId ?? browser.sessionId ?? browserId
-    if (!bridgeId) {
-      setStatusNote("Look for the Articulate Chrome window on this machine.")
-      return
-    }
-    setBusy(true)
-    try {
-      const token = await getLocalBrowserAccessToken()
-      const result = await focusBridgeSession(token, bridgeId)
-      const refreshed = await refreshLocalBrowserSession(bridgeId)
-      if (refreshed) {
-        setNavUrl(refreshed.currentUrl || "")
-        onBrowserChangeRef.current?.({
-          currentUrl: refreshed.currentUrl,
-          pageTitle: refreshed.title,
-        })
-      }
-      setStatusNote(
-        result.method?.includes("relaunch")
-          ? "Opened the same session in Chrome"
-          : "Focused local Chrome",
-      )
-    } catch (err) {
-      setStatusNote(
-        err instanceof Error
-          ? err.message
-          : "Could not focus Chrome — look for the Articulate window.",
-      )
-    } finally {
-      setBusy(false)
-    }
+    setStatusNote("Use the Desktop browser pane — external Chrome helper is no longer used.")
   }
 
   async function handleStopLocalBrowser() {
@@ -747,7 +674,7 @@ export function BrowserSessionPane({
     setBusy(true)
     try {
       await stopOpenedBrowserSession({
-        provider: browser.provider ?? "browser_use_local",
+        provider: browser.provider ?? "articulate_desktop",
         bridgeSessionId: bridgeId,
         browserId,
       })
@@ -756,12 +683,10 @@ export function BrowserSessionPane({
         phase: "stopped",
         liveViewUrl: null,
         bridgeSessionId: null,
-        browserId: null,
-        sessionId: null,
       })
-      setStatusNote(null)
+      setStatusNote("Browser session ended")
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Could not stop local browser")
+      setError(err instanceof Error ? err.message : "Could not stop browser")
     } finally {
       setBusy(false)
     }
@@ -880,15 +805,40 @@ export function BrowserSessionPane({
 
   const status = run?.status
 
+  const isDesktopProvider =
+    browser.provider === "articulate_desktop" ||
+    browser.phase === "desktop_ready" ||
+    (isArticulateDesktopAvailable() &&
+      !browser.bridgeSessionId &&
+      !liveViewUrl &&
+      (browser.phase === "provisioning" || browser.phase === "desktop_ready") &&
+      !destinationId &&
+      !publicationRunId)
+
   const isLocalProvider =
-    browser.provider === "browser_use_local" ||
-    run?.provider === "browser_use_local" ||
-    browser.phase === "local_running" ||
-    browser.phase === "local_ready" ||
-    browser.phase === "provisioning" ||
-    browser.phase === "needs_pairing" ||
-    Boolean(browser.bridgeSessionId) ||
-    Boolean((run?.metadata as { local_browser?: boolean } | undefined)?.local_browser)
+    !isDesktopProvider &&
+    (browser.provider === "browser_use_local" ||
+      run?.provider === "browser_use_local" ||
+      browser.phase === "local_running" ||
+      browser.phase === "local_ready" ||
+      browser.phase === "provisioning" ||
+      browser.phase === "needs_pairing" ||
+      Boolean(browser.bridgeSessionId) ||
+      Boolean((run?.metadata as { local_browser?: boolean } | undefined)?.local_browser))
+
+  const desktopBrowserId =
+    (browser.provider === "articulate_desktop" ? browser.browserId : null) ||
+    (typeof tabId === "string" && tabId.trim() ? tabId.trim() : null) ||
+    browser.browserId ||
+    null
+
+  const showDesktopBrowserPanel =
+    isDesktopProvider &&
+    !intentionallyStopped &&
+    Boolean(desktopBrowserId) &&
+    (browser.phase === "desktop_ready" ||
+      browser.phase === "provisioning" ||
+      browser.provider === "articulate_desktop")
 
   const localBridgeSessionId =
     browser.bridgeSessionId ??
@@ -918,6 +868,7 @@ export function BrowserSessionPane({
     !liveViewUrl &&
     !intentionallyStopped &&
     !isLocalProvider &&
+    !isDesktopProvider &&
     (isProvisioning ||
       browser.phase === "provisioning" ||
       (Boolean(run) &&
@@ -950,10 +901,11 @@ export function BrowserSessionPane({
     Boolean(error && liveViewUrl) ||
     (Boolean(run) && isActivePublicationStatus(status ?? ""))
 
-  // Cloud Live View chrome only — LocalBrowserSurface draws its own toolbar.
+  // Cloud Live View chrome only — Local/Desktop surfaces draw their own toolbar.
   const showChrome =
     !intentionallyStopped &&
     !isLocalProvider &&
+    !isDesktopProvider &&
     (Boolean(liveViewUrl) ||
       isProvisioning ||
       browser.phase === "provisioning" ||
@@ -1057,6 +1009,55 @@ export function BrowserSessionPane({
             busy={busy}
             actionLabel="Open new browser"
             onAction={() => void handleOpenBlankBrowser()}
+          />
+        ) : showDesktopBrowserPanel && desktopBrowserId ? (
+          <DesktopBrowserSurface
+            browserId={desktopBrowserId}
+            active
+            initialUrl={browser.currentUrl || "https://www.google.com/"}
+            onNavigation={(info) => {
+              if (info.url && !urlBarEditingRef.current) setNavUrl(info.url)
+              if (typeof info.canGoBack === "boolean") setCanGoBack(info.canGoBack)
+              if (typeof info.canGoForward === "boolean") setCanGoForward(info.canGoForward)
+              onBrowserChangeRef.current?.({
+                currentUrl: info.url,
+                pageTitle: info.title ?? browser.pageTitle,
+                faviconUrl: info.favicon ?? browser.faviconUrl,
+                provider: "articulate_desktop",
+                phase: "desktop_ready",
+                browserId: desktopBrowserId,
+              })
+            }}
+            onDownload={(info) => {
+              if (process.env.NODE_ENV === "development") {
+                console.info("[desktop-browser] download", info)
+              }
+              setStatusNote(
+                info.state === "completed"
+                  ? `Downloaded ${info.filename}`
+                  : info.state === "started"
+                    ? `Downloading ${info.filename}…`
+                    : `Download ${info.state}: ${info.filename}`,
+              )
+            }}
+            onPopup={(info) => {
+              // Managed popup → new workspace Browser tab (same persistent session).
+              void import("../../app/store/right-pane-tabs").then(({ useRightPaneTabsStore }) => {
+                useRightPaneTabsStore.getState().upsertTab({
+                  kind: "browser",
+                  id: info.id,
+                  title: "Browser",
+                  browser: {
+                    provider: "articulate_desktop",
+                    browserId: info.id,
+                    phase: "desktop_ready",
+                    currentUrl: info.url,
+                    source: "manual",
+                  },
+                  activate: true,
+                })
+              })
+            }}
           />
         ) : showPairingPrompt && !localBridgeSessionId ? (
           <div className="flex h-full min-h-0 w-full flex-col items-center justify-center gap-3 px-6 text-center">

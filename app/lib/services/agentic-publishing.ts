@@ -150,9 +150,9 @@ export async function openStandaloneBrowser(args?: {
   startUrl?: string | null
   profileId?: string | null
   browserViewport?: { width: number; height: number } | null
-  /** When true, skip local even if the client could use the bridge. */
+  /** When true, skip Desktop even if available (force Cloud). */
   forceCloud?: boolean
-  localBridgeAvailable?: boolean
+  desktopAvailable?: boolean
 }): Promise<{
   browser_id: string
   live_view_url: string | null
@@ -160,21 +160,22 @@ export async function openStandaloneBrowser(args?: {
   status?: string | null
   provider?: string | null
   browser_label?: string | null
+  desktop_browser?: { required?: boolean; start_url?: string | null } | null
+  /** @deprecated Local bridge is disconnected. */
   local_browser?: { required?: boolean; start_url?: string | null } | null
 }> {
-  const bridge =
-    args?.localBridgeAvailable === undefined && !args?.forceCloud
-      ? await localBridgePayload()
+  const desktop =
+    args?.desktopAvailable === undefined && !args?.forceCloud
+      ? await desktopAvailabilityPayload()
       : {
-          local_bridge_available: args?.localBridgeAvailable === true,
-          local_chrome_available: args?.localBridgeAvailable === true,
+          desktop_available: args?.desktopAvailable === true,
         }
   return invokePublishingAction({
     action: "open_browser",
     start_url: args?.startUrl ?? null,
     profile_id: args?.profileId ?? null,
     browser_viewport: args?.browserViewport ?? null,
-    ...bridge,
+    ...desktop,
     ...(args?.forceCloud ? { force_cloud: true } : {}),
   })
 }
@@ -240,24 +241,6 @@ export async function controlBrowser(args: {
   })
 }
 
-export async function connectPublishingDestination(
-  destinationId: string,
-  args?: { browserViewport?: { width: number; height: number } | null },
-): Promise<{
-  destination: PublishingDestination
-  live_view_url: string | null
-  connect_session_id?: string | null
-  connect_run_id?: string | null
-}> {
-  const bridge = await localBridgePayload()
-  return invokePublishingAction({
-    action: "connect_destination",
-    destination_id: destinationId,
-    browser_viewport: args?.browserViewport ?? null,
-    ...bridge,
-  })
-}
-
 export async function completePublishingDestinationConnect(
   destinationId: string,
   args?: { publicationRunId?: string | null; userConfirmed?: boolean },
@@ -286,7 +269,14 @@ export type StartPublicationResult = {
   connect_session_id?: string | null
   message?: string | null
   provider?: string | null
-  browser_label?: "Local" | "Cloud" | string | null
+  browser_label?: "Desktop" | "Cloud" | "Local" | string | null
+  desktop_browser?: {
+    required?: boolean
+    start_url?: string | null
+    task?: string | null
+    profile_id?: string | null
+  } | null
+  /** @deprecated Local Bridge disconnected — historical responses only. */
   local_browser?: {
     required?: boolean
     start_url?: string | null
@@ -318,42 +308,57 @@ export type StartPublicationResult = {
   }
 }
 
-async function localBridgePayload(): Promise<Record<string, unknown>> {
+async function desktopAvailabilityPayload(): Promise<Record<string, unknown>> {
   try {
-    const { detectLocalBridgeStatus } = await import("../local-publication-driver")
-    const status = await detectLocalBridgeStatus()
+    const { isArticulateDesktopAvailable } = await import("../articulate-desktop")
+    const available = isArticulateDesktopAvailable()
     return {
-      local_bridge_available: status.available,
-      local_chrome_available: status.chromeAvailable,
-      local_bridge_version: status.version,
-      local_bridge: {
-        available: status.available,
-        chromeAvailable: status.chromeAvailable,
-        version: status.version,
-      },
+      desktop_available: available,
+      // Legacy fields always false — Local Bridge is disconnected from runtime.
+      local_bridge_available: false,
+      local_chrome_available: false,
     }
   } catch {
     return {
+      desktop_available: false,
       local_bridge_available: false,
       local_chrome_available: false,
     }
   }
 }
 
+export async function connectPublishingDestination(
+  destinationId: string,
+  args?: { browserViewport?: { width: number; height: number } | null },
+): Promise<{
+  destination: PublishingDestination
+  live_view_url: string | null
+  connect_session_id?: string | null
+  connect_run_id?: string | null
+}> {
+  const desktop = await desktopAvailabilityPayload()
+  return invokePublishingAction({
+    action: "connect_destination",
+    destination_id: destinationId,
+    browser_viewport: args?.browserViewport ?? null,
+    ...desktop,
+  })
+}
+
 export async function startArtifactPublication(args: {
   artifactId: string
   destinationId: string
   browserViewport?: { width: number; height: number } | null
-  /** Force Cloud even when local bridge is available. */
+  /** Force Cloud even when Desktop is available. */
   forceCloud?: boolean
 }): Promise<StartPublicationResult> {
-  const bridge = await localBridgePayload()
+  const desktop = await desktopAvailabilityPayload()
   return invokePublishingAction<StartPublicationResult>({
     action: "start_publication",
     artifact_id: args.artifactId,
     destination_id: args.destinationId,
     browser_viewport: args.browserViewport ?? null,
-    ...bridge,
+    ...desktop,
     ...(args.forceCloud ? { force_cloud: true } : {}),
   })
 }
@@ -377,12 +382,12 @@ export async function startPublication(args: {
   scheduleStrategy?: "external" | "internal" | null
   forceCloud?: boolean
 }): Promise<StartPublicationResult> {
-  const bridge = await localBridgePayload()
+  const desktop = await desktopAvailabilityPayload()
   return invokePublishingAction<StartPublicationResult>({
     action: "start_publication",
     destination_id: args.destinationId,
     browser_viewport: args.browserViewport ?? null,
-    ...bridge,
+    ...desktop,
     ...(args.forceCloud ? { force_cloud: true } : {}),
     ...(args.artifactId ? { artifact_id: args.artifactId } : {}),
     ...(args.content ? { content: args.content } : {}),
