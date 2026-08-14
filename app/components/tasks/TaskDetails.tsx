@@ -1,6 +1,13 @@
 "use client"
 
 import { cn } from "@/lib/utils"
+import {
+  CHAT_CONTENT_COLUMN_CLASS,
+  TASK_DETAILS_FIELD_CONTROL_CLASS,
+  TASK_DETAILS_FIELD_LABEL_CLASS,
+  TASK_DETAILS_FIELDS_GRID_CLASS,
+  TASK_DETAILS_SELECT_TRIGGER_CLASS,
+} from "../../lib/chat-content-column"
 import { useEffect, useState, useRef, useCallback, useMemo, Dispatch, SetStateAction } from "react"
 import { Thread } from '../../types/task'
 import { Button } from "../ui/button"
@@ -3102,14 +3109,14 @@ export function TaskDetails({
         {activeTaskTab === "overview" ? (
           <div className="flex min-h-0 flex-1 flex-col">
             <div className="min-h-0 flex-1 overflow-auto overflow-x-hidden">
-          <section className="p-4 pb-0">
+          <section className={cn(CHAT_CONTENT_COLUMN_CLASS, "p-4 pb-0")}>
               {/* Banner is rendered in the header for suggestion mode */}
           {!isSuggestionMode && (
-            <h3 className="text-base font-medium text-gray-900 mb-3">Overview</h3>
+            <h3 className="mb-4 text-sm font-semibold text-gray-900">Overview</h3>
           )}
-          <div className="grid grid-cols-[max-content_minmax(0,1fr)] gap-x-6 gap-y-2 items-start">
+          <div className={TASK_DETAILS_FIELDS_GRID_CLASS}>
             {/* Task Title */}
-            <label className="text-sm font-normal text-gray-400 self-center justify-self-start text-left" htmlFor="task-title">Title</label>
+            <label className={TASK_DETAILS_FIELD_LABEL_CLASS} htmlFor="task-title">Title</label>
             {canEdit ? (
               <input
                 ref={titleInputRef}
@@ -3146,12 +3153,12 @@ export function TaskDetails({
                 }}
                 placeholder="Set title"
                 disabled={isLoading}
-                className="h-10 min-h-10 w-full !cursor-text rounded-md border border-gray-200 bg-white px-3 text-sm font-normal leading-none text-gray-900 caret-gray-900 outline-none focus:ring-2 focus:ring-gray-200"
+                className={cn(TASK_DETAILS_FIELD_CONTROL_CLASS, "!cursor-text caret-gray-900")}
                 style={{ cursor: "text" }}
               />
             ) : (
               <div
-                className="flex h-10 min-h-10 w-full min-w-0 items-center overflow-hidden rounded-md border border-gray-200 px-3"
+                className={cn(TASK_DETAILS_FIELD_CONTROL_CLASS, "flex items-center overflow-hidden")}
                 aria-label="Title"
                 title={title || ''}
               >
@@ -3159,7 +3166,7 @@ export function TaskDetails({
               </div>
             )}
             {/* Project */}
-            <label className="text-sm font-normal text-gray-400 self-center justify-self-start text-left" htmlFor="task-project">Project</label>
+            <label className={TASK_DETAILS_FIELD_LABEL_CLASS} htmlFor="task-project">Project</label>
             {isSuggestionMode ? (
               hasMountedSuggestionControls ? (
                 <Select
@@ -3171,7 +3178,7 @@ export function TaskDetails({
                   }
                   onOpenChange={(open) => { if (open) setProjectSearchQuery("") }}
                 >
-                  <SelectTrigger className="h-10 min-h-10 w-full min-w-0 border-gray-200 rounded-md text-sm leading-none">
+                  <SelectTrigger className={TASK_DETAILS_SELECT_TRIGGER_CLASS}>
                     <div className="flex min-w-0 items-center gap-2">
                       {renderProjectMark(currentProjectOption?.logo, currentProjectOption?.color ?? currentProjectColor)}
                       <span className="truncate">
@@ -3201,7 +3208,7 @@ export function TaskDetails({
                   </SelectContent>
                 </Select>
               ) : (
-                <div className="h-10 min-h-10 w-full rounded-md border border-gray-200 bg-white" />
+                <div className={cn(TASK_DETAILS_FIELD_CONTROL_CLASS, "bg-white")} />
               )
             ) : canEdit ? (
               <Select
@@ -3209,7 +3216,7 @@ export function TaskDetails({
                 onValueChange={isLoading ? undefined : (value) => handleProjectChange({ target: { value: value === NONE_OPTION ? '' : value } } as React.ChangeEvent<HTMLSelectElement>)}
                 onOpenChange={(open) => { if (open) setProjectSearchQuery("") }}
               >
-                <SelectTrigger className="h-10 min-h-10 w-full min-w-0 border-gray-200 rounded-md text-sm leading-none">
+                <SelectTrigger className={TASK_DETAILS_SELECT_TRIGGER_CLASS}>
                   <div className="flex min-w-0 items-center gap-2">
                     {renderProjectMark(currentProjectOption?.logo, currentProjectOption?.color ?? currentProjectColor)}
                     <span className="truncate">
@@ -3239,7 +3246,7 @@ export function TaskDetails({
                 </SelectContent>
               </Select>
             ) : (
-              <div className="w-full h-10 px-3 py-2 rounded-md border border-gray-200 truncate text-sm font-normal text-gray-900 min-w-0" title={currentProjectName || ''}>
+              <div className={cn(TASK_DETAILS_FIELD_CONTROL_CLASS, "flex items-center truncate py-0")} title={currentProjectName || ''}>
                 {task?.project || currentProjectName ? (
                   <ProjectBadge
                     name={task?.project?.name ?? currentProjectName}
@@ -3253,7 +3260,7 @@ export function TaskDetails({
               </div>
             )}
             {/* Assigned to (with avatar) */}
-            <label className="text-sm font-normal text-gray-400 self-center justify-self-start text-left" htmlFor="task-assignee">Assigned to</label>
+            <label className={TASK_DETAILS_FIELD_LABEL_CLASS} htmlFor="task-assignee">Assigned to</label>
             {isSuggestionMode ? (
               hasMountedSuggestionControls ? (
                 <Select
@@ -3264,7 +3271,7 @@ export function TaskDetails({
                       : (value) => handleAssigneeChange({ target: { value: value === NONE_OPTION ? '' : value } } as React.ChangeEvent<HTMLSelectElement>)
                   }
                 >
-                  <SelectTrigger className="h-10 min-h-10 w-full min-w-0 border-gray-200 rounded-md text-sm leading-none">
+                  <SelectTrigger className={TASK_DETAILS_SELECT_TRIGGER_CLASS}>
                     <SelectValue placeholder="Select assignee" />
                   </SelectTrigger>
                   <SelectContent className="w-[min(90vw,24rem)] max-w-full">
@@ -3284,14 +3291,14 @@ export function TaskDetails({
                   </SelectContent>
                 </Select>
               ) : (
-                <div className="h-10 min-h-10 w-full rounded-md border border-gray-200 bg-white" />
+                <div className={cn(TASK_DETAILS_FIELD_CONTROL_CLASS, "bg-white")} />
               )
             ) : canEdit ? (
               <Select
                 value={isLoading ? NONE_OPTION : (filteredUserId || NONE_OPTION)}
                 onValueChange={isLoading ? undefined : (value) => handleAssigneeChange({ target: { value: value === NONE_OPTION ? '' : value } } as React.ChangeEvent<HTMLSelectElement>)}
               >
-                <SelectTrigger className="h-10 min-h-10 w-full min-w-0 border-gray-200 rounded-md text-sm leading-none">
+                <SelectTrigger className={TASK_DETAILS_SELECT_TRIGGER_CLASS}>
                   <SelectValue placeholder="Select assignee" />
                 </SelectTrigger>
                 <SelectContent className="w-[min(90vw,24rem)] max-w-full">
@@ -3324,7 +3331,7 @@ export function TaskDetails({
             )}
             {!isSuggestionMode ? (
               <>
-                <label className="text-sm font-normal text-gray-400 self-center justify-self-start text-left">
+                <label className={TASK_DETAILS_FIELD_LABEL_CLASS}>
                   Watchers
                 </label>
                 <div className="w-full min-w-0">
@@ -3337,7 +3344,7 @@ export function TaskDetails({
                     <PopoverTrigger asChild>
                       <button
                         type="button"
-                        className="flex h-10 min-h-10 w-full min-w-0 items-center gap-2 rounded-md border border-gray-200 bg-white px-3 text-left text-sm hover:border-gray-300"
+                        className={cn(TASK_DETAILS_FIELD_CONTROL_CLASS, "flex items-center gap-2 text-left hover:border-gray-300")}
                         title="Manage watchers"
                         aria-label="Manage watchers"
                         disabled={isLoading}
@@ -3442,10 +3449,10 @@ export function TaskDetails({
               </>
             ) : null}
             {/* Due date */}
-            <label className="text-sm font-normal text-gray-400 self-center justify-self-start text-left" htmlFor="task-due-date">Due date</label>
+            <label className={TASK_DETAILS_FIELD_LABEL_CLASS} htmlFor="task-due-date">Due date</label>
             {canEdit || isSuggestionMode ? (
-              <div className="relative w-full min-h-[40px] px-3 py-2 rounded-md border border-gray-200 flex items-center text-sm font-normal text-gray-900 min-w-0">
-                <span className={`pointer-events-none truncate ${task?.is_overdue ? "text-red-600 font-medium" : ""}`}>
+              <div className={cn(TASK_DETAILS_FIELD_CONTROL_CLASS, "relative flex items-center py-0")}>
+                <span className={`pointer-events-none truncate ${task?.is_overdue ? "text-red-500/80" : ""}`}>
                   {currentDueDate ? formatDateWithYear(currentDueDate) : <span className="text-gray-400">Set due date</span>}
                 </span>
                 <input
@@ -3463,17 +3470,17 @@ export function TaskDetails({
                 />
               </div>
             ) : (
-              <div className="w-full min-h-[40px] px-3 py-2 rounded-md border border-gray-200 truncate text-sm font-normal text-gray-900 min-w-0" title={currentDueDate ? formatDateWithYear(currentDueDate) : ''}>
-                <span className={task?.is_overdue ? "text-red-600 font-medium" : ""}>
+              <div className={cn(TASK_DETAILS_FIELD_CONTROL_CLASS, "flex items-center truncate py-0")} title={currentDueDate ? formatDateWithYear(currentDueDate) : ''}>
+                <span className={task?.is_overdue ? "text-red-500/80" : ""}>
                   {currentDueDate ? formatDateWithYear(currentDueDate) : <span className="text-gray-400">—</span>}
                 </span>
               </div>
             )}
             {/* Publish date */}
-            <label className="text-sm font-normal text-gray-400 self-center justify-self-start text-left" htmlFor="task-publication-date">Publish date</label>
+            <label className={TASK_DETAILS_FIELD_LABEL_CLASS} htmlFor="task-publication-date">Publish date</label>
             {canEdit ? (
-              <div className="relative w-full min-h-[40px] px-3 py-2 rounded-md border border-gray-200 flex items-center text-sm font-normal text-gray-900 min-w-0">
-                <span className={`pointer-events-none truncate ${task?.is_publication_overdue ? "text-red-600 font-medium" : ""}`}>
+              <div className={cn(TASK_DETAILS_FIELD_CONTROL_CLASS, "relative flex items-center py-0")}>
+                <span className={`pointer-events-none truncate ${task?.is_publication_overdue ? "text-red-500/80" : ""}`}>
                   {currentPublicationDate ? formatDateWithYear(currentPublicationDate) : <span className="text-gray-400">Set publish date</span>}
                 </span>
                 <input
@@ -3491,20 +3498,20 @@ export function TaskDetails({
                 />
               </div>
             ) : (
-              <div className="w-full min-h-[40px] px-3 py-2 rounded-md border border-gray-200 truncate text-sm font-normal text-gray-900 min-w-0" title={currentPublicationDate ? formatDateWithYear(currentPublicationDate) : ''}>
-                <span className={task?.is_publication_overdue ? "text-red-600 font-medium" : ""}>
+              <div className={cn(TASK_DETAILS_FIELD_CONTROL_CLASS, "flex items-center truncate py-0")} title={currentPublicationDate ? formatDateWithYear(currentPublicationDate) : ''}>
+                <span className={task?.is_publication_overdue ? "text-red-500/80" : ""}>
                   {currentPublicationDate ? formatDateWithYear(currentPublicationDate) : <span className="text-gray-400">—</span>}
                 </span>
               </div>
             )}
             {/* Status (as pill) */}
-            <label className="text-sm font-normal text-gray-400 self-center justify-self-start text-left" htmlFor="task-status">Status</label>
+            <label className={TASK_DETAILS_FIELD_LABEL_CLASS} htmlFor="task-status">Status</label>
             {canEdit ? (
               <Select
                 value={isLoading ? NONE_OPTION : (currentStatusId || NONE_OPTION)}
                 onValueChange={isLoading ? undefined : (value) => handleStatusChange({ target: { value: value === NONE_OPTION ? '' : value } } as React.ChangeEvent<HTMLSelectElement>)}
               >
-                <SelectTrigger className="h-10 min-h-10 w-full min-w-0 border-gray-200 rounded-md text-sm leading-none">
+                <SelectTrigger className={TASK_DETAILS_SELECT_TRIGGER_CLASS}>
                   {currentStatusName ? (
                     <span
                       className="inline-flex items-center px-3 py-1 rounded-full text-xs font-medium truncate max-w-full"
@@ -3537,7 +3544,7 @@ export function TaskDetails({
                 </SelectContent>
               </Select>
             ) : (
-              <div className="w-full h-10 px-3 py-2 rounded-md border border-gray-200 truncate text-sm font-normal text-gray-900 min-w-0" title={currentStatusName || ''}>
+              <div className={cn(TASK_DETAILS_FIELD_CONTROL_CLASS, "flex items-center truncate py-0")} title={currentStatusName || ''}>
                 {currentStatusName ? (
                   <span
                     className="inline-block px-3 py-1 rounded-full text-xs font-medium"
@@ -3552,7 +3559,7 @@ export function TaskDetails({
               </div>
             )}
             {/* Content Type */}
-            <label className="text-sm font-normal text-gray-400 self-center justify-self-start text-left" htmlFor="task-content-type">Content Type</label>
+            <label className={TASK_DETAILS_FIELD_LABEL_CLASS} htmlFor="task-content-type">Content Type</label>
             {isSuggestionMode ? (
               hasMountedSuggestionControls ? (
                 <Select
@@ -3563,7 +3570,7 @@ export function TaskDetails({
                       : (value) => handleContentTypeChange({ target: { value: value === NONE_OPTION ? '' : value } } as React.ChangeEvent<HTMLSelectElement>)
                   }
                 >
-                  <SelectTrigger className="h-10 min-h-10 w-full min-w-0 border-gray-200 rounded-md text-sm leading-none">
+                  <SelectTrigger className={TASK_DETAILS_SELECT_TRIGGER_CLASS}>
                     <SelectValue placeholder="Select content type" />
                   </SelectTrigger>
                   <SelectContent className="w-[min(90vw,24rem)] max-w-full">
@@ -3576,14 +3583,14 @@ export function TaskDetails({
                   </SelectContent>
                 </Select>
               ) : (
-                <div className="h-10 min-h-10 w-full rounded-md border border-gray-200 bg-white" />
+                <div className={cn(TASK_DETAILS_FIELD_CONTROL_CLASS, "bg-white")} />
               )
             ) : canEdit ? (
               <Select
                 value={isLoading ? NONE_OPTION : (currentContentTypeId || NONE_OPTION)}
                 onValueChange={isLoading ? undefined : (value) => handleContentTypeChange({ target: { value: value === NONE_OPTION ? '' : value } } as React.ChangeEvent<HTMLSelectElement>)}
               >
-                <SelectTrigger className="h-10 min-h-10 w-full min-w-0 border-gray-200 rounded-md text-sm leading-none">
+                <SelectTrigger className={TASK_DETAILS_SELECT_TRIGGER_CLASS}>
                   <SelectValue placeholder="Select content type" />
                 </SelectTrigger>
                 <SelectContent className="w-[min(90vw,24rem)] max-w-full">
@@ -3596,13 +3603,13 @@ export function TaskDetails({
                 </SelectContent>
               </Select>
             ) : (
-              <div className="w-full h-10 px-3 py-2 rounded-md border border-gray-200 truncate text-sm font-normal text-gray-900 min-w-0" title={currentContentTypeTitle || ''}>
+              <div className={cn(TASK_DETAILS_FIELD_CONTROL_CLASS, "flex items-center truncate py-0")} title={currentContentTypeTitle || ''}>
                 {currentContentTypeTitle || <span className="text-gray-400">—</span>}
               </div>
             )}
 
             {/* Production Type */}
-            <label className="text-sm font-normal text-gray-400 self-center justify-self-start text-left" htmlFor="task-production-type">Production Type</label>
+            <label className={TASK_DETAILS_FIELD_LABEL_CLASS} htmlFor="task-production-type">Production Type</label>
             {isSuggestionMode ? (
               hasMountedSuggestionControls ? (
                 <Select
@@ -3613,7 +3620,7 @@ export function TaskDetails({
                       : (value) => handleProductionTypeChange({ target: { value: value === NONE_OPTION ? '' : value } } as React.ChangeEvent<HTMLSelectElement>)
                   }
                 >
-                  <SelectTrigger className="h-10 min-h-10 w-full min-w-0 border-gray-200 rounded-md text-sm leading-none">
+                  <SelectTrigger className={TASK_DETAILS_SELECT_TRIGGER_CLASS}>
                     <SelectValue placeholder="Select production type" />
                   </SelectTrigger>
                   <SelectContent className="w-[min(90vw,24rem)] max-w-full">
@@ -3626,14 +3633,14 @@ export function TaskDetails({
                   </SelectContent>
                 </Select>
               ) : (
-                <div className="h-10 min-h-10 w-full rounded-md border border-gray-200 bg-white" />
+                <div className={cn(TASK_DETAILS_FIELD_CONTROL_CLASS, "bg-white")} />
               )
             ) : canEdit ? (
               <Select
                 value={currentProductionTypeId || NONE_OPTION}
                 onValueChange={(value) => handleProductionTypeChange({ target: { value: value === NONE_OPTION ? '' : value } } as React.ChangeEvent<HTMLSelectElement>)}
               >
-                <SelectTrigger className="h-10 min-h-10 w-full min-w-0 border-gray-200 rounded-md text-sm leading-none">
+                <SelectTrigger className={TASK_DETAILS_SELECT_TRIGGER_CLASS}>
                   <SelectValue placeholder="Select production type" />
                 </SelectTrigger>
                 <SelectContent className="w-[min(90vw,24rem)] max-w-full">
@@ -3646,12 +3653,12 @@ export function TaskDetails({
                 </SelectContent>
               </Select>
             ) : (
-              <div className="w-full h-10 px-3 py-2 rounded-md border border-gray-200 truncate text-sm font-normal text-gray-900 min-w-0" title={currentProductionTypeTitle || ''}>
+              <div className={cn(TASK_DETAILS_FIELD_CONTROL_CLASS, "flex items-center truncate py-0")} title={currentProductionTypeTitle || ''}>
                 {currentProductionTypeTitle || <span className="text-gray-400">—</span>}
               </div>
             )}
             {/* Language */}
-            <label className="text-sm font-normal text-gray-400 self-center justify-self-start text-left" htmlFor="task-language">Language</label>
+            <label className={TASK_DETAILS_FIELD_LABEL_CLASS} htmlFor="task-language">Language</label>
             {isSuggestionMode ? (
               hasMountedSuggestionControls ? (
                 <Select
@@ -3662,7 +3669,7 @@ export function TaskDetails({
                       : (value) => handleLanguageChange({ target: { value: value === NONE_OPTION ? '' : value } } as React.ChangeEvent<HTMLSelectElement>)
                   }
                 >
-                  <SelectTrigger className="h-10 min-h-10 w-full min-w-0 border-gray-200 rounded-md text-sm leading-none">
+                  <SelectTrigger className={TASK_DETAILS_SELECT_TRIGGER_CLASS}>
                     <SelectValue placeholder="Select language" />
                   </SelectTrigger>
                   <SelectContent className="w-[min(90vw,24rem)] max-w-full">
@@ -3675,14 +3682,14 @@ export function TaskDetails({
                   </SelectContent>
                 </Select>
               ) : (
-                <div className="h-10 min-h-10 w-full rounded-md border border-gray-200 bg-white" />
+                <div className={cn(TASK_DETAILS_FIELD_CONTROL_CLASS, "bg-white")} />
               )
             ) : canEdit ? (
               <Select
                 value={currentLanguageId || NONE_OPTION}
                 onValueChange={(value) => handleLanguageChange({ target: { value: value === NONE_OPTION ? '' : value } } as React.ChangeEvent<HTMLSelectElement>)}
               >
-                <SelectTrigger className="h-10 min-h-10 w-full min-w-0 border-gray-200 rounded-md text-sm leading-none">
+                <SelectTrigger className={TASK_DETAILS_SELECT_TRIGGER_CLASS}>
                   <SelectValue placeholder="Select language" />
                 </SelectTrigger>
                 <SelectContent className="w-[min(90vw,24rem)] max-w-full">
@@ -3695,14 +3702,14 @@ export function TaskDetails({
                 </SelectContent>
               </Select>
             ) : (
-              <div className="w-full h-10 px-3 py-2 rounded-md border border-gray-200 truncate text-sm font-normal text-gray-900 min-w-0" title={currentLanguageCode || ''}>
+              <div className={cn(TASK_DETAILS_FIELD_CONTROL_CLASS, "flex items-center truncate py-0")} title={currentLanguageCode || ''}>
                 {currentLanguageCode || <span className="text-gray-400">—</span>}
               </div>
             )}
 
             {!isSuggestionMode && taskIdNum ? (
               <>
-                <label className="text-sm font-normal text-gray-400 self-center justify-self-start text-left">
+                <label className={TASK_DETAILS_FIELD_LABEL_CLASS}>
                   Channels
                 </label>
                 <div className="w-full min-w-0">
@@ -3720,7 +3727,7 @@ export function TaskDetails({
 
             {showParentField && (
               <>
-                <label className="text-sm font-normal text-gray-400 self-center justify-self-start text-left">Parent Task</label>
+                <label className={TASK_DETAILS_FIELD_LABEL_CLASS}>Parent Task</label>
                 <div className="w-full min-w-0 flex items-center gap-2">
                   <div className="flex-1 min-w-0">
                     <ParentTaskSelect
@@ -3748,7 +3755,7 @@ export function TaskDetails({
 
             {/* Briefing (rich text) - last in overview; label above, value below */}
             <div className="col-span-2 space-y-1">
-              <label className="text-sm font-normal text-gray-400 block text-left">Briefing</label>
+              <label className="mb-1 block text-left text-sm font-medium text-gray-800">Briefing</label>
               <div className="relative min-h-[120px] w-full min-w-0 overflow-hidden rounded-md border border-gray-200 bg-white">
                 {isSuggestionMode && !hasMountedSuggestionBriefingEditor ? (
                   <div className="min-h-[120px] w-full bg-white" />
@@ -3803,7 +3810,7 @@ export function TaskDetails({
           {/* Subtasks section (full width, only once) */}
           {task && String(task.content_type_id) === '39' && (
             <div className="mt-6">
-              <label className="text-sm font-normal text-gray-400 text-left mb-1 block">Subtasks</label>
+              <label className="mb-1 block text-left text-sm font-medium text-gray-800">Subtasks</label>
               {subtasks.length === 0 ? (
                 <div className="text-gray-400 text-sm">No subtasks</div>
               ) : (
@@ -3892,14 +3899,14 @@ export function TaskDetails({
             {!isSuggestionMode && commentsPanelProps ? (
               <div
                 id={TASK_OVERVIEW_COMMENT_DOCK_ID}
-                className="shrink-0 border-t border-gray-100 bg-white px-4 py-2"
+                className={cn(CHAT_CONTENT_COLUMN_CLASS, "shrink-0 border-t border-gray-100 bg-white px-4 py-2")}
               />
             ) : null}
           </div>
         ) : (
           <div className="flex min-h-0 flex-1 flex-col overflow-hidden">
             {activeTaskTab === "comments" && commentsPanelProps ? (
-              <section className="flex min-h-0 flex-1 flex-col p-4 pb-0">
+              <section className={cn(CHAT_CONTENT_COLUMN_CLASS, "flex min-h-0 flex-1 flex-col p-4 pb-0")}>
                 <h3 className="mb-3 shrink-0 text-base font-medium text-gray-900">Comments</h3>
                 <div className="flex min-h-0 flex-1 flex-col gap-2">
                   <div className="min-h-0 flex-1 overflow-y-auto">
@@ -3931,6 +3938,7 @@ export function TaskDetails({
               </section>
             ) : (
               <div className="min-h-0 flex-1 overflow-auto overflow-x-hidden">
+                <div className={CHAT_CONTENT_COLUMN_CLASS}>
 
           {/* Attachments section */}
           {!isSuggestionMode && activeTaskTab === "attachments" && (
@@ -4063,6 +4071,7 @@ export function TaskDetails({
             </section>
           ) : null}
 
+                </div>
               </div>
             )}
           </div>

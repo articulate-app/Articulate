@@ -29,10 +29,11 @@ import {
   DropdownMenuSubTrigger,
   DropdownMenuTrigger,
 } from "../../app/components/ui/dropdown-menu"
-import { Button } from "../../app/components/ui/button"
-import { IconTooltip } from "../../app/components/ui/icon-tooltip"
 import { toast } from "../../app/components/ui/use-toast"
-import { TASK_DETAILS_HEADER_ROW_CLASS } from "../../app/components/tasks/pane-header-tokens"
+import {
+  PANE_CHROME_ICON_BUTTON_CLASS,
+  PANE_CHROME_ICON_CLASS,
+} from "../../app/components/tasks/pane-header-tokens"
 import {
   artifactPlainText,
   countWords,
@@ -938,61 +939,55 @@ export function ArtifactPane({
 
   return (
     <div className={cn("flex h-full min-h-0 flex-col bg-white", className)}>
-      <div className={cn(TASK_DETAILS_HEADER_ROW_CLASS, "sticky top-0 z-10 shrink-0")}>
-        <input
-          value={draftTitle}
-          onChange={(event) => {
-            setDraftTitle(event.target.value)
-            scheduleAutosave()
-          }}
-          className="min-w-0 flex-1 border-0 bg-transparent text-[13px] font-medium text-gray-800 outline-none focus-visible:ring-0"
-          placeholder="Untitled artifact"
-          style={{ cursor: "text" }}
-        />
-        <div className="flex shrink-0 items-center gap-0.5">
+      <div className="flex h-10 min-h-10 shrink-0 items-center gap-2 bg-white px-4">
+        <div className="flex min-w-0 flex-1 items-center gap-2">
+          {displayArtifact.project_id != null && bindingQuery.data?.projectName ? (
+            <button
+              type="button"
+              className="max-w-[40%] shrink-0 truncate text-left text-sm text-gray-500 hover:text-gray-800 hover:underline"
+              onClick={() => openBoundProject(displayArtifact.project_id!)}
+            >
+              {bindingQuery.data.projectName}
+            </button>
+          ) : null}
+          <input
+            value={draftTitle}
+            onChange={(event) => {
+              setDraftTitle(event.target.value)
+              scheduleAutosave()
+            }}
+            disabled={isLivePreview}
+            className="min-w-0 flex-1 truncate border-0 bg-transparent text-sm font-medium text-gray-900 outline-none placeholder:text-gray-400 focus-visible:ring-0 disabled:opacity-70"
+            placeholder="Untitled artifact"
+            aria-label="Artifact title"
+          />
           {isLivePreview ? (
-            <span className="mr-1 shrink-0 rounded bg-amber-50 px-1.5 py-0.5 text-[11px] text-amber-800">
+            <span className="shrink-0 rounded bg-amber-50 px-1.5 py-0.5 text-[11px] text-amber-800">
               Live preview
             </span>
           ) : null}
-          <ArtifactFindReplacePopover
-            contentJson={draftContentJson ?? displayArtifact.content_json}
-            contentText={draftContentText ?? displayArtifact.content_text}
+        </div>
+        <div className="flex shrink-0 items-center gap-0.5">
+          <button
+            type="button"
+            className={PANE_CHROME_ICON_BUTTON_CLASS}
+            aria-label="Download"
+            title="Download"
             disabled={isLivePreview}
-            open={showFindReplace}
-            onOpenChange={setShowFindReplace}
-            onApply={({ contentJson, contentText }) => {
-              if (isLivePreview) return
-              setShowChanges(false)
-              applyingServerContentRef.current = true
-              userDirtyRef.current = true
-              setDraftContentJson(contentJson)
-              setDraftContentText(contentText)
-              setEditorForceNonce((n) => n + 1)
-              scheduleAutosave()
-              window.setTimeout(() => {
-                applyingServerContentRef.current = false
-              }, 50)
-            }}
-          />
-          <IconTooltip label="Download Word">
-            <Button
-              type="button"
-              variant="ghost"
-              size="sm"
-              className="h-7 w-7 p-0"
-              aria-label="Download Word"
-              disabled={isLivePreview}
-              onClick={() => void handleDownload("docx")}
-            >
-              <Download className="h-4 w-4" />
-            </Button>
-          </IconTooltip>
+            onClick={() => void handleDownload("docx")}
+          >
+            <Download className={PANE_CHROME_ICON_CLASS} />
+          </button>
           <DropdownMenu>
             <DropdownMenuTrigger asChild>
-              <Button variant="ghost" size="sm" className="h-7 w-7 p-0" aria-label="More actions">
-                <MoreHorizontal className="h-4 w-4" />
-              </Button>
+              <button
+                type="button"
+                className={PANE_CHROME_ICON_BUTTON_CLASS}
+                aria-label="More actions"
+                title="More"
+              >
+                <MoreHorizontal className={PANE_CHROME_ICON_CLASS} />
+              </button>
             </DropdownMenuTrigger>
             <DropdownMenuContent align="end" className="min-w-[220px]">
               {hasChangeDiff ? (
@@ -1152,6 +1147,29 @@ export function ArtifactPane({
         </div>
       </div>
 
+      {/* Find/replace stays available via the … menu */}
+      <ArtifactFindReplacePopover
+        contentJson={draftContentJson ?? displayArtifact.content_json}
+        contentText={draftContentText ?? displayArtifact.content_text}
+        disabled={isLivePreview}
+        open={showFindReplace}
+        onOpenChange={setShowFindReplace}
+        hideTrigger
+        onApply={({ contentJson, contentText }) => {
+          if (isLivePreview) return
+          setShowChanges(false)
+          applyingServerContentRef.current = true
+          userDirtyRef.current = true
+          setDraftContentJson(contentJson)
+          setDraftContentText(contentText)
+          setEditorForceNonce((n) => n + 1)
+          scheduleAutosave()
+          window.setTimeout(() => {
+            applyingServerContentRef.current = false
+          }, 50)
+        }}
+      />
+
       <Dialog open={showVersions} onOpenChange={setShowVersions}>
         <DialogContent className="max-w-sm p-4">
           <DialogHeader>
@@ -1248,6 +1266,7 @@ export function ArtifactPane({
               }}
               forceContentKey={editorForceContentKey}
               readOnly={isLivePreview}
+              hideHtmlToolbar
               onSelectImagePoint={({ attachmentId, x, y }) => {
                 attachArtifactSelection(
                   {

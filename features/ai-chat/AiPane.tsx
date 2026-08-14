@@ -69,21 +69,42 @@ interface AiPaneProps {
   isActiveWorkspaceView?: boolean
 }
 
+/**
+ * Prefer the live shallow URL (replaceState) until Next.js `useSearchParams` catches up.
+ * Keep a stable URLSearchParams identity when the query string is unchanged — otherwise
+ * consumers that depend on `searchParams` re-fire, rewrite the URL, and loop
+ * (Maximum update depth via setShallowSearch).
+ */
 function useSyncedTasksSearchParams(nextSearch: ReturnType<typeof useSearchParams>) {
-  const [shallowSearch, setShallowSearch] = useState<string | null>(null)
+  const nextSearchString = nextSearch.toString()
+  const [shallowOverride, setShallowOverride] = useState<string | null>(null)
+  const paramsRef = useRef<URLSearchParams>(new URLSearchParams(nextSearchString))
+  const lastStringRef = useRef(nextSearchString)
+
   useEffect(() => {
-    const onShallow = () => setShallowSearch(window.location.search.replace(/^\?/, ""))
+    const onShallow = () => {
+      const live = window.location.search.replace(/^\?/, "")
+      setShallowOverride((prev) => (prev === live ? prev : live))
+    }
     window.addEventListener(TASKS_SHALLOW_NAV_EVENT, onShallow)
     return () => window.removeEventListener(TASKS_SHALLOW_NAV_EVENT, onShallow)
   }, [])
+
   useEffect(() => {
-    if (shallowSearch === null) return
-    if (shallowSearch === nextSearch.toString()) setShallowSearch(null)
-  }, [nextSearch, shallowSearch])
-  return useMemo(() => {
-    if (shallowSearch !== null) return new URLSearchParams(shallowSearch)
-    return new URLSearchParams(nextSearch.toString())
-  }, [shallowSearch, nextSearch])
+    if (shallowOverride === null) return
+    // Next has the same query as the live bar — drop the override.
+    if (shallowOverride === nextSearchString) {
+      setShallowOverride(null)
+    }
+  }, [nextSearchString, shallowOverride])
+
+  const effectiveString = shallowOverride !== null ? shallowOverride : nextSearchString
+  if (lastStringRef.current !== effectiveString) {
+    lastStringRef.current = effectiveString
+    paramsRef.current = new URLSearchParams(effectiveString)
+  }
+
+  return paramsRef.current
 }
 
 type AiPaneTabStripProps = {
@@ -271,6 +292,7 @@ function AiPaneInner({ isOpen, onClose, onExpand, initialScope = 'global', proje
   const previousActiveIdRef = useRef<string | null>(null)
   const bootstrapScopeReadyRef = useRef(false)
   const didAutoBootstrapRef = useRef(false)
+  const creatingLockRef = useRef(false)
   const effectiveScope: AiScope = scopeOverride?.scope ?? initialScope
   const effectiveProjectId = scopeOverride?.scope === 'project'
     ? (scopeOverride.projectId ?? null)
@@ -417,10 +439,12 @@ function AiPaneInner({ isOpen, onClose, onExpand, initialScope = 'global', proje
       return
     }
 
-    if (forceNewThread && isOpen && !active && !isCreating) {
+    if (forceNewThread && isOpen) {
       logAiChatDebug("thread.force-new.consume", { source: "url-flag" })
       onForceNewThreadConsumed?.()
-      handleNewChat()
+      if (!creatingLockRef.current) {
+        void handleNewChat()
+      }
       return
     }
 
@@ -483,6 +507,10 @@ function AiPaneInner({ isOpen, onClose, onExpand, initialScope = 'global', proje
 
     if (!isAiPaneMode) {
       didAutoBootstrapRef.current = false
+      return
+    }
+
+    if (forceNewThread || creatingLockRef.current || isCreating) {
       return
     }
 
@@ -652,8 +680,11 @@ function AiPaneInner({ isOpen, onClose, onExpand, initialScope = 'global', proje
   }, [active?.id, disableUrlSync, isOpen, searchParams, navigateToThreadId])
 
   const handleNewChat = async () => {
-    if (isCreating) return
-    
+    if (isCreating || creatingLockRef.current) return
+    // Already sitting on an in-flight new chat — don't spawn a second tab.
+    if (active && !isPersistedAiThreadId(active.id)) return
+
+    creatingLockRef.current = true
     setIsCreating(true)
     const previousActive = active
     
@@ -738,6 +769,7 @@ function AiPaneInner({ isOpen, onClose, onExpand, initialScope = 'global', proje
         variant: 'destructive'
       })
     } finally {
+      creatingLockRef.current = false
       setIsCreating(false)
     }
   }
@@ -1107,6 +1139,26 @@ function AiPaneInner({ isOpen, onClose, onExpand, initialScope = 'global', proje
     },
     closeAllAiTabs: handleCloseAllTabs,
     copyLink: handleCopyLink,
+    reorderTabs: (orderedIds) => {
+      setOpenTabs((prev) => {
+        const byId = new Map(prev.map((tab) => [tab.id, tab]))
+        const next: AiThread[] = []
+        for (const id of orderedIds) {
+          const tab = byId.get(id)
+          if (!tab) continue
+          next.push(tab)
+          byId.delete(id)
+        }
+        for (const tab of byId.values()) next.push(tab)
+        if (
+          next.length === prev.length &&
+          next.every((tab, index) => tab.id === prev[index]?.id)
+        ) {
+          return prev
+        }
+        return next
+      })
+    },
     expand: onExpand,
   }
 
@@ -1129,6 +1181,7 @@ function AiPaneInner({ isOpen, onClose, onExpand, initialScope = 'global', proje
       setVisibility: (visibility) => chromeHandlersRef.current?.setVisibility(visibility),
       closeAllAiTabs: () => chromeHandlersRef.current?.closeAllAiTabs(),
       copyLink: () => chromeHandlersRef.current?.copyLink(),
+      reorderTabs: (orderedIds) => chromeHandlersRef.current?.reorderTabs(orderedIds),
       expand: () => chromeHandlersRef.current?.expand?.(),
     }
     useAiPaneChromeStore.getState().setHandlers(stableHandlers)

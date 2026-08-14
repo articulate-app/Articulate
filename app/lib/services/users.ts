@@ -147,6 +147,54 @@ export async function getUserProjects(userId: number) {
   return { data: data as UserProject[] | null, error }
 }
 
+/** Compact directory label: "A, B" or "A, B +N". */
+export function formatUserProjectsDirectoryLabel(names: string[]): string {
+  const cleaned = names.map((n) => n.trim()).filter(Boolean)
+  if (cleaned.length === 0) return "—"
+  if (cleaned.length <= 2) return cleaned.join(", ")
+  return `${cleaned.slice(0, 2).join(", ")} +${cleaned.length - 2}`
+}
+
+/**
+ * Batch project names for users directory (Projects column).
+ * Keys are stringified user ids.
+ */
+export async function fetchUserProjectLabelsByUserIds(
+  userIds: number[],
+): Promise<Record<string, string>> {
+  const unique = Array.from(
+    new Set(
+      userIds.filter((id) => Number.isFinite(id) && id > 0).map((id) => Math.trunc(id)),
+    ),
+  )
+  if (unique.length === 0) return {}
+
+  const { data, error } = await supabase
+    .from("v_user_projects_i_can_see")
+    .select("user_id,project_name")
+    .in("user_id", unique)
+    .order("project_name")
+
+  if (error) throw error
+
+  const namesByUser = new Map<string, string[]>()
+  for (const row of data ?? []) {
+    const uid = String((row as { user_id?: unknown }).user_id ?? "").trim()
+    const name = String((row as { project_name?: unknown }).project_name ?? "").trim()
+    if (!uid || !name) continue
+    const list = namesByUser.get(uid) ?? []
+    list.push(name)
+    namesByUser.set(uid, list)
+  }
+
+  const out: Record<string, string> = {}
+  for (const id of unique) {
+    const key = String(id)
+    out[key] = formatUserProjectsDirectoryLabel(namesByUser.get(key) ?? [])
+  }
+  return out
+}
+
 /**
  * Get teams a user belongs to
  */

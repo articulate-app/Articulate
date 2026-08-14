@@ -44,21 +44,41 @@ function PdfGlyph({ className }: { className?: string }) {
   )
 }
 
-function FileKindIcon({ kind }: { kind: AttachmentFileKind }) {
-  if (kind === "word") return <WordGlyph className="h-8 w-8 shrink-0" />
-  if (kind === "pdf") return <PdfGlyph className="h-8 w-8 shrink-0" />
+/** Format glyph used on attachment chips and elsewhere (e.g. template lists). */
+export function AttachmentFileKindIcon({
+  kind,
+  size = "md",
+}: {
+  kind: AttachmentFileKind
+  /** `md` matches chat chips; `sm` fits compact directory rows. */
+  size?: "sm" | "md"
+}) {
+  const box = size === "sm" ? "h-5 w-5" : "h-8 w-8"
+  const glyph = size === "sm" ? "h-3 w-3" : "h-4 w-4"
+  const radius = size === "sm" ? "rounded-md" : "rounded-lg"
+
+  if (kind === "word") return <WordGlyph className={`${box} shrink-0`} />
+  if (kind === "pdf") return <PdfGlyph className={`${box} shrink-0`} />
   if (kind === "image") {
     return (
-      <span className="inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-emerald-50 text-emerald-700">
-        <ImageIcon className="h-4 w-4" aria-hidden />
+      <span
+        className={`inline-flex ${box} shrink-0 items-center justify-center ${radius} bg-emerald-50 text-emerald-700`}
+      >
+        <ImageIcon className={glyph} aria-hidden />
       </span>
     )
   }
   return (
-    <span className="inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-slate-100 text-slate-600">
-      <FileText className="h-4 w-4" aria-hidden />
+    <span
+      className={`inline-flex ${box} shrink-0 items-center justify-center ${radius} bg-slate-100 text-slate-600`}
+    >
+      <FileText className={glyph} aria-hidden />
     </span>
   )
+}
+
+function FileKindIcon({ kind }: { kind: AttachmentFileKind }) {
+  return <AttachmentFileKindIcon kind={kind} size="md" />
 }
 
 export function AttachmentFileChip({

@@ -19,7 +19,6 @@ import { GlobalSearchPreviewPanel } from "../search/global-search-preview-panel"
 import type { GlobalSearchDocument, GlobalSearchItemEntityType } from "../../lib/global-search-types"
 import { openWorkspaceView } from "../../lib/open-workspace-view"
 import { beginManualBrowserOpen } from "../../lib/open-browser-session"
-import { probeLocalBridge } from "../../lib/local-browser-bridge"
 import { openWorkspaceViewFromSearchDocument } from "../../lib/open-workspace-view-from-search"
 import {
   WORKSPACE_NEW_TAB_LIST_ACTIONS,
@@ -107,7 +106,6 @@ export function WorkspaceNewTabMenu({
       startUrl: "https://www.google.com/",
       source: "manual",
       profileKey: "manual-browser",
-      autoPair: false,
     })
     openWorkspaceView(
       {
@@ -256,8 +254,6 @@ export function WorkspaceNewTabMenu({
       open={isOpen}
       onOpenChange={(next) => {
         setIsOpen(next)
-        // Warm the local-helper probe while the menu is open so + → Browser skips cold latency.
-        if (next) void probeLocalBridge()
       }}
     >
       <PopoverTrigger asChild>

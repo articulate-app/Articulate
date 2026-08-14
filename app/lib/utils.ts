@@ -45,8 +45,8 @@ export function formatDateDisplay(date: string | Date | null | undefined): strin
 }
 
 /**
- * Compact date display for narrow (compact) task/suggestion rows.
- * - Current-year dates render as `dd/mmm` (e.g. `08/Jun`, `21/Jul`).
+ * Compact date display for task/suggestion list rows.
+ * - Current-year dates render as `dd/mmm` without year (e.g. `08/Jun`, `23/May`).
  * - Dates in any other year fall back to the standard `formatDateDisplay` (dd/mm/yyyy).
  */
 export function formatCompactDateDisplay(date: string | Date | null | undefined): string {

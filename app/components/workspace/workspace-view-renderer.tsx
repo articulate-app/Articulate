@@ -8,6 +8,7 @@ import { CreateCenterPane } from "../tasks/create-center-pane"
 import { GlobalSearchDetailsPane } from "../search/global-search-details-pane"
 import { CenterPaneThreadChat } from "../comments-section/center-pane-thread-chat"
 import { NewMessagePane } from "./new-message-pane"
+import { WorkspaceStartPane } from "./workspace-start-pane"
 import { TeamDetailsPage } from "../teams/TeamDetailsPage"
 import { WorkspaceTaskView } from "./workspace-task-view"
 import { WorkspaceTaskListView } from "./workspace-task-list-view"
@@ -264,9 +265,8 @@ export function WorkspaceViewRenderer({
             onClose={onCloseTab ?? (() => {})}
             onSuccess={onCloseTab ?? (() => {})}
             onAiPillSelect={() => {
-              onCloseTab?.()
               openWorkspaceView(
-                { type: "ai", params: { forceNewAiThread: true } },
+                { type: "ai", title: "New chat", params: { forceNewAiThread: true } },
                 {
                   pane: paneId === "right" ? "middle" : "right",
                   source: `workspace-create-ai:${paneId}`,
@@ -279,6 +279,15 @@ export function WorkspaceViewRenderer({
         </div>
       )
     }
+
+    case "start":
+      return (
+        <WorkspaceStartPane
+          paneId={paneId}
+          pathname={typeof window !== "undefined" ? window.location.pathname : undefined}
+          onClose={onCloseTab}
+        />
+      )
 
     case "search-results": {
       const searchQuery =

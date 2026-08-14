@@ -303,7 +303,8 @@ export function BrowserSessionPane({
             desktopBrowserId: workspaceTabId,
           })
         }
-        if (!isCurrent()) return
+        // Commit success even if this effect was cleaned up (React Strict Mode remount).
+        // Dropping a completed open left the tab stuck on "Could not open" until Retry.
         const screen = defaultBrowserUseScreen()
         onBrowserChangeRef.current?.({
           browserId: opened.browserId,
@@ -323,6 +324,7 @@ export function BrowserSessionPane({
           requestedScreenHeight: screen.height,
           viewerMode: "fit",
         })
+        if (!isCurrent()) return
         setStatusNote(opened.provider === "articulate_desktop" ? "Browser · Desktop" : null)
         setNavUrl(opened.currentUrl || "")
       } catch (err) {
@@ -817,6 +819,7 @@ export function BrowserSessionPane({
 
   const isLocalProvider =
     !isDesktopProvider &&
+    !isArticulateDesktopAvailable() &&
     (browser.provider === "browser_use_local" ||
       run?.provider === "browser_use_local" ||
       browser.phase === "local_running" ||
@@ -1146,11 +1149,15 @@ export function BrowserSessionPane({
             />
           ) : (
             <div className="flex h-full min-h-0 w-full flex-col items-center justify-center gap-2 px-6 text-center">
-              <p className="text-sm font-medium text-gray-900">Browser · Local</p>
+              <p className="text-sm font-medium text-gray-900">
+                {isArticulateDesktopAvailable() ? "Browser · Desktop" : "Browser"}
+              </p>
               <p className="max-w-sm text-xs text-gray-600">
                 {statusNote ||
                   humanStatusMessage(browser.connectMessage) ||
-                  "Starting local Chrome…"}
+                  (isArticulateDesktopAvailable()
+                    ? "Starting desktop browser…"
+                    : "Starting browser…")}
               </p>
               {error ? <p className="text-xs text-red-600">{error}</p> : null}
               {(isProvisioning || busy) && (
@@ -1178,7 +1185,7 @@ export function BrowserSessionPane({
                     })
                   }}
                 >
-                  Retry local browser
+                  Retry
                 </Button>
               ) : null}
             </div>
@@ -1206,9 +1213,7 @@ export function BrowserSessionPane({
             busy={busy}
             actionLabel={
               browser.phase === "failed"
-                ? /local browser is not available/i.test(error || "")
-                  ? "Retry local browser"
-                  : "Try again"
+                ? "Try again"
                 : "Start browser"
             }
             onAction={() => {

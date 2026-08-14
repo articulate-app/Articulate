@@ -94,12 +94,26 @@ export function TaskGroupHeaderLabel({
   groupKey,
   label,
   editFields,
+  directoryStyle = false,
 }: {
   groupBy: string | null
   groupKey: string
   label: string
   editFields?: EditFieldsLike
+  /** Match AI chats / templates section labels (plain gray text). */
+  directoryStyle?: boolean
 }) {
+  if (directoryStyle) {
+    if (groupBy === 'status') {
+      return <>{label}</>
+    }
+    if (groupBy === 'project') {
+      const project = resolveProjectMeta(groupKey, label, editFields)
+      return <>{project.name}</>
+    }
+    return <>{label}</>
+  }
+
   if (groupBy === 'status') {
     return (
       <TaskStatusPill

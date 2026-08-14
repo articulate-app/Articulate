@@ -34,6 +34,8 @@ export type WorkspaceViewType =
   | "ai"
   | "browser"
   | "details"
+  /** Empty pane chooser (PaneOpenIcon) — pick a list/tool before opening content. */
+  | "start"
 
 export type WorkspaceTab = {
   /** Stable tab identity: `${type}:${id}` */
@@ -59,6 +61,8 @@ export const CREATE_WORKSPACE_TAB_ID = "default"
 export const SEARCH_RESULTS_WORKSPACE_TAB_ID = "main"
 export const AI_WORKSPACE_TAB_ID = "main"
 export const DETAILS_WORKSPACE_TAB_ID = "main"
+/** Singleton identity for the new-pane options chooser. */
+export const START_WORKSPACE_TAB_ID = "main"
 /** Singleton identity for full-list workspace views (tasks / projects / …). */
 export const LIST_WORKSPACE_TAB_ID = "main"
 /** @deprecated Prefer LIST_WORKSPACE_TAB_ID. */
@@ -144,6 +148,10 @@ export function normalizeWorkspaceViewType(
       return "browser"
     case "details":
       return "details"
+    case "start":
+    case "new":
+    case "home":
+      return "start"
     default:
       return null
   }
@@ -164,7 +172,8 @@ export function isEntityWorkspaceViewType(
     type === "template" ||
     type === "research" ||
     type === "create" ||
-    type === "search-results"
+    type === "search-results" ||
+    type === "start"
   )
 }
 
@@ -229,6 +238,7 @@ export const DEFAULT_WORKSPACE_PANE: Record<
   research: "middle",
   create: "middle",
   "search-results": "middle",
+  start: "middle",
   ai: "left",
   browser: "right",
 }

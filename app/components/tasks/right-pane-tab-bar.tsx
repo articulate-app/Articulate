@@ -62,6 +62,11 @@ type RightPaneTabBarProps = {
     fromPane: import("../../lib/workspace-view").WorkspacePaneId,
     meta?: { title?: string; beforeKey?: string | null },
   ) => void
+  /** Reorder a tab within this pane. */
+  onReorderTab?: (
+    tabKey: string,
+    meta?: { title?: string; beforeKey?: string | null },
+  ) => void
   pathname?: string
   searchValue?: string
   onSearchChange?: (value: string) => void
@@ -74,8 +79,20 @@ type RightPaneTabBarProps = {
 }
 
 function browserTabLabel(tab: RightPaneTab): string {
+  const page = tab.browser?.pageTitle?.trim()
+  if (page) return page.length > 40 ? `${page.slice(0, 39)}…` : page
   const name = tab.browser?.destinationName?.trim()
   return name || tab.title || "Browser"
+}
+
+function BrowserTabFavicon({ url }: { url?: string | null }) {
+  if (url) {
+    return (
+      // eslint-disable-next-line @next/next/no-img-element
+      <img src={url} alt="" className="h-3 w-3 rounded-sm object-contain" width={12} height={12} />
+    )
+  }
+  return <Globe2 className="h-3 w-3" aria-hidden />
 }
 
 const ENTITY_RIGHT_TAB_KINDS = new Set([
@@ -103,6 +120,7 @@ export function RightPaneTabBar({
   onClosePane,
   onOpenActiveInOtherPane,
   onDropTabFromOtherPane,
+  onReorderTab,
   pathname,
   searchValue = "",
   onSearchChange,
@@ -129,15 +147,24 @@ export function RightPaneTabBar({
           label: tab.title?.trim() || "New chat",
         }))
       : []),
+    // `entityTabs` is the store-ordered non-AI list (may include browsers).
+    // `browserTabs` is only appended when the parent still splits them (legacy).
     ...entityTabs.map((tab) => ({
       key: tab.key,
-      label: tab.title?.trim() || tab.kind,
+      label:
+        tab.kind === "browser" ? browserTabLabel(tab) : tab.title?.trim() || tab.kind,
+      icon:
+        tab.kind === "browser" ? (
+          <BrowserTabFavicon url={tab.browser?.faviconUrl} />
+        ) : undefined,
     })),
-    ...browserTabs.map((tab) => ({
-      key: tab.key,
-      label: browserTabLabel(tab),
-      icon: <Globe2 className="h-3 w-3" aria-hidden />,
-    })),
+    ...(entityTabs.some((tab) => tab.kind === "browser")
+      ? []
+      : browserTabs.map((tab) => ({
+          key: tab.key,
+          label: browserTabLabel(tab),
+          icon: <BrowserTabFavicon url={tab.browser?.faviconUrl} />,
+        }))),
   ]
 
   const resolvedActiveKey =
@@ -175,6 +202,11 @@ export function RightPaneTabBar({
           onDropTabFromOtherPane={
             onDropTabFromOtherPane
               ? (tabKey, fromPane, meta) => onDropTabFromOtherPane(tabKey, fromPane, meta)
+              : undefined
+          }
+          onReorderTab={
+            onReorderTab
+              ? (tabKey, meta) => onReorderTab(tabKey, meta)
               : undefined
           }
         />

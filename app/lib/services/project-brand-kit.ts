@@ -450,6 +450,34 @@ export async function uploadProjectDesignTemplateFiles(args: {
   }
 }
 
+/** Create an empty layout template card (assets added later in Brand kit). */
+export async function createEmptyProjectDesignTemplate(args: {
+  projectId: number
+  brandKit: ProjectBrandKit
+  title?: string | null
+}): Promise<{ data: ProjectBrandKit; template: ProjectDesignTemplate | null; error: Error | null }> {
+  const template: ProjectDesignTemplate = {
+    id: crypto.randomUUID(),
+    title: args.title?.trim() || "Untitled template",
+    notes: null,
+    assets: [],
+    source_artifact_id: null,
+    created_at: new Date().toISOString(),
+  }
+
+  const saved = await saveProjectBrandKitDesign({
+    projectId: args.projectId,
+    brandKit: args.brandKit,
+    designTemplates: [...args.brandKit.design_templates, template],
+  })
+
+  return {
+    data: saved.data,
+    template: saved.error ? null : template,
+    error: saved.error,
+  }
+}
+
 export async function addProjectDesignTemplateLink(args: {
   projectId: number
   brandKit: ProjectBrandKit

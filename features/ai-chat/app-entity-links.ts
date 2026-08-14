@@ -168,6 +168,25 @@ function ensureRightPaneInLayout(params: URLSearchParams) {
   params.set("layout", currentLayout.join(","))
 }
 
+/** Ensure the center (artifact/source) pane is visible without collapsing other panes. */
+function ensureMiddlePaneInLayout(params: URLSearchParams) {
+  const currentLayout = (params.get("layout") || "left,middle")
+    .split(",")
+    .map((item) => item.trim())
+    .filter(Boolean)
+  if (currentLayout.includes("middle")) {
+    params.set("layout", currentLayout.join(","))
+    return
+  }
+  // Solo-right (AI focus) → open middle beside AI.
+  if (currentLayout.length === 1 && currentLayout[0] === "right") {
+    params.set("layout", "middle,right")
+    return
+  }
+  currentLayout.push("middle")
+  params.set("layout", currentLayout.join(","))
+}
+
 /** Navigate to a task from AI chat without closing the AI pane or reopening the task list. */
 export function applyAiChatTaskLinkNavigation(
   params: URLSearchParams,
@@ -211,12 +230,12 @@ function applyArtifactCenterNavigation(
   clearActiveCenterSelectionParams(next)
   next.delete("stackTeamId")
   applyArtifactCenterSelectionParams(next, { artifactId, version })
-  next.set("layout", "right")
+  // Open the artifact in middle; never collapse left/right into solo-right AI.
+  ensureMiddlePaneInLayout(next)
+  next.delete("aiFocus")
   if (fromAiChat && isAiChatPaneOpen(params)) {
     next.set("rightView", "ai")
     next.set("taskAiOpen", "true")
-    ensureRightPaneInLayout(next)
-  } else {
     ensureRightPaneInLayout(next)
   }
   return next
@@ -231,12 +250,11 @@ function applySourceCenterNavigation(
   clearActiveCenterSelectionParams(next)
   next.delete("stackTeamId")
   applySourceCenterSelectionParams(next, { sourceId })
-  next.set("layout", "right")
+  ensureMiddlePaneInLayout(next)
+  next.delete("aiFocus")
   if (fromAiChat && isAiChatPaneOpen(params)) {
     next.set("rightView", "ai")
     next.set("taskAiOpen", "true")
-    ensureRightPaneInLayout(next)
-  } else {
     ensureRightPaneInLayout(next)
   }
   return next

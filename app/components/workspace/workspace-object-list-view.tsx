@@ -2,13 +2,15 @@
 
 /**
  * Non-task object list as a workspace tab (projects / mentions / users / AI chats / artifacts).
- * Users & projects use a directory layout (headers + ⋯ actions); scrollbar stays full-pane right.
+ * Projects, Users, Inbox, and AI chats use the shared workspace page shell
+ * (headline + single pane scroll); other lists keep the compact chrome header.
  */
 
-import { useEffect, useState } from "react"
-import { useSearchParams } from "next/navigation"
+import { useEffect, useRef, useState } from "react"
+import { usePathname, useSearchParams } from "next/navigation"
 import { useQueryClient } from "@tanstack/react-query"
 import { Search } from "lucide-react"
+import { cn } from "@/lib/utils"
 import { useGlobalSearchContext } from "../../contexts/global-search-context"
 import { GlobalSearchFullResultsPane } from "../search/global-search-full-results-pane"
 import { InlineSearchInput } from "../tasks/InlineSearchInput"
@@ -28,7 +30,21 @@ import { WorkspaceHostPaneProvider } from "./workspace-host-pane-context"
 import { openWorkspaceViewFromSearchDocument } from "../../lib/open-workspace-view-from-search"
 import type { GlobalSearchDocument } from "../../lib/global-search-types"
 import { dispatchOpenHeaderCreate } from "../ui/sidebar-home-feed"
-import { TASKS_SHALLOW_NAV_EVENT } from "../../lib/tasks-shallow-nav"
+import {
+  shallowReplaceSearchParams,
+  TASKS_SHALLOW_NAV_EVENT,
+} from "../../lib/tasks-shallow-nav"
+import {
+  openWorkspaceNewTabAi,
+  openWorkspaceNewTabMessage,
+} from "../../lib/workspace-new-tab-actions"
+import {
+  WorkspacePageAddButton,
+  WorkspacePageSearchInput,
+  WorkspacePageShell,
+} from "./workspace-page-shell"
+
+type MentionsInboxTab = "received" | "sent" | "unseen"
 
 function readSelectedDirectoryEntityId(args: {
   listType: WorkspaceListViewType
@@ -50,6 +66,14 @@ function readSelectedDirectoryEntityId(args: {
   return null
 }
 
+function pageSubtitleForList(listType: WorkspaceListViewType): string {
+  if (listType === "project-list") return "Search and open a project."
+  if (listType === "user-list") return "Search and open a user."
+  if (listType === "mention-list") return "Mentions and conversations across your work."
+  if (listType === "ai-thread-list") return "Search and open an AI chat."
+  return `Search ${workspaceListViewLabel(listType).toLowerCase()}.`
+}
+
 export type WorkspaceObjectListViewProps = {
   listType: Exclude<WorkspaceListViewType, "template-list">
   paneId: WorkspacePaneId
@@ -64,7 +88,9 @@ export function WorkspaceObjectListView({
 }: WorkspaceObjectListViewProps) {
   const globalSearch = useGlobalSearchContext()
   const queryClient = useQueryClient()
+  const pathname = usePathname()
   const searchParams = useSearchParams()
+  const pageScrollRef = useRef<HTMLDivElement | null>(null)
   const [shallowEpoch, setShallowEpoch] = useState(0)
   const activeTab = workspaceListViewSearchTab(listType)
   const viewScope = listViewToSearchObjectRoute(listType)
@@ -98,6 +124,18 @@ export function WorkspaceObjectListView({
     searchParams: liveSearchParams,
   })
 
+  const mentionsTab: MentionsInboxTab = (() => {
+    const raw = liveSearchParams.get("mentionsTab")
+    if (raw === "sent" || raw === "unseen") return raw
+    return "received"
+  })()
+
+  const handleMentionsTabChange = (nextTab: MentionsInboxTab) => {
+    const next = new URLSearchParams(liveSearchParams.toString())
+    next.set("mentionsTab", nextTab)
+    shallowReplaceSearchParams(pathname || "/tasks", next, "mentions-tab")
+  }
+
   const handleResultSelect = (item: GlobalSearchDocument) => {
     const opened = openWorkspaceViewFromSearchDocument(item, {
       pane: openPane,
@@ -122,6 +160,103 @@ export function WorkspaceObjectListView({
   const isDirectoryList = listType === "user-list" || listType === "project-list"
   const addLabel = listType === "user-list" ? "Add user" : listType === "project-list" ? "Add project" : null
   const addType = listType === "user-list" ? "user" : listType === "project-list" ? "project" : null
+  const usePageLayout =
+    listType === "project-list" ||
+    listType === "user-list" ||
+    listType === "mention-list" ||
+    listType === "ai-thread-list"
+
+  const results = (
+    <GlobalSearchFullResultsPane
+      query={usePageLayout ? inlineSearchValue : listQuery}
+      activeTab={activeTab}
+      viewScope={viewScope}
+      onResultSelect={handleResultSelect}
+      getQueryKey={globalSearch.getFullResultsQueryKey}
+      fetchPage={globalSearch.fetchFullResultsPage}
+      directoryMode={isDirectoryList}
+      selectedEntityId={selectedEntityId}
+      embedInParentScroll={usePageLayout}
+      scrollRootRef={usePageLayout ? pageScrollRef : null}
+    />
+  )
+
+  if (usePageLayout) {
+    return (
+      <WorkspaceHostPaneProvider pane={paneId}>
+        <WorkspacePageShell
+          scrollRef={pageScrollRef}
+          title={title}
+          subtitle={pageSubtitleForList(listType)}
+          actions={
+            listType === "mention-list" ? (
+              <WorkspacePageAddButton
+                label="New message"
+                onClick={() =>
+                  openWorkspaceNewTabMessage({
+                    pane: paneId,
+                    pathname: pathname || undefined,
+                    sourcePrefix: "workspace-inbox",
+                  })
+                }
+              />
+            ) : listType === "ai-thread-list" ? (
+              <WorkspacePageAddButton
+                label="New chat"
+                onClick={() =>
+                  openWorkspaceNewTabAi({
+                    pane: paneId,
+                    pathname: pathname || undefined,
+                    sourcePrefix: "workspace-ai-list",
+                  })
+                }
+              />
+            ) : addLabel && addType ? (
+              <WorkspacePageAddButton
+                label={addLabel}
+                onClick={() => dispatchOpenHeaderCreate(addType)}
+              />
+            ) : null
+          }
+        >
+          <WorkspacePageSearchInput
+            value={inlineSearchValue}
+            onChange={setInlineSearchValue}
+            placeholder={searchPlaceholder}
+          />
+          {listType === "mention-list" ? (
+            <div className="flex flex-wrap items-center gap-2">
+              {(
+                [
+                  { id: "received", label: "Received" },
+                  { id: "sent", label: "Sent" },
+                  { id: "unseen", label: "Unseen" },
+                ] as const
+              ).map((tab) => {
+                const isActive = mentionsTab === tab.id
+                return (
+                  <button
+                    key={tab.id}
+                    type="button"
+                    onClick={() => handleMentionsTabChange(tab.id)}
+                    className={cn(
+                      "inline-flex h-7 items-center rounded-full px-2.5 text-xs font-medium transition-colors",
+                      isActive
+                        ? "bg-gray-100 text-gray-900"
+                        : "text-gray-500 hover:bg-gray-50 hover:text-gray-800",
+                    )}
+                  >
+                    {tab.label}
+                  </button>
+                )
+              })}
+            </div>
+          ) : null}
+          {results}
+        </WorkspacePageShell>
+      </WorkspaceHostPaneProvider>
+    )
+  }
 
   return (
     <WorkspaceHostPaneProvider pane={paneId}>
@@ -146,13 +281,10 @@ export function WorkspaceObjectListView({
               </div>
               <div className="ml-auto flex shrink-0 items-center gap-0.5">
                 {addLabel && addType ? (
-                  <button
-                    type="button"
-                    className="inline-flex h-7 shrink-0 items-center rounded px-2 text-xs font-medium text-gray-700 hover:bg-gray-100"
+                  <WorkspacePageAddButton
+                    label={addLabel}
                     onClick={() => dispatchOpenHeaderCreate(addType)}
-                  >
-                    {addLabel}
-                  </button>
+                  />
                 ) : null}
                 <IconTooltip label="Search">
                   <button
@@ -168,18 +300,7 @@ export function WorkspaceObjectListView({
             </>
           )}
         </div>
-        <div className="min-h-0 flex-1 overflow-hidden">
-          <GlobalSearchFullResultsPane
-            query={listQuery}
-            activeTab={activeTab}
-            viewScope={viewScope}
-            onResultSelect={handleResultSelect}
-            getQueryKey={globalSearch.getFullResultsQueryKey}
-            fetchPage={globalSearch.fetchFullResultsPage}
-            directoryMode={isDirectoryList}
-            selectedEntityId={selectedEntityId}
-          />
-        </div>
+        <div className="min-h-0 flex-1 overflow-hidden">{results}</div>
       </div>
     </WorkspaceHostPaneProvider>
   )

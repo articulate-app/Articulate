@@ -238,12 +238,10 @@ function SectionHeader({
     <button
       type="button"
       onClick={onToggle}
-      className="flex w-full items-center gap-1 rounded-md px-3 py-2 text-left text-sm font-semibold text-gray-900 hover:bg-gray-50"
+      className="flex w-full items-center gap-1 rounded-md px-3 py-2 text-left text-sm font-normal text-gray-700 hover:bg-gray-50"
     >
-      <span className="min-w-0 flex-1 truncate">{label}</span>
-      <span className="mr-1 inline-flex h-7 w-7 shrink-0 items-center justify-center text-gray-500">
-        <Chevron className="h-4 w-4" />
-      </span>
+      <span className="min-w-0 truncate">{label}</span>
+      <Chevron className="h-4 w-4 shrink-0 text-gray-500" aria-hidden />
     </button>
   )
 }
@@ -280,23 +278,22 @@ function NavRow({
         onClick={onClick}
         className="flex min-w-0 flex-1 items-center gap-3 rounded-md px-3 py-2 text-left text-sm font-normal text-gray-800"
         aria-expanded={expandable ? expanded : undefined}
+        aria-label={
+          expandable
+            ? expanded
+              ? `Collapse ${label}`
+              : `Expand ${label}`
+            : undefined
+        }
       >
         <Icon className="h-[18px] w-[18px] shrink-0 text-gray-700" strokeWidth={1.75} />
-        <span className="flex min-w-0 flex-1 items-center gap-2 truncate">{label}</span>
+        <span className="flex min-w-0 items-center gap-1">
+          <span className="truncate">{label}</span>
+          {Chevron ? <Chevron className="h-4 w-4 shrink-0 text-gray-400" aria-hidden /> : null}
+        </span>
         {badge}
       </button>
       {trailing}
-      {Chevron ? (
-        <button
-          type="button"
-          onClick={onClick}
-          className="mr-1 inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-md text-gray-400 hover:bg-gray-200 hover:text-gray-700"
-          aria-label={expanded ? `Collapse ${label}` : `Expand ${label}`}
-          aria-expanded={expanded}
-        >
-          <Chevron className="h-4 w-4" />
-        </button>
-      ) : null}
     </div>
   )
 }
@@ -361,34 +358,6 @@ function ItemOptionsMenu({
       </DropdownMenuContent>
     </DropdownMenu>
   )
-}
-
-function InfiniteSentinel({
-  enabled,
-  onVisible,
-  rootRef,
-}: {
-  enabled: boolean
-  onVisible: () => void
-  rootRef: React.RefObject<HTMLElement | null>
-}) {
-  const ref = useRef<HTMLDivElement | null>(null)
-
-  useEffect(() => {
-    if (!enabled) return
-    const node = ref.current
-    if (!node) return
-    const observer = new IntersectionObserver(
-      (entries) => {
-        if (entries.some((entry) => entry.isIntersecting)) onVisible()
-      },
-      { root: rootRef.current, rootMargin: "240px", threshold: 0 },
-    )
-    observer.observe(node)
-    return () => observer.disconnect()
-  }, [enabled, onVisible, rootRef])
-
-  return <div ref={ref} className="h-4 w-full" aria-hidden />
 }
 
 function useRecentSectionQuery(
@@ -471,6 +440,7 @@ export function SidebarHomeFeed({
     mentions: SIDEBAR_SECTION_PAGE_SIZE,
     ai_chats: SIDEBAR_SECTION_PAGE_SIZE,
   })
+  const [recentsVisibleCount, setRecentsVisibleCount] = useState(CHRONO_PAGE_SIZE)
 
   useEffect(() => {
     setPinnedItems(readHomeSidebarPinnedItems())
@@ -812,6 +782,19 @@ export function SidebarHomeFeed({
     aiRecentsQuery,
     artifactsQuery,
   ])
+
+  const showMoreRecents = useCallback(() => {
+    setRecentsVisibleCount((prev) => prev + CHRONO_PAGE_SIZE)
+    loadMoreRecents()
+  }, [loadMoreRecents])
+
+  const visibleRecents = useMemo(
+    () => unifiedRecents.slice(0, recentsVisibleCount),
+    [unifiedRecents, recentsVisibleCount],
+  )
+
+  const canShowMoreRecents =
+    unifiedRecents.length > recentsVisibleCount || hasMoreRecents
 
   const handleCreate = useCallback(
     (createType: HeaderCreateType | "ai") => {
@@ -1284,7 +1267,7 @@ export function SidebarHomeFeed({
         })}
       </ul>
 
-      <div className="mt-1 border-t border-gray-100 px-1 pt-2">
+      <div className="mt-1 px-1 pt-1">
         {pinnedItems.length > 0 ? (
           <section className="pt-0.5">
             <SectionHeader
@@ -1326,16 +1309,17 @@ export function SidebarHomeFeed({
               {unifiedRecents.length === 0 && !isRecentsLoading ? (
                 <div className="px-3 py-1.5 text-xs font-normal text-gray-400">No recent items</div>
               ) : null}
-              {unifiedRecents.map((item) =>
+              {visibleRecents.map((item) =>
                 renderUnifiedRow(item, `recent:${item.feedKey}:${item.id}`),
               )}
-              <InfiniteSentinel
-                enabled={hasMoreRecents}
-                onVisible={loadMoreRecents}
-                rootRef={scrollRef}
-              />
-              {isFetchingMoreRecents ? (
-                <div className="px-3 py-1.5 text-xs font-normal text-gray-400">Loading…</div>
+              {canShowMoreRecents ? (
+                <button
+                  type="button"
+                  onClick={showMoreRecents}
+                  className="px-3 py-1.5 text-left text-xs font-medium text-gray-500 hover:text-gray-800"
+                >
+                  {isFetchingMoreRecents ? "Loading…" : "Show more"}
+                </button>
               ) : null}
             </div>
           ) : null}

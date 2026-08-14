@@ -3,7 +3,8 @@
 import { useState } from 'react'
 import { cn } from '@/lib/utils'
 import { buildFilterSearchParams } from '../../lib/tasks-filter-url'
-import { ChevronDown, ChevronRight, Check, Filter } from 'lucide-react'
+import { ChevronDown, ChevronRight, Check, ListFilter } from 'lucide-react'
+import { PANE_CHROME_ICON_BUTTON_CLASS, PANE_CHROME_ICON_CLASS } from './pane-header-tokens'
 import { Input } from '../ui/input'
 import {
   DropdownMenu,
@@ -171,17 +172,18 @@ export function FilterCascadingDropdown({
           type="button"
           aria-label={variant === 'icon' ? 'Filter tasks' : undefined}
           className={cn(
-            variant === 'icon' &&
-              'relative inline-flex h-7 w-7 shrink-0 items-center justify-center rounded text-gray-500 hover:bg-gray-100 hover:text-gray-700',
+            variant === 'icon' && cn(PANE_CHROME_ICON_BUTTON_CLASS, 'relative'),
             variant === 'default' && 'inline-flex items-center gap-1',
             className,
             variant === 'default' && activeFiltersCount > 0 && 'font-semibold',
-            variant === 'icon' && activeFiltersCount > 0 && 'text-gray-800',
+            variant === 'icon' &&
+              activeFiltersCount > 0 &&
+              'bg-gray-100 text-gray-900 hover:bg-gray-100 hover:text-gray-900',
           )}
         >
           {variant === 'icon' ? (
             <>
-              <Filter className="h-3.5 w-3.5" />
+              <ListFilter className={PANE_CHROME_ICON_CLASS} strokeWidth={1.75} />
               {activeFiltersCount > 0 ? (
                 <span
                   className="absolute -right-0.5 -top-0.5 flex h-3.5 min-w-3.5 items-center justify-center rounded-full bg-gray-300 px-1 text-[9px] font-medium tabular-nums text-gray-800"

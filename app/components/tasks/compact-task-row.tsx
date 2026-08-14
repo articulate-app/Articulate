@@ -1,6 +1,6 @@
 "use client"
 
-import { ChevronDown, ChevronRight } from 'lucide-react'
+import { ChevronDown, ChevronRight, Folder } from 'lucide-react'
 import { flexRender, type ColumnDef } from '@tanstack/react-table'
 import { cn } from '@/lib/utils'
 import { UserAvatar } from '@/components/UserAvatar'
@@ -8,57 +8,40 @@ import { getImageUrl } from '../../lib/public-media'
 import { formatCompactDateDisplay } from '../../lib/utils'
 
 /** Secondary metadata size for compact row dates (title uses text-sm). */
-export const COMPACT_DATE_TEXT_CLASS = 'text-xs'
+export const COMPACT_DATE_TEXT_CLASS = 'text-sm'
 
 /**
  * Shared trigger/display styling for compact inline dates. Uses a permanent 1px border
  * (transparent at rest) so switching to edit mode never changes box width.
  */
 export const COMPACT_DATE_TRIGGER_CLASS =
-  'whitespace-nowrap text-xs shrink-0 cursor-pointer border border-transparent hover:bg-white hover:border-gray-300 px-1 py-0.5 rounded transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-gray-400'
+  'whitespace-nowrap text-sm shrink-0 cursor-pointer border border-transparent hover:bg-white hover:border-gray-300 px-1 py-0.5 rounded transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-gray-400'
 
 /** Active/hover/edit affordance — same visual, no width change vs transparent border. */
 export const COMPACT_DATE_TRIGGER_ACTIVE_CLASS = 'bg-white border-gray-300'
 
 /**
- * Project identity marker for compact rows. Prefers the project logo, then the project color, then a
- * subtle fallback dot (violet for suggestions so they stay visually distinct from tasks).
+ * Project identity marker — folder in a rounded square (directory / ChatGPT list style).
+ * Tints the folder with the project color; suggestions use a violet fallback.
  */
-function CompactProjectMarker({ task, isSuggestion }: { task: any; isSuggestion: boolean }) {
-  const logoUrl =
-    (task as any)?.projectLogoUrl ??
-    getImageUrl((task as any)?.project_logo ?? (task as any)?.projects?.logo) ??
-    null
+export function CompactProjectMarker({ task, isSuggestion }: { task: any; isSuggestion: boolean }) {
   const color = (task as any)?.project_color ?? (task as any)?.projects?.color ?? null
   const projectName =
-    (task as any)?.project_name ?? (task as any)?.projects?.name ?? 'Project'
+    (task as any)?.project_name ?? (task as any)?.projects?.name ?? (isSuggestion ? 'Suggestion' : 'Project')
+  const folderColor = color || (isSuggestion ? '#a78bfa' : '#9ca3af')
 
-  if (logoUrl) {
-    return (
-      <img
-        src={logoUrl}
-        alt=""
-        title={projectName}
-        className="h-4 w-4 shrink-0 rounded-sm object-cover"
-      />
-    )
-  }
-  if (color) {
-    return (
-      <span
-        aria-hidden
-        title={projectName}
-        className="h-3 w-3 shrink-0 rounded-full"
-        style={{ backgroundColor: color }}
-      />
-    )
-  }
   return (
     <span
-      aria-hidden
-      title={isSuggestion ? 'Suggestion' : 'Project'}
-      className={cn('h-3 w-3 shrink-0 rounded-full', isSuggestion ? 'bg-violet-400' : 'bg-gray-300')}
-    />
+      title={projectName}
+      className="inline-flex h-5 w-5 shrink-0 items-center justify-center rounded-md border border-gray-200 bg-white"
+    >
+      <Folder
+        className="h-3 w-3"
+        style={{ color: folderColor }}
+        strokeWidth={1.75}
+        aria-hidden
+      />
+    </span>
   )
 }
 
@@ -116,8 +99,7 @@ export function CompactRowContent({
   return (
     <div className="flex w-full min-w-0 items-center gap-2">
       <div className="flex min-w-0 flex-1 items-center gap-2 text-left">
-        <CompactProjectMarker task={task} isSuggestion={isSuggestion} />
-        <span className="block min-w-0 flex-1 truncate text-xs font-normal text-gray-900">{title}</span>
+        <span className="block min-w-0 flex-1 truncate text-sm font-normal text-gray-900">{title}</span>
         {showToggle ? (
           <button
             type="button"
@@ -235,7 +217,6 @@ export function CompactEditableRowContent({
       ) : null}
       <div className="flex min-w-0 flex-1 items-center gap-1.5 overflow-hidden text-left">
         {dragHandle}
-        <CompactProjectMarker task={task} isSuggestion={isSuggestion} />
         <div className="min-w-0 flex-1 overflow-hidden">{renderColumnCell(columns, 'title', task)}</div>
       </div>
       <div className="ml-2 flex shrink-0 items-center justify-end gap-1.5">

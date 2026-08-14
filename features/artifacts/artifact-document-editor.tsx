@@ -289,6 +289,8 @@ export type ArtifactDocumentEditorProps = {
   }) => void
   onSelectAsset?: (attachmentId: string) => void
   onOpenFullscreen?: () => void
+  /** Hide Preview/Code chrome on HTML email documents (template-style pane). */
+  hideHtmlToolbar?: boolean
 }
 
 /**
@@ -307,6 +309,7 @@ export function ArtifactDocumentEditor({
   onSelectVideoTime,
   onSelectAsset,
   onOpenFullscreen,
+  hideHtmlToolbar = false,
 }: ArtifactDocumentEditorProps) {
   const initialBlocks = useMemo(
     () => extractArtifactBlocks(artifact.content_json),
@@ -374,6 +377,7 @@ export function ArtifactDocumentEditor({
         <ArtifactHtmlDocumentFromArtifact
           artifact={artifact}
           readOnly={readOnly}
+          hideToolbar={hideHtmlToolbar}
           onChange={(nextHtml) => {
             const contentJson = buildHtmlEmailContentJson(nextHtml, artifact.content_json)
             const plain = typeof contentJson.blocks?.[0]?.text === "string"

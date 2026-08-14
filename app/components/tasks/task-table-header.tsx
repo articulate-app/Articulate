@@ -131,34 +131,36 @@ function SortableHeaderCell({
       data-col={colId}
       data-col-id={colId}
       className={cn(
-        'task-cell',
-        isSpacer && 'task-spacer-cell p-0 border-transparent',
-        !isSpacer && 'task-header-cell px-3 py-1.5 text-left text-xs font-medium text-gray-500 group select-none relative',
-        !isSpacer && !isLastRealBeforeSpacer && 'border-r border-gray-200',
+        'task-cell group/header-cell',
+        isSpacer && 'task-spacer-cell p-0',
+        !isSpacer &&
+          'task-header-cell relative select-none px-3 py-2 text-left text-sm font-medium text-gray-500',
         colId === 'title' && 'task-cell--sticky',
-        isDraggable && 'cursor-grab active:cursor-grabbing',
       )}
       {...(isDraggable ? attributes : {})}
-      {...(isDraggable ? listeners : {})}
     >
       {dropIndex === idx && (
         <div className="task-header-drop-indicator" style={{ left: 0 }} />
       )}
       {!isSpacer && (
-        <div className="flex items-center w-full h-full gap-1">
-          {isDraggable && (
-            <div
-              className={cn(
-                'task-header-draggable flex shrink-0 p-0.5 rounded cursor-grab active:cursor-grabbing text-gray-400 hover:text-gray-600',
-                isDragging && 'task-header-dragging opacity-60',
-              )}
-            >
-              <GripVertical size={12} />
-            </div>
-          )}
-          <div className="flex-1 min-w-0 flex items-center">
+        <div className="flex h-full w-full items-center gap-1">
+          <div className="flex min-w-0 flex-1 items-center">
             {flexRender(header.column.columnDef.header, header.getContext())}
           </div>
+          {isDraggable ? (
+            <button
+              type="button"
+              aria-label={`Reorder ${getColumnLabel(colId)} column`}
+              className={cn(
+                'task-header-draggable flex shrink-0 cursor-grab rounded p-0.5 text-gray-400',
+                'opacity-0 transition-opacity hover:text-gray-600 group-hover/header-cell:opacity-100 active:cursor-grabbing',
+                isDragging && 'task-header-dragging opacity-100',
+              )}
+              {...listeners}
+            >
+              <GripVertical size={12} />
+            </button>
+          ) : null}
           {header.column.getCanResize?.() && (
             <div
               data-no-dnd
@@ -168,7 +170,7 @@ function SortableHeaderCell({
               onMouseDown={handleResizePointerDown}
               onTouchStart={handleResizePointerDown}
               onDoubleClick={handleResizeDoubleClick}
-              className="absolute right-0 top-0 h-full w-2 cursor-col-resize z-50 transition-colors resize-handle"
+              className="resize-handle absolute right-0 top-0 z-50 h-full w-2 cursor-col-resize transition-colors"
               style={{ userSelect: 'none' }}
             />
           )}
@@ -200,7 +202,7 @@ export function TaskTableHeader<T>({ table, columns, gridTemplateColumns, onColu
   }, [overColId, orderedHeaders])
 
   return (
-    <thead className="task-header sticky top-0 z-40 bg-white border-b shadow-sm">
+    <thead className="task-header sticky top-0 z-40 bg-white">
       {table.getHeaderGroups().map((headerGroup) => (
         <tr key={headerGroup.id} data-row-type="header" className="task-row" style={{ gridTemplateColumns }}>
           {orderedHeaders.map((header, idx) => {
@@ -244,9 +246,9 @@ export function CompactTaskTableHeader({
 }) {
   const dateLabel = dateField === 'publication_date' ? 'Publish date' : 'Due date'
   return (
-    <thead className="task-header sticky top-0 z-40 border-b bg-white shadow-sm">
+    <thead className="task-header sticky top-0 z-40 bg-white">
       <tr data-row-type="header" className="task-row" style={{ gridTemplateColumns: 'minmax(0, 1fr)' }}>
-        <th className="task-cell task-cell-span-full task-header-cell px-3 py-1.5 text-left text-xs font-medium text-gray-500">
+        <th className="task-cell task-cell-span-full task-header-cell px-3 py-2 text-left text-sm font-medium text-gray-500">
           <ObjectListColumnHeaderContent
             primary="Title"
             secondary="Assignee"

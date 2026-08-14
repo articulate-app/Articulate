@@ -1,6 +1,7 @@
 "use client"
 
 import { useEffect, useLayoutEffect, useState, useMemo, useRef, useCallback } from "react"
+import { createPortal } from "react-dom"
 import {
   useReactTable,
   getCoreRowModel,
@@ -97,6 +98,8 @@ interface TaskListProps {
   /** Compact embedded list (e.g. project overview preview). */
   embed?: boolean
   pageSize?: number
+  /** Render bulk actions into an existing toolbar node instead of a new row. */
+  bulkActionsHost?: HTMLElement | null
 }
 
 // Shared date display: dd/mm/yyyy (pt-PT locale) for consistency between hover and edit
@@ -530,7 +533,7 @@ const COMPACT_EXIT_MARGIN = 32
  */
 const COMPACT_MAX_ENTER_WIDTH = 720
 
-export function TaskList({ onTaskSelect, expandMainTaskId, selectedTaskId, editFields, isMultiselectMode: externalIsMultiselectMode, onToggleMultiselect }: TaskListProps) {
+export function TaskList({ onTaskSelect, expandMainTaskId, selectedTaskId, editFields, isMultiselectMode: externalIsMultiselectMode, onToggleMultiselect, bulkActionsHost = null }: TaskListProps) {
   console.log('[TaskList] RENDER');
   const routerParams = useSearchParams()
   /** Keeps list URL-driven state in sync with the address bar when using shallow history updates (no RSC navigation). */
@@ -2031,6 +2034,20 @@ export function TaskList({ onTaskSelect, expandMainTaskId, selectedTaskId, editF
     }
   ]
 
+  const bulkActionBarNode = (
+    <BulkActionBar
+      selectedCount={selectedTasks.size}
+      onClearSelection={handleClearSelection}
+      actions={bulkActions}
+      entityName="task"
+      placement={bulkActionsHost ? 'toolbar' : 'banner'}
+    />
+  )
+  const renderedBulkActionBar =
+    bulkActionsHost && typeof document !== 'undefined'
+      ? createPortal(bulkActionBarNode, bulkActionsHost)
+      : bulkActionBarNode
+
   const bulkDeleteDialog = (
     <AlertDialog
       open={isBulkDeleteDialogOpen}
@@ -2118,9 +2135,9 @@ export function TaskList({ onTaskSelect, expandMainTaskId, selectedTaskId, editF
             />
           )
       ),
-      size: 50,
-      minSize: 50,
-      maxSize: 50,
+      size: 56,
+      minSize: 56,
+      maxSize: 56,
       enableResizing: false,
     }] : []),
     {
@@ -3822,12 +3839,7 @@ export function TaskList({ onTaskSelect, expandMainTaskId, selectedTaskId, editF
     return (
       <div ref={containerRef} className="flex h-full min-h-0 min-w-0 w-full flex-col overflow-hidden bg-white">
         {/* Bulk Action Bar for Mobile */}
-        <BulkActionBar
-          selectedCount={selectedTasks.size}
-          onClearSelection={handleClearSelection}
-          actions={bulkActions}
-          entityName="task"
-        />
+        {renderedBulkActionBar}
         {bulkDeleteDialog}
         <div
           ref={scrollContainerRef}
@@ -3901,12 +3913,7 @@ export function TaskList({ onTaskSelect, expandMainTaskId, selectedTaskId, editF
       {bulkDeleteDialog}
       {/* Always use UnifiedGroupedTaskList (grouped + ungrouped both use task_group_tasks_filtered; ungrouped = p_group_key='all'). */}
       <div className="relative flex h-full min-h-0 min-w-0 flex-1 flex-col" style={{ padding: 0, margin: 0 }}>
-        <BulkActionBar
-          selectedCount={selectedTasks.size}
-          onClearSelection={handleClearSelection}
-          actions={bulkActions}
-          entityName="task"
-        />
+        {renderedBulkActionBar}
 
         <div
           ref={desktopScrollRef}

@@ -87,9 +87,17 @@ export const useTasksUI = create<TasksUIState>((set, get) => ({
     // Layout system now handles view mode independently, no longer sync from old view param
     // searchValue from ?q=...
     const q = params.get('q') || ''
-    set({ searchValue: q, searchDraftValue: q })
-    // filters
-    set({ filters: parseFiltersFromParams(params) })
+    const nextFilters = parseFiltersFromParams(params)
+    set((state) => {
+      const sameSearch = state.searchValue === q && state.searchDraftValue === q
+      const sameFilters = JSON.stringify(state.filters) === JSON.stringify(nextFilters)
+      if (sameSearch && sameFilters) return state
+      return {
+        searchValue: q,
+        searchDraftValue: q,
+        filters: nextFilters,
+      }
+    })
   },
   selectedTaskId: null,
   setSelectedTaskId: (id) => set({ selectedTaskId: id }),

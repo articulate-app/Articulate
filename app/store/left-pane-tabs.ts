@@ -55,6 +55,7 @@ function normalizeTitle(kind: LeftPaneTabKind, title?: string | null, id?: strin
   if (kind === "browser") return id ? `Browser ${id.slice(0, 6)}` : "Browser"
   if (kind === "research") return "Research"
   if (kind === "create") return "Create"
+  if (kind === "start") return "New"
   if (kind === "task" && id) return `Task ${id}`
   if (kind === "project" && id) return `Project ${id}`
   if (kind === "user" && id) return `User ${id}`

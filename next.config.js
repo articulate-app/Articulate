@@ -2,7 +2,7 @@
 const nextConfig = {
   experimental: {
     serverActions: {
-      allowedOrigins: ['localhost:3000', 'localhost:3001', 'app.whyarticulate.com']
+      allowedOrigins: ['localhost:3000', 'localhost:3001', 'localhost:3010', '127.0.0.1:3010', 'app.whyarticulate.com']
     }
   },
   images: {

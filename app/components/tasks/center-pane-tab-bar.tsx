@@ -49,6 +49,11 @@ type CenterPaneTabBarProps = {
     fromPane: WorkspacePaneId,
     meta?: { title?: string; beforeKey?: string | null },
   ) => void
+  /** Reorder a tab within this pane. */
+  onReorderTab?: (
+    tabKey: string,
+    meta?: { title?: string; beforeKey?: string | null },
+  ) => void
   pathname?: string
   /** Same callbacks as the header search preview — draft/filters sync. */
   searchValue?: string
@@ -75,6 +80,7 @@ export function CenterPaneTabBar({
   onOpenRightPane,
   onOpenActiveInOtherPane,
   onDropTabFromOtherPane,
+  onReorderTab,
   pathname,
   searchValue = "",
   onSearchChange,
@@ -92,7 +98,7 @@ export function CenterPaneTabBar({
   return (
     <div className={`${AI_PANE_TAB_ROW_CLASS} shrink-0`}>
       <div className="flex min-h-0 min-w-0 flex-1 items-stretch">
-        {tabs.length > 0 || onDropTabFromOtherPane ? (
+        {tabs.length > 0 || onDropTabFromOtherPane || onReorderTab ? (
           <PaneTabStrip
             tabs={tabs}
             activeKey={activeKey}
@@ -103,6 +109,11 @@ export function CenterPaneTabBar({
             onDropTabFromOtherPane={
               onDropTabFromOtherPane
                 ? (tabKey, fromPane, meta) => onDropTabFromOtherPane(tabKey, fromPane, meta)
+                : undefined
+            }
+            onReorderTab={
+              onReorderTab
+                ? (tabKey, meta) => onReorderTab(tabKey, meta)
                 : undefined
             }
           />

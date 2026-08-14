@@ -10,6 +10,7 @@ import { MessageBubble } from "./MessageBubble"
 import { Composer, type MentionSuggestion } from "./Composer"
 import { getLoadedTaskRowsSnapshot } from "../../src/hooks/use-task-group-tasks-query"
 import { useCurrentUserStore } from "../../app/store/current-user"
+import { CHAT_CONTENT_COLUMN_CLASS } from "../../app/lib/chat-content-column"
 import { sendConversationAiChatStream } from "./send-conversation-ai-chat"
 import { useAiChatModelSelection } from "./ai-chat-model-selection"
 import { SelectionAskAiMenu } from "./SelectionAskAiMenu"
@@ -3362,12 +3363,13 @@ export function ChatWindow({
           <>
         <div
         ref={scrollContainerRef}
-        className={`flex-1 overflow-x-hidden overflow-y-auto p-4 space-y-4 min-h-0 min-w-0 max-w-full${
+        className={`flex-1 overflow-x-hidden overflow-y-auto p-4 min-h-0 min-w-0 max-w-full${
           keepUserMessageScrollRoom || isAssistantStreaming
             ? " pb-[70vh] md:pb-[60vh]"
             : ""
         }`}
       >
+        <div className={`${CHAT_CONTENT_COLUMN_CLASS} space-y-4`}>
         {allMessages.map((m, messageIndex) => {
           const editPreviewKeys = (m.role === "assistant"
             ? editStreamKeysByAssistantId.get(m.id) ?? []
@@ -3716,6 +3718,7 @@ export function ChatWindow({
         })()}
         <div ref={chatEndRef} />
         </div>
+        </div>
         {showJumpToBottom && !keepUserMessageScrollRoom ? (
           <button
             type="button"
@@ -3733,6 +3736,7 @@ export function ChatWindow({
           </>
         ) : null}
       <div className={isChatEmpty ? "w-full shrink-0 px-4 pb-4 pt-2" : "p-4 flex-shrink-0"}>
+        <div className={CHAT_CONTENT_COLUMN_CLASS}>
         {hasPersistedThreadId && isUsageSendBlocked(threadUsage) ? (
           <AiChatUsageLimitCard usage={threadUsage} canReviewLimits={canReviewLimits} />
         ) : null}
@@ -3801,6 +3805,7 @@ export function ChatWindow({
           streamAbortRef={streamAbortRef}
           isAssistantStreaming={isAssistantStreaming}
         />
+        </div>
       </div>
       </div>
       <SelectionAskAiMenu

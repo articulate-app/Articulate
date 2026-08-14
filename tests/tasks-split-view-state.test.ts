@@ -23,6 +23,15 @@ describe("parseTasksSplitViewState", () => {
     expect(state.secondaryView).toBe("calendar")
   })
 
+  it("does not treat workspace shell + middleView=calendar as tasks split", () => {
+    const params = new URLSearchParams(
+      "layout=left,middle,right&tasksView=list&middleView=calendar&leftPaneView=task-list&centerView=start&rightView=start",
+    )
+    const state = parseTasksSplitViewState(params)
+    expect(state.isSplit).toBe(false)
+    expect(state.primaryView).toBe("list")
+  })
+
   it("respects explicit split=true", () => {
     const params = new URLSearchParams(
       "layout=left,middle,right&split=true&tasksView=list&splitView=calendar",

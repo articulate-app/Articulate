@@ -2,7 +2,7 @@
 
 /**
  * Directory-style row for Users / Projects lists: name + secondary column + ⋯ menu.
- * Leading visual matches search rows (project logo/color, user avatar).
+ * Projects use a colored folder icon (no logos); users keep avatars.
  */
 
 import { useMemo, useState } from "react"
@@ -76,8 +76,12 @@ export type ObjectDirectoryResultRowProps = {
   onDeleted?: () => void
   /** Prefer sidebar-style recency (`list_home_recent_*`) when available. */
   recentAtOverride?: string | null
+  /** Projects column override (batch-fetched labels for users directory). */
+  secondaryOverride?: string | null
   /** Open/selected in the details pane — gray highlight like the task list. */
   isSelected?: boolean
+  /** Tighter horizontal inset when nested in WorkspacePageShell. */
+  denseInset?: boolean
 }
 
 export function ObjectDirectoryResultRow({
@@ -86,7 +90,9 @@ export function ObjectDirectoryResultRow({
   onSelect,
   onDeleted,
   recentAtOverride = null,
+  secondaryOverride = null,
   isSelected = false,
+  denseInset = false,
 }: ObjectDirectoryResultRowProps) {
   const queryClient = useQueryClient()
   const [settingsOpen, setSettingsOpen] = useState(false)
@@ -107,7 +113,9 @@ export function ObjectDirectoryResultRow({
 
   const secondary =
     mode === "user"
-      ? resolveUserProjectsLabel(item)
+      ? (typeof secondaryOverride === "string" && secondaryOverride.trim()
+          ? secondaryOverride.trim()
+          : resolveUserProjectsLabel(item))
       : formatCompactDateDisplay(resolveLastUpdate(item, recentAtOverride)) || "—"
 
   const togglePin = () => {
@@ -163,7 +171,8 @@ export function ObjectDirectoryResultRow({
     <>
       <div
         className={cn(
-          "group relative flex h-9 w-full items-center gap-3 px-4",
+          "group relative flex min-h-[52px] w-full items-center gap-3 py-2",
+          denseInset ? "px-1" : "px-4",
           isSelected ? "bg-gray-100" : "hover:bg-gray-50",
         )}
         aria-selected={isSelected}
@@ -180,8 +189,8 @@ export function ObjectDirectoryResultRow({
             isUser={mode === "user"}
             compact
           />
-          <span className="min-w-0 flex-1 truncate text-xs text-gray-900">{title}</span>
-          <span className="w-28 shrink-0 truncate text-right text-[11px] text-gray-500">
+          <span className="min-w-0 flex-1 truncate text-[15px] leading-snug text-gray-900">{title}</span>
+          <span className="w-36 shrink-0 truncate text-right text-[15px] leading-snug text-gray-500">
             {secondary}
           </span>
         </button>

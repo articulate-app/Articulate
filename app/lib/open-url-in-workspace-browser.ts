@@ -33,7 +33,6 @@ export function openUrlInWorkspaceBrowser(args: {
     startUrl,
     source: "manual",
     profileKey: "template-link",
-    autoPair: false,
   })
 
   openWorkspaceView(

@@ -21,6 +21,7 @@ import { ThreadedRealtimeChat } from "../threaded-realtime-chat"
 import { UserAvatar } from "../UserAvatar"
 import { getImageUrl } from "../../lib/public-media"
 import { useCurrentUserStore } from "../../store/current-user"
+import { CHAT_CONTENT_COLUMN_CLASS } from "../../lib/chat-content-column"
 import type { ProjectActivityFeedRow } from "../../lib/services/project-activity"
 import { getProjectActivityRelativeTimeLabel } from "./project-activity-feed-list"
 
@@ -1049,6 +1050,7 @@ export function CommentsTab({
                 : "sticky bottom-0 z-20 mt-2 border-t bg-white pt-3"
             }
           >
+            <div className={`${CHAT_CONTENT_COLUMN_CLASS} px-4 pb-3`}>
             <div className="mb-2 flex items-start gap-2">
               <UserAvatar
                 name={currentUserName || currentUser?.full_name || currentUser?.email || "You"}
@@ -1117,6 +1119,7 @@ export function CommentsTab({
                   Delete thread
                 </Button>
               ) : null}
+            </div>
             </div>
           </div>
         </>
