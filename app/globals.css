@@ -966,14 +966,14 @@ html, body {
   width: 100%;
   align-items: stretch;
 }
-/* Keep compact ↔ full density stable: same header/task row height in both modes. */
+/* Directory-style density (~52px) to match Biblioteca / project lists. */
 .task-list-grid .task-row[data-row-type="header"] {
-  min-height: 36px;
+  min-height: 40px;
 }
 .task-list-grid .task-row[data-row-type="task"] {
-  height: 36px;
-  min-height: 36px;
-  max-height: 36px;
+  height: 52px;
+  min-height: 52px;
+  max-height: 52px;
 }
 .task-list-grid .task-cell {
   min-width: 0;
@@ -983,7 +983,7 @@ html, body {
 .task-list-grid .task-header-cell {
   display: flex;
   align-items: center;
-  min-height: 36px;
+  min-height: 40px;
   box-sizing: border-box;
 }
 /* Content rows: vertically center; fixed row height prevents large-mode columns from growing taller. */
@@ -992,9 +992,12 @@ html, body {
   align-items: center;
   height: 100%;
   min-height: 0;
-  max-height: 36px;
+  max-height: 52px;
   overflow: hidden;
   box-sizing: border-box;
+}
+.task-list-grid tbody .task-row[data-row-type="task"] .task-cell.overflow-visible {
+  overflow: visible;
 }
 .task-list-grid tbody .task-row[data-row-type="group"] .task-cell,
 .task-list-grid tbody .task-row.group-header .task-cell {
@@ -1011,31 +1014,30 @@ html, body {
   grid-column: 1 / -1;
 }
 .task-list-grid .task-spacer-cell {
-  border-bottom: 1px solid #e5e7eb;
-  border-right: none;
-  border-left: none;
+  border: none;
 }
 .task-list-grid .task-cell--sticky {
   position: sticky;
   left: 0;
   z-index: 20;
   background: white;
-  box-shadow: 1px 0 0 #e5e7eb;
+  box-shadow: none;
 }
 /* Hover background only on task rows, not header/group/loading rows */
 .task-list-grid .task-row[data-row-type="task"]:hover .task-cell--sticky {
   background: rgb(249 250 251);
 }
-.task-list-grid .task-row.bg-gray-100 .task-cell--sticky {
+.task-list-grid .task-row.bg-gray-100 .task-cell--sticky,
+.task-list-grid .task-row[data-row-type="task"].bg-gray-100 .task-cell {
   background: rgb(243 244 246);
 }
 .task-list-grid thead .task-cell--sticky {
   z-index: 30;
 }
 
-/* Group header row: label in Title column, sticky-left */
+/* Group header row: directory-style section label */
 .task-list-grid .task-group-label {
-  font-weight: 600;
+  font-weight: 400;
 }
 .task-list-grid .task-cell-span-rest {
   /* Fills remainder of row; background matches row for clean look */

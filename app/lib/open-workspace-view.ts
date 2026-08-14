@@ -22,6 +22,7 @@ import {
   LIST_WORKSPACE_TAB_ID,
   RESEARCH_WORKSPACE_TAB_ID,
   SEARCH_RESULTS_WORKSPACE_TAB_ID,
+  START_WORKSPACE_TAB_ID,
   TASK_LIST_WORKSPACE_TAB_ID,
   buildWorkspaceTabKey,
   getOtherWorkspacePane,
@@ -45,6 +46,11 @@ import {
 } from "../store/right-pane-tabs"
 import { useLeftPaneTabsStore, type LeftPaneTabKind } from "../store/left-pane-tabs"
 import { workspaceListViewLabel } from "./workspace-list-views"
+import { moveItemBeforeKey } from "./pane-tab-order"
+import {
+  parseAiRightTabKey,
+  useAiPaneChromeStore,
+} from "../../features/ai-chat/ai-pane-chrome-store"
 
 export type OpenWorkspaceViewOptions = {
   pane: WorkspacePaneId
@@ -94,6 +100,7 @@ function resolveViewId(view: OpenWorkspaceViewInput): string {
   if (view.type === "research") return RESEARCH_WORKSPACE_TAB_ID
   if (view.type === "create") return CREATE_WORKSPACE_TAB_ID
   if (view.type === "search-results") return SEARCH_RESULTS_WORKSPACE_TAB_ID
+  if (view.type === "start") return START_WORKSPACE_TAB_ID
   if (view.type === "artifact") {
     return view.artifactId?.trim() || (view.id != null ? String(view.id).trim() : "")
   }
@@ -149,6 +156,7 @@ const CENTER_KINDS = new Set<string>([
   "research",
   "create",
   "search-results",
+  "start",
   "ai",
   "browser",
 ])
@@ -335,10 +343,17 @@ export function openWorkspaceView(
 
   let id = resolveViewId(input)
   if (input.type === "browser" && options.tabMode === "new") {
+    // Callers that pre-start the session (beginManualBrowserOpen) already mint a fresh id.
+    // Regenerating here would break claimManualBrowserOpen and orphan the Desktop view.
+    const callerId =
+      (input.id != null && String(input.id).trim()) ||
+      (typeof input.params?.browserTabId === "string" && input.params.browserTabId.trim()) ||
+      ""
     id =
-      typeof crypto !== "undefined" && "randomUUID" in crypto
+      callerId ||
+      (typeof crypto !== "undefined" && "randomUUID" in crypto
         ? crypto.randomUUID()
-        : `browser-${Date.now()}`
+        : `browser-${Date.now()}`)
   }
 
   if (
@@ -568,6 +583,49 @@ export function placeMovedTabInPane(
     return
   }
   useRightPaneTabsStore.getState().moveTabBefore(tabKey, beforeKey ?? null)
+}
+
+/** Reorder an AI chrome tab among other AI tabs (shared middle/right strip). */
+function reorderAiChromeTab(tabKey: string, beforeKey: string | null | undefined) {
+  const id = parseAiRightTabKey(tabKey)
+  if (!id) return
+  const beforeAiId =
+    beforeKey && beforeKey.startsWith("ai:") ? parseAiRightTabKey(beforeKey) : null
+  const { tabs, sync, handlers } = useAiPaneChromeStore.getState()
+  const keyed = tabs.map((tab) => ({
+    key: tab.id,
+    title: tab.title,
+    isOptimistic: tab.isOptimistic,
+  }))
+  const next = moveItemBeforeKey(keyed, id, beforeAiId)
+  if (next === keyed) return
+  const orderedIds = next.map((tab) => tab.key)
+  // Prefer AiPane openTabs as source of truth so the next chrome sync keeps this order.
+  handlers?.reorderTabs?.(orderedIds)
+  sync({
+    tabs: next.map((tab) => ({
+      id: tab.key,
+      title: tab.title,
+      isOptimistic: tab.isOptimistic,
+    })),
+  })
+}
+
+/**
+ * Same-pane tab reorder from the strip drag-and-drop.
+ * AI chrome tabs reorder among themselves; other keys use the pane tab store.
+ */
+export function reorderWorkspaceTabInPane(
+  pane: WorkspacePaneId,
+  tabKey: string,
+  beforeKey: string | null | undefined,
+) {
+  if (!tabKey) return
+  if (tabKey.startsWith("ai:")) {
+    reorderAiChromeTab(tabKey, beforeKey)
+    return
+  }
+  placeMovedTabInPane(pane, tabKey, beforeKey)
 }
 
 /** Resolve the active tab for a pane from the live URL (compat). */

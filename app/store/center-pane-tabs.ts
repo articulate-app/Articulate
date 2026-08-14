@@ -28,6 +28,7 @@ export type CenterPaneTabKind =
   | "search-results"
   | "ai"
   | "browser"
+  | "start"
   /** @deprecated Prefer "research". */
   | "keyword-research"
   /** @deprecated Prefer "research". */
@@ -91,6 +92,7 @@ function normalizeTitle(title: string | null | undefined, kind: CenterPaneTabKin
   if (kind === "template") return `Template ${id.slice(0, 12)}`
   if (kind === "research") return "Research"
   if (kind === "create") return "Create"
+  if (kind === "start") return "New"
   if (kind === "ai") return "AI"
   if (kind === "browser") return id ? `Browser ${id.slice(0, 6)}` : "Browser"
   if (kind === "keyword-research") return "Research"
@@ -122,6 +124,7 @@ export function listCenterPaneTabsNeedingTitleResolution(tabs: CenterPaneTab[]):
     (tab) =>
       tab.kind !== "research" &&
       tab.kind !== "create" &&
+      tab.kind !== "start" &&
       tab.kind !== "ai" &&
       tab.kind !== "browser" &&
       tab.kind !== "task-list" &&

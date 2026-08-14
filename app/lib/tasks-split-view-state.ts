@@ -80,10 +80,14 @@ export function parseTasksSplitViewState(params: URLSearchParams): TasksSplitVie
   }
 
   // Legacy planner URLs only: left+middle with an explicit middleView calendar/kanban.
+  // Skip when modern workspace shell params are present (`leftPaneView`, `centerView`, etc.).
   if (
     layoutParam.includes("left") &&
     layoutParam.includes("middle") &&
-    (legacyMiddle === "calendar" || legacyMiddle === "kanban")
+    (legacyMiddle === "calendar" || legacyMiddle === "kanban") &&
+    !params.get("leftPaneView") &&
+    !params.get("centerView") &&
+    !params.get("rightView")
   ) {
     return {
       primaryView: "list",

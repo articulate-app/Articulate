@@ -70,7 +70,7 @@ export function TaskOverviewPreviewSection({
   return (
     <section
       ref={setSectionRef}
-      className={cn("border-t border-gray-100 py-4 first:border-t-0", className)}
+      className={cn("border-t border-gray-200/80 py-4 first:border-t-0 first:pt-2", className)}
     >
       <div className="mb-3 flex items-center justify-between gap-2">
         <div className="flex min-w-0 flex-1 items-center gap-2">
@@ -80,13 +80,13 @@ export function TaskOverviewPreviewSection({
               onClick={onViewAll}
               className="group flex min-w-0 items-center gap-1 text-left"
             >
-              <h3 className="text-base font-medium text-gray-900 group-hover:text-gray-700">
+              <h3 className="text-sm font-semibold text-gray-900 group-hover:text-gray-700">
                 {title}
               </h3>
               <ChevronRight className="h-4 w-4 shrink-0 text-gray-400 opacity-0 transition-opacity group-hover:opacity-100" />
             </button>
           ) : (
-            <h3 className="text-base font-medium text-gray-900">{title}</h3>
+            <h3 className="text-sm font-semibold text-gray-900">{title}</h3>
           )}
         </div>
         <div className="flex shrink-0 items-center gap-2">

@@ -272,6 +272,25 @@ describe("workspace-pane-url", () => {
     })
   })
 
+  it("opens new message (thread:new) in middle and clears focus=left", () => {
+    const next = applyWorkspaceViewToSearchParams({
+      current: new URLSearchParams(
+        "layout=left,middle&leftPaneView=mention-list&focus=left&taskAiOpen=false",
+      ),
+      pane: "middle",
+      type: "thread",
+      id: "new",
+      params: { compose: true },
+    })
+    expect(next.get("centerThreadId")).toBe("new")
+    expect(next.get("focus")).toBeNull()
+    expect(next.get("leftPaneView")).toBe("mention-list")
+    expect(getActiveMiddleWorkspaceTab(next)).toMatchObject({
+      type: "thread",
+      id: "new",
+    })
+  })
+
   it("opens project list in left via leftPaneView and migrates object=", () => {
     const next = applyWorkspaceViewToSearchParams({
       current: new URLSearchParams("layout=left,middle&object=task"),

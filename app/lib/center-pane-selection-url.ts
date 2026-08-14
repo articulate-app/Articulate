@@ -263,6 +263,8 @@ export function buildCenterPaneSelectionSearchParams(args: {
     }
     next.set("layout", Array.from(layout).join(","))
   }
+  // Exit pane-expand mode so the middle column can show (TasksLayout hides it while focus=left).
+  next.delete("focus")
 
   if (entity === "task") {
     next.set("centerTaskId", String(id))
@@ -400,6 +402,7 @@ export function buildCenterPaneTabSelectionSearchParams(args: {
     const layout = new Set((next.get("layout") || "left,middle").split(",").filter(Boolean))
     layout.add("middle")
     next.set("layout", Array.from(layout).join(","))
+    next.delete("focus")
     applyCreateCenterParams(next, createType)
     return next
   }
@@ -416,6 +419,7 @@ export function buildCenterPaneTabSelectionSearchParams(args: {
     const layout = new Set((next.get("layout") || "left,middle").split(",").filter(Boolean))
     layout.add("middle")
     next.set("layout", Array.from(layout).join(","))
+    next.delete("focus")
     const tab: ResearchTab =
       researchTab ??
       (kind === "prompt-research" ? "prompts" : "keywords")
@@ -440,6 +444,7 @@ export function buildCenterPaneTabSelectionSearchParams(args: {
     const layout = new Set((next.get("layout") || "left,middle").split(",").filter(Boolean))
     layout.add("middle")
     next.set("layout", Array.from(layout).join(","))
+    next.delete("focus")
     next.set("itemKind", "suggestion")
     next.set("centerSuggestionId", String(id))
     next.delete("centerTaskId")

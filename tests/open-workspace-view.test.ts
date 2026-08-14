@@ -291,6 +291,38 @@ describe("openWorkspaceView / moveWorkspaceView", () => {
     ;(useLeftPaneTabsStore.getState() as { __reset?: () => void }).__reset?.()
   })
 
+  it("preserves caller browser id when tabMode is new (manual open claim)", () => {
+    const id = "manual-browser-id-1"
+    openWorkspaceView(
+      {
+        type: "browser",
+        id,
+        title: "Browser",
+        params: { browserTabId: id, phase: "provisioning" },
+      },
+      { pane: "right", tabMode: "new", pathname: "/" },
+    )
+    const params = new URLSearchParams((globalThis as any).window.location.search)
+    expect(getActiveRightWorkspaceTab(params)).toMatchObject({ type: "browser", id })
+    expect(params.get("browserTabId")).toBe(id)
+    const tab = useRightPaneTabsStore
+      .getState()
+      .tabs.find((entry) => entry.key === `browser:${id}`)
+    expect(tab?.browser?.phase).toBe("provisioning")
+  })
+
+  it("mints a browser id when tabMode is new and caller omitted id", () => {
+    openWorkspaceView(
+      { type: "browser", title: "Browser", params: { phase: "provisioning" } },
+      { pane: "right", tabMode: "new", pathname: "/" },
+    )
+    const params = new URLSearchParams((globalThis as any).window.location.search)
+    const tab = getActiveRightWorkspaceTab(params)
+    expect(tab?.type).toBe("browser")
+    expect(tab?.id).toBeTruthy()
+    expect(params.get("browserTabId")).toBe(tab?.id ?? null)
+  })
+
   it("opens task in middle (default UX path)", () => {
     openWorkspaceView({ type: "task", taskId: 13418 }, { pane: "middle", pathname: "/" })
     const params = new URLSearchParams((globalThis as any).window.location.search)

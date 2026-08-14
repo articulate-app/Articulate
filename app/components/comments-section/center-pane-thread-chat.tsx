@@ -11,6 +11,7 @@ import { UserAvatar } from "../UserAvatar"
 import { Button } from "../ui/button"
 import { getImageUrl } from "../../lib/public-media"
 import { useCurrentUserStore } from "../../store/current-user"
+import { CHAT_CONTENT_COLUMN_CLASS } from "../../lib/chat-content-column"
 
 type CenterPaneThreadChatProps = {
   threadId: number
@@ -176,6 +177,7 @@ export function CenterPaneThreadChat({
       </div>
 
       <div className="shrink-0 border-t border-gray-200 bg-white px-4 py-3">
+        <div className={CHAT_CONTENT_COLUMN_CLASS}>
         <div className="mb-2 flex items-start gap-2">
           <UserAvatar
             name={currentUserName}
@@ -250,6 +252,7 @@ export function CenterPaneThreadChat({
               Thread
             </Button>
           )}
+        </div>
         </div>
       </div>
     </div>

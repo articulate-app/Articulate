@@ -8,17 +8,15 @@
 import { useEffect, useMemo, useState } from "react"
 import { useQuery } from "@tanstack/react-query"
 import {
-  ExternalLink,
+  Download,
   FileCode2,
   FileText,
   Loader2,
-  X,
 } from "lucide-react"
-import { cn, formatCompactDateDisplay } from "@/lib/utils"
+import { formatCompactDateDisplay } from "@/lib/utils"
 import { getImageUrl } from "../../lib/public-media"
 import { fetchDocxHtmlFromUrl } from "../../lib/docx-to-html"
 import { fetchHtmlPreviewFromUrl } from "../../lib/fetch-html-preview"
-import { openUrlInWorkspaceBrowser } from "../../lib/open-url-in-workspace-browser"
 import {
   fetchProjectTemplateDetail,
 } from "../../lib/services/project-templates"
@@ -38,7 +36,6 @@ import type { WorkspacePaneId } from "../../lib/workspace-view"
 import { useCenterPaneTabsStore, buildCenterPaneTabKey } from "../../store/center-pane-tabs"
 import { useRightPaneTabsStore } from "../../store/right-pane-tabs"
 import { useLeftPaneTabsStore } from "../../store/left-pane-tabs"
-import { TASK_DETAILS_HEADER_ROW_CLASS } from "../tasks/pane-header-tokens"
 import { ObjectPaneScrollShell, objectPaneCenteredStateClass } from "../search/object-pane-content"
 import { RichTextEditor } from "../editor/RichTextEditor"
 import { ArtifactHtmlDocumentView } from "../../../features/artifacts/artifact-html-document-view"
@@ -47,6 +44,7 @@ export type WorkspaceTemplateViewProps = {
   /** Composite id: `{projectId}:{templateId}`. */
   workspaceId: string
   paneId: WorkspacePaneId
+  /** @deprecated Close lives on the tab strip. */
   onClose?: () => void
   onResolvedTitle?: (title: string) => void
 }
@@ -83,12 +81,6 @@ function assetKindLabel(asset: ProjectDesignTemplateAsset): string {
   if (kind === "url") return "Link"
   if (kind === "image") return "Image"
   return "File"
-}
-
-function browserPaneForHost(paneId: WorkspacePaneId): WorkspacePaneId {
-  if (paneId === "left") return "middle"
-  if (paneId === "middle") return "right"
-  return "middle"
 }
 
 function htmlExcerptFromNotes(notes: string | null | undefined): string | null {
@@ -155,11 +147,11 @@ function TemplateDocxPreview({ href }: { href: string }) {
 function TemplateHtmlPreview({
   href,
   fallbackHtml,
-  onOpenInBrowser,
+  downloadFileName,
 }: {
   href: string
   fallbackHtml?: string | null
-  onOpenInBrowser?: () => void
+  downloadFileName?: string
 }) {
   const htmlQuery = useQuery({
     queryKey: ["template-html-preview", href],
@@ -184,51 +176,47 @@ function TemplateHtmlPreview({
       <div className={objectPaneCenteredStateClass()}>
         <p className="text-sm text-gray-600">Unable to load HTML preview for this link.</p>
         <p className="mt-1 max-w-md truncate text-[11px] text-gray-400">{href}</p>
-        <div className="mt-3 flex items-center gap-2">
-          {onOpenInBrowser ? (
-            <button
-              type="button"
-              className="inline-flex items-center gap-1 rounded-md bg-gray-900 px-3 py-1.5 text-xs font-medium text-white hover:bg-gray-800"
-              onClick={onOpenInBrowser}
-            >
-              <ExternalLink className="h-3.5 w-3.5" />
-              Open in Browser
-            </button>
-          ) : null}
-          <a
-            href={href}
-            target="_blank"
-            rel="noreferrer"
-            className="text-xs text-sky-700 hover:underline"
-          >
-            Open externally
-          </a>
-        </div>
+        <a
+          href={href}
+          download={downloadFileName || "template.html"}
+          target="_blank"
+          rel="noreferrer"
+          className="mt-3 inline-flex items-center gap-1.5 rounded-md bg-gray-900 px-3 py-1.5 text-xs font-medium text-white hover:bg-gray-800"
+        >
+          <Download className="h-3.5 w-3.5" />
+          Download
+        </a>
       </div>
     )
   }
 
   return (
     <div className="min-h-0 flex-1 overflow-auto">
-      <ArtifactHtmlDocumentView html={html} readOnly variant="document" className="min-h-full" />
+      <ArtifactHtmlDocumentView
+        html={html}
+        readOnly
+        variant="document"
+        hideToolbar
+        className="min-h-full"
+      />
     </div>
   )
 }
 
 function TemplateAssetCard({
   asset,
-  onOpenLink,
 }: {
   asset: ProjectDesignTemplateAsset
-  onOpenLink: (url: string) => void
 }) {
   const [imageFailed, setImageFailed] = useState(false)
   const preview = !imageFailed ? assetPreviewUrl(asset) : null
   const href = templateAssetHref(asset)
   const label = assetKindLabel(asset)
-  const isLink = isLinkTemplateAsset(asset)
   const Icon =
     label === "HTML" ? FileCode2 : label === "Image" || label === "Video" ? null : FileText
+  const downloadName =
+    asset.title?.trim() ||
+    (label === "HTML" ? "template.html" : label === "Word" ? "template.docx" : "template")
 
   const body = preview ? (
     // eslint-disable-next-line @next/next/no-img-element
@@ -248,32 +236,19 @@ function TemplateAssetCard({
     </div>
   )
 
-  if (isLink && href) {
-    return (
-      <button
-        type="button"
-        onClick={() => onOpenLink(href)}
-        className="group relative block aspect-[4/3] w-full overflow-hidden rounded-lg border border-gray-200 bg-white text-left shadow-sm transition-colors hover:border-gray-300"
-      >
-        {body}
-        <span className="absolute inset-x-0 bottom-0 truncate bg-black/60 px-2 py-1.5 text-[11px] text-white">
-          {href}
-        </span>
-      </button>
-    )
-  }
-
   if (href) {
     return (
       <a
         href={href}
+        download={downloadName}
         target="_blank"
         rel="noreferrer"
         className="group relative block aspect-[4/3] overflow-hidden rounded-lg border border-gray-200 bg-white shadow-sm transition-colors hover:border-gray-300"
       >
         {body}
-        <span className="absolute right-2 top-2 inline-flex h-7 w-7 items-center justify-center rounded-md bg-white/90 text-gray-600 opacity-0 shadow-sm transition-opacity group-hover:opacity-100">
-          <ExternalLink className="h-3.5 w-3.5" />
+        <span className="absolute right-2 top-2 inline-flex h-7 items-center gap-1 rounded-md bg-white/90 px-2 text-[11px] font-medium text-gray-700 opacity-0 shadow-sm transition-opacity group-hover:opacity-100">
+          <Download className="h-3.5 w-3.5" />
+          Download
         </span>
       </a>
     )
@@ -289,7 +264,6 @@ function TemplateAssetCard({
 export function WorkspaceTemplateView({
   workspaceId,
   paneId,
-  onClose,
   onResolvedTitle,
 }: WorkspaceTemplateViewProps) {
   const parsed = parseTemplateWorkspaceId(workspaceId)
@@ -333,15 +307,13 @@ export function WorkspaceTemplateView({
     [detailQuery.data?.template.assets],
   )
   const notesHtmlFallback = htmlExcerptFromNotes(detailQuery.data?.template.notes)
-
-  const openLinkInBrowser = (url: string) => {
-    openUrlInWorkspaceBrowser({
-      url,
-      pane: browserPaneForHost(paneId),
-      title: detailQuery.data?.template.title,
-      source: `template-view:${workspaceId}`,
-    })
-  }
+  const downloadFileName = (() => {
+    const base = title.replace(/[^\w\-]+/g, "-").replace(/^-|-$/g, "") || "template"
+    if (primaryKind === "html") return `${base}.html`
+    if (primaryKind === "docx") return `${base}.docx`
+    if (primaryKind === "pdf") return `${base}.pdf`
+    return base
+  })()
 
   useEffect(() => {
     if (!detailQuery.data) return
@@ -376,13 +348,12 @@ export function WorkspaceTemplateView({
 
   return (
     <div className="flex h-full min-h-0 flex-col overflow-hidden bg-white">
-      <div className={cn(TASK_DETAILS_HEADER_ROW_CLASS, "gap-2 px-4")}>
-        <div className="min-w-0 flex-1">
-          <div className="truncate text-sm font-medium text-gray-900">{title}</div>
+      <div className="flex h-10 min-h-10 items-center gap-2 bg-white px-4">
+        <div className="flex min-w-0 flex-1 items-center gap-2">
           {detailQuery.data ? (
             <button
               type="button"
-              className="mt-0.5 truncate text-left text-[11px] text-gray-500 hover:text-gray-800 hover:underline"
+              className="max-w-[40%] shrink-0 truncate text-left text-sm text-gray-500 hover:text-gray-800 hover:underline"
               onClick={() => {
                 const detail = detailQuery.data
                 if (!detail) return
@@ -399,26 +370,20 @@ export function WorkspaceTemplateView({
               {detailQuery.data.projectName}
             </button>
           ) : null}
+          <div className="min-w-0 truncate text-sm font-medium text-gray-900">{title}</div>
         </div>
-        {primaryHref && (primaryKind === "url" || primaryKind === "html") ? (
-          <button
-            type="button"
-            className="inline-flex h-7 shrink-0 items-center gap-1 rounded-md px-2 text-[11px] text-sky-700 hover:bg-sky-50"
-            onClick={() => openLinkInBrowser(primaryHref)}
+        {primaryHref ? (
+          <a
+            href={primaryHref}
+            download={downloadFileName}
+            target="_blank"
+            rel="noreferrer"
+            className="inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-md text-gray-600 hover:bg-gray-100 hover:text-gray-900"
+            aria-label="Download"
+            title="Download"
           >
-            <ExternalLink className="h-3.5 w-3.5" />
-            Open in Browser
-          </button>
-        ) : null}
-        {onClose ? (
-          <button
-            type="button"
-            aria-label="Close template"
-            className="inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-md text-gray-500 hover:bg-gray-100 hover:text-gray-800"
-            onClick={onClose}
-          >
-            <X className="h-4 w-4" />
-          </button>
+            <Download className="h-3.5 w-3.5" />
+          </a>
         ) : null}
       </div>
 
@@ -438,7 +403,7 @@ export function WorkspaceTemplateView({
           <TemplateHtmlPreview
             href={primaryHref}
             fallbackHtml={notesHtmlFallback}
-            onOpenInBrowser={() => openLinkInBrowser(primaryHref)}
+            downloadFileName={downloadFileName}
           />
         ) : (
           <ObjectPaneScrollShell>
@@ -488,7 +453,7 @@ export function WorkspaceTemplateView({
                 <ul className="grid gap-3 sm:grid-cols-2">
                   {otherAssets.map((asset) => (
                     <li key={asset.id}>
-                      <TemplateAssetCard asset={asset} onOpenLink={openLinkInBrowser} />
+                      <TemplateAssetCard asset={asset} />
                     </li>
                   ))}
                 </ul>

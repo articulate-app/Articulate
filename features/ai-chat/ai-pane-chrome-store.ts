@@ -23,6 +23,8 @@ export type AiPaneChromeHandlers = {
   setVisibility: (visibility: AiVisibility) => void
   closeAllAiTabs: () => void
   copyLink: () => void
+  /** Persist strip order after same-pane drag of AI tabs. */
+  reorderTabs: (orderedIds: string[]) => void
   expand?: () => void
 }
 

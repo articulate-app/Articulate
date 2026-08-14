@@ -1,9 +1,10 @@
 "use client"
 
-import { useEffect, useMemo, useRef } from "react"
+import { useEffect, useMemo, useRef, type RefObject } from "react"
 import { useSearchParams } from "next/navigation"
 import { useInfiniteQuery, useQueryClient } from "@tanstack/react-query"
 import { Loader2 } from "lucide-react"
+import { cn } from "@/lib/utils"
 import { SearchResultRow } from "./SearchResultRow"
 import type { GlobalSearchDocument } from "../../lib/global-search-types"
 import { groupByFriendlyDateBucket } from "../../lib/friendly-date-buckets"
@@ -74,16 +75,22 @@ export function MentionsFullResultsPane({
   onResultSelect,
   viewScope,
   filterQuery = "",
+  embedInParentScroll = false,
+  scrollRootRef = null,
 }: {
   onResultSelect: (item: GlobalSearchDocument) => void
   viewScope: string
   /** Local list filter — does not hit the network per keystroke. */
   filterQuery?: string
+  /** Parent page owns the single scrollbar (Inbox page layout). */
+  embedInParentScroll?: boolean
+  scrollRootRef?: RefObject<HTMLElement | null> | null
 }) {
   const searchParams = useSearchParams()
   const queryClient = useQueryClient()
   const sentinelRef = useRef<HTMLDivElement | null>(null)
-  const scrollContainerRef = useRef<HTMLDivElement | null>(null)
+  const localScrollContainerRef = useRef<HTMLDivElement | null>(null)
+  const scrollContainerRef = scrollRootRef ?? localScrollContainerRef
   const selectedTab: MentionInboxTab = (() => {
     const raw = searchParams.get("mentionsTab")
     if (raw === "sent" || raw === "unseen") return raw
@@ -121,7 +128,7 @@ export function MentionsFullResultsPane({
     })
     observer.observe(sentinel)
     return () => observer.disconnect()
-  }, [query])
+  }, [embedInParentScroll, query, scrollContainerRef])
 
   const mentionItems = useMemo(() => {
     const rows = query.data?.pages.flat() ?? []
@@ -171,43 +178,67 @@ export function MentionsFullResultsPane({
     onResultSelect(item)
   }
 
+  const body = query.isLoading ? (
+    <div
+      className={cn(
+        "flex items-center justify-center px-6 text-sm text-gray-500",
+        embedInParentScroll ? "py-10" : "h-full text-xs",
+      )}
+    >
+      <Loader2 className="mr-2 h-3.5 w-3.5 animate-spin" />
+      Loading mentions...
+    </div>
+  ) : groupedItems.length === 0 ? (
+    <div
+      className={cn(
+        "flex items-center justify-center px-6 text-sm text-gray-500",
+        embedInParentScroll ? "py-10" : "h-full text-xs",
+      )}
+    >
+      No mentions found.
+    </div>
+  ) : (
+    <div className={cn(embedInParentScroll ? "w-full" : "py-1 pb-4")}>
+      {groupedItems.map((group) => (
+        <section key={group.label} className={cn(!embedInParentScroll && "pt-1")}>
+          <div
+            className={cn(
+              "sticky top-0 z-10 bg-white/95 py-1.5 text-[11px] font-normal text-gray-400 backdrop-blur-sm",
+              embedInParentScroll ? "px-1" : "px-3",
+            )}
+          >
+            {group.label}
+          </div>
+          <div className={cn(embedInParentScroll && "divide-y divide-gray-100")}>
+            {group.items.map((item, index) => (
+              <SearchResultRow
+                key={`${viewScope}:list:mention:${String(item.entity_id ?? item.title)}:${group.label}:${index}`}
+                item={item}
+                onSelect={handleMentionSelect}
+                className={embedInParentScroll ? "h-auto min-h-10 px-1 py-2" : undefined}
+              />
+            ))}
+          </div>
+        </section>
+      ))}
+      <div ref={sentinelRef} />
+      {query.isFetchingNextPage ? (
+        <div className="flex items-center justify-center gap-2 py-3 text-xs text-gray-500">
+          <Loader2 className="h-3.5 w-3.5 animate-spin" />
+          Loading more...
+        </div>
+      ) : null}
+    </div>
+  )
+
+  if (embedInParentScroll) {
+    return <div className="min-w-0">{body}</div>
+  }
+
   return (
     <div className="flex h-full min-h-0 flex-col bg-white">
-      <div ref={scrollContainerRef} className="min-h-0 flex-1 overflow-auto">
-        {query.isLoading ? (
-          <div className="flex h-full items-center justify-center px-6 text-xs text-gray-500">
-            <Loader2 className="mr-2 h-3.5 w-3.5 animate-spin" />
-            Loading mentions...
-          </div>
-        ) : groupedItems.length === 0 ? (
-          <div className="flex h-full items-center justify-center px-6 text-xs text-gray-500">
-            No mentions found.
-          </div>
-        ) : (
-          <div className="py-1 pb-4">
-            {groupedItems.map((group) => (
-              <section key={group.label} className="pt-1">
-                <div className="sticky top-0 z-10 bg-white/95 px-3 py-1.5 text-[11px] font-normal text-gray-400 backdrop-blur-sm">
-                  {group.label}
-                </div>
-                {group.items.map((item, index) => (
-                  <SearchResultRow
-                    key={`${viewScope}:list:mention:${String(item.entity_id ?? item.title)}:${group.label}:${index}`}
-                    item={item}
-                    onSelect={handleMentionSelect}
-                  />
-                ))}
-              </section>
-            ))}
-            <div ref={sentinelRef} />
-            {query.isFetchingNextPage ? (
-              <div className="flex items-center justify-center gap-2 py-3 text-xs text-gray-500">
-                <Loader2 className="h-3.5 w-3.5 animate-spin" />
-                Loading more...
-              </div>
-            ) : null}
-          </div>
-        )}
+      <div ref={localScrollContainerRef} className="min-h-0 flex-1 overflow-auto">
+        {body}
       </div>
     </div>
   )

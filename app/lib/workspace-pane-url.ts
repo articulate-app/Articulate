@@ -23,6 +23,7 @@ import {
   LIST_WORKSPACE_TAB_ID,
   RESEARCH_WORKSPACE_TAB_ID,
   SEARCH_RESULTS_WORKSPACE_TAB_ID,
+  START_WORKSPACE_TAB_ID,
   TASK_LIST_WORKSPACE_TAB_ID,
   buildWorkspaceTabKey,
   isListWorkspaceViewType,
@@ -300,6 +301,13 @@ export function getActiveLeftWorkspaceTab(params: ReadableParams): WorkspaceTab 
       params: { searchQuery },
     })
   }
+  if (leftView === "start") {
+    return workspaceTabFromParts({
+      type: "start",
+      id: START_WORKSPACE_TAB_ID,
+      title: "New",
+    })
+  }
 
   // Left homepage: AI chat when `leftPaneView` is absent (not explicitly emptied).
   // Object lists must set `leftPaneView` via `openWorkspaceView` (sidebar already does).
@@ -365,6 +373,13 @@ export function getActiveMiddleWorkspaceTab(params: ReadableParams): WorkspaceTa
       id: SEARCH_RESULTS_WORKSPACE_TAB_ID,
       title: searchQuery || "Search",
       params: { searchQuery },
+    })
+  }
+  if (centerView === "start") {
+    return workspaceTabFromParts({
+      type: "start",
+      id: START_WORKSPACE_TAB_ID,
+      title: "New",
     })
   }
 
@@ -546,6 +561,13 @@ export function getActiveRightWorkspaceTab(params: ReadableParams): WorkspaceTab
         id: SEARCH_RESULTS_WORKSPACE_TAB_ID,
         title: searchQuery || "Search",
         params: { searchQuery },
+      })
+    }
+    if (rightView === "start") {
+      return workspaceTabFromParts({
+        type: "start",
+        id: START_WORKSPACE_TAB_ID,
+        title: "New",
       })
     }
   }
@@ -786,6 +808,9 @@ export function applyWorkspaceViewToSearchParams(args: ApplyWorkspaceViewArgs): 
   }
 
   if (pane === "middle") {
+    // Opening middle content must exit left/right expand (`focus=left`) so the
+    // details pane becomes visible again (showDetailsPanel requires !focusedPane).
+    next.delete("focus")
     // Strict isolation: mutate only center* / middle active-view params.
     // Never clear or rewrite rightView / right* entity ids here.
     if (type === "ai") {
@@ -800,8 +825,7 @@ export function applyWorkspaceViewToSearchParams(args: ApplyWorkspaceViewArgs): 
       }
       if (next.get(LEFT_PANE_VIEW_PARAM) === "ai") {
         clearLeftPaneSelectionParams(next)
-        next.set(LEFT_PANE_VIEW_PARAM, "task-list")
-        syncLegacyObjectParam(next, "task-list")
+        next.set(LEFT_PANE_VIEW_PARAM, LEFT_PANE_EMPTY_VIEW)
       }
       if (viewParams?.forceNewAiThread) {
         next.delete("aiThreadId")
@@ -858,6 +882,11 @@ export function applyWorkspaceViewToSearchParams(args: ApplyWorkspaceViewArgs): 
         typeof viewParams?.searchQuery === "string" ? viewParams.searchQuery.trim() : ""
       if (query) next.set(CENTER_SEARCH_QUERY_PARAM, query)
       else next.delete(CENTER_SEARCH_QUERY_PARAM)
+      return next
+    }
+    if (type === "start") {
+      clearMiddleSelectionParams(next)
+      next.set("centerView", "start")
       return next
     }
     if (type === "suggestion") {
@@ -919,9 +948,9 @@ export function applyWorkspaceViewToSearchParams(args: ApplyWorkspaceViewArgs): 
       next.delete("centerView")
     }
     if (next.get(LEFT_PANE_VIEW_PARAM) === "ai") {
+      // Single AI host: clear left AI, but never force Tasks over an open AI thread host.
       clearLeftPaneSelectionParams(next)
-      next.set(LEFT_PANE_VIEW_PARAM, "task-list")
-      syncLegacyObjectParam(next, "task-list")
+      next.set(LEFT_PANE_VIEW_PARAM, LEFT_PANE_EMPTY_VIEW)
     }
     if (viewParams?.forceNewAiThread) {
       next.delete("aiThreadId")
@@ -963,6 +992,14 @@ export function applyWorkspaceViewToSearchParams(args: ApplyWorkspaceViewArgs): 
       typeof viewParams?.searchQuery === "string" ? viewParams.searchQuery.trim() : ""
     if (query) next.set(RIGHT_SEARCH_QUERY_PARAM, query)
     else next.delete(RIGHT_SEARCH_QUERY_PARAM)
+    return next
+  }
+
+  if (type === "start") {
+    clearRightEntitySelectionParams(next)
+    next.set("rightView", "start")
+    // Chooser pane — do not also seed/open the AI host on the right.
+    next.set("taskAiOpen", "false")
     return next
   }
 

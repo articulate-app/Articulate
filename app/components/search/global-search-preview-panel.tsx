@@ -88,6 +88,11 @@ export type GlobalSearchPreviewPanelProps = {
    * and a single shared scroll for sections + recents.
    */
   compact?: boolean
+  /**
+   * Full-pane embed (Open something): no card chrome / max-height / inner scroll —
+   * parent page provides the single scrollbar.
+   */
+  pageLayout?: boolean
 }
 
 /**
@@ -118,6 +123,7 @@ export function GlobalSearchPreviewPanel({
   hideTypeFilters = false,
   recentsMode = "both",
   compact = false,
+  pageLayout = false,
 }: GlobalSearchPreviewPanelProps) {
   const filtersRailRef = React.useRef<HTMLDivElement | null>(null)
   const inputRef = React.useRef<HTMLInputElement | null>(null)
@@ -353,18 +359,28 @@ export function GlobalSearchPreviewPanel({
   return (
     <div
       className={cn(
-        "flex flex-col overflow-hidden rounded-xl border border-gray-200 bg-white shadow-xl",
-        compact
-          ? "max-h-[min(28rem,70dvh)]"
-          : "max-h-[56dvh] md:max-h-[32rem]",
+        "flex flex-col bg-white",
+        pageLayout
+          ? "overflow-visible"
+          : cn(
+              "overflow-hidden rounded-xl border border-gray-200 shadow-xl",
+              compact
+                ? "max-h-[min(28rem,70dvh)]"
+                : "max-h-[56dvh] md:max-h-[32rem]",
+            ),
         className,
       )}
     >
       {showInput ? (
         <div
           className={cn(
-            "relative shrink-0 border-b border-gray-100",
-            compact ? "px-2 py-1.5" : "px-3 py-2.5",
+            "relative shrink-0",
+            pageLayout
+              ? "border-0 px-0 py-0"
+              : cn(
+                  "border-b border-gray-100",
+                  compact ? "px-2 py-1.5" : "px-3 py-2.5",
+                ),
           )}
         >
           <input
@@ -399,13 +415,19 @@ export function GlobalSearchPreviewPanel({
               "w-full rounded-md border focus:outline-none focus:ring-2 focus:ring-gray-200",
               compact
                 ? "h-8 py-1.5 pl-8 pr-8 text-xs"
-                : "py-2 pl-9 pr-9 text-sm",
+                : pageLayout
+                  ? "h-10 border-gray-200 py-2 pl-9 pr-9 text-sm"
+                  : "py-2 pl-9 pr-9 text-sm",
             )}
           />
           <Search
             className={cn(
               "pointer-events-none absolute top-1/2 -translate-y-1/2 text-gray-400",
-              compact ? "left-4 h-3.5 w-3.5" : "left-5 h-4 w-4",
+              compact
+                ? "left-4 h-3.5 w-3.5"
+                : pageLayout
+                  ? "left-3 h-4 w-4"
+                  : "left-5 h-4 w-4",
             )}
           />
           {inputValue ? (
@@ -416,7 +438,7 @@ export function GlobalSearchPreviewPanel({
               onClick={handleClear}
               className={cn(
                 "absolute top-1/2 -translate-y-1/2 text-gray-400 hover:text-gray-600 focus:outline-none",
-                compact ? "right-4" : "right-5",
+                compact ? "right-4" : pageLayout ? "right-3" : "right-5",
               )}
             >
               <X className={compact ? "h-3.5 w-3.5" : "h-4 w-4"} />
@@ -478,9 +500,13 @@ export function GlobalSearchPreviewPanel({
 
       <div
         className={cn(
-          "min-h-0 flex-1 overflow-y-auto",
-          compact ? "px-1.5 py-1.5" : "px-2 py-2",
-          !compact && "max-h-[24rem]",
+          pageLayout
+            ? "overflow-visible px-0 py-0"
+            : cn(
+                "min-h-0 flex-1 overflow-y-auto",
+                compact ? "px-1.5 py-1.5" : "px-2 py-2",
+                !compact && "max-h-[24rem]",
+              ),
         )}
       >
         {workspaceMenuSections && workspaceMenuSections.length > 0 && !hasQuery ? (

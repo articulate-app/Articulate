@@ -21,6 +21,8 @@ type ArtifactHtmlDocumentViewProps = {
    * preview — chrome-less card/chat preview (no nested window frame).
    */
   variant?: ArtifactHtmlDocumentVariant
+  /** Hide Preview/Code toolbar (e.g. brand template HTML preview). */
+  hideToolbar?: boolean
 }
 
 function measureIframeContentHeight(doc: Document, minHeight: number): number {
@@ -53,6 +55,7 @@ export function ArtifactHtmlDocumentView({
   className,
   onChange,
   variant = "document",
+  hideToolbar = false,
 }: ArtifactHtmlDocumentViewProps) {
   const isPreviewCard = variant === "preview"
   const [mode, setMode] = useState<"preview" | "code">("preview")
@@ -154,8 +157,8 @@ export function ArtifactHtmlDocumentView({
     }
   }, [srcDoc, scheduleResize])
 
-  const showToolbar = !isPreviewCard
-  const showPreview = mode === "preview" || isPreviewCard
+  const showToolbar = !isPreviewCard && !hideToolbar
+  const showPreview = mode === "preview" || isPreviewCard || hideToolbar
 
   return (
     <div className={cn("flex min-w-0 flex-col", showToolbar && "gap-2", className)}>
@@ -239,12 +242,14 @@ export function ArtifactHtmlDocumentFromArtifact({
   className,
   onChange,
   variant = "document",
+  hideToolbar = false,
 }: {
   artifact: Parameters<typeof extractRawArtifactHtml>[0]
   readOnly?: boolean
   className?: string
   onChange?: (nextHtml: string) => void
   variant?: ArtifactHtmlDocumentVariant
+  hideToolbar?: boolean
 }) {
   const html = extractRawArtifactHtml(artifact)
   return (
@@ -254,6 +259,7 @@ export function ArtifactHtmlDocumentFromArtifact({
       className={className}
       onChange={onChange}
       variant={variant}
+      hideToolbar={hideToolbar}
     />
   )
 }

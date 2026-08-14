@@ -44,6 +44,10 @@ type LeftPaneTabBarProps = {
     fromPane: WorkspacePaneId,
     meta?: { title?: string; beforeKey?: string | null },
   ) => void
+  onReorderTab?: (
+    tabKey: string,
+    meta?: { title?: string; beforeKey?: string | null },
+  ) => void
   pathname?: string
   searchValue?: string
   onSearchChange?: (value: string) => void
@@ -68,6 +72,7 @@ export function LeftPaneTabBar({
   onOpenMiddlePane,
   onOpenActiveInOtherPane,
   onDropTabFromOtherPane,
+  onReorderTab,
   pathname,
   searchValue = "",
   onSearchChange,
@@ -85,7 +90,7 @@ export function LeftPaneTabBar({
   return (
     <div className={`${AI_PANE_TAB_ROW_CLASS} shrink-0`}>
       <div className="flex min-h-0 min-w-0 flex-1 items-stretch">
-        {tabs.length > 0 || onDropTabFromOtherPane ? (
+        {tabs.length > 0 || onDropTabFromOtherPane || onReorderTab ? (
           <PaneTabStrip
             tabs={tabs}
             activeKey={activeKey}
@@ -96,6 +101,11 @@ export function LeftPaneTabBar({
             onDropTabFromOtherPane={
               onDropTabFromOtherPane
                 ? (tabKey, fromPane, meta) => onDropTabFromOtherPane(tabKey, fromPane, meta)
+                : undefined
+            }
+            onReorderTab={
+              onReorderTab
+                ? (tabKey, meta) => onReorderTab(tabKey, meta)
                 : undefined
             }
           />

@@ -46,7 +46,7 @@ type PaneTabStripProps = {
   className?: string
   /** Notified when the multi-selection set changes (for overflow menus, etc.). */
   onSelectionChange?: (keys: string[]) => void
-  /** Pane that owns this strip — enables cross-pane drag-and-drop. */
+  /** Pane that owns this strip — enables drag-and-drop. */
   paneId?: WorkspacePaneId
   /** Drop a tab that was dragged from another pane (optional insert position). */
   onDropTabFromOtherPane?: (
@@ -54,6 +54,8 @@ type PaneTabStripProps = {
     fromPane: WorkspacePaneId,
     meta?: PaneTabDropMeta,
   ) => void
+  /** Reorder a tab within this pane (same-pane drag). */
+  onReorderTab?: (tabKey: string, meta: PaneTabDropMeta) => void
 }
 
 const WORKSPACE_TAB_DND_MIME = "application/x-articulate-workspace-tab"
@@ -122,7 +124,7 @@ function DropInsertLine() {
 /**
  * Horizontal tab strip matching the AI pane chrome (scrollable, close on each tab).
  * Supports Chrome-like Shift-range and ⌘/Ctrl toggle multi-select for bulk close.
- * Optional cross-pane drag-and-drop when `paneId` + `onDropTabFromOtherPane` are set.
+ * Drag-and-drop: cross-pane move (`onDropTabFromOtherPane`) and same-pane reorder (`onReorderTab`).
  */
 export function PaneTabStrip({
   tabs,
@@ -133,6 +135,7 @@ export function PaneTabStrip({
   onSelectionChange,
   paneId,
   onDropTabFromOtherPane,
+  onReorderTab,
 }: PaneTabStripProps) {
   const scrollRef = useRef<HTMLDivElement>(null)
   const anchorKeyRef = useRef<string | null>(activeKey)
@@ -215,12 +218,12 @@ export function PaneTabStrip({
     active?.scrollIntoView({ block: "nearest", inline: "nearest" })
   }, [activeKey, tabs.length])
 
-  if (tabs.length === 0 && !onDropTabFromOtherPane) return null
+  if (tabs.length === 0 && !onDropTabFromOtherPane && !onReorderTab) return null
 
   const selectedSet = new Set(selectedKeys)
   const isMultiSelected = selectedKeys.length > 1
-  const canDrag = Boolean(paneId)
-  const canAcceptDrop = Boolean(paneId && onDropTabFromOtherPane)
+  const canDrag = Boolean(paneId && (onDropTabFromOtherPane || onReorderTab))
+  const canAcceptDrop = Boolean(paneId && (onDropTabFromOtherPane || onReorderTab))
 
   const clearDropIndicator = () => setDropInsertIndex(null)
 
@@ -276,7 +279,7 @@ export function PaneTabStrip({
     event.dataTransfer.effectAllowed = "move"
   }
 
-  const acceptCrossPaneDrag = (event: ReactDragEvent) => {
+  const acceptTabDrag = (event: ReactDragEvent) => {
     if (!canAcceptDrop || !isWorkspaceTabDrag(event)) return false
     event.preventDefault()
     event.dataTransfer.dropEffect = "move"
@@ -284,7 +287,7 @@ export function PaneTabStrip({
   }
 
   const handleStripDragOver = (event: ReactDragEvent) => {
-    if (!acceptCrossPaneDrag(event)) return
+    if (!acceptTabDrag(event)) return
     // Empty strip / trailing filler — append.
     if (tabs.length === 0) {
       setDropInsertIndex(0)
@@ -294,7 +297,7 @@ export function PaneTabStrip({
   }
 
   const handleTabDragOver = (tabIndex: number, event: ReactDragEvent) => {
-    if (!acceptCrossPaneDrag(event)) return
+    if (!acceptTabDrag(event)) return
     event.stopPropagation()
     setDropInsertIndex(insertIndexForTabPointer(event, tabIndex))
   }
@@ -309,12 +312,30 @@ export function PaneTabStrip({
   const handleDrop = (event: ReactDragEvent) => {
     const insertIndex = dropInsertIndex
     clearDropIndicator()
-    if (!paneId || !onDropTabFromOtherPane) return
+    if (!paneId) return
     event.preventDefault()
     event.stopPropagation()
     const payload = readWorkspaceTabDragPayload(event)
-    if (!payload || payload.pane === paneId) return
+    if (!payload) return
+
     const index = insertIndex ?? tabs.length
+    // Same-pane no-op: dropping onto the slot immediately before/after self.
+    if (payload.pane === paneId) {
+      if (!onReorderTab) return
+      const fromIndex = tabs.findIndex((tab) => tab.key === payload.key)
+      if (fromIndex >= 0 && (index === fromIndex || index === fromIndex + 1)) return
+      const beforeKey = index >= tabs.length ? null : tabs[index]?.key ?? null
+      // If beforeKey is the dragged tab itself, use the next tab after removal.
+      const resolvedBefore =
+        beforeKey === payload.key ? (tabs[index + 1]?.key ?? null) : beforeKey
+      onReorderTab(payload.key, {
+        title: payload.title,
+        beforeKey: resolvedBefore,
+      })
+      return
+    }
+
+    if (!onDropTabFromOtherPane) return
     const beforeKey = index >= tabs.length ? null : tabs[index]?.key ?? null
     onDropTabFromOtherPane(payload.key, payload.pane, {
       title: payload.title,

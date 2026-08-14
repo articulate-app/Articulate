@@ -1,7 +1,7 @@
 "use client"
 
 import { useState, type ReactNode } from "react"
-import { AtSign, Bot, FileText, FolderKanban, ListTodo, Search, User, Users } from "lucide-react"
+import { AtSign, Bot, FileText, Folder, FolderKanban, ListTodo, Search, User, Users } from "lucide-react"
 import type { LucideIcon } from "lucide-react"
 import { UserAvatar } from "@/components/UserAvatar"
 import { cn, formatCompactDateDisplay } from "@/lib/utils"
@@ -238,34 +238,23 @@ export function LeftVisual({
     return <UserAvatar name={label} photoUrl={imageFailed ? null : photoUrl} size="xs" />
   }
 
-  // Projects: logo, else a small color dot (same footprint as logo/avatar).
+  // Projects: folder icon tinted with project color (bordered square, no logos).
   if (isProject) {
-    if (logoUrl && !imageFailed) {
-      return (
-        <span
-          title={label}
-          className={cn(
-            boxClass,
-            radiusClass,
-            "inline-flex shrink-0 items-center justify-center overflow-hidden border border-gray-200 bg-white",
-          )}
-        >
-          {/* eslint-disable-next-line @next/next/no-img-element */}
-          <img
-            src={logoUrl}
-            alt=""
-            onError={() => setImageFailed(true)}
-            className="h-full w-full object-cover"
-          />
-        </span>
-      )
-    }
+    const folderColor = color || "#9ca3af"
     return (
-      <span title={label} className={cn("inline-flex shrink-0 items-center justify-center", boxClass)}>
-        <span
-          className={cn("rounded-full", compact ? "h-1.5 w-1.5" : "h-2 w-2")}
-          style={{ backgroundColor: color || "#d1d5db" }}
-          aria-hidden="true"
+      <span
+        title={label}
+        className={cn(
+          boxClass,
+          radiusClass,
+          "inline-flex shrink-0 items-center justify-center border border-gray-200 bg-white",
+        )}
+      >
+        <Folder
+          className={cn(compact ? "h-3 w-3" : "h-4 w-4")}
+          style={{ color: folderColor }}
+          strokeWidth={1.75}
+          aria-hidden
         />
       </span>
     )
@@ -522,32 +511,23 @@ export function SearchResultRow({
         type="button"
         onClick={() => onSelect(item)}
         className={cn(
-          "relative flex h-10 w-full items-center gap-3 px-3 text-left transition hover:bg-gray-50",
-          isUnread && "bg-blue-50/70 hover:bg-blue-50",
+          "relative flex h-10 w-full items-center px-3 text-left transition hover:bg-gray-50",
+          isAiThread ? "gap-4" : "gap-3",
           className,
         )}
       >
-        {isUnread ? (
-          <span
-            className="absolute inset-y-2 left-0 w-0.5 rounded-full bg-blue-500"
-            aria-hidden="true"
-          />
-        ) : null}
         {previewLeft}
         <div className="min-w-0 flex-1">
-          <div className="flex min-w-0 items-center gap-2">
-            <div
-              className={cn(
-                "min-w-0 flex-1 truncate text-sm text-gray-900",
-                isUnread ? "font-medium" : "font-normal",
-              )}
-            >
+          <div className={cn("flex min-w-0 items-center", isAiThread ? "gap-4" : "gap-2")}>
+            <div className="min-w-0 flex-1 truncate text-sm font-normal text-gray-900">
               {previewTitle}
             </div>
             {isUnread ? (
-              <span className="shrink-0 rounded-full bg-blue-500 px-1.5 py-0.5 text-[10px] font-medium leading-none text-white">
-                New
-              </span>
+              <span
+                className="h-2 w-2 shrink-0 rounded-full bg-blue-500"
+                aria-label="Unread"
+                title="Unread"
+              />
             ) : null}
             {isTask && taskDateLabel ? (
               <span
@@ -563,7 +543,9 @@ export function SearchResultRow({
               <div className="shrink-0 whitespace-nowrap text-xs font-normal text-gray-500">{mentionDateLabel}</div>
             ) : null}
             {isAiThread && aiDateLabel ? (
-              <span className="shrink-0 whitespace-nowrap text-xs font-normal text-gray-500">{aiDateLabel}</span>
+              <span className="w-14 shrink-0 truncate text-right text-xs font-normal text-gray-500">
+                {aiDateLabel}
+              </span>
             ) : null}
           </div>
         </div>
@@ -614,17 +596,11 @@ export function SearchResultRow({
       type="button"
       onClick={() => onSelect(item)}
       className={cn(
-        "relative flex h-8 w-full items-center gap-2 px-3 text-left transition hover:bg-gray-50",
-        isUnread && "bg-blue-50/70 hover:bg-blue-50",
+        "relative flex h-8 w-full items-center px-3 text-left transition hover:bg-gray-50",
+        isAiThread ? "gap-4" : "gap-2",
         className,
       )}
     >
-      {isUnread ? (
-        <span
-          className="absolute inset-y-1.5 left-0 w-0.5 rounded-full bg-blue-500"
-          aria-hidden="true"
-        />
-      ) : null}
       {isMention ? (
         <div className="shrink-0">
           <UserAvatar
@@ -648,23 +624,20 @@ export function SearchResultRow({
       ) : null}
       <div className="min-w-0 flex-1">
         <div className="flex min-w-0 items-center gap-2">
-          <div
-            className={cn(
-              "truncate text-xs text-gray-900",
-              isUnread ? "font-medium" : "font-normal",
-            )}
-          >
+          <div className="min-w-0 flex-1 truncate text-sm font-normal text-gray-900">
             {previewTitle}
           </div>
-          {isUnread ? (
-            <span className="shrink-0 rounded-full bg-blue-500 px-1.5 py-0.5 text-[10px] font-medium leading-none text-white">
-              New
-            </span>
-          ) : null}
           {mentionDateLabel ? (
-            <div className="shrink-0 whitespace-nowrap text-[11px] font-normal text-gray-500">
+            <div className="shrink-0 whitespace-nowrap pl-2 text-sm font-normal text-gray-500">
               {mentionDateLabel}
             </div>
+          ) : null}
+          {isUnread ? (
+            <span
+              className="h-2 w-2 shrink-0 rounded-full bg-blue-500"
+              aria-label="Unread"
+              title="Unread"
+            />
           ) : null}
         </div>
         {showSubtitle && previewSubtitle ? (
@@ -682,7 +655,9 @@ export function SearchResultRow({
           <AvatarStack payload={payload} raw={item.raw} max={isProject || isAiThread ? 5 : 3} />
         ) : null}
         {isAiThread && aiDateLabel ? (
-          <span className="whitespace-nowrap text-[11px] font-normal text-gray-500">{aiDateLabel}</span>
+          <span className="w-14 shrink-0 truncate text-right text-sm font-normal text-gray-500">
+            {aiDateLabel}
+          </span>
         ) : null}
       </div>
     </button>

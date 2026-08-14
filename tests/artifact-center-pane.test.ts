@@ -82,6 +82,7 @@ describe("app://artifact links", () => {
     })
     expect(openUrl).toContain("centerArtifactId=11111111-1111-4111-8111-111111111111")
     expect(openUrl).toContain("version=2")
+    expect(openUrl).toContain("layout=left%2Cmiddle")
 
     const downloadUrl = buildNextUrlForEntityLink({
       currentPathname: "/",
@@ -95,6 +96,49 @@ describe("app://artifact links", () => {
       },
     })
     expect(downloadUrl).toBeNull()
+  })
+
+  it("keeps left pane and opens middle when opening artifact from AI chat", () => {
+    const openUrl = buildNextUrlForEntityLink({
+      currentPathname: "/",
+      currentSearchParams: new URLSearchParams(
+        "layout=left,right&taskAiOpen=true&rightView=ai&aiThreadId=thread-a&leftPaneView=ai-thread-list",
+      ),
+      parsedLink: {
+        type: "artifact",
+        id: "11111111-1111-4111-8111-111111111111",
+      },
+      fromAiChat: true,
+    })
+    expect(openUrl).toContain("centerArtifactId=11111111-1111-4111-8111-111111111111")
+    expect(openUrl).toContain("rightView=ai")
+    expect(openUrl).toContain("taskAiOpen=true")
+    expect(openUrl).toContain("leftPaneView=ai-thread-list")
+    const params = new URLSearchParams(openUrl!.split("?")[1] ?? "")
+    const layout = (params.get("layout") || "").split(",")
+    expect(layout).toContain("left")
+    expect(layout).toContain("middle")
+    expect(layout).toContain("right")
+    expect(params.get("layout")).not.toBe("right")
+  })
+
+  it("expands solo-right AI layout to middle,right when opening an artifact", () => {
+    const openUrl = buildNextUrlForEntityLink({
+      currentPathname: "/",
+      currentSearchParams: new URLSearchParams(
+        "layout=right&taskAiOpen=true&rightView=ai&aiFocus=true&aiThreadId=thread-a",
+      ),
+      parsedLink: {
+        type: "artifact",
+        id: "11111111-1111-4111-8111-111111111111",
+      },
+      fromAiChat: true,
+    })
+    const params = new URLSearchParams(openUrl!.split("?")[1] ?? "")
+    expect(params.get("layout")).toBe("middle,right")
+    expect(params.get("aiFocus")).toBeNull()
+    expect(params.get("rightView")).toBe("ai")
+    expect(params.get("centerArtifactId")).toBe("11111111-1111-4111-8111-111111111111")
   })
 })
 

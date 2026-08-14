@@ -31,10 +31,9 @@ import {
   getStablePaletteClass,
   getTaskColorKey,
   getTaskColorLabel,
-  getTaskListRowAccentColor,
 } from '@/lib/task-card-colors'
 import { TaskGroupHeaderLabel } from './task-list-visuals'
-import { TaskGroupHeaderActions } from './task-group-header-actions'
+import { TaskRowActionsMenu, type TaskRowProjectOption } from './task-row-actions-menu'
 import { supportsTaskGroupDragDrop, normalizeCanonicalGroupKey, toBackendGroupKey, GROUP_KEY_NO_DATE, GROUP_KEY_NO_PROJECT, GROUP_KEY_UNASSIGNED } from '@/lib/task-grouping-drop-config'
 import {
   DraggableTaskRow,
@@ -62,6 +61,12 @@ interface UnifiedGroupedTaskListProps<T> {
   isMultiselectMode?: boolean
   selectedTasks?: Set<number>
   onTaskToggle?: (taskId: number) => void
+  /** Always show outside checkbox on hover (directory style); when false, only in multiselect mode. */
+  showOutsideSelectionControls?: boolean
+  onRenameTask?: (task: Record<string, unknown>) => void
+  onDeleteTask?: (task: Record<string, unknown>) => void
+  onChangeTaskProject?: (task: Record<string, unknown>, projectId: string) => void
+  projectOptions?: TaskRowProjectOption[]
   listColorMode?: TaskCardColorMode | null
   onListColorLegendChange?: (
     entries: { key: string; label: string; colorClass: string }[],
@@ -92,7 +97,7 @@ type GroupHeader = { group_key: string; label: string; task_count?: number }
 
 const INITIAL_BOOTSTRAP_GROUP_LIMIT = 8
 const DEBUG_GROUPED_TASKS = false
-const VIRTUAL_ROW_ESTIMATE_PX = 36
+const VIRTUAL_ROW_ESTIMATE_PX = 52
 const VIRTUAL_OVERSCAN = 20
 const FETCH_AHEAD_ROWS = 30
 const SUGGESTIONS_GROUP_KEY = '__suggestions__'
@@ -146,24 +151,57 @@ function renderTaskRowInsertDropEdges(args: {
 function renderFirstTaskCellContent({
   task,
   groupKey,
-  listAccentColor,
   children,
+  showOutsideControls = false,
+  isChecked = false,
+  showCheckbox = false,
+  onToggleChecked,
 }: {
   task: Record<string, unknown>
   groupKey: string
-  listAccentColor: string | null
   children: React.ReactNode
+  /** Grip (+ optional checkbox) sit left of the table content alignment. */
+  showOutsideControls?: boolean
+  isChecked?: boolean
+  showCheckbox?: boolean
+  onToggleChecked?: () => void
 }) {
+  if (showOutsideControls) {
+    return (
+      <div className="relative flex min-w-0 items-center">
+        <div
+          className={cn(
+            'absolute right-full top-1/2 z-30 flex -translate-y-1/2 items-center gap-2 pr-1.5',
+            // Stay visible when checked; otherwise only on row hover.
+            isChecked ? 'opacity-100' : 'opacity-0 group-hover/task-row:opacity-100',
+          )}
+        >
+          {showCheckbox ? (
+            <input
+              type="checkbox"
+              checked={isChecked}
+              aria-label="Select task"
+              className="h-4 w-4 shrink-0 rounded border-gray-300 text-gray-900 focus:ring-gray-400"
+              onClick={(e) => e.stopPropagation()}
+              onChange={(e) => {
+                e.stopPropagation()
+                onToggleChecked?.()
+              }}
+            />
+          ) : null}
+          <TaskDragHandle
+            task={task}
+            sourceGroupKey={groupKey}
+            className="opacity-100"
+          />
+        </div>
+        <div className="min-w-0 flex-1 truncate">{children}</div>
+      </div>
+    )
+  }
   return (
     <div className="flex min-w-0 items-center gap-1">
       <TaskDragHandle task={task} sourceGroupKey={groupKey} />
-      {listAccentColor ? (
-        <span
-          aria-hidden
-          className="w-1.5 shrink-0 self-stretch rounded-sm"
-          style={{ backgroundColor: listAccentColor }}
-        />
-      ) : null}
       <div className="min-w-0 flex-1 truncate">{children}</div>
     </div>
   )
@@ -395,6 +433,11 @@ export function UnifiedGroupedTaskList<T>({
   isMultiselectMode,
   selectedTasks,
   onTaskToggle,
+  showOutsideSelectionControls = true,
+  onRenameTask,
+  onDeleteTask,
+  onChangeTaskProject,
+  projectOptions = [],
   listColorMode = null,
   onListColorLegendChange,
   compact = false,
@@ -832,9 +875,15 @@ export function UnifiedGroupedTaskList<T>({
   const scrollRootRef = useRef<HTMLElement | null>(null)
 
   useEffect(() => {
-    const el = document.querySelector('[data-task-scroll-container]') as HTMLElement | null
-    setScrollEl(el)
-    scrollRootRef.current = el
+    const find = () => {
+      const el = document.querySelector('[data-task-scroll-container]') as HTMLElement | null
+      setScrollEl(el)
+      scrollRootRef.current = el
+      return el
+    }
+    if (find()) return
+    const t = window.setTimeout(find, 0)
+    return () => window.clearTimeout(t)
   }, [])
 
   const toggleGroup = React.useCallback(
@@ -975,10 +1024,8 @@ export function UnifiedGroupedTaskList<T>({
         plannerVisibility.showSuggestions ? suggestionsByGroupKey.get(String(groupKey)) ?? [] : []
       const optimisticForGroupPreview =
         plannerVisibility.showTasks ? optimisticTasksByGroupKey.get(String(groupKey)) ?? [] : []
-      const loadedCount =
-        rowsForGroupPreview.length + suggestionsForGroupPreview.length + optimisticForGroupPreview.length
       const displayTaskCount =
-        typeof group.task_count === 'number' ? group.task_count : loadedCount > 0 ? loadedCount : undefined
+        typeof group.task_count === 'number' ? group.task_count : undefined
 
       if (!isUngroupedSingleAll) {
         result.push({
@@ -1401,7 +1448,7 @@ export function UnifiedGroupedTaskList<T>({
 
         if (item.type === 'group') {
           if (compact) {
-            // Compact mode shows a sticky table header (36px); group headers sit just below it.
+            // Compact mode: directory-style section labels (AI chats / templates).
             return (
               <GroupDropZone
                 key={key}
@@ -1412,13 +1459,10 @@ export function UnifiedGroupedTaskList<T>({
                 measureRef={rowVirtualizer.measureElement}
                 dataIndex={vRow.index}
                 dataRowType="group"
-                className={cn(
-                  "task-row group-header bg-white sticky z-10",
-                  compact ? "top-0" : "top-9 border-b border-gray-200",
-                )}
+                className="task-row group-header sticky top-0 z-10 bg-white/95 backdrop-blur-sm"
                 style={{ gridTemplateColumns }}
               >
-                <td className={cn("task-cell task-cell-span-full task-group-label bg-white px-3", compact ? "py-1.5" : "pb-1.5 pt-5")}>
+                <td className="task-cell task-cell-span-full task-group-label bg-transparent px-1 pb-1.5 pt-6">
                   <div className="flex w-full items-center gap-2">
                     <button
                       type="button"
@@ -1427,26 +1471,28 @@ export function UnifiedGroupedTaskList<T>({
                         e.stopPropagation()
                         toggleGroup(item.groupKey)
                       }}
-                      className="flex min-w-0 flex-1 items-center gap-2 text-left"
+                      className="inline-flex min-w-0 max-w-full items-center gap-1.5 text-left"
                     >
                       {item.isExpanded ? (
-                        <ChevronDown className="w-4 h-4 text-muted-foreground shrink-0" />
+                        <ChevronDown className="h-4 w-4 shrink-0 text-gray-400" />
                       ) : (
-                        <ChevronRight className="w-4 h-4 text-muted-foreground shrink-0" />
+                        <ChevronRight className="h-4 w-4 shrink-0 text-gray-400" />
                       )}
-                      <TaskGroupHeaderLabel
-                        groupBy={effectiveGroupBy}
-                        groupKey={item.groupKey}
-                        label={item.label}
-                        editFields={editFields}
-                      />
+                      <span className="min-w-0 truncate text-sm font-normal text-gray-500">
+                        <TaskGroupHeaderLabel
+                          groupBy={effectiveGroupBy}
+                          groupKey={item.groupKey}
+                          label={item.label}
+                          editFields={editFields}
+                          directoryStyle
+                        />
+                      </span>
                       {typeof item.taskCount === 'number' ? (
-                        <span className="shrink-0 text-xs font-normal tabular-nums text-gray-500">
+                        <span className="shrink-0 text-xs font-normal tabular-nums text-gray-400">
                           {item.taskCount}
                         </span>
                       ) : null}
                     </button>
-                    <TaskGroupHeaderActions />
                   </div>
                 </td>
               </GroupDropZone>
@@ -1464,20 +1510,17 @@ export function UnifiedGroupedTaskList<T>({
               measureRef={rowVirtualizer.measureElement}
               dataIndex={vRow.index}
               dataRowType="group"
-              className={cn(
-                "task-row group-header bg-white sticky z-10",
-                compact ? "top-0" : "top-9 border-b border-gray-200",
-              )}
+              className="task-row group-header sticky top-10 z-10 bg-white/95 backdrop-blur-sm"
               style={{ gridTemplateColumns }}
             >
               {/* Empty cells for columns before title (e.g. select) */}
               {titleColIndex > 0 &&
                 Array.from({ length: titleColIndex }).map((_, i) => (
-                  <td key={`group-pad-${i}`} className="task-cell bg-white border-r border-gray-100 p-0" />
+                  <td key={`group-pad-${i}`} className="task-cell bg-transparent p-0" />
                 ))}
               {/* Title column: group label, sticky-left like Title */}
               <td
-                className="task-cell task-cell--sticky task-group-label border-r border-gray-100 bg-white px-3 pb-1.5 pt-5"
+                className="task-cell task-cell--sticky task-group-label bg-transparent px-3 pb-1.5 pt-6"
                 data-col="title"
               >
                 <div className="flex w-full items-center gap-2">
@@ -1488,31 +1531,33 @@ export function UnifiedGroupedTaskList<T>({
                       e.stopPropagation()
                       toggleGroup(item.groupKey)
                     }}
-                    className="flex min-w-0 flex-1 items-center gap-2 text-left"
+                    className="inline-flex min-w-0 max-w-full items-center gap-1.5 text-left"
                   >
                     {item.isExpanded ? (
-                      <ChevronDown className="w-4 h-4 text-muted-foreground shrink-0" />
+                      <ChevronDown className="h-4 w-4 shrink-0 text-gray-400" />
                     ) : (
-                      <ChevronRight className="w-4 h-4 text-muted-foreground shrink-0" />
+                      <ChevronRight className="h-4 w-4 shrink-0 text-gray-400" />
                     )}
-                    <TaskGroupHeaderLabel
-                      groupBy={effectiveGroupBy}
-                      groupKey={item.groupKey}
-                      label={item.label}
-                      editFields={editFields}
-                    />
+                    <span className="min-w-0 truncate text-sm font-normal text-gray-500">
+                      <TaskGroupHeaderLabel
+                        groupBy={effectiveGroupBy}
+                        groupKey={item.groupKey}
+                        label={item.label}
+                        editFields={editFields}
+                        directoryStyle
+                      />
+                    </span>
                     {typeof item.taskCount === 'number' ? (
-                      <span className="shrink-0 text-xs font-normal tabular-nums text-gray-500">
+                      <span className="shrink-0 text-xs font-normal tabular-nums text-gray-400">
                         {item.taskCount}
                       </span>
                     ) : null}
                   </button>
-                  <TaskGroupHeaderActions />
                 </div>
               </td>
               {/* Span rest of row */}
               <td
-                className="task-cell task-cell-span-rest bg-white"
+                className="task-cell task-cell-span-rest bg-transparent"
                 style={{ gridColumn: `${titleCol1Based + 1} / -1` }}
               />
             </GroupDropZone>
@@ -1638,12 +1683,12 @@ export function UnifiedGroupedTaskList<T>({
               insertDropEdges={insertDropEdges}
               className={cn(
                 'task-row hover:bg-gray-50 cursor-pointer',
-                !compact && 'border-b',
+                !compact && 'border-b border-gray-100',
                 (isSelectedCompact || isCompactChecked) && 'bg-gray-100',
               )}
               style={{ gridTemplateColumns }}
             >
-              <td className="task-cell task-cell-span-full px-3 py-1">
+              <td className="task-cell task-cell-span-full px-4 py-1.5">
                 <CompactEditableRowContent
                   task={task}
                   columns={columns}
@@ -1668,6 +1713,8 @@ export function UnifiedGroupedTaskList<T>({
           if (target?.closest?.('[data-inline-editor]')) return
           if (target?.closest?.('[data-editable-cell]')) return
           if (target?.closest?.('button[aria-label="Drag task to another group"]')) return
+          if (target?.closest?.('button[aria-label="Task actions"]')) return
+          if (target?.closest?.('input[type="checkbox"]')) return
           onTaskSelect?.(task)
         }
         const insertDropEdges = renderTaskRowInsertDropEdges({
@@ -1680,10 +1727,70 @@ export function UnifiedGroupedTaskList<T>({
           (task as any).board_item_id ?? `${String((task as any).entity_type)}:${String((task as any).entity_id)}`,
         )
         const tableRow = table.getRow(rowId)
-        const listAccentColor =
-          listColorMode
-            ? getTaskListRowAccentColor(task, listColorMode)
-            : null
+        const taskNumericId = Number((task as any)?.id ?? (task as any)?.entity_id)
+        const isSuggestionRow = (task as any)?.kind === 'suggestion'
+        const isChecked =
+          !isSuggestionRow &&
+          Number.isFinite(taskNumericId) &&
+          !!selectedTasks?.has?.(taskNumericId)
+        const showOutsideCheckbox =
+          showOutsideSelectionControls && !isSuggestionRow && !!onTaskToggle
+        const rowActions =
+          !compact && !isSuggestionRow ? (
+            <TaskRowActionsMenu
+              projects={projectOptions}
+              currentProjectId={(task as any)?.project_id_int ?? null}
+              onRename={() => onRenameTask?.(task as Record<string, unknown>)}
+              onChangeProject={(projectId) =>
+                onChangeTaskProject?.(task as Record<string, unknown>, projectId)
+              }
+              onDelete={() => onDeleteTask?.(task as Record<string, unknown>)}
+            />
+          ) : null
+
+        const renderTaskCells = (
+          ordered: {
+            key: string
+            colId: string
+            isSpacer: boolean
+            isLastReal: boolean
+            content: React.ReactNode
+          }[],
+        ) =>
+          ordered.map((entry) => (
+            <td
+              key={entry.key}
+              data-col={entry.colId}
+              className={cn(
+                'task-cell text-[15px] align-middle',
+                !compact && 'border-b border-gray-100',
+                entry.colId !== 'project_statuses' && 'truncate',
+                entry.isSpacer && 'task-spacer-cell relative p-0 overflow-visible',
+                !entry.isSpacer && 'px-3 py-2',
+                entry.colId === 'title' && 'task-cell--sticky overflow-visible',
+              )}
+            >
+              {entry.isSpacer ? (
+                rowActions ? (
+                  <div className="pointer-events-none absolute inset-y-0 right-0 z-20 flex items-center pr-1">
+                    <div className="pointer-events-auto">{rowActions}</div>
+                  </div>
+                ) : null
+              ) : entry.colId === 'title' ? (
+                renderFirstTaskCellContent({
+                  task: task as Record<string, unknown>,
+                  groupKey: item.groupKey,
+                  showOutsideControls: true,
+                  isChecked,
+                  showCheckbox: showOutsideCheckbox,
+                  onToggleChecked: () => onTaskToggle?.(taskNumericId),
+                  children: entry.content,
+                })
+              ) : (
+                entry.content
+              )}
+            </td>
+          ))
 
         if (!tableRow) {
           return (
@@ -1696,10 +1803,11 @@ export function UnifiedGroupedTaskList<T>({
               insertDropEdges={insertDropEdges}
               className={cn(
                 'task-row hover:bg-gray-50 cursor-pointer',
-                !compact && 'border-b',
-                selectedTaskId &&
+                !compact && 'border-b border-gray-100',
+                ((selectedTaskId &&
                   selectedEntityType === String((task as any).entity_type) &&
-                  String(selectedTaskId) === String((task as any).entity_id) &&
+                  String(selectedTaskId) === String((task as any).entity_id)) ||
+                  isChecked) &&
                   'bg-gray-100',
               )}
               style={{ gridTemplateColumns }}
@@ -1708,46 +1816,23 @@ export function UnifiedGroupedTaskList<T>({
                 const realCols = (columns as any[]).filter(c => (c.id ?? c.accessorKey) !== '__spacer')
                 const spacerCols = (columns as any[]).filter(c => (c.id ?? c.accessorKey) === '__spacer')
                 const orderedCols = [...realCols, ...spacerCols]
-                return orderedCols.map((col, colIndex) => {
-                  const colId = col.id ?? col.accessorKey
-                  const isSpacer = colId === '__spacer'
-                  const isLastRealBeforeSpacer = !isSpacer && spacerCols.length > 0 && colIndex === realCols.length - 1
-                  const isFirstDataCell = !isSpacer && colIndex === 0
-                  return (
-                    <td
-                      key={colId ?? colIndex}
-                      data-col={colId}
-                      className={cn(
-                        'task-cell text-sm align-middle',
-                        !compact && 'border-b',
-                        colId !== 'project_statuses' && 'truncate',
-                        isSpacer && 'task-spacer-cell p-0 border-transparent',
-                        !isSpacer && 'px-3 py-1',
-                        !isSpacer && !isLastRealBeforeSpacer && 'border-r border-gray-100',
-                        colId === 'title' && 'task-cell--sticky',
-                      )}
-                    >
-                      {!isSpacer && isFirstDataCell
-                        ? renderFirstTaskCellContent({
-                            task: task as Record<string, unknown>,
-                            groupKey: item.groupKey,
-                            listAccentColor: listAccentColor ?? null,
-                            children: flexRender(col.cell || col.accessorKey, {
-                              getValue: () => (task as any)[col.accessorKey],
-                              row: { original: task },
-                              column: col,
-                            }),
-                          })
-                        : !isSpacer
-                          ? flexRender(col.cell || col.accessorKey, {
-                              getValue: () => (task as any)[col.accessorKey],
-                              row: { original: task },
-                              column: col,
-                            })
-                          : null}
-                    </td>
-                  )
-                })
+                return renderTaskCells(
+                  orderedCols.map((col, colIndex) => {
+                    const colId = String(col.id ?? col.accessorKey ?? colIndex)
+                    const isSpacer = colId === '__spacer'
+                    return {
+                      key: colId,
+                      colId,
+                      isSpacer,
+                      isLastReal: !isSpacer && colIndex === realCols.length - 1,
+                      content: flexRender(col.cell || col.accessorKey, {
+                        getValue: () => (task as any)[col.accessorKey],
+                        row: { original: task },
+                        column: col,
+                      }),
+                    }
+                  }),
+                )
               })()}
             </DraggableTaskRow>
           )
@@ -1770,8 +1855,8 @@ export function UnifiedGroupedTaskList<T>({
             insertDropEdges={insertDropEdges}
             className={cn(
               'task-row hover:bg-gray-50 cursor-pointer',
-              !compact && 'border-b',
-              isSelected && 'bg-gray-100',
+              !compact && 'border-b border-gray-100',
+              (isSelected || isChecked) && 'bg-gray-100',
             )}
             style={{ gridTemplateColumns }}
           >
@@ -1780,37 +1865,18 @@ export function UnifiedGroupedTaskList<T>({
               const realCells = cells.filter(c => c.column.id !== '__spacer')
               const spacerCells = cells.filter(c => c.column.id === '__spacer')
               const orderedCells = [...realCells, ...spacerCells]
-              return orderedCells.map((cell, cellIdx) => {
-                const isSpacer = cell.column.id === '__spacer'
-                const isLastRealBeforeSpacer = !isSpacer && spacerCells.length > 0 && cellIdx === realCells.length - 1
-                const isFirstDataCell = !isSpacer && cellIdx === 0
-                return (
-                  <td
-                    key={cell.id}
-                    data-col={cell.column.id}
-                    className={cn(
-                      'task-cell text-sm align-middle',
-                      !compact && 'border-b',
-                      cell.column.id !== 'project_statuses' && 'truncate',
-                      isSpacer && 'task-spacer-cell p-0 border-transparent',
-                      !isSpacer && 'px-3 py-1',
-                      !isSpacer && !isLastRealBeforeSpacer && 'border-r border-gray-100',
-                      cell.column.id === 'title' && 'task-cell--sticky',
-                    )}
-                  >
-                    {!isSpacer && isFirstDataCell
-                      ? renderFirstTaskCellContent({
-                          task: task as Record<string, unknown>,
-                          groupKey: item.groupKey,
-                          listAccentColor: listAccentColor ?? null,
-                          children: flexRender(cell.column.columnDef.cell, cell.getContext()),
-                        })
-                      : !isSpacer
-                        ? flexRender(cell.column.columnDef.cell, cell.getContext())
-                        : null}
-                  </td>
-                )
-              })
+              return renderTaskCells(
+                orderedCells.map((cell, cellIdx) => {
+                  const isSpacer = cell.column.id === '__spacer'
+                  return {
+                    key: cell.id,
+                    colId: cell.column.id,
+                    isSpacer,
+                    isLastReal: !isSpacer && cellIdx === realCells.length - 1,
+                    content: flexRender(cell.column.columnDef.cell, cell.getContext()),
+                  }
+                }),
+              )
             })()}
           </DraggableTaskRow>
         )
