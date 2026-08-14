@@ -1,0 +1,110 @@
+name: Desktop Release
+
+# Builds, signs, notarizes, and publishes Articulate Desktop for macOS.
+# Trigger only on desktop version tags — not on ordinary web commits.
+#
+# Tag convention:
+#   desktop-v1.0.0        → stable channel
+#   desktop-v1.0.1-beta.1 → beta (prerelease GitHub Release)
+#
+# Required repository secrets — see docs/desktop-release.md
+
+on:
+  push:
+    tags:
+      - "desktop-v*"
+
+permissions:
+  contents: write
+
+jobs:
+  release-macos:
+    runs-on: macos-latest
+    timeout-minutes: 90
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Sync Desktop version from tag
+        run: |
+          VERSION="${GITHUB_REF_NAME#desktop-v}"
+          if [[ ! "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+([.-].*)?$ ]]; then
+            echo "Invalid desktop tag: $GITHUB_REF_NAME (expected desktop-v1.2.3)"
+            exit 1
+          fi
+          export VERSION
+          node -e "
+            const fs = require('fs');
+            const p = 'desktop/package.json';
+            const j = JSON.parse(fs.readFileSync(p, 'utf8'));
+            j.version = process.env.VERSION;
+            fs.writeFileSync(p, JSON.stringify(j, null, 2) + '\n');
+            console.log('desktop/package.json version =', j.version);
+          "
+
+      - name: Import Apple Developer ID certificate
+        env:
+          MACOS_CERTIFICATE_BASE64: ${{ secrets.MACOS_CERTIFICATE_BASE64 }}
+          MACOS_CERTIFICATE_PASSWORD: ${{ secrets.MACOS_CERTIFICATE_PASSWORD }}
+          KEYCHAIN_PASSWORD: ${{ secrets.KEYCHAIN_PASSWORD }}
+        run: |
+          if [ -z "${MACOS_CERTIFICATE_BASE64}" ]; then
+            echo "MACOS_CERTIFICATE_BASE64 not set — release builds require Developer ID Application signing."
+            exit 1
+          fi
+          CERTIFICATE_PATH="$RUNNER_TEMP/certificate.p12"
+          KEYCHAIN_PATH="$RUNNER_TEMP/app-signing.keychain-db"
+          echo -n "$MACOS_CERTIFICATE_BASE64" | base64 --decode -o "$CERTIFICATE_PATH"
+          security create-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
+          security set-keychain-settings -lut 21600 "$KEYCHAIN_PATH"
+          security unlock-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
+          security import "$CERTIFICATE_PATH" -P "$MACOS_CERTIFICATE_PASSWORD" -A -t cert -f pkcs12 -k "$KEYCHAIN_PATH"
+          security list-keychain -d user -s "$KEYCHAIN_PATH"
+          security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
+
+      - name: Write App Store Connect API key
+        env:
+          APPLE_API_KEY_BASE64: ${{ secrets.APPLE_API_KEY_BASE64 }}
+          APPLE_API_KEY_ID: ${{ secrets.APPLE_API_KEY_ID }}
+        run: |
+          if [ -z "${APPLE_API_KEY_BASE64}" ]; then
+            echo "APPLE_API_KEY_BASE64 not set — notarization required for release."
+            exit 1
+          fi
+          KEY_PATH="$RUNNER_TEMP/AuthKey_${APPLE_API_KEY_ID}.p8"
+          echo -n "$APPLE_API_KEY_BASE64" | base64 --decode -o "$KEY_PATH"
+          echo "APPLE_API_KEY=$KEY_PATH" >> "$GITHUB_ENV"
+
+      - name: Build, sign, notarize, publish
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          CSC_LINK: ${{ secrets.MACOS_CERTIFICATE_BASE64 }}
+          CSC_KEY_PASSWORD: ${{ secrets.MACOS_CERTIFICATE_PASSWORD }}
+          APPLE_API_KEY_ID: ${{ secrets.APPLE_API_KEY_ID }}
+          APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          ARTICULATE_DESKTOP_PROD_URL: https://app.whyarticulate.com/auth
+        run: |
+          export APPLE_API_KEY
+          npm run desktop:release
+
+      - name: Upload local artifacts (backup)
+        uses: actions/upload-artifact@v4
+        with:
+          name: articulate-desktop-macos
+          path: |
+            desktop/release/*.dmg
+            desktop/release/*.zip
+            desktop/release/latest-mac.yml
+            desktop/release/*.blockmap
+          if-no-files-found: warn

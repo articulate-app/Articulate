@@ -1,0 +1,15 @@
+{
+  "name": "articulate-desktop",
+  "productName": "Articulate",
+  "version": "1.0.0",
+  "description": "Articulate Desktop — native macOS shell with embedded Browser",
+  "author": "Articulate",
+  "license": "UNLICENSED",
+  "private": true,
+  "main": "dist/main.js",
+  "homepage": "https://app.whyarticulate.com",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/articulate-app/Articulate.git"
+  }
+}
