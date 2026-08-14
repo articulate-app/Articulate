@@ -107,7 +107,6 @@ export function WorkspaceNewTabMenu({
       startUrl: "https://www.google.com/",
       source: "manual",
       profileKey: "manual-browser",
-      autoPair: false,
     })
     openWorkspaceView(
       {
