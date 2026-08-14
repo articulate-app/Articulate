@@ -4640,9 +4640,7 @@ export function TasksLayout({
       isTemplateCenterOpen ||
       isAiInMiddle ||
       isBrowserInMiddle ||
-      isListInMiddle ||
-      activeMiddleWorkspaceTab?.type === "search-results" ||
-      activeMiddleWorkspaceTab?.type === "start") &&
+      isListInMiddle) &&
     !focusedPane;
   // Browser / AI are first-class workspace views — may live in either pane.
   const showBrowserPanel =
