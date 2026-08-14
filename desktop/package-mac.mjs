@@ -29,8 +29,18 @@ const desktopPkg = JSON.parse(
   fs.readFileSync(path.join(__dirname, "package.json"), "utf8"),
 )
 
-const publishArg = process.argv.find((a) => a.startsWith("--publish="))
-const publishMode = publishArg?.split("=")[1] === "always" ? "always" : "never"
+const publishIdx = process.argv.findIndex(
+  (a) => a === "--publish" || a.startsWith("--publish="),
+)
+let publishMode = "never"
+if (publishIdx >= 0) {
+  const arg = process.argv[publishIdx]
+  if (arg.startsWith("--publish=")) {
+    publishMode = arg.split("=")[1] === "always" ? "always" : "never"
+  } else {
+    publishMode = process.argv[publishIdx + 1] === "always" ? "always" : "never"
+  }
+}
 const isRelease = publishMode === "always"
 const hasSigningCreds = Boolean(process.env.CSC_LINK || process.env.CSC_NAME)
 
