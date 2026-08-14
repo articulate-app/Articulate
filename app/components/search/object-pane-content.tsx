@@ -27,12 +27,16 @@ export function ObjectPaneScrollShell({
   className,
 }: {
   children: React.ReactNode
-  scrollRef?: React.RefObject<HTMLDivElement>
+  /** Accept React 19 `useRef<T>(null)` RefObjects (current includes null). */
+  scrollRef?: React.RefObject<HTMLDivElement | null>
   className?: string
 }) {
   return (
     <div className="flex h-full min-h-0 flex-col bg-white">
-      <div ref={scrollRef} className={cn("min-h-0 flex-1 overflow-auto", className)}>
+      <div
+        ref={scrollRef as React.Ref<HTMLDivElement> | undefined}
+        className={cn("min-h-0 flex-1 overflow-auto", className)}
+      >
         {children}
       </div>
     </div>
