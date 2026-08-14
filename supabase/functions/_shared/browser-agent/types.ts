@@ -5,14 +5,19 @@
 
 export type BrowserAgentProviderName =
   | "browser_use"
-  /** Local isolated Chromium via Articulate Browser Bridge (Phase 1+). */
+  /** Articulate Desktop Electron WebContentsView (interactive + immediate publishing). */
+  | "articulate_desktop"
+  /**
+   * @deprecated Legacy Local Browser Bridge. Retained for historical publication_runs only.
+   * Never select for new executions.
+   */
   | "browser_use_local"
   | "browserbase_stagehand"
   | "browserbase_computer_use"
   | "other"
 
-/** Developer flag for eventual AUTO/LOCAL/CLOUD routing (not production UI yet). */
-export type BrowserExecutionMode = "local" | "cloud" | "auto"
+/** Execution preference. "local" is accepted as a legacy alias of "auto" (never Local Bridge). */
+export type BrowserExecutionMode = "desktop" | "cloud" | "auto" | "local"
 
 export type BrowserProfile = {
   id: string

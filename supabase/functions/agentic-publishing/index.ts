@@ -335,40 +335,37 @@ function isCloudConfigured(): boolean {
   return Boolean(BROWSER_USE_API_KEY.trim())
 }
 
+function parseDesktopAvailability(body: Record<string, unknown>): boolean {
+  return (
+    body.desktop_available === true ||
+    body.desktopAvailable === true ||
+    String(body.browser_execution_mode ?? body.execution_mode ?? "").toLowerCase() === "desktop"
+  )
+}
+
+/** @deprecated Local bridge status is ignored for resolution; kept for request parsing. */
 function parseLocalBridgeStatus(body: Record<string, unknown>): LocalBridgeStatusInput {
   const nested = asRecord(body.local_bridge) ?? asRecord(body.localBridge) ?? {}
-  const availableRaw =
-    body.local_bridge_available ??
-    body.localBridgeAvailable ??
-    nested.available ??
-    nested.ok
-  const chromeRaw =
-    body.local_chrome_available ??
-    body.localChromeAvailable ??
-    nested.chromeAvailable ??
-    nested.chrome_available
   return {
-    available: availableRaw === true || availableRaw === "true",
-    chromeAvailable:
-      chromeRaw === undefined || chromeRaw === null
-        ? null
-        : chromeRaw === true || chromeRaw === "true",
+    available: false,
+    chromeAvailable: false,
     version: asString(body.local_bridge_version ?? nested.version),
     forceCloud:
       body.force_cloud === true ||
       nested.forceCloud === true ||
       String(body.browser_execution_mode ?? body.execution_mode ?? "").toLowerCase() === "cloud",
-    forceLocal:
-      body.force_local === true ||
-      nested.forceLocal === true ||
-      String(body.browser_execution_mode ?? body.execution_mode ?? "").toLowerCase() === "local",
+    forceLocal: false,
   }
 }
 
 function getProvider(providerName: BrowserAgentProviderName | string | null = "browser_use"): BrowserAgentProvider {
   const name = String(providerName ?? "browser_use").trim() || "browser_use"
+  // Legacy local-bridge rows: do not instantiate LocalBridgeProvider for new control.
+  // Historical cloud ops still use browser_use.
   if (isLocalBrowserProvider(name)) {
-    return createBrowserAgentProvider({ provider: "browser_use_local" })
+    throw new Error(
+      "Local Browser Bridge is deprecated. Re-open this publication with Desktop or Cloud.",
+    )
   }
   return createBrowserAgentProvider({
     provider: "browser_use",
@@ -2011,33 +2008,34 @@ Deno.serve(async (req) => {
 
     if (action === "open_browser") {
       // First-class Browser tab session (not publishing-specific).
-      // Same resolver as publishing — never hard-code Cloud when Local is available.
+      // Desktop → client-driven WebContentsView; otherwise Cloud Live View.
       const startUrl = normalizeUrl(body.start_url) ?? "https://www.google.com/"
       const profileId = asString(body.profile_id)
       const screen = resolveBrowserViewport(body.browser_viewport ?? body.screen)
       const proxyCountryCode = resolveProxyCountryCode(body.proxy_country_code, body)
       const localBridge = parseLocalBridgeStatus(body)
+      const desktopAvailable = parseDesktopAvailability(body)
       const resolved = resolveBrowserProvider({
         operation: "interactive_browser",
         executionMode: asString(body.browser_execution_mode ?? body.execution_mode),
         preferredProvider: asString(body.preferred_provider ?? body.provider),
+        desktopAvailable,
         localBridge,
         cloudConfigured: isCloudConfigured(),
       })
 
-      if (isLocalBrowserProvider(resolved.provider)) {
+      if (resolved.provider === "articulate_desktop") {
         logPub("browser_open_resolved", {
           browser_open_source: asString(body.source) ?? "unknown",
-          resolved_provider: "browser_use_local",
-          local_bridge_available: true,
+          resolved_provider: "articulate_desktop",
+          desktop_available: true,
           reason: resolved.reason,
         })
-        // Edge cannot reach 127.0.0.1 — client must open the Bridge session.
         return json({
           ok: true,
-          provider: "browser_use_local",
-          browser_label: "Local",
-          local_browser: {
+          provider: "articulate_desktop",
+          browser_label: "Desktop",
+          desktop_browser: {
             required: true,
             start_url: startUrl,
             profile_id: profileId,
@@ -2045,13 +2043,13 @@ Deno.serve(async (req) => {
           browser_id: null,
           live_view_url: null,
           start_url: startUrl,
-          status: "pending_local",
+          status: "pending_desktop",
         })
       }
 
       if (!isCloudConfigured()) {
         return cloudUnavailableResponse({
-          localTried: !localBridge.available,
+          localTried: false,
           detail: "BROWSER_USE_API_KEY is not configured.",
         })
       }
@@ -2069,7 +2067,7 @@ Deno.serve(async (req) => {
       } catch (openError) {
         if (isCloudBrowserUnavailableError(openError)) {
           return cloudUnavailableResponse({
-            localTried: !localBridge.available,
+            localTried: false,
             detail: sanitizeLogText((openError as Error).message),
           })
         }
@@ -2100,7 +2098,7 @@ Deno.serve(async (req) => {
       logPub("browser_opened", {
         browser_open_source: asString(body.source) ?? "unknown",
         resolved_provider: "browser_use",
-        local_bridge_available: Boolean(localBridge.available),
+        desktop_available: desktopAvailable,
         provider_browser_id: browser.id,
         has_live_view: true,
         has_profile: Boolean(profileId),
@@ -2969,6 +2967,7 @@ Deno.serve(async (req) => {
         body.schedule_strategy ?? (body.prefer_internal_schedule === true ? "internal" : null),
       )
       const localBridge = parseLocalBridgeStatus(body)
+      const desktopAvailable = parseDesktopAvailability(body)
       const resolved = resolveBrowserProvider({
         operation:
           publishMode === "scheduled" && forcedStrategy !== "internal"
@@ -2976,23 +2975,34 @@ Deno.serve(async (req) => {
             : "immediate_publication",
         executionMode: asString(body.browser_execution_mode ?? body.execution_mode),
         preferredProvider: asString(body.preferred_provider ?? body.provider),
+        desktopAvailable,
         localBridge,
         cloudConfigured: isCloudConfigured(),
       })
       // Provider selection before any irreversible browser/Cloud work.
       if (resolved.provider === "browser_use" && !isCloudConfigured()) {
         return cloudUnavailableResponse({
-          localTried: !localBridge.available,
+          localTried: false,
           detail: "BROWSER_USE_API_KEY is not configured.",
         })
       }
-      const provider = getProvider(resolved.provider)
-      let profileId = await ensureDestinationProfileId(
-        service,
-        provider,
-        destination,
-        actorUserId,
-      )
+      // Desktop is client-driven — do not instantiate a server provider yet.
+      const provider =
+        resolved.provider === "articulate_desktop"
+          ? null
+          : getProvider("browser_use")
+      let profileId: string | null = null
+      if (provider) {
+        profileId = await ensureDestinationProfileId(
+          service,
+          provider,
+          destination,
+          actorUserId,
+        )
+      } else {
+        profileId = asString((asRecord(destination.metadata) ?? {}).provider_profile_id) ??
+          asString(destination.provider_profile_id)
+      }
       let scheduledAt: Date | null = null
       let scheduleTimezone = "UTC"
       if (publishMode === "scheduled") {
@@ -3110,9 +3120,102 @@ Deno.serve(async (req) => {
         })
       }
 
-      // ── Local browser path (client drives Bridge; no Cloud credits) ──
-      if (isLocalBrowserProvider(resolved.provider)) {
-        const workspace = await provider.createWorkspace(
+      // ── Desktop browser path (client drives Electron WebContentsView) ──
+      if (resolved.provider === "articulate_desktop") {
+        const task =
+          publishMode === "scheduled" && scheduledAt
+            ? buildPrepareScheduledPublicationTask({
+                destination: destCtx,
+                artifact: publishingArtifact,
+                files: [],
+                scheduledAtIso: scheduledAt.toISOString(),
+                timezone: scheduleTimezone,
+              })
+            : buildPreparePublicationTask({
+                destination: destCtx,
+                artifact: publishingArtifact,
+                files: [],
+              })
+
+        const connectMessage =
+          `Sign in directly to ${destination.name} in the Desktop browser if needed. Articulate does not receive or store your login credentials.`
+
+        const { data: inserted, error: insertError } = await service
+          .from("publication_runs")
+          .insert({
+            project_id: runProjectId,
+            artifact_id: artifactId,
+            source_type: sourceType,
+            source_snapshot: sourceSnapshot,
+            destination_id: destinationId,
+            started_by: actorUserId,
+            provider: "articulate_desktop",
+            status: needsAuthentication ? "needs_user" : "starting",
+            publish_mode: publishMode,
+            scheduled_at: scheduledAt ? scheduledAt.toISOString() : null,
+            schedule_timezone: publishMode === "scheduled" ? scheduleTimezone : null,
+            schedule_strategy: publishMode === "scheduled" ? (forcedStrategy ?? "external") : null,
+            started_at: new Date().toISOString(),
+            activity: appendActivity(
+              [],
+              needsAuthentication ? "Waiting for user" : "Opening desktop browser",
+            ),
+            metadata: {
+              destination_name: destination.name,
+              artifact_title: publishingArtifact.title ?? null,
+              content_type: publishingArtifact.type ?? null,
+              final_publish_attempted: false,
+              user_has_control: needsAuthentication,
+              awaiting_destination_auth: needsAuthentication,
+              files: [],
+              source_type: sourceType,
+              browser_viewport: screen,
+              preferred_start_url: destCtx.startUrl,
+              start_url_source: destCtx.startSource,
+              schedule_authorized: publishMode === "scheduled",
+              browser_provider_resolved: "articulate_desktop",
+              browser_provider_reason: resolved.reason,
+              desktop_browser: true,
+              desktop_agent_task: task,
+              phase_message: needsAuthentication
+                ? connectMessage
+                : "Browser running in Articulate Desktop",
+              ...(aiThreadId ? { ai_thread_id: aiThreadId } : {}),
+            },
+            result: { artifact: publishingArtifact },
+          })
+          .select("*")
+          .single()
+        if (insertError || !inserted) {
+          return json({ error: { code: "agent_failed", message: insertError?.message ?? "Could not create run" } }, 500)
+        }
+
+        logPub("publication_desktop_pending", {
+          run_id: inserted.id,
+          destination_id: destinationId,
+          needs_authentication: needsAuthentication,
+        })
+
+        return json({
+          ok: true,
+          needs_authentication: needsAuthentication,
+          provider: "articulate_desktop",
+          browser_label: "Desktop",
+          run: publicRun(inserted as Record<string, unknown>),
+          artifact: publishingArtifact,
+          message: needsAuthentication ? connectMessage : "Browser running in Articulate Desktop",
+          desktop_browser: {
+            required: true,
+            start_url: destCtx.startUrl,
+            task,
+            profile_id: profileId,
+          },
+        })
+      }
+
+      // Legacy Local Bridge path must never run for new publications.
+      if (false && isLocalBrowserProvider(resolved.provider)) {
+        const workspace = await provider!.createWorkspace(
           `local-pub-${(artifactId ?? publishingArtifact.id).slice(0, 8)}`,
         )
         let files: Awaited<ReturnType<typeof uploadArtifactFiles>> = []
@@ -3273,6 +3376,12 @@ Deno.serve(async (req) => {
       }
 
       // ── Cloud browser path ──
+      if (!provider) {
+        return json(
+          { error: { code: "agent_failed", message: "Cloud browser provider is unavailable." } },
+          500,
+        )
+      }
       let workspace: Awaited<ReturnType<BrowserAgentProvider["createWorkspace"]>>
       try {
         workspace = await provider.createWorkspace(
@@ -3281,7 +3390,7 @@ Deno.serve(async (req) => {
       } catch (workspaceError) {
         if (isCloudBrowserUnavailableError(workspaceError)) {
           return cloudUnavailableResponse({
-            localTried: !localBridge.available,
+            localTried: false,
             detail: sanitizeLogText((workspaceError as Error).message),
           })
         }

@@ -1,7 +1,7 @@
 "use client"
 
 import { useEffect, useRef, useState } from "react"
-import { ArrowLeft, ArrowRight, History, RotateCw } from "lucide-react"
+import { ArrowLeft, ArrowRight, History, RotateCw, Square } from "lucide-react"
 import { Button } from "../../app/components/ui/button"
 import {
   DropdownMenu,
@@ -21,6 +21,8 @@ type BrowserChromeBarProps = {
   history: BrowserHistoryEntry[]
   disabled?: boolean
   busy?: boolean
+  /** When true, the reload control becomes Stop (native desktop browser). */
+  isLoading?: boolean
   viewerMode?: BrowserViewerMode
   onViewerModeChange?: (mode: BrowserViewerMode) => void
   /** Called when the address field gains/loses focus (so polls do not overwrite typing). */
@@ -29,6 +31,7 @@ type BrowserChromeBarProps = {
   onBack: () => void
   onForward: () => void
   onReload: () => void
+  onStop?: () => void
   onSelectHistory: (entryId: number) => void
 }
 
@@ -39,6 +42,7 @@ export function BrowserChromeBar({
   history,
   disabled = false,
   busy = false,
+  isLoading = false,
   viewerMode,
   onViewerModeChange,
   onEditingChange,
@@ -46,6 +50,7 @@ export function BrowserChromeBar({
   onBack,
   onForward,
   onReload,
+  onStop,
   onSelectHistory,
 }: BrowserChromeBarProps) {
   const [draft, setDraft] = useState(url)
@@ -90,12 +95,19 @@ export function BrowserChromeBar({
         variant="ghost"
         size="icon"
         className={cn(PANE_CHROME_ICON_BUTTON_CLASS, "h-8 w-8")}
-        disabled={controlsDisabled}
-        onClick={onReload}
-        aria-label="Reload"
-        title="Reload"
+        disabled={controlsDisabled && !isLoading}
+        onClick={() => {
+          if (isLoading && onStop) onStop()
+          else onReload()
+        }}
+        aria-label={isLoading && onStop ? "Stop" : "Reload"}
+        title={isLoading && onStop ? "Stop" : "Reload"}
       >
-        <RotateCw className={cn(PANE_CHROME_ICON_CLASS, busy ? "animate-spin" : undefined)} />
+        {isLoading && onStop ? (
+          <Square className={cn(PANE_CHROME_ICON_CLASS, "fill-current")} />
+        ) : (
+          <RotateCw className={cn(PANE_CHROME_ICON_CLASS, busy ? "animate-spin" : undefined)} />
+        )}
       </Button>
 
       <form

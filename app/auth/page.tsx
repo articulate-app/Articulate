@@ -64,6 +64,12 @@ export default function AuthPage() {
     const checkSession = async () => {
       const { data: { session }, error } = await supabase.auth.getSession();
       if (session) {
+        const next =
+          redirect && redirect.startsWith("/") ? redirect : "/tasks"
+        if (typeof window !== "undefined" && window.articulateDesktop?.isDesktop) {
+          window.location.assign(next)
+          return
+        }
         if (redirect) {
           router.push(redirect);
         } else {
@@ -112,10 +118,18 @@ export default function AuthPage() {
         if (sessionError) throw sessionError;
         
         if (session) {
+          const next =
+            redirect && redirect.startsWith("/") ? redirect : "/tasks"
+          // Electron + Next Fast Refresh: soft router navigations can land in the
+          // "missing required error components" loop. Hard navigation is reliable.
+          if (typeof window !== "undefined" && window.articulateDesktop?.isDesktop) {
+            window.location.assign(next)
+            return
+          }
           if (redirect) {
-            router.push(redirect);
+            router.push(redirect)
           } else {
-            router.push('/tasks');
+            router.push('/tasks')
           }
         } else {
           throw new Error('Failed to create session');

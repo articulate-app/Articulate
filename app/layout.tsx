@@ -13,8 +13,8 @@ export const dynamic = 'force-dynamic';
 const inter = Inter({ subsets: ['latin'] });
 
 export const metadata: Metadata = {
-  title: 'Authentication App',
-  description: 'A simple authentication app with Supabase',
+  title: 'Articulate',
+  description: 'Articulate — AI workspace for teams',
   icons: {
     icon: [{ url: '/brand-mark.png', type: 'image/png' }],
     shortcut: ['/brand-mark.png'],

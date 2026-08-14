@@ -1,11 +1,12 @@
 /**
- * Local browser provider (Articulate Browser Bridge).
+ * @deprecated LEGACY / ARCHIVED SPIKE — Local Browser Bridge provider.
  *
- * Edge cannot reach 127.0.0.1. This provider coordinates local runs:
- * creates profile/workspace/run placeholders and stores the agent task.
- * The web client drives Chrome via the loopback Bridge + local-browser-agent.
+ * Disconnected from runtime provider resolution (Desktop → Cloud only).
+ * Do not instantiate for new publication or browser sessions.
+ * Module retained for historical reference and old `browser_use_local` rows.
  *
- * Cloud Browser Use remains in `browser-use.ts`.
+ * Edge cannot reach 127.0.0.1. This provider coordinated local runs via the
+ * Articulate Browser Bridge experiment — never a production-quality experience.
  */
 
 import type {

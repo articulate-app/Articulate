@@ -30,6 +30,7 @@ export type RightPaneTabKind =
   | "research"
   | "create"
   | "search-results"
+  | "start"
 
 /** @deprecated Prefer WorkspaceBrowserAssociations naming; shape is pane-neutral. */
 export type RightPaneBrowserAssociations = {
@@ -52,13 +53,15 @@ export type RightPaneBrowserAssociations = {
   /** Articulate viewer mode — independent of remote screen size. */
   viewerMode?: "fit" | "fill" | null
   /** Per-session provider — not a permanent destination classification. */
-  provider?: "browser_use_local" | "browser_use" | string | null
+  provider?: "browser_use_local" | "browser_use" | "articulate_desktop" | string | null
   /** Articulate Browser Bridge session id when provider is local. */
   bridgeSessionId?: string | null
   /** Why this browser tab was opened. */
   source?: "manual" | "publishing" | "ai" | "reconnect" | string | null
   currentUrl?: string | null
   pageTitle?: string | null
+  /** Favicon URL for desktop / local browser tab chrome. */
+  faviconUrl?: string | null
 }
 
 export type RightPaneTab = {
@@ -104,6 +107,7 @@ function normalizeTitle(kind: RightPaneTabKind, title?: string | null, id?: stri
   if (kind === "details") return "Details"
   if (kind === "research") return "Research"
   if (kind === "create") return "Create"
+  if (kind === "start") return "New"
   if (kind === "search-results") return "Search"
   if (kind === "browser") {
     if (id) return `Browser ${id.slice(0, 6)}`
