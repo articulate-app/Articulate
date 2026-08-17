@@ -6,14 +6,17 @@ const corsHeaders = {
   "Access-Control-Allow-Methods": "POST, OPTIONS",
 };
 
-type ModelDef = { label: string; family: string; transport: "openai" | "openrouter"; inputPerM?: number; outputPerM?: number };
-const MODEL_CATALOG: Record<string, ModelDef> = {
+type ModelDef = {
+  label: string;
+  family: string;
+  transport: "openai" | "openrouter";
+  inputPerM?: number;
+  outputPerM?: number;
+};
+
+const NATIVE_MODELS: Record<string, ModelDef> = {
   "openai/gpt-5.4-mini": { label: "GPT-5.4 mini", family: "openai", transport: "openai", inputPerM: 0.75, outputPerM: 4.5 },
   "openai/gpt-5.5": { label: "GPT-5.5", family: "openai", transport: "openai", inputPerM: 5, outputPerM: 30 },
-  "deepseek/deepseek-v4-flash": { label: "DeepSeek V4 Flash", family: "deepseek", transport: "openrouter" },
-  "minimax/minimax-m3": { label: "MiniMax M3", family: "minimax", transport: "openrouter" },
-  "qwen/qwen3-max": { label: "Qwen3 Max", family: "qwen", transport: "openrouter" },
-  "moonshotai/kimi-k3": { label: "Kimi K3", family: "moonshot", transport: "openrouter" },
 };
 
 const SLOP_TERMS = [
@@ -38,6 +41,15 @@ function antiSlop(text: string) {
   if (paragraphs.length >= 6 && shortRatio > 0.7) penalty += 4;
   return { score: Math.max(0, Math.min(100, 100 - penalty)), hits, paragraph_count: paragraphs.length };
 }
+
+function finite(value: unknown): number | null {
+  const parsed = Number(value);
+  return Number.isFinite(parsed) && parsed >= 0 ? parsed : null;
+}
+function pricePerMillion(value: unknown): number | null {
+  const perToken = finite(value);
+  return perToken == null ? null : perToken * 1_000_000;
+}
 function normalizeUsage(body: any, def: ModelDef) {
   const u = body?.usage ?? {};
   const prompt = Number(u.prompt_tokens ?? u.input_tokens ?? 0) || 0;
@@ -49,8 +61,31 @@ function normalizeUsage(body: any, def: ModelDef) {
   return { prompt_tokens: prompt, completion_tokens: completion, total_tokens: Number(u.total_tokens ?? prompt + completion) || 0, cost: providerCost ?? calculatedCost };
 }
 
-async function callModel(modelKey: string, system: string, prompt: string, maxTokens: number, temperature: number) {
-  const def = MODEL_CATALOG[modelKey]; const started = performance.now();
+async function loadOpenRouterCatalog() {
+  const key = Deno.env.get("OPENROUTER_API_KEY") ?? "";
+  if (!key) return new Map<string, any>();
+  const response = await fetch("https://openrouter.ai/api/v1/models", {
+    headers: { Authorization: `Bearer ${key}` },
+    signal: AbortSignal.timeout(20_000),
+  });
+  if (!response.ok) throw new Error(`openrouter_catalog_failed:${response.status}`);
+  const payload = await response.json();
+  const byId = new Map<string, any>();
+  for (const row of Array.isArray(payload?.data) ? payload.data : []) {
+    const id = typeof row?.id === "string" ? row.id.trim() : "";
+    if (id) byId.set(id, row);
+  }
+  return byId;
+}
+
+function normalizeRequestedModel(raw: unknown) {
+  const value = String(raw ?? "").trim();
+  if (!value) return "";
+  return value.startsWith("openrouter:") ? value.slice("openrouter:".length) : value;
+}
+
+async function callModel(modelKey: string, def: ModelDef, system: string, prompt: string, maxTokens: number, temperature: number) {
+  const started = performance.now();
   try {
     let url: string; let headers: Record<string, string>; let payloadModel: string;
     if (def.transport === "openai") {
@@ -73,7 +108,8 @@ async function callModel(modelKey: string, system: string, prompt: string, maxTo
     };
     if (!payloadModel.startsWith("gpt-5")) requestBody.temperature = temperature;
     if (def.transport === "openrouter") {
-      delete requestBody.max_completion_tokens; requestBody.max_tokens = maxTokens;
+      delete requestBody.max_completion_tokens;
+      requestBody.max_tokens = maxTokens;
       requestBody.temperature = temperature;
       requestBody.usage = { include: true };
       requestBody.provider = { sort: "price", allow_fallbacks: true, data_collection: "deny" };
@@ -91,14 +127,64 @@ async function callModel(modelKey: string, system: string, prompt: string, maxTo
 Deno.serve(async (req: Request) => {
   if (req.method === "OPTIONS") return new Response("ok", { headers: corsHeaders });
   if (req.method !== "POST") return new Response("Use POST", { status: 405, headers: corsHeaders });
+
   const body = await req.json().catch(() => ({}));
   const prompt = String(body?.prompt ?? "").trim();
   const system = String(body?.system ?? "You are a precise editorial assistant. Follow the user's requested language and constraints.").trim();
-  const models = (Array.isArray(body?.models) ? body.models : [body?.model]).map((x: unknown) => String(x ?? "").trim()).filter((x: string) => Boolean(MODEL_CATALOG[x])).slice(0, 6);
   if (!prompt) return new Response(JSON.stringify({ ok: false, error: "prompt_required" }), { status: 400, headers: { ...corsHeaders, "Content-Type": "application/json" } });
-  if (!models.length) return new Response(JSON.stringify({ ok: false, error: "supported_model_required", catalog: MODEL_CATALOG }), { status: 400, headers: { ...corsHeaders, "Content-Type": "application/json" } });
+
+  const requested = (Array.isArray(body?.models) ? body.models : [body?.model])
+    .map(normalizeRequestedModel)
+    .filter(Boolean)
+    .slice(0, 8);
+  if (!requested.length) return new Response(JSON.stringify({ ok: false, error: "model_required" }), { status: 400, headers: { ...corsHeaders, "Content-Type": "application/json" } });
+
+  let openRouterCatalog = new Map<string, any>();
+  try { openRouterCatalog = await loadOpenRouterCatalog(); } catch (error) { console.warn("ai-model-lab catalog lookup failed", error); }
+
+  const resolved: Array<{ key: string; def: ModelDef; metadata?: any }> = [];
+  for (const key of requested) {
+    if (NATIVE_MODELS[key]) {
+      resolved.push({ key, def: NATIVE_MODELS[key] });
+      continue;
+    }
+    const row = openRouterCatalog.get(key);
+    if (!row) continue;
+    resolved.push({
+      key,
+      def: {
+        label: typeof row?.name === "string" && row.name.trim() ? row.name.trim() : key,
+        family: key.split("/")[0] || "openrouter",
+        transport: "openrouter",
+        inputPerM: pricePerMillion(row?.pricing?.prompt) ?? undefined,
+        outputPerM: pricePerMillion(row?.pricing?.completion) ?? undefined,
+      },
+      metadata: {
+        context_length: finite(row?.context_length),
+        supported_parameters: Array.isArray(row?.supported_parameters) ? row.supported_parameters : [],
+      },
+    });
+  }
+
+  if (!resolved.length) {
+    return new Response(JSON.stringify({
+      ok: false,
+      error: "unknown_model",
+      message: "None of the requested model ids are currently present in the OpenRouter catalog.",
+    }), { status: 400, headers: { ...corsHeaders, "Content-Type": "application/json" } });
+  }
+
   const maxTokens = Math.max(64, Math.min(8000, Number(body?.max_tokens ?? 1600) || 1600));
   const temperature = Math.max(0, Math.min(1.5, Number(body?.temperature ?? 0.4) || 0.4));
-  const results = await Promise.all(models.map((model: string) => callModel(model, system, prompt, maxTokens, temperature)));
-  return new Response(JSON.stringify({ ok: true, results, catalog: MODEL_CATALOG }), { status: 200, headers: { ...corsHeaders, "Content-Type": "application/json", "Cache-Control": "no-store" } });
+  const results = await Promise.all(resolved.map(async ({ key, def, metadata }) => ({
+    ...(await callModel(key, def, system, prompt, maxTokens, temperature)),
+    metadata: metadata ?? null,
+  })));
+
+  return new Response(JSON.stringify({
+    ok: true,
+    results,
+    requested_models: requested,
+    resolved_models: resolved.map(({ key, def, metadata }) => ({ model: key, label: def.label, transport: def.transport, metadata: metadata ?? null })),
+  }), { status: 200, headers: { ...corsHeaders, "Content-Type": "application/json", "Cache-Control": "no-store" } });
 });
