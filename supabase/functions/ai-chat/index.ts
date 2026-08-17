@@ -130,11 +130,13 @@ function normalizeProviderUsage(raw: any) {
   const cached = Math.max(0, Number(
     usage.input_tokens_details?.cached_tokens ?? usage.prompt_tokens_details?.cached_tokens ?? 0,
   ) || 0);
+  const cost = Math.max(0, Number(usage.cost ?? usage.total_cost ?? 0) || 0);
   return {
     prompt_tokens: Math.round(prompt),
     completion_tokens: Math.round(completion),
     total_tokens: Math.round(total),
     cached_prompt_tokens: Math.round(cached),
+    cost,
   };
 }
 
@@ -230,6 +232,7 @@ async function fetchOpenAiWithTokenAccounting(args: {
   init: RequestInit;
   context: AiTokenQuotaContext;
   stage: string;
+  provider?: string;
   defaultMaxCompletionTokens?: number;
 }): Promise<Response> {
   const bodyText = typeof args.init.body === "string" ? args.init.body : "";
@@ -248,7 +251,7 @@ async function fetchOpenAiWithTokenAccounting(args: {
     p_client_request_id: args.context.clientRequestId,
     p_call_key: callKey,
     p_stage: args.stage,
-    p_provider: "openai",
+    p_provider: args.provider ?? "openai",
     p_model: model,
     p_estimated_prompt_tokens: estimatedPrompt,
     p_estimated_completion_tokens: estimatedCompletion,
@@ -452,6 +455,9 @@ const SUPABASE_SERVICE_KEY = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY");
 
 
 const OPENAI_API_KEY = Deno.env.get("OPENAI_API_KEY");
+
+
+const OPENROUTER_API_KEY = Deno.env.get("OPENROUTER_API_KEY");
 
 
 const ANTHROPIC_API_KEY = Deno.env.get("ANTHROPIC_API_KEY");
@@ -678,10 +684,59 @@ async function fetchOpenAi(
     init: nextInit,
     context: accounting.quota,
     stage: accounting.stage,
+    provider: "openai",
     defaultMaxCompletionTokens: accounting.defaultMaxCompletionTokens,
   });
 }
 
+
+async function fetchOpenRouter(
+  url: string,
+  init: RequestInit = {},
+  accounting: {
+    quota?: AiTokenQuotaContext | null;
+    stage: string;
+    defaultMaxCompletionTokens?: number;
+    tokenBased?: boolean;
+  },
+): Promise<Response> {
+  const nextInit: RequestInit = { ...init };
+  if (accounting.quota?.signal) {
+    nextInit.signal = nextInit.signal
+      ? AbortSignal.any([nextInit.signal, accounting.quota.signal])
+      : accounting.quota.signal;
+  }
+  const rawBody = (nextInit as any).body;
+  if (typeof rawBody === "string") {
+    try {
+      const parsed = JSON.parse(rawBody);
+      if (parsed && typeof parsed === "object") {
+        if (
+          accounting.tokenBased !== false && accounting.quota && accounting.defaultMaxCompletionTokens &&
+          parsed.max_output_tokens == null && parsed.max_completion_tokens == null && parsed.max_tokens == null
+        ) {
+          parsed.max_tokens = accounting.defaultMaxCompletionTokens;
+        }
+        // OpenRouter includes usage automatically in the final streamed chunk.
+        // Do not force deprecated usage/stream_options flags.
+        delete parsed.stream_options;
+        delete parsed.usage;
+        nextInit.body = JSON.stringify(parsed);
+      }
+    } catch {
+      // Non-JSON body. Leave untouched.
+    }
+  }
+  if (accounting.tokenBased === false || !accounting.quota) return await fetch(url, nextInit);
+  return await fetchOpenAiWithTokenAccounting({
+    url,
+    init: nextInit,
+    context: accounting.quota,
+    stage: accounting.stage,
+    provider: "openrouter",
+    defaultMaxCompletionTokens: accounting.defaultMaxCompletionTokens,
+  });
+}
 
 
 const TOOLS = [
@@ -2258,10 +2313,16 @@ function getConfiguredModelRegistry() {
 
 
 function resolveModelAlias(value: any) {
+  const raw = String(value ?? "").trim();
   const key = normalizeModelChoiceKey(value);
   if (!key) return null;
   const registry = getConfiguredModelRegistry();
   if (registry[key]) return { ...registry[key], key };
+
+  if (/^openrouter:/i.test(raw)) {
+    const model = raw.replace(/^openrouter:/i, "").trim();
+    if (model) return { provider: "openrouter", model, label: model, key: `openrouter:${model}` };
+  }
 
   // Accept raw OpenAI/Anthropic model ids when the FE sends provider separately.
   // This preserves escape hatches for admins while the normal UI uses model keys.
@@ -2373,6 +2434,10 @@ function assertExecutableAiProvider(provider: string) {
     if (!OPENAI_API_KEY) throw new Error("OPENAI_API_KEY is missing");
     return;
   }
+  if (provider === "openrouter") {
+    if (!OPENROUTER_API_KEY) throw new Error("OPENROUTER_API_KEY is missing");
+    return;
+  }
   if (provider === "anthropic") {
     // Anthropic model keys are already registry-aware so the FE can be wired now.
     // However this function still uses OpenAI Responses/tool-call streaming payloads.
@@ -2385,12 +2450,43 @@ function assertExecutableAiProvider(provider: string) {
 
 
 
+let openRouterToolModelsCache: { expiresAt: number; models: Set<string> } | null = null;
+
+async function openRouterModelSupportsTools(model: string): Promise<boolean> {
+  if (!OPENROUTER_API_KEY) return false;
+  const now = Date.now();
+  if (openRouterToolModelsCache && openRouterToolModelsCache.expiresAt > now) {
+    return openRouterToolModelsCache.models.has(model);
+  }
+  try {
+    const response = await fetch("https://openrouter.ai/api/v1/models?supported_parameters=tools", {
+      headers: { Authorization: `Bearer ${OPENROUTER_API_KEY}` },
+      signal: AbortSignal.timeout(10000),
+    });
+    if (!response.ok) throw new Error(`openrouter_models_failed:${response.status}`);
+    const payload = await response.json();
+    const models = new Set<string>((Array.isArray(payload?.data) ? payload.data : [])
+      .map((row: any) => String(row?.id ?? "").trim())
+      .filter(Boolean));
+    openRouterToolModelsCache = { expiresAt: now + 5 * 60 * 1000, models };
+    return models.has(model);
+  } catch (error) {
+    console.warn("ai-chat OpenRouter tool capability lookup failed", { model, error: String(error) });
+    // Fail closed for tool execution, but keep the model usable for chat.
+    return false;
+  }
+}
+
 const modelPricingCache = new Map<string, { expiresAt: number; data: any }>();
 
 
 
 async function computeCost(supabaseService: any, provider: string, model: string, usage: any) {
   if (!usage) return {};
+  const directCost = Number(usage?.cost);
+  if (provider === "openrouter" && Number.isFinite(directCost) && directCost >= 0) {
+    return { input_cost: null, output_cost: null, total_cost: directCost, currency: "USD" };
+  }
   const cacheKey = `${provider}:${model}`;
   const cached = modelPricingCache.get(cacheKey);
   let data = cached && cached.expiresAt > Date.now() ? cached.data : null;
@@ -2986,6 +3082,7 @@ function mergeUsage(total: any, current: any) {
     completion_tokens: a.completion_tokens + b.completion_tokens,
     total_tokens: a.total_tokens + b.total_tokens,
     cached_prompt_tokens: a.cached_prompt_tokens + b.cached_prompt_tokens,
+    cost: (a.cost ?? 0) + (b.cost ?? 0),
   };
 }
 
@@ -3457,6 +3554,7 @@ async function runArtifactConversation(args: {
   db: any;
   supabaseService: any;
   thread: any;
+  provider: string;
   model: string;
   messages: any[];
   tools: any[];
@@ -3477,23 +3575,41 @@ async function runArtifactConversation(args: {
   const streamStartedAtMs = args.streamStartedAtMs ?? performance.now();
 
   for (let round = 0; round < 10; round++) {
+    const isOpenRouter = args.provider === "openrouter";
     const payload: any = {
       model: args.model,
       messages: conversation,
-      tools: args.tools,
-      tool_choice: "auto",
-      parallel_tool_calls: true,
       stream: true,
-      stream_options: { include_usage: true },
     };
-    args.trace.mark(`openai_round_${round + 1}_request`);
-    const response = await fetchOpenAi("https://api.openai.com/v1/chat/completions", {
-      method: "POST",
-      headers: { Authorization: `Bearer ${OPENAI_API_KEY}`, "Content-Type": "application/json" },
-      body: JSON.stringify(sanitizeOpenAiPayload(payload)),
-      signal: args.ctx?.abort_signal ?? undefined,
-    }, { quota: args.ctx?.ai_token_quota, stage: `chat_round_${round + 1}`, defaultMaxCompletionTokens: 10000 });
-    if (!response.ok) throw new Error(`openai_chat_failed:${response.status}:${await response.text()}`);
+    if (Array.isArray(args.tools) && args.tools.length > 0) {
+      payload.tools = args.tools;
+      payload.tool_choice = "auto";
+      // OpenRouter standardizes tool calls across providers. Avoid forcing
+      // parallel_tool_calls because not every compatible model exposes it.
+      if (!isOpenRouter) payload.parallel_tool_calls = true;
+    }
+    if (!isOpenRouter) payload.stream_options = { include_usage: true };
+
+    args.trace.mark(`${args.provider}_round_${round + 1}_request`);
+    const response = isOpenRouter
+      ? await fetchOpenRouter("https://openrouter.ai/api/v1/chat/completions", {
+          method: "POST",
+          headers: {
+            Authorization: `Bearer ${OPENROUTER_API_KEY}`,
+            "Content-Type": "application/json",
+            "HTTP-Referer": "https://www.whyarticulate.com",
+            "X-Title": "Articulate",
+          },
+          body: JSON.stringify(payload),
+          signal: args.ctx?.abort_signal ?? undefined,
+        }, { quota: args.ctx?.ai_token_quota, stage: `chat_round_${round + 1}`, defaultMaxCompletionTokens: 10000 })
+      : await fetchOpenAi("https://api.openai.com/v1/chat/completions", {
+          method: "POST",
+          headers: { Authorization: `Bearer ${OPENAI_API_KEY}`, "Content-Type": "application/json" },
+          body: JSON.stringify(sanitizeOpenAiPayload(payload)),
+          signal: args.ctx?.abort_signal ?? undefined,
+        }, { quota: args.ctx?.ai_token_quota, stage: `chat_round_${round + 1}`, defaultMaxCompletionTokens: 10000 });
+    if (!response.ok) throw new Error(`${args.provider}_chat_failed:${response.status}:${await response.text()}`);
     const streamed = await consumeOpenAiChatCompletionStream({
       response,
       streamStats: args.streamStats,
@@ -4013,7 +4129,10 @@ async function handleAiChatRequest(req: Request) {
       bindQuotaRunPromise,
     ]);
     trace.mark("context_loaded");
-    const selectedTools = MODEL_TOOLS;
+    const modelSupportsTools = resolvedModel.provider === "openrouter"
+      ? await openRouterModelSupportsTools(resolvedModel.model)
+      : resolvedModel.provider === "openai";
+    const selectedTools = modelSupportsTools ? MODEL_TOOLS : [];
     // Static system prompt first (stable prompt-cache prefix); volatile per-turn
     // facts go into a context message just before the current user message.
     const systemPrompt = buildArtifactOnlySystemPrompt();
@@ -4029,6 +4148,7 @@ async function handleAiChatRequest(req: Request) {
       { role: "system", content: systemPrompt },
       ...recentMessages,
       ...(turnContextPrompt ? [{ role: "system", content: turnContextPrompt }] : []),
+      ...(!modelSupportsTools ? [{ role: "system", content: "MODEL CAPABILITY: The explicitly selected model does not expose native function tools through OpenRouter. It remains available for conversation and content generation, but it cannot read or mutate workspace data in this run. Do not claim that a workspace change was applied." }] : []),
       { role: "user", content: currentContent },
     ];
     const ctx = {
@@ -4047,7 +4167,7 @@ async function handleAiChatRequest(req: Request) {
     const streamStats = createOutboundStreamStats();
     const streamStartedAtMs = performance.now();
     const execute = async (onEvent?: (event: any) => void | Promise<void>) => runArtifactConversation({
-      db, supabaseService, thread, model: resolvedModel.model, messages: modelMessages, tools: selectedTools,
+      db, supabaseService, thread, provider: resolvedModel.provider, model: resolvedModel.model, messages: modelMessages, tools: selectedTools,
       ctx, trace, attachments: requestAttachments, onEvent, streamStats, streamStartedAtMs,
     });
 
