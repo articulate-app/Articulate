@@ -9,6 +9,7 @@ import {
   listArtifactVersions,
   restoreArtifactVersion,
 } from "../../app/lib/services/artifacts"
+import { applyArtifactCachePatch } from "./artifact-query-cache"
 
 function versionHistoryLabel(row: {
   created_at?: string | null
@@ -138,7 +139,8 @@ export function ArtifactVersionHistoryPopover({
     setIsRestoring(true)
     setRestoreError(null)
     try {
-      await restoreArtifactVersion({ artifactId, versionNumber })
+      const result = await restoreArtifactVersion({ artifactId, versionNumber })
+      applyArtifactCachePatch(queryClient, result.snapshot)
       await Promise.all([
         queryClient.invalidateQueries({ queryKey: ["artifact", artifactId] }),
         queryClient.invalidateQueries({ queryKey: ["artifact-versions", artifactId] }),

@@ -3050,7 +3050,13 @@ export function TasksLayout({
       const detail = (event as CustomEvent<OpenHeaderCreateDetail>).detail
       const type = detail?.type
       if (!type || type === "ai") {
-        handleTaskAiPaneOpenChange(true)
+        const next = buildNewAiThreadParams(new URLSearchParams(params.toString()))
+        next.delete("focus")
+        setSearchOpenedAiThreadId(null)
+        setAiPaneContextSafe({ scope: "global" })
+        setIsTaskAiPaneOpen(true)
+        shallowReplaceSearchParams(effectivePathname, next, "mobile-create-ai-thread")
+        dispatchTasksShallowNavigation()
         return
       }
       setMobileCreateOpen(true)
@@ -3080,6 +3086,7 @@ export function TasksLayout({
     isTaskAiPaneOpen,
     openResearchCenterTab,
     params,
+    setAiPaneContextSafe,
   ])
 
   useEffect(() => {
@@ -5427,7 +5434,7 @@ export function TasksLayout({
         // pane). Render ONLY the task detail full-height with a back chevron (onDetailStackBack ->
         // handleDetailStackBackFromTask). The parent detail target stays in the URL as back-history
         // and is NOT rendered underneath; the chevron clears the task and returns to it.
-        <div className="h-full overflow-auto">
+        <div className="h-full overflow-hidden">
           <TaskDetails
             isCollapsed={isDetailsCollapsed}
             selectedTask={isSuggestionSelected ? (selectedSuggestionAsTask as any) : selectedTaskData}
@@ -6569,7 +6576,7 @@ export function TasksLayout({
             </div>
           ) : focus === 'right' && middleView === 'ai-build' ? (
             <div className="h-full flex">
-              <div className="flex-1 overflow-auto border-r">
+              <div className="flex-1 overflow-hidden border-r">
                 <TaskDetails
                     isCollapsed={isDetailsCollapsed}
                     selectedTask={isSuggestionSelected ? (selectedSuggestionAsTask as any) : selectedTaskData}
@@ -6607,7 +6614,7 @@ export function TasksLayout({
                     onDetailStackBack={taskDetailStackBack}
                   />
               </div>
-              <div className="flex-1 overflow-auto">
+              <div className="flex-1 overflow-hidden">
                 {!isSuggestionSelected ? (
                   <AiPane 
                     isOpen={true} 
@@ -6624,7 +6631,7 @@ export function TasksLayout({
           ) : focus !== 'right' ? (
             <div className="h-full flex">
               <div
-                className={cn("h-full overflow-auto", !isSuggestionSelected && isTaskAiPaneOpen ? "border-r" : "flex-1")}
+                className={cn("h-full overflow-hidden", !isSuggestionSelected && isTaskAiPaneOpen ? "border-r" : "flex-1")}
                 style={!isSuggestionSelected && isTaskAiPaneOpen ? { flex: `0 0 ${taskDetailsPanePercent}%` } : undefined}
               >
                 <TaskDetails
@@ -6684,7 +6691,7 @@ export function TasksLayout({
                     aria-orientation="vertical"
                     aria-label="Resize Task Details and AI pane"
                   />
-                  <div className="h-full overflow-auto" style={{ flex: `0 0 ${100 - taskDetailsPanePercent}%` }}>
+                  <div className="h-full overflow-hidden" style={{ flex: `0 0 ${100 - taskDetailsPanePercent}%` }}>
                     <AiPane
                       isOpen={true}
                       onClose={() => handleTaskAiPaneOpenChange(false)}
@@ -6724,7 +6731,7 @@ export function TasksLayout({
         >
           <div className="h-full flex">
             <div
-              className={cn("h-full overflow-auto", !isSuggestionSelected && isTaskAiPaneOpen ? "border-r" : "flex-1")}
+              className={cn("h-full overflow-hidden", !isSuggestionSelected && isTaskAiPaneOpen ? "border-r" : "flex-1")}
               style={!isSuggestionSelected && isTaskAiPaneOpen ? { flex: `0 0 ${taskDetailsPanePercent}%` } : undefined}
             >
               <TaskDetails
@@ -6784,7 +6791,7 @@ export function TasksLayout({
                   aria-orientation="vertical"
                   aria-label="Resize Task Details and AI pane"
                 />
-                <div className="h-full overflow-auto" style={{ flex: `0 0 ${100 - taskDetailsPanePercent}%` }}>
+                <div className="h-full overflow-hidden" style={{ flex: `0 0 ${100 - taskDetailsPanePercent}%` }}>
                   <AiPane
                     isOpen={true}
                     onClose={() => handleTaskAiPaneOpenChange(false)}

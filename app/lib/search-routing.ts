@@ -2,6 +2,19 @@ import type { GlobalSearchResultTab } from "./global-search-types"
 
 export const PANE_QUERY_KEYS = [
   "layout",
+  "leftPaneView",
+  "leftTaskId",
+  "leftProjectId",
+  "leftUserId",
+  "leftTeamId",
+  "leftThreadId",
+  "leftMentionId",
+  "leftArtifactId",
+  "leftSourceId",
+  "leftTemplateId",
+  "leftSuggestionId",
+  "leftTab",
+  "leftSearchQuery",
   "centerTaskId",
   "centerProjectId",
   "centerMentionId",
@@ -9,6 +22,10 @@ export const PANE_QUERY_KEYS = [
   "centerUserId",
   "centerTeamId",
   "centerArtifactId",
+  "centerSourceId",
+  "centerTab",
+  "centerView",
+  "centerSearchQuery",
   "version",
   "id",
   "detailId",
@@ -20,8 +37,12 @@ export const PANE_QUERY_KEYS = [
   "rightUserId",
   "rightTeamId",
   "rightMentionId",
+  "rightTab",
+  "rightSearchQuery",
   "taskAiOpen",
   "aiThreadId",
+  "browserTabId",
+  "publicationRunId",
 ] as const
 
 export const SHARED_SEARCH_PARAMS = ["q", ...PANE_QUERY_KEYS] as const

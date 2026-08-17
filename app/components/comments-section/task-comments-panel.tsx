@@ -645,7 +645,7 @@ export function TaskCommentsInputPart(props: TaskCommentsPanelProps) {
   const composerPhotoUrl =
     getImageUrl(currentUserAvatar || null)
     || (currentUserAvatar?.startsWith("http") ? currentUserAvatar : null)
-  const [localExpanded, setLocalExpanded] = React.useState(() => Boolean(minimalComposer))
+  const [localExpanded, setLocalExpanded] = React.useState(false)
   const [localFocusToken, setLocalFocusToken] = React.useState(0)
   const [selectionQuoteVisible, setSelectionQuoteVisible] = React.useState(false)
   const isExpanded = composerExpanded ?? localExpanded
@@ -889,4 +889,3 @@ export function TaskCommentsFooterPart(props: TaskCommentsPanelProps) {
     </div>
   )
 }
-

@@ -9,7 +9,7 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from "react"
 import { usePathname, useRouter, useSearchParams } from "next/navigation"
 import { createClientComponentClient } from "@supabase/auth-helpers-nextjs"
-import { Calendar, CheckSquare, ChevronDown, LayoutGrid, List } from "lucide-react"
+import { ArrowUpDown, Calendar, CheckSquare, ChevronDown, LayoutGrid, List, Search } from "lucide-react"
 import { TaskList } from "../tasks/TaskList"
 import { KanbanView } from "../kanban-view/kanban-view"
 import { CalendarView } from "../calendar-view/calendar-view"
@@ -29,6 +29,9 @@ import {
   DropdownMenu,
   DropdownMenuContent,
   DropdownMenuItem,
+  DropdownMenuSub,
+  DropdownMenuSubContent,
+  DropdownMenuSubTrigger,
   DropdownMenuTrigger,
 } from "../ui/dropdown-menu"
 import { cn } from "@/lib/utils"
@@ -94,7 +97,9 @@ function WorkspaceTaskListViewInner({ paneId }: { paneId: WorkspacePaneId }) {
   const calendarToolbarRef = useRef<HTMLDivElement | null>(null)
   const [bulkActionsHost, setBulkActionsHost] = useState<HTMLDivElement | null>(null)
   const stickyChromeRef = useRef<HTMLDivElement | null>(null)
+  const toolbarRowRef = useRef<HTMLDivElement | null>(null)
   const [toolbarRefReady, setToolbarRefReady] = useState(false)
+  const [toolbarWidth, setToolbarWidth] = useState(0)
   const setKanbanToolbarEl = useCallback((el: HTMLDivElement | null) => {
     kanbanToolbarRef.current = el
     if (el) setToolbarRefReady((r) => r || true)
@@ -132,6 +137,9 @@ function WorkspaceTaskListViewInner({ paneId }: { paneId: WorkspacePaneId }) {
   const [pageSearchValue, setPageSearchValue] = useState(
     () => params.get("q")?.trim() || searchValue || "",
   )
+  const [isSearchOpen, setIsSearchOpen] = useState(
+    () => Boolean(params.get("q")?.trim()),
+  )
   const [isMultiselectMode, setIsMultiselectMode] = useState(false)
 
   const [listEditBootstrapAfterPaint, setListEditBootstrapAfterPaint] = useState(false)
@@ -152,6 +160,18 @@ function WorkspaceTaskListViewInner({ paneId }: { paneId: WorkspacePaneId }) {
     setViewMode((prev) => (prev === v ? prev : v))
   }, [params])
 
+  useLayoutEffect(() => {
+    const node = toolbarRowRef.current
+    if (!node) return
+    const update = () => {
+      setToolbarWidth(Math.ceil(node.getBoundingClientRect().width))
+    }
+    update()
+    const observer = new ResizeObserver(update)
+    observer.observe(node)
+    return () => observer.disconnect()
+  }, [])
+
   const searchDebounceRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const isSearchTypingRef = useRef(false)
 
@@ -163,6 +183,7 @@ function WorkspaceTaskListViewInner({ paneId }: { paneId: WorkspacePaneId }) {
           ? new URLSearchParams(window.location.search).get("q")?.trim() || ""
           : params.get("q")?.trim() || ""
       setPageSearchValue((current) => (current === next ? current : next))
+      setIsSearchOpen(next.length > 0)
     }
     syncSearchFromLiveUrl()
     if (typeof window === "undefined") return
@@ -240,6 +261,7 @@ function WorkspaceTaskListViewInner({ paneId }: { paneId: WorkspacePaneId }) {
       isSearchTypingRef.current = false
       const trimmed = value.trim()
       setPageSearchValue(trimmed)
+      if (!trimmed) setIsSearchOpen(false)
       writeSearchToUrl(trimmed)
     },
     [writeSearchToUrl],
@@ -436,8 +458,25 @@ function WorkspaceTaskListViewInner({ paneId }: { paneId: WorkspacePaneId }) {
     { id: "calendar", label: "Calendar", icon: Calendar },
   ]
 
+  const showSearchRow = isSearchOpen || pageSearchValue.trim().length > 0
+  const groupByPlacement =
+    viewMode !== "list" ? "none" : toolbarWidth < 620 ? "overflow" : toolbarWidth < 760 ? "icon" : "full"
+
   const listOverflowMenu = (
     <>
+      {viewMode === "list" && groupByPlacement === "overflow" ? (
+        <DropdownMenuSub>
+          <DropdownMenuSubTrigger className="gap-2">
+            <span className="min-w-0 truncate">Group by</span>
+            <span className="ml-auto max-w-[7rem] truncate text-xs text-muted-foreground">
+              {listGroupBySummary}
+            </span>
+          </DropdownMenuSubTrigger>
+          <DropdownMenuSubContent className="min-w-[220px]">
+            <GroupingMenuItems />
+          </DropdownMenuSubContent>
+        </DropdownMenuSub>
+      ) : null}
       <DropdownMenuItem
         className="justify-between gap-2"
         onSelect={(e) => {
@@ -466,63 +505,83 @@ function WorkspaceTaskListViewInner({ paneId }: { paneId: WorkspacePaneId }) {
           : "mx-auto flex h-full w-full max-w-none min-h-0 flex-1 flex-col gap-4 px-4"
       }
       actions={
-        <WorkspacePageAddButton
-          label="New task"
-          onClick={() => openComposer({})}
-        />
+        <>
+          <button
+            type="button"
+            aria-label="Search tasks"
+            aria-pressed={showSearchRow}
+            onClick={() => setIsSearchOpen((open) => (pageSearchValue.trim().length > 0 ? true : !open))}
+            className={cn(
+              "inline-flex h-8 min-w-[9.75rem] shrink-0 cursor-text items-center justify-start gap-2 rounded-full border border-gray-200 bg-white px-3.5 text-sm font-medium text-gray-500 transition-colors hover:bg-gray-50 hover:text-gray-700",
+              showSearchRow && "bg-gray-100 text-gray-900",
+            )}
+          >
+            <Search className="h-3.5 w-3.5 shrink-0" />
+            <span className="truncate">{pageSearchValue.trim().length > 0 ? pageSearchValue : "Search tasks..."}</span>
+          </button>
+          <WorkspacePageAddButton
+            label="New task"
+            onClick={() => openComposer({})}
+          />
+        </>
       }
     >
       <div
         ref={stickyChromeRef}
         className={cn(
-          "flex flex-col gap-4 bg-white",
-          isListLayout && "sticky top-0 z-30 -mx-4 px-4 pb-2",
+          "flex flex-col gap-3 bg-white",
+          isListLayout && "sticky top-0 z-30 -mx-4 px-4 pb-2 pt-3",
         )}
       >
-      <WorkspacePageSearchInput
-        value={pageSearchValue}
-        onChange={handleSearchChange}
-        onCommit={commitSearch}
-        placeholder="Search tasks…"
-      />
+        {showSearchRow ? (
+          <WorkspacePageSearchInput
+            value={pageSearchValue}
+            onChange={handleSearchChange}
+            onCommit={commitSearch}
+            placeholder="Search tasks…"
+            autoFocus={isSearchOpen}
+          />
+        ) : null}
 
-      <div className="flex shrink-0 flex-wrap items-center gap-2.5">
-        <IconTooltip label={isMultiselectMode ? "Exit multiselect" : "Multiselect"}>
-          <button
-            type="button"
-            aria-label="Multiselect"
-            aria-pressed={isMultiselectMode}
-            onClick={() => setIsMultiselectMode((v) => !v)}
-            className={cn(
-              "inline-flex h-9 w-9 shrink-0 items-center justify-center rounded-md text-gray-500 transition-colors hover:bg-gray-100 hover:text-gray-800",
-              isMultiselectMode && "bg-gray-100 text-gray-900",
-            )}
-          >
-            <CheckSquare className="h-[18px] w-[18px]" strokeWidth={1.75} />
-          </button>
-        </IconTooltip>
-        {scopePills.map((tab) => {
-          const isActive = activeScope === tab.id
-          return (
+      <div ref={toolbarRowRef} className="flex min-w-0 shrink-0 items-center gap-2.5">
+        <div className="flex min-w-0 flex-1 items-center gap-2 overflow-x-auto overflow-y-hidden whitespace-nowrap pr-1">
+          <IconTooltip label={isMultiselectMode ? "Exit multiselect" : "Multiselect"}>
             <button
-              key={tab.id}
               type="button"
-              onClick={() => applyScopePill(tab.id)}
+              aria-label="Multiselect"
+              aria-pressed={isMultiselectMode}
+              onClick={() => setIsMultiselectMode((v) => !v)}
               className={cn(
-                "inline-flex h-9 items-center rounded-full px-3.5 text-[15px] font-medium transition-colors",
-                isActive
-                  ? "bg-gray-100 text-gray-900"
-                  : "text-gray-500 hover:bg-gray-50 hover:text-gray-800",
+                "inline-flex h-9 w-9 shrink-0 items-center justify-center rounded-md text-gray-500 transition-colors hover:bg-gray-100 hover:text-gray-800",
+                isMultiselectMode && "bg-gray-100 text-gray-900",
               )}
             >
-              {tab.label}
+              <CheckSquare className="h-[18px] w-[18px]" strokeWidth={1.75} />
             </button>
-          )
-        })}
-        <div className="ml-auto flex min-w-0 shrink-0 items-center gap-1.5">
+          </IconTooltip>
+          {scopePills.map((tab) => {
+            const isActive = activeScope === tab.id
+            return (
+              <button
+                key={tab.id}
+                type="button"
+                onClick={() => applyScopePill(tab.id)}
+                className={cn(
+                  "inline-flex h-9 shrink-0 items-center rounded-full px-3.5 text-[15px] font-medium transition-colors",
+                  isActive
+                    ? "bg-gray-100 text-gray-900"
+                    : "text-gray-500 hover:bg-gray-50 hover:text-gray-800",
+                )}
+              >
+                {tab.label}
+              </button>
+            )
+          })}
+        </div>
+        <div className="flex min-w-0 shrink-0 items-center gap-1.5">
           <div ref={setBulkActionsHost} className="flex flex-nowrap items-center gap-1.5" />
           <div className="flex min-w-0 flex-nowrap items-center gap-1.5">
-            {viewMode === "list" ? (
+            {viewMode === "list" && groupByPlacement === "full" ? (
               <DropdownMenu>
                 <DropdownMenuTrigger asChild>
                   <button
@@ -536,6 +595,23 @@ function WorkspaceTaskListViewInner({ paneId }: { paneId: WorkspacePaneId }) {
                         : `Group by: ${listGroupBySummary}`}
                     </span>
                     <ChevronDown className="h-4 w-4 opacity-70" />
+                  </button>
+                </DropdownMenuTrigger>
+                <DropdownMenuContent align="end" className="min-w-[220px]">
+                  <GroupingMenuItems />
+                </DropdownMenuContent>
+              </DropdownMenu>
+            ) : null}
+            {viewMode === "list" && groupByPlacement === "icon" ? (
+              <DropdownMenu>
+                <DropdownMenuTrigger asChild>
+                  <button
+                    type="button"
+                    className="inline-flex h-9 w-9 shrink-0 items-center justify-center rounded-md text-gray-600 transition-colors hover:bg-gray-100 hover:text-gray-900"
+                    aria-label={`Group by: ${listGroupBySummary}`}
+                    title={`Group by: ${listGroupBySummary}`}
+                  >
+                    <ArrowUpDown className="h-[18px] w-[18px]" strokeWidth={1.75} />
                   </button>
                 </DropdownMenuTrigger>
                 <DropdownMenuContent align="end" className="min-w-[220px]">
@@ -600,12 +676,6 @@ function WorkspaceTaskListViewInner({ paneId }: { paneId: WorkspacePaneId }) {
         </div>
       ) : null}
       </div>
-
-      {viewMode === "list" && badges.length > 0 ? (
-        <div className="shrink-0">
-          <FilterBadges badges={badges} onClearAll={onClearAll} className="mb-0" />
-        </div>
-      ) : null}
 
       <TaskFilters
         isOpen={isFilterPaneOpen}
