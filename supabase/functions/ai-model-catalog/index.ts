@@ -15,6 +15,7 @@ type CatalogModel = {
   tier: "economy" | "balanced" | "premium"
   context_limit: number | null
   recommended: boolean
+  recommendation_tag: string | null
   selectable: boolean
   lab_only: boolean
   supports_tools: boolean
@@ -23,36 +24,27 @@ type CatalogModel = {
   output_price_per_million: number | null
 }
 
+const RECOMMENDED_OPENROUTER = new Map<string, string>([
+  ["deepseek/deepseek-v4-pro", "Best value"],
+  ["deepseek/deepseek-v4-flash", "Lowest cost"],
+  ["qwen/qwen3.6-plus", "All-rounder"],
+  ["minimax/minimax-m3", "Agentic"],
+])
+
 const nativeModels: CatalogModel[] = [
   {
-    key: "openai.gpt-5.5",
-    label: "OpenAI GPT-5.5",
-    provider: "openai",
-    external_id: "gpt-5.5",
-    tier: "premium",
-    context_limit: 1_050_000,
-    recommended: true,
-    selectable: true,
-    lab_only: false,
-    supports_tools: true,
+    key: "openai.gpt-5.5", label: "OpenAI GPT-5.5", provider: "openai", external_id: "gpt-5.5",
+    tier: "premium", context_limit: 1_050_000, recommended: true, recommendation_tag: "Quality",
+    selectable: true, lab_only: false, supports_tools: true,
     supported_parameters: ["tools", "tool_choice", "reasoning", "max_tokens"],
-    input_price_per_million: 5,
-    output_price_per_million: 30,
+    input_price_per_million: 5, output_price_per_million: 30,
   },
   {
-    key: "openai.gpt-5.4-mini",
-    label: "OpenAI GPT-5.4 Mini",
-    provider: "openai",
-    external_id: "gpt-5.4-mini",
-    tier: "balanced",
-    context_limit: 400_000,
-    recommended: true,
-    selectable: true,
-    lab_only: false,
-    supports_tools: true,
+    key: "openai.gpt-5.4-mini", label: "OpenAI GPT-5.4 Mini", provider: "openai", external_id: "gpt-5.4-mini",
+    tier: "balanced", context_limit: 400_000, recommended: true, recommendation_tag: "OpenAI value",
+    selectable: true, lab_only: false, supports_tools: true,
     supported_parameters: ["tools", "tool_choice", "reasoning", "max_tokens"],
-    input_price_per_million: 0.75,
-    output_price_per_million: 4.5,
+    input_price_per_million: 0.75, output_price_per_million: 4.5,
   },
 ]
 
@@ -60,12 +52,10 @@ function finite(value: unknown): number | null {
   const parsed = Number(value)
   return Number.isFinite(parsed) && parsed >= 0 ? parsed : null
 }
-
 function pricePerMillion(value: unknown): number | null {
   const perToken = finite(value)
   return perToken == null ? null : perToken * 1_000_000
 }
-
 function inferTier(input: number | null, output: number | null): CatalogModel["tier"] {
   const blended = (input ?? 0) + (output ?? 0)
   if (blended > 0 && blended <= 2) return "economy"
@@ -80,13 +70,10 @@ Deno.serve(async (req: Request) => {
   const authorization = req.headers.get("Authorization") ?? ""
   const supabaseUrl = Deno.env.get("SUPABASE_URL") ?? ""
   const anonKey = Deno.env.get("SUPABASE_ANON_KEY") ?? ""
-  if (!authorization || !supabaseUrl || !anonKey) {
-    return Response.json({ error: "unauthorized" }, { status: 401, headers: corsHeaders })
-  }
+  if (!authorization || !supabaseUrl || !anonKey) return Response.json({ error: "unauthorized" }, { status: 401, headers: corsHeaders })
 
   const supabase = createClient(supabaseUrl, anonKey, {
-    global: { headers: { Authorization: authorization } },
-    auth: { persistSession: false },
+    global: { headers: { Authorization: authorization } }, auth: { persistSession: false },
   })
   const { data: authData, error: authError } = await supabase.auth.getUser()
   if (authError || !authData.user) return Response.json({ error: "unauthorized" }, { status: 401, headers: corsHeaders })
@@ -95,9 +82,7 @@ Deno.serve(async (req: Request) => {
   const openRouterKey = Deno.env.get("OPENROUTER_API_KEY") ?? ""
   if (openRouterKey) {
     try {
-      const response = await fetch("https://openrouter.ai/api/v1/models", {
-        headers: { Authorization: `Bearer ${openRouterKey}` },
-      })
+      const response = await fetch("https://openrouter.ai/api/v1/models", { headers: { Authorization: `Bearer ${openRouterKey}` } })
       if (response.ok) {
         const payload = await response.json()
         for (const row of Array.isArray(payload?.data) ? payload.data : []) {
@@ -108,23 +93,15 @@ Deno.serve(async (req: Request) => {
           const supportedParameters = Array.isArray(row?.supported_parameters)
             ? row.supported_parameters.map((value: unknown) => String(value ?? "").trim()).filter(Boolean)
             : []
+          const recommendationTag = RECOMMENDED_OPENROUTER.get(id) ?? null
           models.push({
             key: `openrouter:${id}`,
             label: typeof row?.name === "string" && row.name.trim() ? row.name.trim() : id,
-            provider: "openrouter",
-            external_id: id,
-            tier: inferTier(inputPrice, outputPrice),
-            context_limit: finite(row?.context_length),
-            recommended: false,
-            // Every model discovered through OpenRouter is selectable/testable.
-            // Capability metadata tells the chat runtime whether native tool calling
-            // can be used for that model; it is not a gate on model availability.
-            selectable: true,
-            lab_only: false,
-            supports_tools: supportedParameters.includes("tools"),
-            supported_parameters: supportedParameters,
-            input_price_per_million: inputPrice,
-            output_price_per_million: outputPrice,
+            provider: "openrouter", external_id: id, tier: inferTier(inputPrice, outputPrice),
+            context_limit: finite(row?.context_length), recommended: Boolean(recommendationTag),
+            recommendation_tag: recommendationTag, selectable: true, lab_only: false,
+            supports_tools: supportedParameters.includes("tools"), supported_parameters: supportedParameters,
+            input_price_per_million: inputPrice, output_price_per_million: outputPrice,
           })
         }
       }
