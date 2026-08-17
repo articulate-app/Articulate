@@ -577,12 +577,11 @@ export function ArtifactWorkspace({
     const extras: TaskArtifact[] = []
     for (const entry of liveByArtifactId.values()) {
       if (known.has(entry.artifactId)) continue
-      // Task overview: keep live extras for this task. Missing taskId is common on
-      // early build events — still show them here so cards don't blink out.
+      // Task overview must only render live previews explicitly owned by this
+      // task. Project/thread previews without a taskId must not leak into every task.
       if (
         taskId != null
         && taskId > 0
-        && entry.taskId != null
         && entry.taskId !== taskId
       ) {
         continue
