@@ -9,7 +9,7 @@ const corsHeaders = {
 
 const CONTEXT_LIMITS: Record<string, number> = {
   "gpt-5.4-mini": 400_000,
-  "gpt-5.5": 400_000,
+  "gpt-5.5": 1_050_000,
   "claude-haiku-4-5": 200_000,
   "claude-sonnet-4-6": 200_000,
 }
@@ -38,8 +38,6 @@ Deno.serve(async (req: Request) => {
   const threadId = new URL(req.url).searchParams.get("thread_id")?.trim() ?? ""
   if (!threadId) return Response.json({ error: "thread_id_required" }, { status: 400, headers: corsHeaders })
 
-  // This read intentionally uses the caller JWT. Existing RLS on ai_threads / ai_chat_runs
-  // remains the authority for private, team and project-visible threads.
   const { data: thread, error: threadError } = await supabase
     .from("ai_threads")
     .select("id, context_summary_updated_at")
