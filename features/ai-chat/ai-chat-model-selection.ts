@@ -19,6 +19,8 @@ export type AiChatCatalogModel = {
   recommended: boolean
   selectable: boolean
   lab_only: boolean
+  supports_tools?: boolean
+  supported_parameters?: string[]
   input_price_per_million: number | null
   output_price_per_million: number | null
 }
@@ -40,7 +42,7 @@ export type AiChatModelOption = {
   label: string
 }
 
-/** Offline fallback. Only models executable by ai-chat belong here. */
+/** Offline fallback when the dynamic catalog is unavailable. */
 export const AI_CHAT_MODEL_OPTIONS: AiChatModelOption[] = [
   { key: "auto", label: "Auto" },
   { key: "openai.gpt-5.5", label: "OpenAI GPT-5.5" },
@@ -50,7 +52,7 @@ export const AI_CHAT_MODEL_OPTIONS: AiChatModelOption[] = [
 export const DEFAULT_AI_CHAT_MODEL_KEY: AiChatModelKey = "auto"
 
 const STORAGE_KEY = "ai-chat-model-key-v3"
-const SAFE_MODEL_KEY = /^(auto|[a-z0-9._:-]{2,220})$/i
+const SAFE_MODEL_KEY = /^(auto|[a-z0-9._:/-]{2,220})$/i
 
 function normalizeModelKey(value: string | null | undefined): AiChatModelKey {
   const trimmed = value?.trim() ?? ""
@@ -127,7 +129,7 @@ function subscribe(listener: () => void): () => void {
 }
 
 export function getAiChatModelLabel(key: AiChatModelKey): string {
-  return AI_CHAT_MODEL_OPTIONS.find((option) => option.key === key)?.label ?? (key === "auto" ? "Auto" : key)
+  return AI_CHAT_MODEL_OPTIONS.find((option) => option.key === key)?.label ?? (key === "auto" ? "Auto" : key.replace(/^openrouter:/, ""))
 }
 
 /** Shared, persisted model selection kept in sync across every AI chat surface. */
