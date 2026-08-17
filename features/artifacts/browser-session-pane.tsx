@@ -29,6 +29,10 @@ import {
   openBrowserSession,
   stopOpenedBrowserSession,
 } from "../../app/lib/open-browser-session"
+import {
+  isBrowserSurfaceOverlayActive,
+  subscribeBrowserSurfaceOverlay,
+} from "../../app/lib/browser-surface-overlay"
 import { BrowserChromeBar } from "./browser-chrome-bar"
 import { LocalBrowserSurface } from "./local-browser-surface"
 import { DesktopBrowserSurface } from "./desktop-browser-surface"
@@ -119,8 +123,13 @@ export function BrowserSessionPane({
   const [navBusy, setNavBusy] = useState(false)
   const [liveViewDisconnected, setLiveViewDisconnected] = useState(false)
   const [localControl, setLocalControl] = useState<"human" | "agent">("human")
+  const [overlayActive, setOverlayActive] = useState(isBrowserSurfaceOverlayActive)
   const localControlRef = useRef(localControl)
   localControlRef.current = localControl
+
+  useEffect(() => subscribeBrowserSurfaceOverlay(() => {
+    setOverlayActive(isBrowserSurfaceOverlayActive())
+  }), [])
 
   const startLocalAgentCallbacks = (extra?: {
     onStatus?: (message: string) => void
@@ -969,6 +978,8 @@ export function BrowserSessionPane({
               display: "block",
               border: 0,
               background: "#ffffff",
+              // Live-view iframes paint above most HTML; hide while chrome overlays (e.g. `+` menu).
+              visibility: overlayActive ? "hidden" : "visible",
             }}
             allow="autoplay; clipboard-read; clipboard-write; fullscreen"
             onLoad={() => {

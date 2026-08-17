@@ -472,3 +472,33 @@ export async function saveWorkspaceArtifact(args: {
     snapshot,
   }
 }
+
+/** Create an empty document artifact on a task (`ai_create_task_artifact_v1`). */
+export async function createTaskArtifact(args: {
+  taskId: number
+  title?: string
+  artifactType?: string
+  channelId?: number | null
+  languageId?: number | null
+  status?: string | null
+}): Promise<TaskArtifact> {
+  const supabase = getSupabaseBrowser()
+  const { data, error } = await supabase.rpc("ai_create_task_artifact_v1", {
+    p_task_id: args.taskId,
+    p_artifact_type: args.artifactType ?? "document",
+    p_title: args.title?.trim() || "Untitled",
+    p_artifact_role: null,
+    p_channel_id: args.channelId ?? null,
+    p_language_id: args.languageId ?? null,
+    p_source_artifact_id: null,
+    p_source_version_number: null,
+    p_derivation_type: null,
+    p_metadata: {},
+    p_status: args.status ?? "draft",
+  })
+  if (error) throw error
+  const root = asRecord(data) ?? {}
+  const artifact = normalizeTaskArtifact(root.artifact)
+  if (!artifact) throw new Error("ai_create_task_artifact_v1 returned no artifact")
+  return artifact
+}

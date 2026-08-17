@@ -1,7 +1,7 @@
 "use client"
 
-import React, { useEffect } from "react"
-import { ChevronRight, Loader2, RefreshCw } from "lucide-react"
+import React, { useEffect, useId, useState } from "react"
+import { ChevronDown, ChevronRight, Loader2, RefreshCw } from "lucide-react"
 import { cn } from "@/lib/utils"
 import { useInViewport } from "@/hooks/use-in-viewport"
 import { AddDashedButton } from "../ui/add-dashed-button"
@@ -16,6 +16,11 @@ type TaskOverviewPreviewSectionProps = {
   belowTitle?: React.ReactNode
   /** When false, children are not rendered and lazy loading does not start. */
   active?: boolean
+  /** Start expanded (default true). */
+  defaultCollapsed?: boolean
+  /** Controlled collapsed state; when set, parent owns expand/collapse. */
+  collapsed?: boolean
+  onCollapsedChange?: (collapsed: boolean) => void
   isLoading?: boolean
   isError?: boolean
   onRetry?: () => void
@@ -38,6 +43,9 @@ export function TaskOverviewPreviewSection({
   headerActions,
   belowTitle,
   active = true,
+  defaultCollapsed = false,
+  collapsed: collapsedControlled,
+  onCollapsedChange,
   isLoading = false,
   isError = false,
   onRetry,
@@ -49,9 +57,18 @@ export function TaskOverviewPreviewSection({
   sectionRef,
   onVisible,
 }: TaskOverviewPreviewSectionProps) {
-  const { ref, isInViewport } = useInViewport({ enabled: active })
+  const contentId = useId()
+  const [collapsedLocal, setCollapsedLocal] = useState(defaultCollapsed)
+  const isCollapsed =
+    typeof collapsedControlled === "boolean" ? collapsedControlled : collapsedLocal
+  const setCollapsed = (next: boolean) => {
+    if (typeof collapsedControlled !== "boolean") setCollapsedLocal(next)
+    onCollapsedChange?.(next)
+  }
 
-  const showContent = active && isInViewport
+  const { ref, isInViewport } = useInViewport({ enabled: active && !isCollapsed })
+
+  const showContent = active && !isCollapsed && isInViewport
 
   useEffect(() => {
     if (!showContent || !onVisible) return
@@ -67,28 +84,23 @@ export function TaskOverviewPreviewSection({
     }
   }
 
+  const Chevron = isCollapsed ? ChevronRight : ChevronDown
+
   return (
     <section
       ref={setSectionRef}
-      className={cn("border-t border-gray-200/80 py-4 first:border-t-0 first:pt-2", className)}
+      className={cn("border-t border-gray-200 pt-5 pb-4", className)}
     >
       <div className="mb-3 flex items-center justify-between gap-2">
-        <div className="flex min-w-0 flex-1 items-center gap-2">
-          {onViewAll ? (
-            <button
-              type="button"
-              onClick={onViewAll}
-              className="group flex min-w-0 items-center gap-1 text-left"
-            >
-              <h3 className="text-sm font-semibold text-gray-900 group-hover:text-gray-700">
-                {title}
-              </h3>
-              <ChevronRight className="h-4 w-4 shrink-0 text-gray-400 opacity-0 transition-opacity group-hover:opacity-100" />
-            </button>
-          ) : (
-            <h3 className="text-sm font-semibold text-gray-900">{title}</h3>
-          )}
-        </div>
+        <button
+          type="button"
+          onClick={() => setCollapsed(!isCollapsed)}
+          className="group flex min-w-0 flex-1 items-center gap-2 text-left"
+          aria-expanded={!isCollapsed}
+          aria-controls={contentId}
+        >
+          <h3 className="min-w-0 truncate text-sm font-semibold text-gray-900">{title}</h3>
+        </button>
         <div className="flex shrink-0 items-center gap-2">
           {headerActions}
           {onViewAll ? (
@@ -100,48 +112,62 @@ export function TaskOverviewPreviewSection({
               {viewAllLabel}
             </button>
           ) : null}
+          <button
+            type="button"
+            onClick={() => setCollapsed(!isCollapsed)}
+            className="inline-flex h-7 w-7 items-center justify-center rounded-md text-gray-400 hover:bg-gray-50 hover:text-gray-600"
+            aria-expanded={!isCollapsed}
+            aria-controls={contentId}
+            aria-label={isCollapsed ? `Expand ${title}` : `Collapse ${title}`}
+          >
+            <Chevron className="h-4 w-4" aria-hidden />
+          </button>
         </div>
       </div>
 
-      {belowTitle ? <div className="mb-3">{belowTitle}</div> : null}
+      {!isCollapsed ? (
+        <div id={contentId}>
+          {belowTitle ? <div className="mb-3">{belowTitle}</div> : null}
 
-      {!showContent ? (
-        <div className="space-y-2">
-          <div className="h-4 w-2/3 animate-pulse rounded bg-gray-100" />
-          <div className="h-4 w-1/2 animate-pulse rounded bg-gray-100" />
+          {!showContent ? (
+            <div className="space-y-2">
+              <div className="h-4 w-2/3 animate-pulse rounded bg-gray-100" />
+              <div className="h-4 w-1/2 animate-pulse rounded bg-gray-100" />
+            </div>
+          ) : isLoading ? (
+            <div className="flex items-center gap-2 text-sm text-gray-500">
+              <Loader2 className="h-4 w-4 animate-spin" />
+              Loading…
+            </div>
+          ) : isError ? (
+            <div className="flex items-center gap-2 text-sm text-red-600">
+              <span>Could not load preview.</span>
+              {onRetry ? (
+                <button
+                  type="button"
+                  onClick={onRetry}
+                  className="inline-flex items-center gap-1 text-xs text-red-700 hover:underline"
+                >
+                  <RefreshCw className="h-3 w-3" />
+                  Retry
+                </button>
+              ) : null}
+            </div>
+          ) : isEmpty ? (
+            onEmptyClick ? (
+              <AddDashedButton
+                label={emptyMessage}
+                className="mt-0"
+                onClick={onEmptyClick}
+              />
+            ) : (
+              <p className="text-sm text-gray-500">{emptyMessage}</p>
+            )
+          ) : (
+            children
+          )}
         </div>
-      ) : isLoading ? (
-        <div className="flex items-center gap-2 text-sm text-gray-500">
-          <Loader2 className="h-4 w-4 animate-spin" />
-          Loading…
-        </div>
-      ) : isError ? (
-        <div className="flex items-center gap-2 text-sm text-red-600">
-          <span>Could not load preview.</span>
-          {onRetry ? (
-            <button
-              type="button"
-              onClick={onRetry}
-              className="inline-flex items-center gap-1 text-xs text-red-700 hover:underline"
-            >
-              <RefreshCw className="h-3 w-3" />
-              Retry
-            </button>
-          ) : null}
-        </div>
-      ) : isEmpty ? (
-        onEmptyClick ? (
-          <AddDashedButton
-            label={emptyMessage}
-            className="mt-0"
-            onClick={onEmptyClick}
-          />
-        ) : (
-          <p className="text-sm text-gray-500">{emptyMessage}</p>
-        )
-      ) : (
-        children
-      )}
+      ) : null}
     </section>
   )
 }

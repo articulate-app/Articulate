@@ -10,11 +10,28 @@ export function TaskStatusPill({
   name,
   color,
   className,
+  variant = 'pill',
 }: {
   name: string
   color?: string | null
   className?: string
+  /** `plain` — directory-style meta text with optional color dot (task list). */
+  variant?: 'pill' | 'plain'
 }) {
+  if (variant === 'plain') {
+    return (
+      <span className={cn('inline-flex min-w-0 items-center gap-1.5 text-[15px] font-normal leading-snug text-gray-800', className)}>
+        {color ? (
+          <span
+            className="h-2 w-2 shrink-0 rounded-full"
+            style={{ backgroundColor: color }}
+            aria-hidden
+          />
+        ) : null}
+        <span className="truncate">{name}</span>
+      </span>
+    )
+  }
   const bg = color || '#e5e7eb'
   const textColor = color ? '#fff' : '#374151'
   return (

@@ -1,0 +1,16 @@
+{
+  "plugins": {
+    "supabase": {
+      "enabled": true
+    },
+    "firecrawl": {
+      "enabled": true
+    },
+    "vercel": {
+      "enabled": true
+    },
+    "google-drive": {
+      "enabled": true
+    }
+  }
+}

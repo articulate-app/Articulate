@@ -27,6 +27,7 @@ import {
   Maximize2,
   Trash2,
 } from "lucide-react"
+import { AddDashedButton } from "../../app/components/ui/add-dashed-button"
 import { ArtifactDocumentEditor } from "./artifact-document-editor"
 import { ArtifactRichDiffBody } from "./artifact-rich-diff-body"
 import { openArtifactCenterTab } from "./open-artifact-center-tab"
@@ -55,6 +56,7 @@ import {
   saveWorkspaceArtifact,
   attachArtifactToTask,
   attachArtifactToProject,
+  createTaskArtifact,
 } from "../../app/lib/services/artifacts"
 import type {
   ArtifactContentJson,
@@ -413,6 +415,7 @@ export function ArtifactWorkspace({
   const [isAttachDragOver, setIsAttachDragOver] = useState(false)
   const [isAttachingDrop, setIsAttachingDrop] = useState(false)
   const [attachDropError, setAttachDropError] = useState<string | null>(null)
+  const [isCreatingArtifact, setIsCreatingArtifact] = useState(false)
   const draftByArtifactIdRef = useRef(draftByArtifactId)
   draftByArtifactIdRef.current = draftByArtifactId
   const allArtifactsRef = useRef<TaskArtifact[]>([])
@@ -1276,6 +1279,51 @@ export function ArtifactWorkspace({
       }
     : {}
 
+  const canCreateBlankArtifact = taskId != null && taskId > 0
+
+  const handleCreateBlankArtifact = useCallback(async () => {
+    if (!canCreateBlankArtifact || isCreatingArtifact) return
+    setIsCreatingArtifact(true)
+    setAttachDropError(null)
+    try {
+      const created = await createTaskArtifact({
+        taskId: taskId!,
+        title: "Untitled",
+        artifactType: "document",
+        channelId: defaultChannelId,
+        languageId: defaultLanguageId,
+        status: "draft",
+      })
+      await queryClient.invalidateQueries({ queryKey: ["task-artifacts"] })
+      await queryClient.invalidateQueries({ queryKey: ["task-artifacts-meta"] })
+      setExpandedStackIds((prev) => new Set(prev).add(created.id))
+      setSelectedArtifactId(created.id)
+    } catch (error) {
+      setAttachDropError(
+        error instanceof Error ? error.message : "Failed to create artifact",
+      )
+    } finally {
+      setIsCreatingArtifact(false)
+    }
+  }, [
+    canCreateBlankArtifact,
+    defaultChannelId,
+    defaultLanguageId,
+    isCreatingArtifact,
+    queryClient,
+    taskId,
+  ])
+
+  const addArtifactButton =
+    canCreateBlankArtifact ? (
+      <AddDashedButton
+        label="Add"
+        className="mt-2"
+        disabled={isCreatingArtifact}
+        onClick={() => void handleCreateBlankArtifact()}
+      />
+    ) : null
+
   useEffect(() => {
     if (!onArtifactTextSelectForComment) return
     const handleMouseUp = () => {
@@ -1440,7 +1488,7 @@ export function ArtifactWorkspace({
           </p>
         ) : null}
         {allArtifacts.length === 0 && !isLoading ? (
-          <p className="text-sm text-gray-500">No artifacts yet.</p>
+          addArtifactButton
         ) : (
           <DndContext sensors={sensors} collisionDetection={closestCenter} onDragEnd={onDragEnd}>
             <SortableContext
@@ -1680,6 +1728,7 @@ export function ArtifactWorkspace({
             </SortableContext>
           </DndContext>
         )}
+        {allArtifacts.length > 0 && !isLoading ? addArtifactButton : null}
         <SelectionAskAiMenu
           containerSelector='[data-ai-selectable="artifact"]'
           resolve={resolveArtifactTextSelection}
@@ -1740,7 +1789,7 @@ export function ArtifactWorkspace({
       ) : null}
 
       {allArtifacts.length === 0 && !isLoading ? (
-        <p className="text-sm text-gray-500">No artifacts yet.</p>
+        addArtifactButton
       ) : (
         <div className="flex min-h-0 flex-1 flex-col gap-3 overflow-hidden lg:flex-row">
           <aside className="flex max-h-40 w-full shrink-0 flex-col gap-1.5 overflow-auto lg:max-h-none lg:w-56">
@@ -1908,7 +1957,7 @@ export function ArtifactWorkspace({
           </div>
         </div>
       )}
-      <SelectionAskAiMenu
+      {allArtifacts.length > 0 && !isLoading ? addArtifactButton : null}      <SelectionAskAiMenu
         containerSelector='[data-ai-selectable="artifact"]'
         resolve={resolveArtifactTextSelection}
         onAsk={(context) => {

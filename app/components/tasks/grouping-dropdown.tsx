@@ -10,13 +10,13 @@ import { dispatchTasksShallowNavigation } from '@/lib/tasks-shallow-nav'
 
 export const GROUP_OPTIONS: { value: GroupByField; label: string }[] = [
   { value: null, label: 'No group' },
-  { value: 'assigned_to', label: 'Assigned To' },
+  { value: 'assigned_to', label: 'Assignee' },
   { value: 'status', label: 'Status' },
-  { value: 'delivery_date', label: 'Delivery Date' },
-  { value: 'publication_date', label: 'Publication Date' },
+  { value: 'delivery_date', label: 'Due date' },
+  { value: 'publication_date', label: 'Publish date' },
   { value: 'project', label: 'Project' },
-  { value: 'content_type', label: 'Content Type' },
-  { value: 'production_type', label: 'Production Type' },
+  { value: 'content_type', label: 'Content type' },
+  { value: 'production_type', label: 'Production type' },
   { value: 'language', label: 'Language' },
   { value: 'channels', label: 'Channels' },
 ]

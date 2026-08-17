@@ -78,7 +78,7 @@ export function TaskOverviewReviewsPreview({
         isError={reviewsQuery.isError && !isAddingReview}
         onRetry={() => void reviewsQuery.refetch()}
         isEmpty={isEmpty}
-        emptyMessage="Add review"
+        emptyMessage="Add"
         onEmptyClick={() => setIsAddingReview(true)}
       >
         <div className="space-y-3">
@@ -127,7 +127,7 @@ export function TaskOverviewReviewsPreview({
           ))}
           {!isAddingReview ? (
             <AddDashedButton
-              label="Add review"
+              label="Add"
               className="mt-0"
               onClick={() => setIsAddingReview(true)}
             />

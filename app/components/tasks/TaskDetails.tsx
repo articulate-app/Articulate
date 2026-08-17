@@ -84,8 +84,9 @@ import { useWorkspaceHostPane } from "../workspace/workspace-host-pane-context"
 import { buildGenericTaskPrompt } from "../../../features/ai-chat/ai-utils"
 import { TASK_DETAILS_HEADER_ROW_CLASS } from "./pane-header-tokens"
 import { TaskOverviewPreviews } from "./task-overview-previews"
-import { TaskOverviewChannelsPill } from "./task-overview-channels-pill"
+import { TaskOverviewPreviewSection } from "./task-overview-preview-section"
 import { TASK_OVERVIEW_COMMENT_DOCK_ID } from "./task-overview-updates-comments"
+import { TaskOverviewChannelsPill } from "./task-overview-channels-pill"
 import { TaskSeoAndAiSeoTab } from "../../../features/tasks/components/task-seo-and-ai-seo-tab"
 
 const EMPTY_ARR: any[] = []
@@ -3109,11 +3110,12 @@ export function TaskDetails({
         {activeTaskTab === "overview" ? (
           <div className="flex min-h-0 flex-1 flex-col">
             <div className="min-h-0 flex-1 overflow-auto overflow-x-hidden">
-          <section className={cn(CHAT_CONTENT_COLUMN_CLASS, "p-4 pb-0")}>
+          <section className={cn(CHAT_CONTENT_COLUMN_CLASS, "px-4 pb-0")}>
               {/* Banner is rendered in the header for suggestion mode */}
-          {!isSuggestionMode && (
-            <h3 className="mb-4 text-sm font-semibold text-gray-900">Overview</h3>
-          )}
+          <TaskOverviewPreviewSection
+            title="Overview"
+            className="border-t-0 pt-2"
+          >
           <div className={TASK_DETAILS_FIELDS_GRID_CLASS}>
             {/* Task Title */}
             <label className={TASK_DETAILS_FIELD_LABEL_CLASS} htmlFor="task-title">Title</label>
@@ -3318,7 +3320,7 @@ export function TaskDetails({
                 </SelectContent>
               </Select>
             ) : (
-              <div className="w-full h-10 px-3 py-2 rounded-md border border-gray-200 truncate flex items-center gap-2 text-sm font-normal text-gray-900 min-w-0" title={currentAssignedUserName || ''}>
+              <div className={cn(TASK_DETAILS_FIELD_CONTROL_CLASS, "flex items-center gap-2 truncate py-0")} title={currentAssignedUserName || ''}>
                 {currentAssignedUserName ? (
                   <>
                     <UserAvatar name={currentAssignedUserName} photoUrl={assignedUserPhotoUrl} size="xs" />
@@ -3358,7 +3360,6 @@ export function TaskDetails({
                                   name={u.full_name ?? `User #${u.watcher_user_id}`}
                                   photoUrl={getImageUrl(u.photo)}
                                   size="xs"
-                                  className="h-5 w-5 min-h-5 min-w-5"
                                 />
                               ))}
                             </div>
@@ -3753,9 +3754,10 @@ export function TaskDetails({
               </>
             )}
 
-            {/* Briefing (rich text) - last in overview; label above, value below */}
-            <div className="col-span-2 space-y-1">
-              <label className="mb-1 block text-left text-sm font-medium text-gray-800">Briefing</label>
+          </div>
+          </TaskOverviewPreviewSection>
+
+          <TaskOverviewPreviewSection title="Briefing">
               <div className="relative min-h-[120px] w-full min-w-0 overflow-hidden rounded-md border border-gray-200 bg-white">
                 {isSuggestionMode && !hasMountedSuggestionBriefingEditor ? (
                   <div className="min-h-[120px] w-full bg-white" />
@@ -3804,13 +3806,11 @@ export function TaskDetails({
                   </svg>
                 </div>
               </div>
-            </div>
-          </div>
+          </TaskOverviewPreviewSection>
 
           {/* Subtasks section (full width, only once) */}
           {task && String(task.content_type_id) === '39' && (
-            <div className="mt-6">
-              <label className="mb-1 block text-left text-sm font-medium text-gray-800">Subtasks</label>
+            <TaskOverviewPreviewSection title="Subtasks">
               {subtasks.length === 0 ? (
                 <div className="text-gray-400 text-sm">No subtasks</div>
               ) : (
@@ -3860,8 +3860,8 @@ export function TaskDetails({
                 </div>
               )}
               {/* Add Subtask button, right-aligned below the table, ghost/underline style */}
-              <div className="flex justify-end mt-1">
-                <Button size="sm" variant="ghost" className="text-blue-600 hover:underline px-2 py-1 h-auto" onClick={() => {
+              <div className="mt-1 flex justify-start">
+                <Button size="sm" variant="ghost" className="h-auto px-2 py-1 text-blue-600 hover:underline" onClick={() => {
                   const paramsStr = searchParams.toString();
                   const url = paramsStr ? `/tasks/${task.id}/add-subtask?${paramsStr}` : `/tasks/${task.id}/add-subtask`;
                   router.push(url);
@@ -3869,9 +3869,8 @@ export function TaskDetails({
                   + Add Subtask
                 </Button>
               </div>
-            </div>
+            </TaskOverviewPreviewSection>
             )}
-          </section>
 
           {!isSuggestionMode && taskIdNum && commentsPanelProps ? (
             <TaskOverviewPreviews
@@ -3890,11 +3889,11 @@ export function TaskDetails({
                   setPendingArtifactTextQuote(null)
                   return
                 }
-                // Keep the dock collapsed; the composer shows a comment icon until clicked.
                 setPendingArtifactTextQuote(selection.quote)
               }}
             />
           ) : null}
+          </section>
             </div>
             {!isSuggestionMode && commentsPanelProps ? (
               <div

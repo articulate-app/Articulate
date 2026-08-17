@@ -26,14 +26,44 @@ export function formatDate(date: string | null | undefined): string {
 const DATE_DISPLAY_LOCALE = 'pt-PT'
 
 /**
+ * Parse a calendar date without UTC day-shift for `yyyy-mm-dd` strings.
+ */
+function parseCalendarDateInput(date: string | Date): Date | null {
+  if (date instanceof Date) return Number.isNaN(date.getTime()) ? null : date
+  const s = String(date).trim()
+  if (!s) return null
+  if (/^\d{4}-\d{2}-\d{2}/.test(s)) {
+    const d = new Date(`${s.slice(0, 10)}T12:00:00`)
+    return Number.isNaN(d.getTime()) ? null : d
+  }
+  const d = new Date(s)
+  return Number.isNaN(d.getTime()) ? null : d
+}
+
+/** Local calendar `yyyy-mm-dd` (never UTC `toISOString` day). */
+export function toLocalISODate(value: string | Date | null | undefined): string {
+  if (!value) return ''
+  if (typeof value === 'string') {
+    const s = value.trim()
+    if (/^\d{4}-\d{2}-\d{2}/.test(s)) return s.slice(0, 10)
+  }
+  const d = parseCalendarDateInput(value as string | Date)
+  if (!d) return ''
+  const y = d.getFullYear()
+  const m = String(d.getMonth() + 1).padStart(2, '0')
+  const day = String(d.getDate()).padStart(2, '0')
+  return `${y}-${m}-${day}`
+}
+
+/**
  * Format a date for display in dd/mm/yyyy (pt-PT locale).
  * Use for both hover display and edit mode to avoid format flipping.
  */
 export function formatDateDisplay(date: string | Date | null | undefined): string {
   if (!date) return ''
   try {
-    const d = typeof date === 'string' ? new Date(date) : date
-    if (isNaN(d.getTime())) return ''
+    const d = parseCalendarDateInput(date)
+    if (!d) return ''
     return d.toLocaleDateString(DATE_DISPLAY_LOCALE, {
       day: '2-digit',
       month: '2-digit',
@@ -52,8 +82,8 @@ export function formatDateDisplay(date: string | Date | null | undefined): strin
 export function formatCompactDateDisplay(date: string | Date | null | undefined): string {
   if (!date) return ''
   try {
-    const d = typeof date === 'string' ? new Date(date) : date
-    if (isNaN(d.getTime())) return ''
+    const d = parseCalendarDateInput(date)
+    if (!d) return ''
     if (d.getFullYear() !== new Date().getFullYear()) return formatDateDisplay(d)
     const day = String(d.getDate()).padStart(2, '0')
     const month = d.toLocaleDateString('en-US', { month: 'short' })
@@ -64,14 +94,12 @@ export function formatCompactDateDisplay(date: string | Date | null | undefined)
 }
 
 /**
- * Parse dd/mm/yyyy or dd-mm-yyyy to ISO yyyy-mm-dd.
+ * Parse dd/mm/yyyy or dd-mm-yyyy (or Date / ISO) to local ISO yyyy-mm-dd.
  * Returns empty string if invalid.
  */
 export function toISODate(value: string | Date | null | undefined): string {
   if (!value) return ''
-  if (value instanceof Date) {
-    return isNaN(value.getTime()) ? '' : value.toISOString().split('T')[0]
-  }
+  if (value instanceof Date) return toLocalISODate(value)
   const s = String(value).trim()
   if (!s) return ''
   // Already ISO format
@@ -84,9 +112,7 @@ export function toISODate(value: string | Date | null | undefined): string {
     const month = mo!.padStart(2, '0')
     return `${y}-${month}-${day}`
   }
-  // Try parsing as Date
-  const parsed = new Date(s)
-  return isNaN(parsed.getTime()) ? '' : parsed.toISOString().split('T')[0]
+  return toLocalISODate(s)
 }
 
 /**
@@ -94,9 +120,7 @@ export function toISODate(value: string | Date | null | undefined): string {
  */
 export function fromISOToDisplay(iso: string | null | undefined): string {
   if (!iso) return ''
-  const d = new Date(iso + 'T12:00:00')
-  if (isNaN(d.getTime())) return ''
-  return formatDateDisplay(d)
+  return formatDateDisplay(iso)
 }
 
 export function isDateInRange(date: Date, from?: Date, to?: Date): boolean {

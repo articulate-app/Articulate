@@ -5,11 +5,15 @@
  * Does not render page content — only reports geometry to the desktop bridge.
  */
 
-import { useEffect, useRef } from "react"
+import { useEffect, useRef, useState } from "react"
 import {
   getArticulateDesktop,
   type DesktopBrowserBounds,
 } from "../../app/lib/articulate-desktop"
+import {
+  isBrowserSurfaceOverlayActive,
+  subscribeBrowserSurfaceOverlay,
+} from "../../app/lib/browser-surface-overlay"
 
 type DesktopBrowserHostProps = {
   browserId: string
@@ -42,6 +46,13 @@ export function DesktopBrowserHost({
   const hostRef = useRef<HTMLDivElement | null>(null)
   const lastSentRef = useRef<string>("")
   const rafRef = useRef<number | null>(null)
+  const [overlayActive, setOverlayActive] = useState(isBrowserSurfaceOverlayActive)
+
+  useEffect(() => subscribeBrowserSurfaceOverlay(() => {
+    setOverlayActive(isBrowserSurfaceOverlayActive())
+  }), [])
+
+  const surfaceVisible = active && !overlayActive
 
   useEffect(() => {
     const desktop = getArticulateDesktop()
@@ -52,7 +63,7 @@ export function DesktopBrowserHost({
       rafRef.current = null
       const el = hostRef.current
       if (!el) return
-      const bounds = readBounds(el, active)
+      const bounds = readBounds(el, surfaceVisible)
       const key = `${bounds.x}|${bounds.y}|${bounds.width}|${bounds.height}|${bounds.visible}`
       if (key === lastSentRef.current) return
       lastSentRef.current = key
@@ -93,10 +104,10 @@ export function DesktopBrowserHost({
         visible: false,
       })
     }
-  }, [active, browserId, onBoundsChange])
+  }, [surfaceVisible, browserId, onBoundsChange])
 
   useEffect(() => {
-    if (!active) {
+    if (!surfaceVisible) {
       const desktop = getArticulateDesktop()
       if (!desktop || !browserId) return
       void desktop.browser.setBounds(browserId, {
@@ -108,7 +119,7 @@ export function DesktopBrowserHost({
       })
       lastSentRef.current = ""
     }
-  }, [active, browserId])
+  }, [surfaceVisible, browserId])
 
   return (
     <div

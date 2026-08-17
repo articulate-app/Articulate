@@ -1347,10 +1347,14 @@ export function KanbanView({
 
   // --- Render ---
   const kanbanToolbarSegments = useMemo(() => {
-    const groupTriggerClass = pillButton + ' gap-1 min-w-[140px]';
+    const groupTriggerClass = hideToolbar
+      ? 'inline-flex h-9 shrink-0 items-center gap-1 rounded-md px-2.5 text-[15px] font-medium text-gray-600 hover:bg-gray-100 hover:text-gray-900'
+      : pillButton + ' gap-1 min-w-[140px]';
     const sortTriggerClass = pillButton + ' gap-1 min-w-[160px]';
     const colorTriggerClass = pillButton + ' gap-1 min-w-[120px]';
     const subtasksClass = pillButton + (showSubtasks ? ' bg-blue-600 text-white border-blue-600' : '');
+    const groupByLabel =
+      visibleGroupByOptions.find((o) => o.value === kanbanOptions.groupBy)?.label ?? 'Status';
     return [
       <GroupSortPanel
         key="kb-group"
@@ -1373,9 +1377,20 @@ export function KanbanView({
         open={groupPanelOpen}
         onOpenChange={setGroupPanelOpen}
         trigger={
-          <button type="button" className={groupTriggerClass}>
-            Group by: {visibleGroupByOptions.find((o) => o.value === kanbanOptions.groupBy)?.label ?? 'Status'}
-            <ChevronDown size={16} />
+          <button type="button" className={groupTriggerClass} aria-label="Group by">
+            {hideToolbar ? (
+              <>
+                <span className="max-w-[12rem] truncate">
+                  {`Group by: ${groupByLabel}`}
+                </span>
+                <ChevronDown className="h-4 w-4 opacity-70" />
+              </>
+            ) : (
+              <>
+                Group by: {groupByLabel}
+                <ChevronDown size={16} />
+              </>
+            )}
           </button>
         }
         isMobile={isMobile}
@@ -1498,6 +1513,7 @@ export function KanbanView({
     ];
   }, [
     pillButton,
+    hideToolbar,
     kanbanOptions.groupBy,
     groupOrder,
     rowSortBy,
@@ -1513,7 +1529,18 @@ export function KanbanView({
     pathname,
   ]);
 
-  // When hideToolbar + toolbarContainerRef, portal header into parent's shared toolbar; otherwise render in place
+  // When hideToolbar + toolbarContainerRef, portal only Group by (sort/color/etc. go in … menu)
+  const groupByOnlyBar = (
+    <div className="flex shrink-0 flex-nowrap items-center gap-2">
+      {kanbanToolbarSegments[0]}
+    </div>
+  );
+
+  const toolbarPortaled =
+    hideToolbar && toolbarContainerRef?.current
+      ? createPortal(groupByOnlyBar, toolbarContainerRef.current)
+      : null;
+
   const headerBar = (
     <div
       className="flex items-center gap-2 px-4 py-2 min-h-[56px] border-b border-transparent bg-transparent z-10 flex-shrink-0 overflow-x-auto overflow-y-hidden"
@@ -1526,11 +1553,10 @@ export function KanbanView({
     </div>
   );
 
-  const toolbarPortaled = hideToolbar && toolbarContainerRef?.current ? createPortal(headerBar, toolbarContainerRef.current) : null;
-
   const kanbanOverflowMenuSubs = useMemo(
     () => (
     <>
+      {!toolbarContainerRef ? (
       <DropdownMenuSub>
         <DropdownMenuSubTrigger className="gap-2">
           <span className="min-w-0 truncate">Group by</span>
@@ -1579,6 +1605,7 @@ export function KanbanView({
           </DropdownMenuItem>
         </DropdownMenuSubContent>
       </DropdownMenuSub>
+      ) : null}
 
       <DropdownMenuSub>
         <DropdownMenuSubTrigger className="gap-2">
@@ -1726,6 +1753,7 @@ export function KanbanView({
     </>
     ),
     [
+      toolbarContainerRef,
       visibleGroupByOptions,
       kanbanOptions.groupBy,
       groupOrder,
@@ -1756,12 +1784,13 @@ export function KanbanView({
   }, [hideToolbar, registerPaneOverflowMenu])
 
   const inlineOptionalEl = inlineOptionalToolbarRef?.current ?? null;
+  const groupByPortaled = Boolean(hideToolbar && toolbarContainerRef?.current);
   const inlineOptionalPortaled =
     hideToolbar &&
     inlineOptionalEl &&
     createPortal(
       <div key={inlineOptionalToolbarSlotVersion} className="flex shrink-0 flex-nowrap items-center gap-2">
-        {kanbanToolbarSegments.slice(0, kanbanSegVisible)}
+        {kanbanToolbarSegments.slice(groupByPortaled ? 1 : 0, kanbanSegVisible)}
       </div>,
       inlineOptionalEl,
     );
