@@ -3,6 +3,7 @@
 import { useEffect, useState } from "react"
 import {
   Bot,
+  FileText,
   FolderKanban,
   Globe2,
   Inbox,
@@ -54,6 +55,7 @@ function quickActionIcon(type: WorkspaceNewTabQuickActionType) {
   if (type === "mention-list") return <Inbox className="h-3.5 w-3.5" aria-hidden />
   if (type === "user-list") return <Users className="h-3.5 w-3.5" aria-hidden />
   if (type === "ai-thread-list") return <Bot className="h-3.5 w-3.5" aria-hidden />
+  if (type === "artifact-list") return <FileText className="h-3.5 w-3.5" aria-hidden />
   if (type === "research") return <Lightbulb className="h-3.5 w-3.5" aria-hidden />
   if (type === "browser") return <Globe2 className="h-3.5 w-3.5" aria-hidden />
   if (type === "message") return <MessageSquare className="h-3.5 w-3.5" aria-hidden />

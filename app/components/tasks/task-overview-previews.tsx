@@ -55,7 +55,7 @@ export function TaskOverviewPreviews({
   return (
     <>
       <TaskOverviewPreviewSection
-        title="Artifacts"
+        title="Outputs"
         active
       >
         <div className="min-h-0">
@@ -66,6 +66,7 @@ export function TaskOverviewPreviews({
             defaultLanguageId={languageId ?? null}
             layout="stack"
             hideHeading
+            contextProjectName={null}
             onArtifactTextSelectForComment={onArtifactTextSelectForComment}
           />
         </div>

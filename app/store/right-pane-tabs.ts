@@ -118,7 +118,7 @@ function normalizeTitle(kind: RightPaneTabKind, title?: string | null, id?: stri
   if (kind === "mention-list") return "Inbox"
   if (kind === "user-list") return "Users"
   if (kind === "ai-thread-list") return "AI chats"
-  if (kind === "artifact-list") return "Artifacts"
+  if (kind === "artifact-list") return "Outputs"
   if (kind === "template-list") return "Templates"
   if (kind === "task" && id) return `Task ${id}`
   if (kind === "suggestion" && id) return `Suggestion ${id}`

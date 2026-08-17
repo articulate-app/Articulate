@@ -71,6 +71,7 @@ function pageSubtitleForList(listType: WorkspaceListViewType): string {
   if (listType === "user-list") return "Search and open a user."
   if (listType === "mention-list") return "Mentions and conversations across your work."
   if (listType === "ai-thread-list") return "Search and open an AI chat."
+  if (listType === "artifact-list") return "Search and open an output."
   return `Search ${workspaceListViewLabel(listType).toLowerCase()}.`
 }
 
@@ -164,7 +165,8 @@ export function WorkspaceObjectListView({
     listType === "project-list" ||
     listType === "user-list" ||
     listType === "mention-list" ||
-    listType === "ai-thread-list"
+    listType === "ai-thread-list" ||
+    listType === "artifact-list"
 
   const results = (
     <GlobalSearchFullResultsPane

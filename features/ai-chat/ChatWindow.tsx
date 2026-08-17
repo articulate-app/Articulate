@@ -591,7 +591,6 @@ export function ChatWindow({
   // during assistant streaming, so sends without an immediate stream (or after
   // stream ends) could not scroll the bubble to the top and left it clipped.
   const [keepUserMessageScrollRoom, setKeepUserMessageScrollRoom] = useState(false)
-  const [composerDockHeight, setComposerDockHeight] = useState(0)
   const {
     showJumpToBottom,
     scrollUserMessageIntoView,
@@ -2551,21 +2550,6 @@ export function ChatWindow({
   )
   const isChatEmpty = !isMessagesLoading && allMessages.length === 0
 
-  useEffect(() => {
-    const node = composerDockRef.current
-    if (!node) {
-      setComposerDockHeight(0)
-      return
-    }
-    const update = () => {
-      setComposerDockHeight(Math.ceil(node.getBoundingClientRect().height))
-    }
-    update()
-    const observer = new ResizeObserver(update)
-    observer.observe(node)
-    return () => observer.disconnect()
-  }, [isChatEmpty, thread.id])
-
   const activeClarification = useMemo(() => {
     const candidate = pendingClarification ?? resolveActiveClarificationFromMessages(allMessages)
     if (!candidate) return null
@@ -3358,6 +3342,81 @@ export function ChatWindow({
     }
   }
 
+  const composerBody = (
+    <div className={isChatEmpty ? "w-full px-4 py-6" : "p-4 flex-shrink-0"}>
+      <div className={CHAT_CONTENT_COLUMN_CLASS}>
+        {hasPersistedThreadId && isUsageSendBlocked(threadUsage) ? (
+          <AiChatUsageLimitCard usage={threadUsage} canReviewLimits={canReviewLimits} />
+        ) : null}
+        {isChatEmpty ? (
+          <div className="mb-4 text-center">
+            <h2 className="text-lg font-medium tracking-tight text-gray-900">
+              {(() => {
+                if (!isPlaceholderAiThreadTitle(thread.title) && thread.title?.trim()) {
+                  return thread.title.trim()
+                }
+                const firstName = (fullName || "").trim().split(/\s+/)[0]
+                return firstName
+                  ? `What do you want to build, ${firstName}?`
+                  : "What do you want to build?"
+              })()}
+            </h2>
+          </div>
+        ) : null}
+        <Composer
+          threadId={thread.id}
+          taskId={taskId}
+          onOptimistic={handleOptimistic}
+          onAssistantStreamStart={handleAssistantStreamStart}
+          onAssistantStreamChunk={handleAssistantStreamChunk}
+          onAssistantStreamReset={handleAssistantStreamReset}
+          onAssistantStreamStatus={handleAssistantStreamStatus}
+          onAssistantStreamComplete={handleAssistantStreamComplete}
+          onAssistantStreamError={handleAssistantStreamError}
+          onAiChatAction={handleAiChatAction}
+          onThreadTitleEvent={handleThreadTitleEvent}
+          onAssetEvent={handleAssistantStreamAsset}
+          onMessageOutputEvent={handleAssistantMessageOutput}
+          onComponentOutputEvent={handleAssistantComponentOutput}
+          onComponentEditPreviewEvent={handleComponentEditPreviewEvent}
+          onAiChangePreviewEvent={handleAiChangePreviewEvent}
+          onComponentLibraryTraceEvent={handleComponentLibraryTraceEvent}
+          onComponentPlanTraceEvent={handleComponentPlanTraceEvent}
+          onRequestPlanEvent={handleRequestPlanEvent}
+          onExecutionTraceEvent={handleExecutionTraceEvent}
+          onAiChatV2RunEvent={handleAiChatV2RunEvent}
+          onRunId={handleRunId}
+          onRunTerminalState={handleRunTerminalState}
+          onUsageUpdate={(usage) => {
+            if (usage) applyUsageSnapshot(usage)
+          }}
+          threadUsage={threadUsage}
+          isThreadUsageLoading={isThreadUsageLoading || !hasPersistedThreadId}
+          isSendBlockedByUsage={isUsageSendBlocked(threadUsage) || !hasPersistedThreadId}
+          canReviewLimits={canReviewLimits}
+          threadScope={threadScope}
+          inFlightTurnRef={inFlightTurnRef}
+          activeChannelId={activeChannelId}
+          preFillMessage={chatContext?.preFillMessage}
+          mode={chatContext?.mode}
+          componentId={chatContext?.componentId}
+          autoRun={hasPersistedThreadId ? chatContext?.autoRun : false}
+          activeFieldContext={effectiveActiveFieldContext}
+          ambientContext={ambientContext}
+          ambientTaskTitle={ambientTaskTitle}
+          clarificationFollowUpRef={clarificationFollowUpRef}
+          onClarificationFollowUpSent={undefined}
+          onScopeModeChange={onScopeModeChange}
+          mentionDirectSeed={mentionDirectSeed}
+          droppedFiles={droppedFiles}
+          onDroppedFilesHandled={() => setDroppedFiles([])}
+          streamAbortRef={streamAbortRef}
+          isAssistantStreaming={isAssistantStreaming}
+        />
+      </div>
+    </div>
+  )
+
   return (
     <div
       className="relative h-full flex flex-col"
@@ -3378,7 +3437,7 @@ export function ChatWindow({
         >
           <div className="flex min-h-full flex-col">
             {!isChatEmpty ? (
-              <div className="min-w-0 px-4 pt-4">
+              <div className="min-w-0 flex-1 px-4 pt-4">
                 <div
                   ref={scrollRoomRef}
                   className={`${CHAT_CONTENT_COLUMN_CLASS} space-y-4 pb-4${
@@ -3736,96 +3795,24 @@ export function ChatWindow({
             />
           )
         })()}
-                  <div
-                    aria-hidden="true"
-                    className="pointer-events-none shrink-0"
-                    style={{ height: composerDockHeight > 0 ? composerDockHeight + 8 : 0 }}
-                  />
                   <div ref={chatEndRef} />
                 </div>
               </div>
             ) : (
-              <div className="flex-1" />
+              <div className="flex min-h-full flex-1 flex-col justify-center">
+                {composerBody}
+              </div>
             )}
           </div>
         </div>
-        <div
-          ref={composerDockRef}
-          className={`absolute bottom-0 left-0 right-0 z-10 bg-white${isChatEmpty ? "" : " border-t border-gray-100"}`}
-        >
-          <div className={isChatEmpty ? "w-full shrink-0 px-4 pb-4 pt-2" : "p-4 flex-shrink-0"}>
-            <div className={CHAT_CONTENT_COLUMN_CLASS}>
-              {hasPersistedThreadId && isUsageSendBlocked(threadUsage) ? (
-                <AiChatUsageLimitCard usage={threadUsage} canReviewLimits={canReviewLimits} />
-              ) : null}
-              {isChatEmpty ? (
-                <div className="mb-4 text-center">
-                  <h2 className="text-lg font-medium tracking-tight text-gray-900">
-                    {(() => {
-                      if (!isPlaceholderAiThreadTitle(thread.title) && thread.title?.trim()) {
-                        return thread.title.trim()
-                      }
-                      const firstName = (fullName || "").trim().split(/\s+/)[0]
-                      return firstName
-                        ? `What do you want to build, ${firstName}?`
-                        : "What do you want to build?"
-                    })()}
-                  </h2>
-                </div>
-              ) : null}
-              <Composer
-                threadId={thread.id}
-                taskId={taskId}
-                onOptimistic={handleOptimistic}
-                onAssistantStreamStart={handleAssistantStreamStart}
-                onAssistantStreamChunk={handleAssistantStreamChunk}
-                onAssistantStreamReset={handleAssistantStreamReset}
-                onAssistantStreamStatus={handleAssistantStreamStatus}
-                onAssistantStreamComplete={handleAssistantStreamComplete}
-                onAssistantStreamError={handleAssistantStreamError}
-                onAiChatAction={handleAiChatAction}
-                onThreadTitleEvent={handleThreadTitleEvent}
-                onAssetEvent={handleAssistantStreamAsset}
-                onMessageOutputEvent={handleAssistantMessageOutput}
-                onComponentOutputEvent={handleAssistantComponentOutput}
-                onComponentEditPreviewEvent={handleComponentEditPreviewEvent}
-                onAiChangePreviewEvent={handleAiChangePreviewEvent}
-                onComponentLibraryTraceEvent={handleComponentLibraryTraceEvent}
-                onComponentPlanTraceEvent={handleComponentPlanTraceEvent}
-                onRequestPlanEvent={handleRequestPlanEvent}
-                onExecutionTraceEvent={handleExecutionTraceEvent}
-                onAiChatV2RunEvent={handleAiChatV2RunEvent}
-                onRunId={handleRunId}
-                onRunTerminalState={handleRunTerminalState}
-                onUsageUpdate={(usage) => {
-                  if (usage) applyUsageSnapshot(usage)
-                }}
-                threadUsage={threadUsage}
-                isThreadUsageLoading={isThreadUsageLoading || !hasPersistedThreadId}
-                isSendBlockedByUsage={isUsageSendBlocked(threadUsage) || !hasPersistedThreadId}
-                canReviewLimits={canReviewLimits}
-                threadScope={threadScope}
-                inFlightTurnRef={inFlightTurnRef}
-                activeChannelId={activeChannelId}
-                preFillMessage={chatContext?.preFillMessage}
-                mode={chatContext?.mode}
-                componentId={chatContext?.componentId}
-                autoRun={hasPersistedThreadId ? chatContext?.autoRun : false}
-                activeFieldContext={effectiveActiveFieldContext}
-                ambientContext={ambientContext}
-                ambientTaskTitle={ambientTaskTitle}
-                clarificationFollowUpRef={clarificationFollowUpRef}
-                onClarificationFollowUpSent={undefined}
-                onScopeModeChange={onScopeModeChange}
-                mentionDirectSeed={mentionDirectSeed}
-                droppedFiles={droppedFiles}
-                onDroppedFilesHandled={() => setDroppedFiles([])}
-                streamAbortRef={streamAbortRef}
-                isAssistantStreaming={isAssistantStreaming}
-              />
-            </div>
+        {!isChatEmpty ? (
+          <div
+            ref={composerDockRef}
+            className="z-10 shrink-0 border-t border-gray-100 bg-white"
+          >
+            {composerBody}
           </div>
-        </div>
+        ) : null}
         {showJumpToBottom && !keepUserMessageScrollRoom ? (
           <button
             type="button"

@@ -43,6 +43,10 @@ describe("keyword density matching", () => {
     expect(countKeywordOccurrences(text, "coloproctologia")).toBe(3)
   })
 
+  it("treats diacritic variants as the same keyword", () => {
+    expect(countKeywordOccurrences("A glicémia capilar ajuda a acompanhar a diabetes.", "glicemia capilar")).toBe(1)
+  })
+
   it("does not count partial word matches", () => {
     expect(countKeywordOccurrences("marketing and remarketing tips", "marketing")).toBe(1)
   })

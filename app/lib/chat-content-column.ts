@@ -13,7 +13,7 @@ export const TASK_LIST_CONTENT_COLUMN_CLASS = "mx-auto w-full max-w-none px-4"
 
 /** Overview meta fields: label left, control column right (settings-panel style). */
 export const TASK_DETAILS_FIELDS_GRID_CLASS =
-  "grid grid-cols-[minmax(0,1fr)_minmax(10rem,14rem)] items-center gap-x-2 gap-y-2.5"
+  "grid grid-cols-[minmax(7.5rem,11rem)_minmax(0,1fr)] items-center gap-x-3 gap-y-2.5"
 
 export const TASK_DETAILS_FIELD_LABEL_CLASS =
   "self-center justify-self-start text-left text-sm font-normal text-gray-500"

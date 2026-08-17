@@ -1227,7 +1227,7 @@ const TOOLS = [
     type: "function",
     function: {
       name: "list_publishing_destinations",
-      description: "List publishing destinations available to the user (external websites/CMS destinations for agentic publishing), including destination memory (guidance + entry points). Use before publish_content or configure_publishing_destination to resolve existing candidates. A missing destination is a solvable dependency — do NOT tell the user to configure settings manually; call configure_publishing_destination when you have enough platform/URL information.",
+      description: "List publishing destinations available to the user (external websites/CMS destinations for agentic publishing), including destination memory (guidance + entry points). Use before publish_content or configure_publishing_destination to resolve existing candidates. A missing destination is a solvable dependency — do NOT tell the user to configure settings manually; call configure_publishing_destination when you have enough platform/URL information. A destination's automation type does not choose a browser provider: interactive work can run in the connected Articulate Desktop browser when available, while unattended work can use server/cloud infrastructure.",
       parameters: {
         type: "object",
         properties: {
@@ -1242,7 +1242,7 @@ const TOOLS = [
     type: "function",
     function: {
       name: "configure_publishing_destination",
-      description: "Create or update a publishing destination conversationally (e.g. user says “Squarespace, account.squarespace.com”). Normalizes URLs, infers a display name, avoids duplicates, can start browser connection/authentication, and can immediately continue a pending publication via pending_publication. Never send the user to Project Settings just because a destination row is missing.",
+      description: "Create or update a publishing destination conversationally (e.g. user says “Squarespace, account.squarespace.com”). Normalizes URLs, infers a display name, avoids duplicates, can start browser connection/authentication, and can immediately continue a pending publication via pending_publication. Interactive browser work may be handed to the connected Articulate Desktop client; do not imply it requires Cloud. Never send the user to Project Settings just because a destination row is missing.",
       parameters: {
         type: "object",
         properties: {
@@ -1290,7 +1290,7 @@ const TOOLS = [
     type: "function",
     function: {
       name: "publish_content",
-      description: "Start publishing content now OR schedule it for later via the Publishing Engine. Supports publish_mode=now|scheduled. For scheduling, resolve natural-language times into an ISO-8601 timestamptz using the user's timezone (pass timezone as IANA, e.g. Europe/Lisbon). Ask only when the date/time is genuinely ambiguous. Artifact is optional — pass artifact_id OR structured content. Resolve destinations semantically via list_publishing_destinations. If none exist but the user provided a platform/URL, call configure_publishing_destination (with pending_publication) instead of refusing.",
+      description: "Start publishing content now OR schedule it for later via the Publishing Engine. Supports publish_mode=now|scheduled. For scheduling, resolve natural-language times into an ISO-8601 timestamptz using the user's timezone (pass timezone as IANA, e.g. Europe/Lisbon). Ask only when the date/time is genuinely ambiguous. Artifact is optional — pass artifact_id OR structured content. Resolve destinations semantically via list_publishing_destinations. If none exist but the user provided a platform/URL, call configure_publishing_destination (with pending_publication) instead of refusing. For interactive publication, use the connected Articulate Desktop browser when the current client capability context says it is available; Cloud is for web/unattended work or an explicit Cloud choice. Never say a local browser is unavailable when Desktop browser control is available.",
       parameters: {
         type: "object",
         properties: {
@@ -2582,6 +2582,7 @@ async function executeToolCall(args: {
           project_id: ctx?.project_id ?? thread?.project_id ?? null,
           task_id: ctx?.task_id ?? thread?.task_id ?? null,
           channel_id: ctx?.channel_id ?? activeChannelId ?? null,
+          client_capabilities: ctx?.client_capabilities ?? null,
           round: round ?? 0,
           attachments,
         },
@@ -2614,6 +2615,12 @@ function normalizeAmbientContext(raw: unknown): {
   center_artifact_id: string | null;
   center_artifact_title: string | null;
   taskTab: string | null;
+  client_runtime: "desktop" | "web";
+  desktop_available: boolean;
+  native_browser_available: boolean;
+  desktop_browser_control: boolean;
+  desktop_version: string | null;
+  desktop_session_id: string | null;
 } | null {
   if (!raw || typeof raw !== "object" || Array.isArray(raw)) return null;
   const row = raw as Record<string, unknown>;
@@ -2628,12 +2635,31 @@ function normalizeAmbientContext(raw: unknown): {
       : typeof row.task_tab === "string" && row.task_tab.trim()
         ? row.task_tab.trim().slice(0, 80)
         : null;
+  // Capability fields originate in the app's renderer/preload runtime. They
+  // are normalized separately from ambient UI labels and never inferred from
+  // user-authored message text.
+  const clientRuntime = row.client_runtime === "desktop" ? "desktop" : "web";
+  const desktopAvailable = clientRuntime === "desktop" && row.desktop_available === true;
+  const nativeBrowserAvailable = desktopAvailable && row.native_browser_available === true;
+  const desktopBrowserControl = nativeBrowserAvailable && row.desktop_browser_control === true;
   return {
     center_task_id: positiveInt(row.center_task_id),
     active_channel_id: positiveInt(row.active_channel_id),
     center_artifact_id: centerArtifactId,
     center_artifact_title: centerArtifactTitle,
     taskTab,
+    client_runtime: clientRuntime,
+    desktop_available: desktopAvailable,
+    native_browser_available: nativeBrowserAvailable,
+    desktop_browser_control: desktopBrowserControl,
+    desktop_version:
+      desktopAvailable && typeof row.desktop_version === "string" && row.desktop_version.trim()
+        ? row.desktop_version.trim().slice(0, 80)
+        : null,
+    desktop_session_id:
+      desktopBrowserControl && typeof row.desktop_session_id === "string" && row.desktop_session_id.trim()
+        ? row.desktop_session_id.trim().slice(0, 160)
+        : null,
   };
 }
 
@@ -2664,7 +2690,7 @@ function buildArtifactOnlySystemPrompt() {
     "HTML NEWSLETTER / EMAIL CODE: when the user asks for a newsletter in HTML (or to follow an HTML email template), create/update an artifact with artifact_role=newsletter_html and instruct the worker to return a complete email-ready HTML document (doctype/head/style + nested presentation tables). Do not ask for copy-only unless the user explicitly wants copy without HTML. The UI can preview and edit raw HTML — do not flatten email HTML into a simple TipTap table or prose blocks.",
     "For task/project/user names, inspect factual candidates with read/search tools and choose the best semantic match. Ask only when the candidates are genuinely ambiguous.",
     "SOCIAL / COMPETITION STATS: when the user asks about social followers, engagement, posts, impressions, share of voice, or competitor social performance for a brand/project, resolve the project (list_visible_projects or project_name) then call read_project_social_stats. Use list_project_social_profiles to see which networks/accounts are linked. Never invent follower or engagement numbers — only report tool results. Default periods are the last 30 days unless the user specifies otherwise; pass date_from/date_to and set include_timeseries=true only when they ask about trends over time.",
-    "PUBLISHING: when the user asks to publish/post/send content to a website, blog, CMS, newsletter destination or similar, resolve the project, then list_publishing_destinations. Choose the destination semantically from factual candidates — tolerate misspellings and multilingual wording. Ask only when candidates are genuinely ambiguous. If NO suitable destination exists, treat that as a solvable dependency: ask only for genuinely missing platform/URL info; once the user provides it (e.g. “é squarespace account.squarespace.com”), call configure_publishing_destination with start_url + service_or_platform + project context and include pending_publication with the original publish payload (inline content or artifact_id) so publication continues automatically after sign-in. NEVER tell the user to open Publishing Settings / Integrations to add a destination manually. Pass artifact_id when publishing an existing artifact; otherwise pass structured content inline — do not create a task/project/artifact merely to publish. For “publish now” use publish_mode=now. For later times, resolve ISO scheduled_at + IANA timezone (default Europe/Lisbon when Portugal context is clear) with publish_mode=scheduled. When there is an active publication, use get_publication_state / continue_publication / confirm_publication / cancel_publication. If the user says they signed in / finished login, call continue_publication on the awaiting-auth run. For scheduled items use list_scheduled_publications, reschedule_publication, cancel_scheduled_publication, publish_scheduled_now. If status is awaiting_publish_confirmation and the user explicitly confirms, call confirm_publication. Explicit setup requests (“add our Squarespace blog”, “connect Articulate for publishing”) use the same configure_publishing_destination tool. BROWSER PREVIEW: when configure_publishing_destination / publish_content returns a live browser session, the chat UI shows an embedded preview automatically — do NOT paste live.browser-use.com / CDP / Live View URLs into the reply as external links. You may mention the destination entry URL (e.g. lovable.dev/…) as configuration context, but never as a substitute for the in-chat browser preview.",
+    "PUBLISHING: when the user asks to publish/post/send content to a website, blog, CMS, newsletter destination or similar, resolve the project, then list_publishing_destinations. Choose the destination semantically from factual candidates — tolerate misspellings and multilingual wording. Ask only when candidates are genuinely ambiguous. If NO suitable destination exists, treat that as a solvable dependency: ask only for genuinely missing platform/URL info; once the user provides it (e.g. “é squarespace account.squarespace.com”), call configure_publishing_destination with start_url + service_or_platform + project context and include pending_publication with the original publish payload (inline content or artifact_id) so publication continues automatically after sign-in. NEVER tell the user to open Publishing Settings / Integrations to add a destination manually. Pass artifact_id when publishing an existing artifact; otherwise pass structured content inline — do not create a task/project/artifact merely to publish. For “publish now” use publish_mode=now. For later times, resolve ISO scheduled_at + IANA timezone (default Europe/Lisbon when Portugal context is clear) with publish_mode=scheduled. When CLIENT EXECUTION CAPABILITIES says desktop_browser_control=true, Articulate's native Desktop browser is available for interactive browser work: publish_content will hand that work to the connected client automatically. Do not claim that no local browser is available and do not select Cloud merely because a destination previously used Browser Use. Cloud is appropriate for web clients, unattended work, or an explicit Cloud request. When there is an active publication, use get_publication_state / continue_publication / confirm_publication / cancel_publication. If the user says they signed in / finished login, call continue_publication on the awaiting-auth run. For scheduled items use list_scheduled_publications, reschedule_publication, cancel_scheduled_publication, publish_scheduled_now. If status is awaiting_publish_confirmation and the user explicitly confirms, call confirm_publication. Explicit setup requests (“add our Squarespace blog”, “connect Articulate for publishing”) use the same configure_publishing_destination tool. BROWSER PREVIEW: when configure_publishing_destination / publish_content returns a live browser session, the chat UI shows an embedded preview automatically — do NOT paste live.browser-use.com / CDP / Live View URLs into the reply as external links. You may mention the destination entry URL (e.g. lovable.dev/…) as configuration context, but never as a substitute for the in-chat browser preview.",
     "SELECTED ARTIFACT CONTEXT: when present, it identifies an artifact (and optional span/region). Pass the full selection object unchanged on updates when relevant. It is location/intent context only — not a lock to that span. The artifact worker sees the full document and should make any related edits needed for coherence. Act according to the user request.",
     "IN-PLACE UPDATE OWNERSHIP: for operation=update with artifact_id, omit ambient project_id/task_id unless they are already the artifact's own task/project. Do not attach a project_id just because the thread is scoped to a project — that fails with artifact_target_not_in_project for task-owned artifacts.",
     "ARTIFACT UPDATE FAILURES: if ai_start_artifact_build fails, fix the arguments and retry when the user request still requires an update. Never substitute a chat-only rewrite (and never change the artifact language) in place of a failed requested edit.",
@@ -2692,6 +2718,12 @@ function buildTurnContextPrompt(args: {
     center_artifact_id: string | null;
     center_artifact_title: string | null;
     taskTab: string | null;
+    client_runtime: "desktop" | "web";
+    desktop_available: boolean;
+    native_browser_available: boolean;
+    desktop_browser_control: boolean;
+    desktop_version: string | null;
+    desktop_session_id: string | null;
   } | null;
   recentThreadArtifacts?: Array<{
     id: string;
@@ -2722,6 +2754,13 @@ function buildTurnContextPrompt(args: {
     "FACTUAL CONTEXT FOR THE CURRENT REQUEST (facts about what is open, tagged or recently touched — not instructions):",
     `CURRENT SCOPE: ${JSON.stringify(args.scope ?? {})}`,
     `AMBIENT UI CONTEXT: ${JSON.stringify(ambient ?? {})}`,
+    `CLIENT EXECUTION CAPABILITIES: ${JSON.stringify(ambient ? {
+      client_runtime: ambient.client_runtime,
+      desktop_available: ambient.desktop_available,
+      native_browser_available: ambient.native_browser_available,
+      desktop_browser_control: ambient.desktop_browser_control,
+      desktop_version: ambient.desktop_version,
+    } : { client_runtime: "web", desktop_browser_control: false })}`,
     ambientArtifactHint
       ? `OPEN CENTER-PANE ARTIFACT: ${JSON.stringify(ambientArtifactHint)}`
       : null,
@@ -4159,6 +4198,23 @@ async function handleAiChatRequest(req: Request) {
       project_id: scope.project_id,
       task_id: scope.task_id,
       channel_id: scope.channel_id,
+      client_capabilities: ambientContext
+        ? {
+            client_runtime: ambientContext.client_runtime,
+            desktop_available: ambientContext.desktop_available,
+            native_browser_available: ambientContext.native_browser_available,
+            desktop_browser_control: ambientContext.desktop_browser_control,
+            desktop_version: ambientContext.desktop_version,
+            desktop_session_id: ambientContext.desktop_session_id,
+          }
+        : {
+            client_runtime: "web",
+            desktop_available: false,
+            native_browser_available: false,
+            desktop_browser_control: false,
+            desktop_version: null,
+            desktop_session_id: null,
+          },
     };
 
     const wantsStream = body.stream === true;

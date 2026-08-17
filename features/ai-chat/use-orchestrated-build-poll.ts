@@ -29,6 +29,7 @@ import {
   parseBuildArtifactPreviewPayload,
   useAiBuildArtifactPreviewStore,
 } from "../../app/store/ai-build-artifact-preview-store"
+import { getArtifact } from "../../app/lib/services/artifacts"
 import { loadPersistedBuildAfterSequence } from "./orchestrated-build-sequence-persist"
 import { logArtifactBuildLegacyComponentRegression } from "./artifact-build-legacy-guard"
 import { useAiRequestPlanStore } from "../../app/store/ai-request-plan-store"
@@ -43,6 +44,7 @@ import {
   CENTER_ARTIFACT_ID_PARAM,
 } from "../../app/lib/artifact-selection-url"
 import { shallowReplaceSearchParams } from "../../app/lib/tasks-shallow-nav"
+import { applyArtifactCachePatch } from "../artifacts/artifact-query-cache"
 
 const TERMINAL_UNIT_STATUSES = new Set<AiOrchestratedBuildUnitStatus>([
   "succeeded",
@@ -420,6 +422,11 @@ function invalidateContentFromBuildSnapshot(
             : null
       scheduleArtifactListInvalidation(queryClient)
       if (artifactId) {
+        void getArtifact({ artifactId })
+          .then((result) => {
+            if (result?.snapshot) applyArtifactCachePatch(queryClient, result.snapshot)
+          })
+          .catch(() => undefined)
         void queryClient.invalidateQueries({ queryKey: ["artifact", artifactId] })
         void queryClient.invalidateQueries({ queryKey: ["artifact-versions", artifactId] })
         // Drop pinned historic version so the open pane reloads the just-saved current.

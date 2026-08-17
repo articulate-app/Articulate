@@ -179,6 +179,7 @@ import {
   toLeftPaneTabStripItems,
   useLeftPaneTabsStore,
 } from "../../store/left-pane-tabs";
+import { useResolveAiWorkspaceTabTitles } from "../../hooks/use-resolve-ai-workspace-tab-titles";
 import { useResolveCenterPaneTabTitles } from "../../hooks/use-resolve-center-pane-tab-titles";
 import { useElementWidth } from "../../hooks/use-element-width";
 import {
@@ -2779,6 +2780,7 @@ export function TasksLayout({
 
   // Resolve placeholder labels for inactive tabs (detail pages only mount for the active tab).
   useResolveCenterPaneTabTitles(!isMobile)
+  useResolveAiWorkspaceTabTitles(!isMobile)
 
   const handleDuplicateTask = useCallback((initialValues: any, options?: { onSuccess?: (task: any) => void | Promise<void> }) => {
     setDuplicateInitialValues(initialValues);
@@ -2805,7 +2807,10 @@ export function TasksLayout({
     return raw !== "false"
   })
   const [searchOpenedAiThreadId, setSearchOpenedAiThreadId] = useState<string | null>(null)
-  const forceNewAiThread = params.get("newAiThread") === "true"
+  const forceNewAiThread =
+    (typeof window !== "undefined"
+      ? new URLSearchParams(window.location.search).get("newAiThread")
+      : params.get("newAiThread")) === "true"
   const [taskDetailsPanePercent, setTaskDetailsPanePercent] = useState(58)
   const [activeFieldContext, setActiveFieldContext] = useState<AiActiveFieldContext>({
     fieldType: 'task',
@@ -3139,11 +3144,11 @@ export function TasksLayout({
   }, [effectivePathname, params.toString(), shallowReplaceSearchParams, tasksShallowUrlEpoch])
 
   const handleConsumeForceNewAiThread = useCallback(() => {
-    if (params.get("newAiThread") !== "true") return
-    const nextParams = new URLSearchParams(params.toString())
+    const nextParams = getLatestSearchParams()
+    if (nextParams.get("newAiThread") !== "true") return
     nextParams.delete("newAiThread")
     shallowReplaceSearchParams(effectivePathname, nextParams, "task-ai-consume-new-thread")
-  }, [params, pathname])
+  }, [effectivePathname, getLatestSearchParams])
 
   const handleMobileNewAiThreadClick = useCallback(() => {
     const next = buildNewAiThreadParams(new URLSearchParams(params.toString()))
@@ -5159,17 +5164,33 @@ export function TasksLayout({
   })()
 
   const middlePaneStripTabs = (() => {
-    const nonAiCenter = toPaneTabStripItems(
-      centerPaneTabs.filter((tab) => tab.kind !== "ai"),
-    )
-    if (!isAiInMiddle) return nonAiCenter
+    if (!isAiInMiddle) {
+      return toPaneTabStripItems(centerPaneTabs)
+    }
     // When AI is hosted in middle, surface AiPane thread tabs on the outer strip
-    // (same pattern as the right pane) — never nest AiPane's own strip underneath.
+    // in the same position as the persisted AI workspace tab(s), instead of hiding
+    // them completely. This keeps neighboring center tabs stable and prevents the
+    // chat tab from "disappearing" when switching to another center view.
     const aiItems = aiChromeTabs.map((tab) => ({
       key: buildAiRightTabKey(tab.id),
       label: tab.title?.trim() || "New chat",
     }))
-    return [...nonAiCenter, ...aiItems]
+    const items: { key: string; label: string }[] = []
+    let injectedAiTabs = false
+    for (const tab of centerPaneTabs) {
+      if (tab.kind !== "ai") {
+        items.push({ key: tab.key, label: tab.title })
+        continue
+      }
+      if (injectedAiTabs) continue
+      if (aiItems.length > 0) {
+        items.push(...aiItems)
+      } else {
+        items.push({ key: tab.key, label: tab.title })
+      }
+      injectedAiTabs = true
+    }
+    return items
   })()
   const middlePaneActiveKey = (() => {
     if (isAiInMiddle && aiChromeActiveId) return buildAiRightTabKey(aiChromeActiveId)

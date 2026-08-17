@@ -49,7 +49,7 @@ export function workspaceListViewLabel(type: WorkspaceListViewType): string {
   if (type === "user-list") return "Users"
   if (type === "ai-thread-list") return "AI chats"
   if (type === "template-list") return "Templates"
-  return "Artifacts"
+  return "Outputs"
 }
 
 /** Global-search / full-results tab key for a list view. Templates use a dedicated list. */

@@ -5,6 +5,10 @@
 export function normalizeKeywordMatchText(value: string): string {
   return value
     .toLowerCase()
+    // Accent-insensitive matching keeps editorial variants such as
+    // "glicemia" and "glicémia" from being reported as missing.
+    .normalize("NFD")
+    .replace(/\p{M}+/gu, "")
     .replace(/[\u2010-\u2015\u2212\uFE58\uFE63\uFF0D]/g, "-")
     .replace(/[-_/]+/g, " ")
     .replace(/\s+/g, " ")

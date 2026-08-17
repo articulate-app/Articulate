@@ -28,7 +28,6 @@ import {
   AI_PANE_TAB_ACTIVE_CLASS,
   AI_PANE_TAB_CHIP_CLASS,
   AI_PANE_TAB_CHROME_CLASS,
-  AI_PANE_TAB_FILLER_CLASS,
   AI_PANE_TAB_INACTIVE_CLASS,
   AI_PANE_TAB_ROW_CLASS,
   AI_PANE_TAB_SCROLL_CLASS,
@@ -39,6 +38,8 @@ import { isPlaceholderAiThreadTitle } from "./ai-thread-title"
 import type { AiActiveFieldContext } from "./active-field-context"
 import { AiPaneThreadLibraryMenus } from "./AiPaneThreadLibraryMenus"
 import { useAiPaneChromeStore, type AiChromeTab, type AiPaneChromeHandlers } from "./ai-pane-chrome-store"
+import { buildLeftPaneTabKey, useLeftPaneTabsStore } from "../../app/store/left-pane-tabs"
+import { buildCenterPaneTabKey, useCenterPaneTabsStore } from "../../app/store/center-pane-tabs"
 
 interface AiPaneProps {
   isOpen: boolean
@@ -188,7 +189,7 @@ function AiPaneTabStrip({
 
   return (
     <div className="flex min-h-0 min-w-0 flex-1 items-stretch">
-      <div ref={scrollRef} className={AI_PANE_TAB_SCROLL_CLASS}>
+      <div ref={scrollRef} className={`${AI_PANE_TAB_SCROLL_CLASS} flex-1`}>
         <div className={AI_PANE_TAB_STRIP_CLASS}>
           {allTabs.map((tab) => {
             const isOptimistic = isOptimisticThreadTab(tab)
@@ -258,7 +259,7 @@ function AiPaneTabStrip({
           )})}
         </div>
       </div>
-      <div className={AI_PANE_TAB_FILLER_CLASS} aria-hidden />
+      <div className="min-h-0 w-0 flex-none self-stretch" aria-hidden />
     </div>
   )
 }
@@ -1048,6 +1049,25 @@ function AiPaneInner({ isOpen, onClose, onExpand, initialScope = 'global', proje
       openTabCount: openTabs.length,
     })
   }, [active?.id, openTabs.length, searchParams])
+
+  useEffect(() => {
+    const syncWorkspaceTabTitle = (threadId: string | null | undefined, rawTitle: string | null | undefined) => {
+      const normalizedId = typeof threadId === "string" ? threadId.trim() : ""
+      const normalizedTitle = typeof rawTitle === "string" ? rawTitle.trim() : ""
+      if (!normalizedId || !normalizedTitle || isPlaceholderAiThreadTitle(normalizedTitle)) return
+      useLeftPaneTabsStore
+        .getState()
+        .updateTitle(buildLeftPaneTabKey("ai", normalizedId), normalizedTitle)
+      useCenterPaneTabsStore
+        .getState()
+        .updateTitle(buildCenterPaneTabKey("ai", normalizedId), normalizedTitle)
+    }
+
+    for (const tab of openTabs) {
+      syncWorkspaceTabTitle(tab.id, streamingThreadTitlesById[tab.id] ?? tab.title ?? null)
+    }
+    syncWorkspaceTabTitle(active?.id, active?.title ?? null)
+  }, [active?.id, active?.title, openTabs, streamingThreadTitlesById])
 
   // Peer right-pane mode: publish open AI chats into the shared tab strip.
   useEffect(() => {

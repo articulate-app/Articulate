@@ -276,6 +276,11 @@ export type StartPublicationResult = {
     task?: string | null
     profile_id?: string | null
   } | null
+  execution?: {
+    type?: "desktop_browser" | string
+    operation?: "prepare_publication" | "continue_publication" | "confirm_publication" | string
+    status?: string | null
+  } | null
   /** @deprecated Local Bridge disconnected — historical responses only. */
   local_browser?: {
     required?: boolean
@@ -310,17 +315,20 @@ export type StartPublicationResult = {
 
 async function desktopAvailabilityPayload(): Promise<Record<string, unknown>> {
   try {
-    const { isArticulateDesktopAvailable } = await import("../articulate-desktop")
-    const available = isArticulateDesktopAvailable()
+    const { getDesktopClientRuntimeContext } = await import("../articulate-desktop")
+    const runtime = await getDesktopClientRuntimeContext()
     return {
-      desktop_available: available,
+      ...runtime,
       // Legacy fields always false — Local Bridge is disconnected from runtime.
       local_bridge_available: false,
       local_chrome_available: false,
     }
   } catch {
     return {
+      client_runtime: "web",
       desktop_available: false,
+      native_browser_available: false,
+      desktop_browser_control: false,
       local_bridge_available: false,
       local_chrome_available: false,
     }
@@ -507,6 +515,47 @@ export async function cancelPublication(runId: string): Promise<PublicationRun> 
   const data = await invokePublishingAction<{ run: PublicationRun }>({
     action: "cancel_publication",
     run_id: runId,
+  })
+  return data.run
+}
+
+/** Report a state transition from the native Electron browser executor. */
+export async function reportDesktopPublication(args: {
+  runId: string
+  desktopBrowserId: string
+  status: PublicationRun["status"]
+  phaseMessage?: string | null
+  activityLabel?: string | null
+  awaitingDestinationAuth?: boolean
+  userHasControl?: boolean
+  executionOperation?: "prepare_publication" | "continue_publication" | "confirm_publication" | string
+  agentStatus?: string | null
+  thought?: string | null
+  errorCode?: string | null
+  errorMessage?: string | null
+  externalUrl?: string | null
+  externalId?: string | null
+  scheduleStrategy?: "external" | "internal" | null
+  destinationConnected?: boolean
+}): Promise<PublicationRun> {
+  const data = await invokePublishingAction<{ run: PublicationRun }>({
+    action: "report_desktop_publication",
+    run_id: args.runId,
+    desktop_browser_id: args.desktopBrowserId,
+    status: args.status,
+    ...(args.phaseMessage ? { phase_message: args.phaseMessage } : {}),
+    ...(args.activityLabel ? { activity_label: args.activityLabel } : {}),
+    ...(args.awaitingDestinationAuth === true ? { awaiting_destination_auth: true } : {}),
+    ...(args.userHasControl === true ? { user_has_control: true } : {}),
+    ...(args.executionOperation ? { execution_operation: args.executionOperation } : {}),
+    ...(args.agentStatus ? { agent_status: args.agentStatus } : {}),
+    ...(args.thought ? { thought: args.thought } : {}),
+    ...(args.errorCode ? { error_code: args.errorCode } : {}),
+    ...(args.errorMessage ? { error_message: args.errorMessage } : {}),
+    ...(args.externalUrl ? { external_url: args.externalUrl } : {}),
+    ...(args.externalId ? { external_id: args.externalId } : {}),
+    ...(args.scheduleStrategy ? { schedule_strategy: args.scheduleStrategy } : {}),
+    ...(args.destinationConnected === true ? { destination_connected: true } : {}),
   })
   return data.run
 }

@@ -92,7 +92,7 @@ import { TaskSeoAndAiSeoTab } from "../../../features/tasks/components/task-seo-
 const EMPTY_ARR: any[] = []
 const NONE_OPTION = "__none__"
 const TASK_TABS = ["overview", "attachments", "artifacts", "seo", "activity", "reviews", "comments"] as const
-/** Legacy deep-links used `taskTab=content`; map to Artifacts. */
+/** Legacy deep-links used `taskTab=content`; map to Outputs. */
 const LEGACY_CONTENT_TAB = "content"
 
 type TaskTab = (typeof TASK_TABS)[number]
@@ -3941,7 +3941,7 @@ export function TaskDetails({
                 ref={overviewCommentDockRef}
                 className={cn(
                   CHAT_CONTENT_COLUMN_CLASS,
-                  "absolute bottom-0 left-0 right-0 z-10 border-t border-gray-100 bg-white px-4 py-2",
+                  "absolute bottom-0 left-0 right-0 z-10 bg-white px-4 py-2",
                 )}
               />
             ) : null}
@@ -3962,7 +3962,7 @@ export function TaskDetails({
                   </div>
                   <div
                     ref={commentInputRef}
-                    className="absolute bottom-0 left-0 right-0 z-10 border-t border-gray-100 bg-white pt-1"
+                    className="absolute bottom-0 left-0 right-0 z-10 bg-white pt-1"
                     data-ai-field-type="comment_input"
                     data-ai-field-label="Comment"
                     onFocusCapture={() =>
@@ -4060,12 +4060,13 @@ export function TaskDetails({
 
           {!isSuggestionMode && activeTaskTab === "artifacts" && taskIdNum ? (
             <section className="p-4 pb-0">
-              <h3 className="mb-3 text-base font-medium text-gray-900">Artifacts</h3>
+              <h3 className="mb-3 text-base font-medium text-gray-900">Outputs</h3>
               <ArtifactWorkspace
                 taskId={taskIdNum}
                 defaultChannelId={activeChannelId}
                 defaultLanguageId={task?.language_id ? Number(task.language_id) : null}
                 projectId={task?.project_id_int ?? null}
+                contextProjectName={task?.project?.name ?? currentProjectName ?? null}
                 hideHeading
               />
             </section>

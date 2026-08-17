@@ -49,6 +49,8 @@ export type ResolveBrowserProviderInput = {
 
 export type ResolvedBrowserProvider = {
   provider: BrowserAgentProviderName
+  /** Where the provider is executed. Electron is always client-executed. */
+  executionLocation: "client" | "server"
   reason:
     | "explicit_cloud"
     | "desktop_available"
@@ -109,6 +111,7 @@ export function resolveBrowserProvider(
   if (input.operation === "unattended_scheduled_execution") {
     return {
       provider: "browser_use",
+      executionLocation: "server",
       reason: "unattended_requires_cloud",
       desktopAvailable,
       localBridgeAvailable: false,
@@ -120,6 +123,7 @@ export function resolveBrowserProvider(
   if (forceCloud) {
     return {
       provider: "browser_use",
+      executionLocation: "server",
       reason: "explicit_cloud",
       desktopAvailable,
       localBridgeAvailable: false,
@@ -139,6 +143,7 @@ export function resolveBrowserProvider(
     if (desktopAvailable || preferred === "articulate_desktop") {
       return {
         provider: "articulate_desktop",
+        executionLocation: "client",
         reason: "desktop_available",
         desktopAvailable: true,
         localBridgeAvailable: false,
@@ -148,6 +153,7 @@ export function resolveBrowserProvider(
     }
     return {
       provider: "browser_use",
+      executionLocation: "server",
       reason: "desktop_unavailable_fallback_cloud",
       desktopAvailable: false,
       localBridgeAvailable: false,
@@ -158,6 +164,7 @@ export function resolveBrowserProvider(
 
   return {
     provider: "browser_use",
+    executionLocation: "server",
     reason: "cloud_default",
     desktopAvailable,
     localBridgeAvailable: false,

@@ -111,7 +111,11 @@ import {
   applyArtifactCachePatch,
   artifactCachePatchFromSavedLivePreview,
 } from "./artifact-query-cache"
-import { resolveSavedLiveArtifactBase } from "./artifact-live-save-base"
+import {
+  isArtifactDraftStaleForServerVersion,
+  resolveArtifactDraftExpectedVersion,
+  resolveSavedLiveArtifactBase,
+} from "./artifact-live-save-base"
 import { isArtifactLiveEditLocked } from "./artifact-live-edit-lock"
 import { exportArtifactAsDocx } from "./artifact-docx-export"
 import {
@@ -185,6 +189,8 @@ export function ArtifactPane({
   const applyingServerContentRef = useRef(false)
   /** True only after a real user edit — server/AI content loads must not count as a dirty draft. */
   const userDirtyRef = useRef(false)
+  /** Server version at the start of a manual edit; never advance it implicitly. */
+  const draftBaseVersionRef = useRef<number | null>(null)
   const [editorForceNonce, setEditorForceNonce] = useState(0)
   draftTitleRef.current = draftTitle
   draftContentJsonRef.current = draftContentJson
@@ -427,6 +433,13 @@ export function ArtifactPane({
 
   const lastSyncedArtifactKeyRef = useRef<string | null>(null)
 
+  const beginUserEdit = () => {
+    if (!userDirtyRef.current) {
+      draftBaseVersionRef.current = displayArtifact?.current_version ?? 0
+    }
+    userDirtyRef.current = true
+  }
+
   useEffect(() => {
     if (!displayArtifact) return
     const serverVersion = displayArtifact.current_version ?? 0
@@ -452,6 +465,7 @@ export function ArtifactPane({
     if (isLiveAi) {
       applyingServerContentRef.current = true
       userDirtyRef.current = false
+      draftBaseVersionRef.current = null
       setDraftTitle(displayArtifact.title ?? "")
       setDraftContentJson(displayArtifact.content_json)
       setDraftContentText(displayArtifact.content_text)
@@ -472,6 +486,7 @@ export function ArtifactPane({
     const isFirstSync = previousKey == null || !previousKey.startsWith(`${displayArtifact.id}:`)
     if (!isFirstSync && draftMatchesServer) {
       userDirtyRef.current = false
+      draftBaseVersionRef.current = null
       setDraftTitle(displayArtifact.title ?? "")
       setDraftContentJson(displayArtifact.content_json)
       setDraftContentText(displayArtifact.content_text)
@@ -483,7 +498,30 @@ export function ArtifactPane({
     // the editor to the old version after AI builds saved a new one.
     const previousId = previousKey?.slice(0, previousKey.indexOf(":")) ?? null
     const isSameArtifact = previousId === displayArtifact.id
-    if (isSameArtifact && userDirtyRef.current && !draftMatchesServer && !version) {
+    const staleUserDraft =
+      isSameArtifact
+      && userDirtyRef.current
+      && !draftMatchesServer
+      && !version
+      && isArtifactDraftStaleForServerVersion(
+        draftBaseVersionRef.current,
+        serverVersion,
+      )
+
+    if (staleUserDraft) {
+      // A newer AI/server version arrived after this edit started. Keeping the
+      // old editor body would make the user see stale content and could later
+      // attempt to overwrite the newer revision.
+      setConflictMessage("A newer version was saved. The editor has refreshed.")
+    }
+
+    if (
+      isSameArtifact
+      && userDirtyRef.current
+      && !draftMatchesServer
+      && !version
+      && !staleUserDraft
+    ) {
       // Rebase silently — TipTap already owns the document; avoid force remount.
       setDraftTitle((prev) => prev || (displayArtifact.title ?? ""))
       return
@@ -491,6 +529,7 @@ export function ArtifactPane({
 
     applyingServerContentRef.current = true
     userDirtyRef.current = false
+    draftBaseVersionRef.current = null
     setDraftTitle(displayArtifact.title ?? "")
     setDraftContentJson(displayArtifact.content_json)
     setDraftContentText(displayArtifact.content_text)
@@ -569,9 +608,12 @@ export function ArtifactPane({
       return
     }
     const effectiveArtifact = resolveSavedLiveArtifactBase(displayArtifact, livePreview)
-    const expectedVersion = Math.max(
-      effectiveArtifact.current_version ?? 0,
-      knownServerVersionRef.current,
+    const expectedVersion = resolveArtifactDraftExpectedVersion(
+      draftBaseVersionRef.current,
+      Math.max(
+        effectiveArtifact.current_version ?? 0,
+        knownServerVersionRef.current,
+      ),
     )
     if (expectedVersion <= 0) return
     // Drop no-op autosaves (TipTap echo after force-sync).
@@ -968,6 +1010,7 @@ export function ArtifactPane({
           <input
             value={draftTitle}
             onChange={(event) => {
+              beginUserEdit()
               setDraftTitle(event.target.value)
               scheduleAutosave()
             }}
@@ -1174,7 +1217,7 @@ export function ArtifactPane({
           if (isLivePreview) return
           setShowChanges(false)
           applyingServerContentRef.current = true
-          userDirtyRef.current = true
+          beginUserEdit()
           setDraftContentJson(contentJson)
           setDraftContentText(contentText)
           setEditorForceNonce((n) => n + 1)
@@ -1344,13 +1387,13 @@ export function ArtifactPane({
               }}
               onContentJsonChange={(contentJson) => {
                 if (isLivePreview || applyingServerContentRef.current) return
-                userDirtyRef.current = true
+                beginUserEdit()
                 setDraftContentJson(contentJson)
                 scheduleAutosave()
               }}
               onContentTextChange={(contentText) => {
                 if (isLivePreview || applyingServerContentRef.current) return
-                userDirtyRef.current = true
+                beginUserEdit()
                 setDraftContentText(contentText)
                 scheduleAutosave()
               }}
@@ -1392,7 +1435,7 @@ export function ArtifactPane({
               readOnly={isLivePreview}
               onContentChange={({ contentText, contentJson }) => {
                 if (isLivePreview) return
-                if (!applyingServerContentRef.current) userDirtyRef.current = true
+                if (!applyingServerContentRef.current) beginUserEdit()
                 setDraftContentText(contentText)
                 setDraftContentJson(contentJson)
                 scheduleAutosave()

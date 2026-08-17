@@ -49,7 +49,6 @@ import {
 } from "../../lib/tasks-shallow-nav"
 import {
   WorkspacePageAddButton,
-  WorkspacePageSearchInput,
   WorkspacePageShell,
 } from "./workspace-page-shell"
 import { useCurrentUserStore } from "../../store/current-user"
@@ -137,9 +136,6 @@ function WorkspaceTaskListViewInner({ paneId }: { paneId: WorkspacePaneId }) {
   const [pageSearchValue, setPageSearchValue] = useState(
     () => params.get("q")?.trim() || searchValue || "",
   )
-  const [isSearchOpen, setIsSearchOpen] = useState(
-    () => Boolean(params.get("q")?.trim()),
-  )
   const [isMultiselectMode, setIsMultiselectMode] = useState(false)
 
   const [listEditBootstrapAfterPaint, setListEditBootstrapAfterPaint] = useState(false)
@@ -183,7 +179,6 @@ function WorkspaceTaskListViewInner({ paneId }: { paneId: WorkspacePaneId }) {
           ? new URLSearchParams(window.location.search).get("q")?.trim() || ""
           : params.get("q")?.trim() || ""
       setPageSearchValue((current) => (current === next ? current : next))
-      setIsSearchOpen(next.length > 0)
     }
     syncSearchFromLiveUrl()
     if (typeof window === "undefined") return
@@ -261,7 +256,6 @@ function WorkspaceTaskListViewInner({ paneId }: { paneId: WorkspacePaneId }) {
       isSearchTypingRef.current = false
       const trimmed = value.trim()
       setPageSearchValue(trimmed)
-      if (!trimmed) setIsSearchOpen(false)
       writeSearchToUrl(trimmed)
     },
     [writeSearchToUrl],
@@ -458,7 +452,6 @@ function WorkspaceTaskListViewInner({ paneId }: { paneId: WorkspacePaneId }) {
     { id: "calendar", label: "Calendar", icon: Calendar },
   ]
 
-  const showSearchRow = isSearchOpen || pageSearchValue.trim().length > 0
   const groupByPlacement =
     viewMode !== "list" ? "none" : toolbarWidth < 620 ? "overflow" : toolbarWidth < 760 ? "icon" : "full"
 
@@ -506,19 +499,25 @@ function WorkspaceTaskListViewInner({ paneId }: { paneId: WorkspacePaneId }) {
       }
       actions={
         <>
-          <button
-            type="button"
-            aria-label="Search tasks"
-            aria-pressed={showSearchRow}
-            onClick={() => setIsSearchOpen((open) => (pageSearchValue.trim().length > 0 ? true : !open))}
-            className={cn(
-              "inline-flex h-8 min-w-[9.75rem] shrink-0 cursor-text items-center justify-start gap-2 rounded-full border border-gray-200 bg-white px-3.5 text-sm font-medium text-gray-500 transition-colors hover:bg-gray-50 hover:text-gray-700",
-              showSearchRow && "bg-gray-100 text-gray-900",
-            )}
-          >
-            <Search className="h-3.5 w-3.5 shrink-0" />
-            <span className="truncate">{pageSearchValue.trim().length > 0 ? pageSearchValue : "Search tasks..."}</span>
-          </button>
+          <label className="relative flex h-9 min-w-[12rem] shrink-0 items-center overflow-hidden rounded-full border border-gray-200 bg-white text-gray-500 transition-colors focus-within:border-gray-300 focus-within:text-gray-900 hover:border-gray-300 hover:text-gray-700">
+            <Search className="pointer-events-none ml-3 h-3.5 w-3.5 shrink-0" />
+            <input
+              type="text"
+              aria-label="Search tasks"
+              value={pageSearchValue}
+              onChange={(event) => handleSearchChange(event.target.value)}
+              onKeyDown={(event) => {
+                if (event.key !== "Enter") return
+                event.preventDefault()
+                commitSearch(event.currentTarget.value)
+              }}
+              placeholder="Search tasks..."
+              autoComplete="off"
+              inputMode="search"
+              spellCheck={false}
+              className="h-full w-full min-w-0 bg-transparent px-2.5 pr-3 text-sm font-medium text-gray-900 outline-none placeholder:text-gray-400"
+            />
+          </label>
           <WorkspacePageAddButton
             label="New task"
             onClick={() => openComposer({})}
@@ -533,16 +532,6 @@ function WorkspaceTaskListViewInner({ paneId }: { paneId: WorkspacePaneId }) {
           isListLayout && "sticky top-0 z-30 -mx-4 px-4 pb-2 pt-3",
         )}
       >
-        {showSearchRow ? (
-          <WorkspacePageSearchInput
-            value={pageSearchValue}
-            onChange={handleSearchChange}
-            onCommit={commitSearch}
-            placeholder="Search tasks…"
-            autoFocus={isSearchOpen}
-          />
-        ) : null}
-
       <div ref={toolbarRowRef} className="flex min-w-0 shrink-0 items-center gap-2.5">
         <div className="flex min-w-0 flex-1 items-center gap-2 overflow-x-auto overflow-y-hidden whitespace-nowrap pr-1">
           <IconTooltip label={isMultiselectMode ? "Exit multiselect" : "Multiselect"}>

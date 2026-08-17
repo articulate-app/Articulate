@@ -1,6 +1,8 @@
 import { describe, expect, it } from "vitest"
 import {
+  isArtifactDraftStaleForServerVersion,
   isArtifactDraftNoopAgainstBase,
+  resolveArtifactDraftExpectedVersion,
   resolveSavedLiveArtifactBase,
 } from "../features/artifacts/artifact-live-save-base"
 import type { TaskArtifact } from "../app/lib/artifacts/artifact-types"
@@ -116,5 +118,10 @@ describe("artifact live save base", () => {
     )
 
     expect(noop).toBe(true)
+  })
+
+  it("keeps a manual draft on its original version when the server advances", () => {
+    expect(resolveArtifactDraftExpectedVersion(4, 5)).toBe(4)
+    expect(isArtifactDraftStaleForServerVersion(4, 5)).toBe(true)
   })
 })

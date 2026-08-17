@@ -78,6 +78,8 @@ export type PublicationRun = {
   destination_id: string
   started_by?: number | null
   provider: string
+  /** Client for native Desktop execution; server for Cloud/unattended execution. */
+  execution_location?: "client" | "server" | string | null
   status: PublicationRunStatus
   publish_mode?: PublishMode | string | null
   scheduled_at?: string | null
@@ -126,6 +128,18 @@ export type PublicationRun = {
     schedule_wording?: "destination" | "articulate" | string | null
     local_confirm_pending?: boolean
     local_confirm_task?: string | null
+    desktop_browser?: boolean
+    desktop_browser_id?: string | null
+    desktop_agent_task?: string | null
+    desktop_confirm_pending?: boolean
+    desktop_confirm_task?: string | null
+    client_execution?: {
+      type?: "desktop_browser" | string
+      operation?: "prepare_publication" | "confirm_publication" | "continue_publication" | string
+      status?: "requested" | "running" | "needs_user" | "completed" | string
+      requested_at?: string | null
+      client_session_id?: string | null
+    } | null
   }
   created_at?: string | null
   updated_at?: string | null
@@ -169,12 +183,18 @@ export function shouldPollPublicationSync(run: {
   metadata?: {
     awaiting_destination_auth?: boolean | null
     local_browser?: boolean | null
+    desktop_browser?: boolean | null
   } | null
 }): boolean {
   if (!run.status || !isActivePublicationStatus(run.status)) return false
   if (run.metadata?.awaiting_destination_auth) return false
   // Local Bridge runs are advanced by the client driver, not Cloud sync polling.
-  if (run.provider === "browser_use_local" || run.metadata?.local_browser) return false
+  if (
+    run.provider === "browser_use_local" ||
+    run.provider === "articulate_desktop" ||
+    run.metadata?.local_browser ||
+    run.metadata?.desktop_browser
+  ) return false
   // Without a provider run id there is nothing actionable to poll — sync once reconciles zombies.
   return Boolean(run.provider_run_id)
 }

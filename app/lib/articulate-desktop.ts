@@ -53,6 +53,19 @@ export type DesktopControlState = {
   agentGeneration: number
 }
 
+/**
+ * Runtime facts attached to AI requests. These are deliberately obtained from
+ * the Electron preload bridge, never from the user-authored chat message.
+ */
+export type DesktopClientRuntimeContext = {
+  client_runtime: "desktop" | "web"
+  desktop_available: boolean
+  native_browser_available: boolean
+  desktop_browser_control: boolean
+  desktop_version: string | null
+  desktop_session_id: string | null
+}
+
 export type DesktopUpdateStatus = {
   status:
     | "idle"
@@ -134,6 +147,77 @@ export function isArticulateDesktopAvailable(): boolean {
 export function getArticulateDesktop(): ArticulateDesktopApi | null {
   if (!isArticulateDesktopAvailable()) return null
   return window.articulateDesktop ?? null
+}
+
+const DESKTOP_SESSION_STORAGE_KEY = "articulate.desktop-session-id"
+
+function desktopSessionId(): string | null {
+  if (typeof window === "undefined") return null
+  try {
+    const existing = window.sessionStorage.getItem(DESKTOP_SESSION_STORAGE_KEY)
+    if (existing) return existing
+    const next =
+      typeof crypto !== "undefined" && "randomUUID" in crypto
+        ? crypto.randomUUID()
+        : `desktop-${Date.now()}-${Math.random().toString(36).slice(2)}`
+    window.sessionStorage.setItem(DESKTOP_SESSION_STORAGE_KEY, next)
+    return next
+  } catch {
+    return null
+  }
+}
+
+/**
+ * Read the Desktop capability handshake from Electron's trusted preload API.
+ * Web clients receive an explicit negative capability set, so the backend can
+ * make execution-location decisions without interpreting message text.
+ */
+export async function getDesktopClientRuntimeContext(): Promise<DesktopClientRuntimeContext> {
+  const api = getArticulateDesktop()
+  if (!api) {
+    return {
+      client_runtime: "web",
+      desktop_available: false,
+      native_browser_available: false,
+      desktop_browser_control: false,
+      desktop_version: null,
+      desktop_session_id: null,
+    }
+  }
+
+  try {
+    const info = await api.getInfo()
+    const capabilities = new Set(info.capabilities ?? [])
+    // Older Desktop shells did not advertise capability flags but did expose
+    // the base native browser API. Do not assume agent control in that case.
+    const nativeBrowser =
+      capabilities.size === 0 ||
+      capabilities.has("browser") ||
+      capabilities.has("native_webcontents_view")
+    const browserControl =
+      capabilities.has("desktop_browser_provider") &&
+      capabilities.has("agent_control") &&
+      Boolean(api.browser.observe && api.browser.agentAction && api.browser.beginAgent)
+    return {
+      client_runtime: "desktop",
+      desktop_available: true,
+      native_browser_available: nativeBrowser,
+      desktop_browser_control: browserControl,
+      desktop_version: info.desktopVersion ?? null,
+      desktop_session_id: desktopSessionId(),
+    }
+  } catch {
+    // The preload object itself is sufficient to identify the Desktop shell,
+    // but failure to read its capabilities must never claim agent control.
+    return {
+      client_runtime: "desktop",
+      desktop_available: true,
+      native_browser_available: Boolean(api.browser.create),
+      desktop_browser_control: false,
+      desktop_version: null,
+      desktop_session_id: desktopSessionId(),
+    }
+  }
 }
 
 /**

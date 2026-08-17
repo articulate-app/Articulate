@@ -48,6 +48,13 @@ export type AiAmbientContext = {
   /** Optional label for the open center-pane artifact (UI title). */
   center_artifact_title?: string | null
   taskTab?: string | null
+  /** Runtime facts supplied by the renderer/preload bridge, never chat text. */
+  client_runtime?: "desktop" | "web"
+  desktop_available?: boolean
+  native_browser_available?: boolean
+  desktop_browser_control?: boolean
+  desktop_version?: string | null
+  desktop_session_id?: string | null
 }
 
 export type ResolvedAiChatOutboundContext = {

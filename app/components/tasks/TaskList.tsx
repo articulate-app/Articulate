@@ -594,6 +594,7 @@ function fitColumnSizing(
 export function TaskList({ onTaskSelect, expandMainTaskId, selectedTaskId, editFields, isMultiselectMode: externalIsMultiselectMode, onToggleMultiselect, bulkActionsHost = null, nestedScroll = true }: TaskListProps) {
   console.log('[TaskList] RENDER');
   const routerParams = useSearchParams()
+  const routerSearch = routerParams?.toString() ?? ''
   /** Keeps list URL-driven state in sync with the address bar when using shallow history updates (no RSC navigation). */
   const [addressSearch, setAddressSearch] = useState<string | null>(null)
   useLayoutEffect(() => {
@@ -603,7 +604,7 @@ export function TaskList({ onTaskSelect, expandMainTaskId, selectedTaskId, editF
   useEffect(() => {
     if (typeof window === 'undefined') return
     setAddressSearch(window.location.search)
-  }, [routerParams.toString()])
+  }, [routerSearch])
   useEffect(() => {
     if (typeof window === 'undefined') return
     const onAddrChange = () => setAddressSearch(window.location.search)
@@ -622,10 +623,10 @@ export function TaskList({ onTaskSelect, expandMainTaskId, selectedTaskId, editF
       const w = window.location.search
       raw = w.startsWith('?') ? w.slice(1) : w
     } else {
-      raw = routerParams.toString()
+      raw = routerSearch
     }
     return new URLSearchParams(raw)
-  }, [addressSearch, routerParams.toString()])
+  }, [addressSearch, routerSearch])
   const router = useRouter()
   const pathname = usePathname()
   const { selectedGroupBy, setGroupBy } = useTaskGrouping();
@@ -3852,12 +3853,41 @@ export function TaskList({ onTaskSelect, expandMainTaskId, selectedTaskId, editF
     })
   }
 
+  const handleRowRenameTask = useCallback((task: Record<string, unknown>, title: string) => {
+    const taskId = Number((task as any)?.id ?? (task as any)?.entity_id)
+    if (!Number.isFinite(taskId)) return
+    void handleCellSaveWithValue(taskId, 'title', title, task)
+  }, [handleCellSaveWithValue])
+
+  const handleRowChangeTaskProject = useCallback((task: Record<string, unknown>, projectId: string) => {
+    const taskId = Number((task as any)?.id ?? (task as any)?.entity_id)
+    if (!Number.isFinite(taskId)) return
+    void handleCellSaveWithValue(taskId, 'projects', projectId, task)
+  }, [handleCellSaveWithValue])
+
+  const handleRowDeleteTask = useCallback((task: Record<string, unknown>) => {
+    const taskId = Number((task as any)?.id ?? (task as any)?.entity_id)
+    if (!Number.isFinite(taskId)) return
+    handleOptimisticDelete(taskId)
+  }, [])
+
   // Add local state for instant row highlight
   const [localSelectedId, setLocalSelectedId] = useState<string | number | null>(selectedTaskId ?? null);
   // Sync localSelectedId with selectedTaskId prop
   useEffect(() => {
     setLocalSelectedId(selectedTaskId ?? null);
   }, [selectedTaskId]);
+
+  const rowProjectOptions = useMemo(
+    () =>
+      Array.isArray(editFields?.projects)
+        ? editFields.projects.map((project: any) => ({
+            id: String(project.id),
+            label: String(project.name ?? project.label ?? `Project ${project.id}`),
+          }))
+        : [],
+    [editFields?.projects],
+  )
 
   console.log('[TaskList] isGroupedView:', isGroupedView);
   if (!hasHydrated || !hasMeasured) return null
@@ -3868,7 +3898,7 @@ export function TaskList({ onTaskSelect, expandMainTaskId, selectedTaskId, editF
     ? 'minmax(0, 1fr)'
     : leafColumns.map((col) => `${Math.max(0, col.getSize())}px`).join(' ')
   const compactDateField: 'delivery_date' | 'publication_date' =
-    routerParams.get('calendar_date_field') === 'publication' ? 'publication_date' : 'delivery_date'
+    params.get('calendar_date_field') === 'publication' ? 'publication_date' : 'delivery_date'
 
   const selectableTaskIds = taskListViewTasks
     .filter((t: any) => t?.kind !== 'suggestion')
@@ -3947,6 +3977,10 @@ export function TaskList({ onTaskSelect, expandMainTaskId, selectedTaskId, editF
                 isMultiselectMode={isBulkSelecting}
                 selectedTasks={selectedTasks}
                 onTaskToggle={handleTaskToggle}
+                onRenameTask={handleRowRenameTask}
+                onDeleteTask={handleRowDeleteTask}
+                onChangeTaskProject={handleRowChangeTaskProject}
+                projectOptions={rowProjectOptions}
                 listColorMode={listColorModeForRows}
                 onListColorLegendChange={onListColorLegendChange}
                 compact={isCompact}
@@ -4035,6 +4069,10 @@ export function TaskList({ onTaskSelect, expandMainTaskId, selectedTaskId, editF
                 isMultiselectMode={isBulkSelecting}
                 selectedTasks={selectedTasks}
                 onTaskToggle={handleTaskToggle}
+                onRenameTask={handleRowRenameTask}
+                onDeleteTask={handleRowDeleteTask}
+                onChangeTaskProject={handleRowChangeTaskProject}
+                projectOptions={rowProjectOptions}
                 listColorMode={listColorModeForRows}
                 onListColorLegendChange={onListColorLegendChange}
                 compact={isCompact}

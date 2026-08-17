@@ -3878,6 +3878,29 @@ async function executePublishingTool(runtime: any) {
   const auth = ctx?.request_auth_header ?? null;
   const runId = ctx?.ai_run_id ?? null;
   const threadId = cleanUuidOrNull(thread?.id ?? ctx?.thread_id);
+  // This is request-scoped renderer/preload capability data forwarded by
+  // ai-chat. It is intentionally separate from tool arguments so the model
+  // cannot manufacture a Desktop execution environment.
+  const clientExecutionContext = (() => {
+    const capabilities = ctx?.client_capabilities;
+    const desktop =
+      capabilities?.client_runtime === "desktop" &&
+      capabilities?.desktop_available === true &&
+      capabilities?.native_browser_available === true &&
+      capabilities?.desktop_browser_control === true;
+    return {
+      client_runtime: desktop ? "desktop" : "web",
+      desktop_available: desktop,
+      native_browser_available: desktop,
+      desktop_browser_control: desktop,
+      ...(desktop && typeof capabilities?.desktop_version === "string"
+        ? { desktop_version: capabilities.desktop_version }
+        : {}),
+      ...(desktop && typeof capabilities?.desktop_session_id === "string"
+        ? { desktop_session_id: capabilities.desktop_session_id }
+        : {}),
+    };
+  })();
 
   if (toolName === "list_publishing_destinations") {
     const projectId =
@@ -4000,6 +4023,7 @@ async function executePublishingTool(runtime: any) {
           ...(typeof rawArgs.guidance === "string" ? { guidance: rawArgs.guidance.trim() } : {}),
           connect,
           ...(threadId ? { ai_thread_id: threadId } : {}),
+          ...clientExecutionContext,
         },
         120000,
         auth,
@@ -4043,6 +4067,7 @@ async function executePublishingTool(runtime: any) {
             ...(threadId ? { ai_thread_id: threadId } : {}),
             ...(scheduledAt ? { scheduled_at: scheduledAt } : {}),
             ...(timezone ? { timezone } : {}),
+            ...clientExecutionContext,
           },
           120000,
           auth,
@@ -4161,6 +4186,7 @@ async function executePublishingTool(runtime: any) {
           ...(scheduledAt ? { scheduled_at: scheduledAt } : {}),
           ...(timezone ? { timezone } : {}),
           ...(scheduleStrategy ? { schedule_strategy: scheduleStrategy } : {}),
+          ...clientExecutionContext,
         },
         120000,
         auth,
