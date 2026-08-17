@@ -96,8 +96,13 @@ Deno.serve(async (req: Request) => {
   const promptTokens = Math.round(positiveNumber(latest.metrics?.usage_prompt_tokens) ?? 0)
   const modelProvider = String(latest.model_provider ?? "")
   const modelName = String(latest.model_name ?? "")
-  const contextLimit = await resolveContextLimit(modelProvider, modelName)
+  const measuredContextLimit = positiveNumber(latest.metrics?.context_limit)
+  const contextLimit = measuredContextLimit ?? await resolveContextLimit(modelProvider, modelName)
   const percentUsed = contextLimit ? Math.min(100, (promptTokens / contextLimit) * 100) : null
+  const cachedPromptTokens = Math.round(Number(latest.metrics?.cached_prompt_tokens ?? 0) || 0)
+  const cacheWriteTokens = Math.round(Number(latest.metrics?.cache_write_tokens ?? 0) || 0)
+  const cacheHitRate = promptTokens > 0 ? cachedPromptTokens / promptTokens : null
+  const status = percentUsed == null ? null : percentUsed >= 80 ? "high" : percentUsed >= 55 ? "compacting" : "healthy"
 
   return Response.json({
     context: {
@@ -107,6 +112,12 @@ Deno.serve(async (req: Request) => {
       prompt_tokens: promptTokens,
       context_limit: contextLimit,
       percent_used: percentUsed,
+      status,
+      composition: latest.metrics?.context_composition ?? null,
+      estimated_prompt_tokens: positiveNumber(latest.metrics?.context_estimated_prompt_tokens),
+      cached_prompt_tokens: cachedPromptTokens,
+      cache_write_tokens: cacheWriteTokens,
+      cache_hit_rate: cacheHitRate,
       summarized: Boolean(thread.context_summary_updated_at),
       measured_at: latest.created_at ?? null,
     },
