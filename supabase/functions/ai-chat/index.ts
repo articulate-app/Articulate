@@ -111,6 +111,38 @@ function estimatePromptTokens(bodyText: string) {
   return Math.max(1, Math.ceil(new TextEncoder().encode(bodyText).byteLength / 3.2));
 }
 
+function estimateContextTokens(value: unknown): number {
+  if (value == null) return 0;
+  const text = typeof value === "string" ? value : JSON.stringify(value);
+  if (!text) return 0;
+  return Math.max(1, Math.ceil(new TextEncoder().encode(text).byteLength / 3.2));
+}
+
+function buildContextComposition(args: {
+  systemPrompt: string;
+  recentMessages: any[];
+  turnContextPrompt: string;
+  currentContent: any;
+  tools: any[];
+}) {
+  const summaryMessages = args.recentMessages.filter((message) =>
+    message?.role === "system" && String(message?.content ?? "").startsWith("SUMMARY OF EARLIER CONVERSATION")
+  );
+  const normalRecent = args.recentMessages.filter((message) => !summaryMessages.includes(message));
+  const composition = {
+    system: estimateContextTokens(args.systemPrompt),
+    tools: estimateContextTokens(args.tools),
+    summary: estimateContextTokens(summaryMessages),
+    recent_messages: estimateContextTokens(normalRecent),
+    turn_context: estimateContextTokens(args.turnContextPrompt),
+    current_request: estimateContextTokens(args.currentContent),
+  };
+  return {
+    ...composition,
+    total_estimated_tokens: Object.values(composition).reduce((sum, value) => sum + value, 0),
+  };
+}
+
 
 
 function parseRequestedCompletionTokens(body: any, fallback: number) {
@@ -128,7 +160,10 @@ function normalizeProviderUsage(raw: any) {
   const completion = Math.max(0, Number(usage.output_tokens ?? usage.completion_tokens ?? 0) || 0);
   const total = Math.max(0, Number(usage.total_tokens ?? (prompt + completion)) || 0);
   const cached = Math.max(0, Number(
-    usage.input_tokens_details?.cached_tokens ?? usage.prompt_tokens_details?.cached_tokens ?? 0,
+    usage.input_tokens_details?.cached_tokens ?? usage.prompt_tokens_details?.cached_tokens ?? usage.cached_tokens ?? 0,
+  ) || 0);
+  const cacheWrite = Math.max(0, Number(
+    usage.cache_write_tokens ?? usage.input_tokens_details?.cache_write_tokens ?? usage.prompt_tokens_details?.cache_write_tokens ?? 0,
   ) || 0);
   const cost = Math.max(0, Number(usage.cost ?? usage.total_cost ?? 0) || 0);
   return {
@@ -136,6 +171,7 @@ function normalizeProviderUsage(raw: any) {
     completion_tokens: Math.round(completion),
     total_tokens: Math.round(total),
     cached_prompt_tokens: Math.round(cached),
+    cache_write_tokens: Math.round(cacheWrite),
     cost,
   };
 }
@@ -205,10 +241,15 @@ async function finalizeTokenEvent(args: {
     p_prompt_tokens: usage.prompt_tokens,
     p_completion_tokens: usage.completion_tokens,
     p_cached_prompt_tokens: usage.cached_prompt_tokens,
+    p_cache_write_tokens: usage.cache_write_tokens,
     p_total_tokens: usage.total_tokens,
     p_succeeded: args.succeeded,
     p_error_code: args.errorCode ?? (parseFailed ? "provider_usage_missing" : null),
-    p_metadata: { usage_parse_failed: parseFailed },
+    p_metadata: {
+      usage_parse_failed: parseFailed,
+      cache_write_tokens: usage.cache_write_tokens,
+      cache_hit_rate: usage.prompt_tokens > 0 ? usage.cached_prompt_tokens / usage.prompt_tokens : 0,
+    },
   });
   if (error) {
     console.error("ai token call finalization failed", { event_id: args.eventId, error: error.message });
@@ -2447,13 +2488,14 @@ function assertExecutableAiProvider(provider: string) {
 
 
 
-let openRouterToolModelsCache: { expiresAt: number; models: Set<string> } | null = null;
+type OpenRouterModelMetadata = { supportsTools: boolean; contextLength: number | null };
+let openRouterModelMetadataCache: { expiresAt: number; models: Map<string, OpenRouterModelMetadata> } | null = null;
 
-async function openRouterModelSupportsTools(model: string): Promise<boolean> {
-  if (!OPENROUTER_API_KEY) return false;
+async function openRouterModelMetadata(model: string): Promise<OpenRouterModelMetadata> {
+  if (!OPENROUTER_API_KEY) return { supportsTools: false, contextLength: null };
   const now = Date.now();
-  if (openRouterToolModelsCache && openRouterToolModelsCache.expiresAt > now) {
-    return openRouterToolModelsCache.models.has(model);
+  if (openRouterModelMetadataCache && openRouterModelMetadataCache.expiresAt > now) {
+    return openRouterModelMetadataCache.models.get(model) ?? { supportsTools: false, contextLength: null };
   }
   try {
     const response = await fetch("https://openrouter.ai/api/v1/models?supported_parameters=tools", {
@@ -2462,16 +2504,36 @@ async function openRouterModelSupportsTools(model: string): Promise<boolean> {
     });
     if (!response.ok) throw new Error(`openrouter_models_failed:${response.status}`);
     const payload = await response.json();
-    const models = new Set<string>((Array.isArray(payload?.data) ? payload.data : [])
-      .map((row: any) => String(row?.id ?? "").trim())
-      .filter(Boolean));
-    openRouterToolModelsCache = { expiresAt: now + 5 * 60 * 1000, models };
-    return models.has(model);
+    const models = new Map<string, OpenRouterModelMetadata>();
+    for (const row of Array.isArray(payload?.data) ? payload.data : []) {
+      const id = String(row?.id ?? "").trim();
+      if (!id) continue;
+      const supported = Array.isArray(row?.supported_parameters)
+        ? row.supported_parameters.map((value: unknown) => String(value ?? "").trim())
+        : [];
+      const parsedContext = Number(row?.context_length);
+      models.set(id, {
+        supportsTools: supported.includes("tools"),
+        contextLength: Number.isFinite(parsedContext) && parsedContext > 0 ? Math.round(parsedContext) : null,
+      });
+    }
+    openRouterModelMetadataCache = { expiresAt: now + 5 * 60 * 1000, models };
+    return models.get(model) ?? { supportsTools: false, contextLength: null };
   } catch (error) {
-    console.warn("ai-chat OpenRouter tool capability lookup failed", { model, error: String(error) });
-    // Fail closed for tool execution, but keep the model usable for chat.
-    return false;
+    console.warn("ai-chat OpenRouter model metadata lookup failed", { model, error: String(error) });
+    return { supportsTools: false, contextLength: null };
   }
+}
+
+async function openRouterModelSupportsTools(model: string): Promise<boolean> {
+  return (await openRouterModelMetadata(model)).supportsTools;
+}
+
+function nativeModelContextLimit(provider: string, model: string): number | null {
+  if (provider !== "openai") return null;
+  if (model === "gpt-5.4-mini") return 400_000;
+  if (model === "gpt-5.5") return 1_050_000;
+  return null;
 }
 
 const modelPricingCache = new Map<string, { expiresAt: number; data: any }>();
@@ -3045,7 +3107,7 @@ async function refreshThreadContextSummary(supabaseService: any, threadId: strin
         messages: [
           {
             role: "system",
-            content: "You maintain a rolling summary of an AI workspace chat thread. Merge the previous summary (if any) with the new messages into ONE updated summary in the conversation's dominant language. Preserve every fact needed for follow-ups: user goals and decisions, agreed deliverables and their formats, names of people/brands/projects, artifact/task/project IDs mentioned, stated preferences and constraints, and open questions. Max ~350 words. Output only the summary text.",
+            content: "You maintain a rolling summary of an AI workspace chat thread. Merge the previous summary (if any) with the new messages into ONE compact structured summary in the conversation's dominant language. Use exactly these headings: GOALS, DECISIONS, CONSTRAINTS, WORKSPACE ENTITIES, COMPLETED ACTIONS, OPEN ITEMS. Under each heading use concise bullets and omit empty headings only when truly irrelevant. Preserve exact names, IDs, agreed deliverable formats, task/project/artifact references and unresolved dependencies. Keep thread-specific style constraints when they matter to this work, but do not turn generic cross-thread user preferences into thread memory. Max ~350 words. Output only the structured summary.",
           },
           {
             role: "user",
@@ -3119,6 +3181,7 @@ function mergeUsage(total: any, current: any) {
     completion_tokens: a.completion_tokens + b.completion_tokens,
     total_tokens: a.total_tokens + b.total_tokens,
     cached_prompt_tokens: a.cached_prompt_tokens + b.cached_prompt_tokens,
+    cache_write_tokens: a.cache_write_tokens + b.cache_write_tokens,
     cost: (a.cost ?? 0) + (b.cost ?? 0),
   };
 }
@@ -3609,6 +3672,7 @@ async function runArtifactConversation(args: {
   let assistantText = "";
   let usage: any = null;
   let markedFirstToken = false;
+  let maxContextEstimatedTokens = estimateContextTokens({ messages: conversation, tools: args.tools });
   const streamStartedAtMs = args.streamStartedAtMs ?? performance.now();
 
   for (let round = 0; round < 10; round++) {
@@ -3618,6 +3682,10 @@ async function runArtifactConversation(args: {
       messages: conversation,
       stream: true,
     };
+    if (isOpenRouter) {
+      const sessionId = String(args.thread?.id ?? "").trim().slice(0, 256);
+      if (sessionId) payload.session_id = sessionId;
+    }
     if (Array.isArray(args.tools) && args.tools.length > 0) {
       payload.tools = args.tools;
       payload.tool_choice = "auto";
@@ -3626,6 +3694,10 @@ async function runArtifactConversation(args: {
       if (!isOpenRouter) payload.parallel_tool_calls = true;
     }
     if (!isOpenRouter) payload.stream_options = { include_usage: true };
+    maxContextEstimatedTokens = Math.max(
+      maxContextEstimatedTokens,
+      estimateContextTokens({ messages: conversation, tools: args.tools }),
+    );
 
     args.trace.mark(`${args.provider}_round_${round + 1}_request`);
     const response = isOpenRouter
@@ -3819,6 +3891,7 @@ async function runArtifactConversation(args: {
     buildIds: [...new Set(buildIds)],
     clarification,
     usage,
+    maxContextEstimatedTokens,
     streamStats: args.streamStats ?? null,
   };
 }
@@ -3839,6 +3912,9 @@ async function persistAssistantMessage(args: {
   latencyMs: number;
   scope: any;
   streamStats?: OutboundStreamStats | null;
+  contextComposition?: Record<string, number> | null;
+  contextLimit?: number | null;
+  contextActiveEstimatedTokens?: number | null;
 }) {
   const costs = await computeCost(args.supabaseService, args.provider, args.model, args.usage);
   const hasVisibleText = Boolean(args.text?.trim()) || Boolean(args.clarification);
@@ -3890,6 +3966,20 @@ async function persistAssistantMessage(args: {
         usage_prompt_tokens: args.usage?.prompt_tokens ?? null,
         usage_completion_tokens: args.usage?.completion_tokens ?? null,
         usage_total_tokens: args.usage?.total_tokens ?? null,
+        cached_prompt_tokens: args.usage?.cached_prompt_tokens ?? 0,
+        cache_write_tokens: args.usage?.cache_write_tokens ?? 0,
+        cache_hit_rate: (args.usage?.prompt_tokens ?? 0) > 0
+          ? (args.usage?.cached_prompt_tokens ?? 0) / args.usage.prompt_tokens
+          : null,
+        context_composition: args.contextComposition
+          ? {
+              ...args.contextComposition,
+              active_tool_loop: Math.max(0, (args.contextActiveEstimatedTokens ?? 0) - (args.contextComposition.total_estimated_tokens ?? 0)),
+            }
+          : null,
+        context_limit: args.contextLimit ?? null,
+        context_estimated_prompt_tokens: args.contextComposition?.total_estimated_tokens ?? null,
+        context_active_estimated_tokens: args.contextActiveEstimatedTokens ?? args.contextComposition?.total_estimated_tokens ?? null,
         build_ids: args.buildIds,
         ...(stream
           ? {
@@ -4166,9 +4256,15 @@ async function handleAiChatRequest(req: Request) {
       bindQuotaRunPromise,
     ]);
     trace.mark("context_loaded");
+    const openRouterMetadata = resolvedModel.provider === "openrouter"
+      ? await openRouterModelMetadata(resolvedModel.model)
+      : null;
     const modelSupportsTools = resolvedModel.provider === "openrouter"
-      ? await openRouterModelSupportsTools(resolvedModel.model)
+      ? openRouterMetadata?.supportsTools === true
       : resolvedModel.provider === "openai";
+    const modelContextLimit = resolvedModel.provider === "openrouter"
+      ? null
+      : nativeModelContextLimit(resolvedModel.provider, resolvedModel.model);
     const selectedTools = modelSupportsTools ? MODEL_TOOLS : [];
     // Static system prompt first (stable prompt-cache prefix); volatile per-turn
     // facts go into a context message just before the current user message.
@@ -4188,6 +4284,13 @@ async function handleAiChatRequest(req: Request) {
       ...(!modelSupportsTools ? [{ role: "system", content: "MODEL CAPABILITY: The explicitly selected model does not expose native function tools through OpenRouter. It remains available for conversation and content generation, but it cannot read or mutate workspace data in this run. Do not claim that a workspace change was applied." }] : []),
       { role: "user", content: currentContent },
     ];
+    const contextComposition = buildContextComposition({
+      systemPrompt,
+      recentMessages,
+      turnContextPrompt,
+      currentContent,
+      tools: selectedTools,
+    });
     const ctx = {
       ai_run_id: activeRunId,
       current_user_request: requestText,
@@ -4231,6 +4334,8 @@ async function handleAiChatRequest(req: Request) {
         supabaseService, threadId, runId: activeRunId, provider: resolvedModel.provider, model: resolvedModel.model,
         text: result.assistantText, usage: result.usage, toolResults: result.toolResults, buildIds: result.buildIds,
         clarification: result.clarification, latencyMs, scope, streamStats: result.streamStats ?? streamStats,
+        contextComposition, contextLimit: modelContextLimit,
+        contextActiveEstimatedTokens: result.maxContextEstimatedTokens ?? contextComposition.total_estimated_tokens,
       });
       scheduleThreadContextSummary(supabaseService, threadId);
       return { assistant, run_id: activeRunId, ...result };
