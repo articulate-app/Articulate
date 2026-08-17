@@ -1,6 +1,6 @@
 "use client"
 
-import { useState } from "react"
+import { useEffect, useState } from "react"
 import {
   Bot,
   FolderKanban,
@@ -28,6 +28,7 @@ import type { WorkspaceNewTabQuickActionType } from "../../lib/workspace-new-tab
 import { workspaceListViewLabel, type WorkspaceListViewType } from "../../lib/workspace-list-views"
 import { type WorkspacePaneId } from "../../lib/workspace-view"
 import { PANE_CHROME_ICON_BUTTON_CLASS, PANE_CHROME_ICON_CLASS } from "../tasks/pane-header-tokens"
+import { acquireBrowserSurfaceOverlay } from "../../lib/browser-surface-overlay"
 
 export type WorkspaceNewTabMenuProps = {
   /** Destination pane for every option selected from this menu instance. */
@@ -78,6 +79,11 @@ export function WorkspaceNewTabMenu({
 }: WorkspaceNewTabMenuProps) {
   const [isOpen, setIsOpen] = useState(false)
   const queryClient = useQueryClient()
+
+  useEffect(() => {
+    if (!isOpen) return
+    return acquireBrowserSurfaceOverlay()
+  }, [isOpen])
 
   const close = () => setIsOpen(false)
 
@@ -270,7 +276,8 @@ export function WorkspaceNewTabMenu({
       <PopoverContent
         align="end"
         sideOffset={6}
-        className="w-[min(18rem,calc(100vw-2rem))] border-0 bg-transparent p-0 shadow-none"
+        // Above pane chrome + live-view iframes (native BrowserView is hidden via overlay suppress).
+        className="z-[300] w-[min(18rem,calc(100vw-2rem))] border-0 bg-transparent p-0 shadow-none"
         onOpenAutoFocus={(event) => {
           event.preventDefault()
         }}

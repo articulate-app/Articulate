@@ -155,6 +155,7 @@ function renderFirstTaskCellContent({
   showOutsideControls = false,
   isChecked = false,
   showCheckbox = false,
+  forceShowControls = false,
   onToggleChecked,
 }: {
   task: Record<string, unknown>
@@ -164,37 +165,33 @@ function renderFirstTaskCellContent({
   showOutsideControls?: boolean
   isChecked?: boolean
   showCheckbox?: boolean
+  /** Keep checkbox/grip visible while any bulk selection is active (Biblioteca). */
+  forceShowControls?: boolean
   onToggleChecked?: () => void
 }) {
   if (showOutsideControls) {
+    const showRowCheckbox = showCheckbox && (isChecked || forceShowControls)
     return (
-      <div className="relative flex min-w-0 items-center">
-        <div
-          className={cn(
-            'absolute right-full top-1/2 z-30 flex -translate-y-1/2 items-center gap-2 pr-1.5',
-            // Stay visible when checked; otherwise only on row hover.
-            isChecked ? 'opacity-100' : 'opacity-0 group-hover/task-row:opacity-100',
-          )}
-        >
-          {showCheckbox ? (
-            <input
-              type="checkbox"
-              checked={isChecked}
-              aria-label="Select task"
-              className="h-4 w-4 shrink-0 rounded border-gray-300 text-gray-900 focus:ring-gray-400"
-              onClick={(e) => e.stopPropagation()}
-              onChange={(e) => {
-                e.stopPropagation()
-                onToggleChecked?.()
-              }}
-            />
-          ) : null}
+      <div className="relative flex min-w-0 items-center gap-2">
+        {showRowCheckbox ? (
+          <input
+            type="checkbox"
+            checked={isChecked}
+            aria-label="Select task"
+            className="h-4 w-4 shrink-0 rounded border-gray-300 text-gray-900 accent-gray-900 focus:ring-gray-400"
+            onClick={(e) => e.stopPropagation()}
+            onChange={(e) => {
+              e.stopPropagation()
+              onToggleChecked?.()
+            }}
+          />
+        ) : null}
+        {!forceShowControls ? (
           <TaskDragHandle
             task={task}
             sourceGroupKey={groupKey}
-            className="opacity-100"
           />
-        </div>
+        ) : null}
         <div className="min-w-0 flex-1 truncate">{children}</div>
       </div>
     )
@@ -224,6 +221,35 @@ function getFlattenedItemKey(item: FlattenedItem): string {
       return String(_exhaustive)
     }
   }
+}
+
+function taskNumericIdFromItem(item: FlattenedItem): number | null {
+  if (item.type !== 'task') return null
+  if ((item.task as any)?.kind === 'suggestion') return null
+  const id = Number((item.task as any)?.id ?? (item.task as any)?.entity_id)
+  return Number.isFinite(id) ? id : null
+}
+
+/** Biblioteca-style contiguous selection: rounded block around consecutive selected rows. */
+function getBulkSelectionRun(
+  flattenedItems: FlattenedItem[],
+  index: number,
+  selectedTasks?: Set<number>,
+): { isBulkSelected: boolean; run: 'only' | 'start' | 'middle' | 'end' | null } {
+  if (!selectedTasks?.size) return { isBulkSelected: false, run: null }
+  const id = taskNumericIdFromItem(flattenedItems[index]!)
+  if (id == null || !selectedTasks.has(id)) return { isBulkSelected: false, run: null }
+
+  const prevId = index > 0 ? taskNumericIdFromItem(flattenedItems[index - 1]!) : null
+  const nextId =
+    index < flattenedItems.length - 1 ? taskNumericIdFromItem(flattenedItems[index + 1]!) : null
+  const prevSelected = prevId != null && selectedTasks.has(prevId)
+  const nextSelected = nextId != null && selectedTasks.has(nextId)
+
+  if (!prevSelected && !nextSelected) return { isBulkSelected: true, run: 'only' }
+  if (!prevSelected && nextSelected) return { isBulkSelected: true, run: 'start' }
+  if (prevSelected && !nextSelected) return { isBulkSelected: true, run: 'end' }
+  return { isBulkSelected: true, run: 'middle' }
 }
 
 function isGroupDrained(args: {
@@ -1459,7 +1485,7 @@ export function UnifiedGroupedTaskList<T>({
                 measureRef={rowVirtualizer.measureElement}
                 dataIndex={vRow.index}
                 dataRowType="group"
-                className="task-row group-header sticky top-0 z-10 bg-white/95 backdrop-blur-sm"
+              className="task-row group-header sticky z-10 bg-white/95 backdrop-blur-sm top-[var(--task-list-sticky-top,0px)]"
                 style={{ gridTemplateColumns }}
               >
                 <td className="task-cell task-cell-span-full task-group-label bg-transparent px-1 pb-1.5 pt-6">
@@ -1510,7 +1536,7 @@ export function UnifiedGroupedTaskList<T>({
               measureRef={rowVirtualizer.measureElement}
               dataIndex={vRow.index}
               dataRowType="group"
-              className="task-row group-header sticky top-10 z-10 bg-white/95 backdrop-blur-sm"
+              className="task-row group-header sticky z-10 bg-white/95 backdrop-blur-sm top-[calc(var(--task-list-sticky-top,0px)+2.5rem)]"
               style={{ gridTemplateColumns }}
             >
               {/* Empty cells for columns before title (e.g. select) */}
@@ -1523,7 +1549,7 @@ export function UnifiedGroupedTaskList<T>({
                 className="task-cell task-cell--sticky task-group-label bg-transparent px-3 pb-1.5 pt-6"
                 data-col="title"
               >
-                <div className="flex w-full items-center gap-2">
+                <div className="flex w-full items-center gap-1.5">
                   <button
                     type="button"
                     onClick={e => {
@@ -1673,6 +1699,7 @@ export function UnifiedGroupedTaskList<T>({
             task: task as Record<string, unknown>,
             isLastInGroup: item.isLastInGroup,
           })
+          const compactBulkRun = getBulkSelectionRun(flattenedItems, vRow.index, selectedTasks)
           return (
             <DraggableTaskRow
               key={key}
@@ -1681,10 +1708,16 @@ export function UnifiedGroupedTaskList<T>({
               dataRowType="task"
               onClick={handleTaskRowClick}
               insertDropEdges={insertDropEdges}
+              rowProps={{
+                'data-bulk-selected': compactBulkRun.isBulkSelected ? 'true' : undefined,
+                'data-bulk-run': compactBulkRun.run ?? undefined,
+              } as React.HTMLAttributes<HTMLTableRowElement>}
               className={cn(
-                'task-row hover:bg-gray-50 cursor-pointer',
-                !compact && 'border-b border-gray-100',
-                (isSelectedCompact || isCompactChecked) && 'bg-gray-100',
+                'task-row hover:bg-gray-50/60 cursor-pointer',
+                !compact && !compactBulkRun.isBulkSelected && 'border-b border-gray-100/70',
+                (isSelectedCompact || isCompactChecked) &&
+                  !compactBulkRun.isBulkSelected &&
+                  'bg-gray-100',
               )}
               style={{ gridTemplateColumns }}
             >
@@ -1735,6 +1768,9 @@ export function UnifiedGroupedTaskList<T>({
           !!selectedTasks?.has?.(taskNumericId)
         const showOutsideCheckbox =
           showOutsideSelectionControls && !isSuggestionRow && !!onTaskToggle
+        const forceShowControls =
+          Boolean(isMultiselectMode) || Boolean(selectedTasks && selectedTasks.size > 0)
+        const bulkRun = getBulkSelectionRun(flattenedItems, vRow.index, selectedTasks)
         const rowActions =
           !compact && !isSuggestionRow ? (
             <TaskRowActionsMenu
@@ -1763,10 +1799,15 @@ export function UnifiedGroupedTaskList<T>({
               data-col={entry.colId}
               className={cn(
                 'task-cell text-[15px] align-middle',
-                !compact && 'border-b border-gray-100',
+                !compact && !bulkRun.isBulkSelected && 'border-b border-gray-100/70',
+                bulkRun.isBulkSelected && bulkRun.run !== 'end' && bulkRun.run !== 'only' && 'border-b-0',
+                bulkRun.isBulkSelected &&
+                  (bulkRun.run === 'end' || bulkRun.run === 'only') &&
+                  'border-b border-transparent',
                 entry.colId !== 'project_statuses' && 'truncate',
                 entry.isSpacer && 'task-spacer-cell relative p-0 overflow-visible',
-                !entry.isSpacer && 'px-3 py-2',
+                !entry.isSpacer && entry.colId === 'title' && 'py-2 pl-0 pr-3',
+                !entry.isSpacer && entry.colId !== 'title' && 'px-3 py-2',
                 entry.colId === 'title' && 'task-cell--sticky overflow-visible',
               )}
             >
@@ -1783,6 +1824,7 @@ export function UnifiedGroupedTaskList<T>({
                   showOutsideControls: true,
                   isChecked,
                   showCheckbox: showOutsideCheckbox,
+                  forceShowControls,
                   onToggleChecked: () => onTaskToggle?.(taskNumericId),
                   children: entry.content,
                 })
@@ -1791,6 +1833,13 @@ export function UnifiedGroupedTaskList<T>({
               )}
             </td>
           ))
+
+        const isOpenSelected =
+          !!(
+            selectedTaskId &&
+            selectedEntityType === String((task as any).entity_type) &&
+            String(selectedTaskId) === String((task as any).entity_id)
+          ) && !bulkRun.isBulkSelected
 
         if (!tableRow) {
           return (
@@ -1801,14 +1850,14 @@ export function UnifiedGroupedTaskList<T>({
               dataRowType="task"
               onClick={handleTaskRowClick}
               insertDropEdges={insertDropEdges}
+              rowProps={{
+                'data-bulk-selected': bulkRun.isBulkSelected ? 'true' : undefined,
+                'data-bulk-run': bulkRun.run ?? undefined,
+              } as React.HTMLAttributes<HTMLTableRowElement>}
               className={cn(
-                'task-row hover:bg-gray-50 cursor-pointer',
-                !compact && 'border-b border-gray-100',
-                ((selectedTaskId &&
-                  selectedEntityType === String((task as any).entity_type) &&
-                  String(selectedTaskId) === String((task as any).entity_id)) ||
-                  isChecked) &&
-                  'bg-gray-100',
+                'task-row hover:bg-gray-50/60 cursor-pointer',
+                !compact && !bulkRun.isBulkSelected && 'border-b border-gray-100/70',
+                isOpenSelected && 'bg-gray-100',
               )}
               style={{ gridTemplateColumns }}
             >
@@ -1838,13 +1887,6 @@ export function UnifiedGroupedTaskList<T>({
           )
         }
 
-        const isSelected =
-          !!(
-            selectedTaskId &&
-            selectedEntityType === String((task as any).entity_type) &&
-            String(selectedTaskId) === String((task as any).entity_id)
-          )
-
         return (
           <DraggableTaskRow
             key={key}
@@ -1853,10 +1895,14 @@ export function UnifiedGroupedTaskList<T>({
             dataRowType="task"
             onClick={handleTaskRowClick}
             insertDropEdges={insertDropEdges}
+            rowProps={{
+              'data-bulk-selected': bulkRun.isBulkSelected ? 'true' : undefined,
+              'data-bulk-run': bulkRun.run ?? undefined,
+            } as React.HTMLAttributes<HTMLTableRowElement>}
             className={cn(
-              'task-row hover:bg-gray-50 cursor-pointer',
-              !compact && 'border-b border-gray-100',
-              (isSelected || isChecked) && 'bg-gray-100',
+              'task-row hover:bg-gray-50/60 cursor-pointer',
+              !compact && !bulkRun.isBulkSelected && 'border-b border-gray-100/70',
+              isOpenSelected && 'bg-gray-100',
             )}
             style={{ gridTemplateColumns }}
           >

@@ -133,7 +133,6 @@ export function CalendarView({
   const [expandedWeekLimit, setExpandedWeekLimit] = useState<Record<string, number>>({})
   const [monthPickerOpen, setMonthPickerOpen] = useState(false)
   const [dateFieldOpen, setDateFieldOpen] = useState(false)
-  const [isCalendarHovered, setIsCalendarHovered] = useState(false)
   const [viewMode, setViewMode] = useState<'month' | 'week'>(
     params.get('calendar_mode') === 'week' ? 'week' : 'month',
   )
@@ -552,7 +551,7 @@ export function CalendarView({
   const pillButton =
     'inline-flex h-8 items-center gap-1 px-4 py-1 rounded-full border border-gray-200 text-gray-700 text-sm font-medium hover:bg-gray-50 transition shadow-none focus:ring-2 focus:ring-blue-200 focus:outline-none'
 
-  /** Prev / month / next / Today — keep Date & other pills adjacent with uniform gap-2 (Zoom follows optional row). */
+  /** Prev / month / next — keep Date & other pills adjacent with uniform gap-2 (Zoom follows optional row). */
   const calendarMonthNavCluster = (
     <div className="inline-flex items-center rounded-full border border-gray-200 overflow-hidden shrink-0">
       <button
@@ -625,13 +624,6 @@ export function CalendarView({
       >
         <ChevronRight size={16} />
       </button>
-      <button
-        type="button"
-        className="inline-flex h-8 items-center px-2 text-sm font-medium text-gray-700 hover:bg-gray-50 focus:ring-2 focus:ring-blue-200 focus:outline-none border-l border-gray-200"
-        onClick={() => virtualCalendarRef.current?.scrollToToday()}
-      >
-        Today
-      </button>
     </div>
   )
 
@@ -649,7 +641,9 @@ export function CalendarView({
     </DropdownMenu>
   )
 
-  const dateBtn = `${pillButton} min-w-[140px]`
+  const dateBtn = hideToolbar
+    ? 'inline-flex h-9 shrink-0 items-center gap-1 rounded-md px-2.5 text-[15px] font-medium text-gray-600 hover:bg-gray-100 hover:text-gray-900'
+    : `${pillButton} min-w-[140px]`
   const colorBtn = `${pillButton} min-w-[11rem] shrink-0 whitespace-nowrap`
   const legendBtn = `${pillButton} shrink-0 whitespace-nowrap`
   const subBtn = pillButton + (showSubtasks ? ' bg-blue-600 text-white border-blue-600' : '')
@@ -658,8 +652,19 @@ export function CalendarView({
     () => [
       <DropdownMenu open={dateFieldOpen} onOpenChange={setDateFieldOpen} key="cal-date">
         <DropdownMenuTrigger asChild>
-          <button className={dateBtn} type="button">
-            Date: {dateField === 'delivery_date' ? 'Delivery' : 'Publication'} <ChevronDown size={16} />
+          <button className={dateBtn} type="button" aria-label="Date field">
+            {hideToolbar ? (
+              <>
+                <span className="max-w-[12rem] truncate">
+                  Date: {dateField === 'delivery_date' ? 'Delivery' : 'Publication'}
+                </span>
+                <ChevronDown className="h-4 w-4 opacity-70" />
+              </>
+            ) : (
+              <>
+                Date: {dateField === 'delivery_date' ? 'Delivery' : 'Publication'} <ChevronDown size={16} />
+              </>
+            )}
           </button>
         </DropdownMenuTrigger>
         <DropdownMenuContent align="start">
@@ -741,6 +746,8 @@ export function CalendarView({
       dateFieldOpen,
       showSubtasks,
       pillButton,
+      dateBtn,
+      hideToolbar,
       params,
       pathname,
     ],
@@ -791,23 +798,21 @@ export function CalendarView({
           {calendarZoomMenu}
         </div>
       )}
-      {toolbarMode !== 'full' && (
-        <button
-          type="button"
-          className={cn(pillButton, 'shrink-0')}
-          onClick={() => virtualCalendarRef.current?.scrollToToday()}
-        >
-          Today
-        </button>
-      )}
 
       {!hideToolbar && <div className="min-w-0 flex-1" />}
       {expandButton}
     </div>
   )
 
+  // Shared toolbar host: Date field only; navigate/zoom/color/etc. live in the … menu.
+  const dateOnlyBar = (
+    <div className="flex shrink-0 flex-nowrap items-center gap-2">
+      {calendarOptionalToolbarRow[0]}
+    </div>
+  )
+
   const toolbarPortaled = hideToolbar && toolbarContainerRef?.current
-    ? createPortal(headerBar, toolbarContainerRef.current)
+    ? createPortal(dateOnlyBar, toolbarContainerRef.current)
     : null
 
   const calendarOverflowMenuSubs = useMemo(
@@ -918,6 +923,7 @@ export function CalendarView({
       </DropdownMenuSub>
 
       <>
+        {!toolbarContainerRef ? (
         <DropdownMenuSub>
           <DropdownMenuSubTrigger className="gap-2">
             <span className="min-w-0 truncate">Date field</span>
@@ -949,6 +955,7 @@ export function CalendarView({
             </DropdownMenuItem>
           </DropdownMenuSubContent>
         </DropdownMenuSub>
+        ) : null}
 
         <DropdownMenuItem
           className="justify-between gap-2"
@@ -1013,6 +1020,7 @@ export function CalendarView({
       pathname,
       setCalendarMode,
       calendarOptions.dateField,
+      toolbarContainerRef,
     ],
   )
 
@@ -1030,6 +1038,8 @@ export function CalendarView({
   }, [hideToolbar, registerPaneOverflowMenu])
 
   const inlineOptionalEl = inlineOptionalToolbarRef?.current ?? null
+  const datePortaled = Boolean(hideToolbar && toolbarContainerRef?.current)
+  const inlineStart = datePortaled ? 1 : 0
   const inlineOptionalPortaled =
     hideToolbar &&
     inlineOptionalEl &&
@@ -1038,27 +1048,17 @@ export function CalendarView({
         key={inlineOptionalToolbarSlotVersion}
         className="flex shrink-0 flex-nowrap items-center gap-2"
       >
-        {calendarOptionalToolbarRow.slice(0, calendarInlineVisible)}
+        {calendarOptionalToolbarRow.slice(inlineStart, Math.max(inlineStart, calendarInlineVisible))}
       </div>,
       inlineOptionalEl,
     )
-
-  const hoverControlPill =
-    'inline-flex h-8 items-center gap-1 rounded-full border border-gray-200/90 bg-white/95 px-3.5 text-xs font-medium text-gray-700 shadow-sm backdrop-blur-sm transition hover:bg-white'
-  const showHoverControls = isCalendarHovered || dateFieldOpen
 
   return (
     <section className="w-full h-full min-h-0 flex flex-col overflow-hidden">
       {!hideToolbar && headerBar}
       {toolbarPortaled}
       {inlineOptionalPortaled}
-      <div
-        className="relative flex-1 min-h-0"
-        onMouseEnter={() => setIsCalendarHovered(true)}
-        onMouseLeave={() => {
-          if (!dateFieldOpen) setIsCalendarHovered(false)
-        }}
-      >
+      <div className="relative flex-1 min-h-0">
         <VirtualizedWeekGridCalendar
           ref={virtualCalendarRef}
           tasks={filteredTasks}
@@ -1080,56 +1080,6 @@ export function CalendarView({
           getColorClass={getColorClass}
           getInlineStyle={getInlineStyle}
         />
-        <div
-          className={cn(
-            'absolute inset-x-0 bottom-3 z-30 flex justify-center transition-opacity duration-150',
-            showHoverControls ? 'pointer-events-auto opacity-100' : 'pointer-events-none opacity-0',
-          )}
-        >
-          <div className="inline-flex items-center gap-1.5 rounded-full border border-gray-200/80 bg-white/95 p-1 shadow-md backdrop-blur-md">
-            <button
-              type="button"
-              className={hoverControlPill}
-              onClick={() => virtualCalendarRef.current?.scrollToToday()}
-            >
-              Today
-            </button>
-            <DropdownMenu
-              open={dateFieldOpen}
-              onOpenChange={(open) => {
-                setDateFieldOpen(open)
-                if (open) setIsCalendarHovered(true)
-              }}
-            >
-              <DropdownMenuTrigger asChild>
-                <button type="button" className={hoverControlPill}>
-                  Date: {dateField === 'delivery_date' ? 'Delivery' : 'Publication'}
-                  <ChevronDown size={14} className="opacity-60" />
-                </button>
-              </DropdownMenuTrigger>
-              <DropdownMenuContent align="center" side="top" sideOffset={8}>
-                <DropdownMenuItem
-                  onClick={() => {
-                    const next = writeParam(new URLSearchParams(params.toString()), 'calendar_date_field', 'delivery')
-                    shallowReplaceSearchParams(pathname, next)
-                    setDateFieldOpen(false)
-                  }}
-                >
-                  Delivery Date
-                </DropdownMenuItem>
-                <DropdownMenuItem
-                  onClick={() => {
-                    const next = writeParam(new URLSearchParams(params.toString()), 'calendar_date_field', 'publication')
-                    shallowReplaceSearchParams(pathname, next)
-                    setDateFieldOpen(false)
-                  }}
-                >
-                  Publication Date
-                </DropdownMenuItem>
-              </DropdownMenuContent>
-            </DropdownMenu>
-          </div>
-        </div>
       </div>
 
       {!isLoading && (!filteredTasks || filteredTasks.length === 0) && (

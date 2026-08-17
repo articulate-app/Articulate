@@ -10,6 +10,7 @@ import {
   ChevronRight,
   FileText,
   FolderKanban,
+  LayoutTemplate,
   ListTodo,
   Menu,
   MessageSquare,
@@ -100,10 +101,11 @@ type ExpandableSectionKey = "projects" | "users" | "mentions" | "ai_chats"
 
 type SidebarNavRow =
   | {
-      kind: "task-list"
+      kind: "workspace-list"
+      id: "tasks" | "templates"
       name: string
       icon: LucideIcon
-      createType: HeaderCreateType | "ai"
+      createType?: HeaderCreateType | "ai"
     }
   | {
       kind: "expandable"
@@ -115,7 +117,7 @@ type SidebarNavRow =
     }
 
 const SIDEBAR_NAV_ROWS: SidebarNavRow[] = [
-  { kind: "task-list", name: "Tasks", icon: ListTodo, createType: "task" },
+  { kind: "workspace-list", id: "tasks", name: "Tasks", icon: ListTodo, createType: "task" },
   {
     kind: "expandable",
     section: "projects",
@@ -124,6 +126,7 @@ const SIDEBAR_NAV_ROWS: SidebarNavRow[] = [
     icon: FolderKanban,
     createType: "project",
   },
+  { kind: "workspace-list", id: "templates", name: "Templates", icon: LayoutTemplate },
   {
     kind: "expandable",
     section: "users",
@@ -251,6 +254,7 @@ function NavRow({
   label,
   active,
   onClick,
+  onToggleExpand,
   trailing,
   badge,
   expanded,
@@ -260,6 +264,8 @@ function NavRow({
   label: string
   active?: boolean
   onClick: () => void
+  /** When set, the chevron toggles inline preview without triggering `onClick`. */
+  onToggleExpand?: () => void
   trailing?: React.ReactNode
   badge?: React.ReactNode
   expanded?: boolean
@@ -276,23 +282,32 @@ function NavRow({
       <button
         type="button"
         onClick={onClick}
-        className="flex min-w-0 flex-1 items-center gap-3 rounded-md px-3 py-2 text-left text-sm font-normal text-gray-800"
-        aria-expanded={expandable ? expanded : undefined}
-        aria-label={
-          expandable
-            ? expanded
-              ? `Collapse ${label}`
-              : `Expand ${label}`
-            : undefined
-        }
+        className={cn(
+          "flex min-w-0 flex-1 items-center gap-3 rounded-md py-2 text-left text-sm font-normal text-gray-800",
+          expandable && onToggleExpand ? "pl-3 pr-1" : "px-3",
+        )}
+        aria-label={expandable ? `Open ${label}` : undefined}
       >
         <Icon className="h-[18px] w-[18px] shrink-0 text-gray-700" strokeWidth={1.75} />
         <span className="flex min-w-0 items-center gap-1">
           <span className="truncate">{label}</span>
-          {Chevron ? <Chevron className="h-4 w-4 shrink-0 text-gray-400" aria-hidden /> : null}
+          {Chevron && !onToggleExpand ? (
+            <Chevron className="h-4 w-4 shrink-0 text-gray-400" aria-hidden />
+          ) : null}
         </span>
         {badge}
       </button>
+      {Chevron && onToggleExpand ? (
+        <button
+          type="button"
+          aria-expanded={expanded}
+          aria-label={expanded ? `Collapse ${label} preview` : `Expand ${label} preview`}
+          onClick={onToggleExpand}
+          className="mr-1 inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-md text-gray-400 hover:bg-gray-200 hover:text-gray-700"
+        >
+          <Chevron className="h-4 w-4" aria-hidden />
+        </button>
+      ) : null}
       {trailing}
     </div>
   )
@@ -401,6 +416,7 @@ export function SidebarHomeFeed({
   hasUnseenMentions,
   onNavigateObject,
   onOpenTaskList,
+  onOpenTemplateList,
   onOpenProject,
   onOpenProjectDefinitions,
   onOpenTask,
@@ -416,6 +432,7 @@ export function SidebarHomeFeed({
   hasUnseenMentions: boolean
   onNavigateObject: (object: SearchObjectRoute) => void
   onOpenTaskList?: () => void
+  onOpenTemplateList?: () => void
   onOpenProject: (projectId: number) => void
   onOpenProjectDefinitions: (projectId: number) => void
   onOpenTask: (taskId: number) => void
@@ -1106,22 +1123,20 @@ export function SidebarHomeFeed({
         </div>
         <ul className="space-y-0.5 px-1">
           {SIDEBAR_NAV_ROWS.map((item) => (
-            <li key={item.kind === "task-list" ? "tasks" : item.section}>
+            <li key={item.kind === "workspace-list" ? item.id : item.section}>
               <button
                 type="button"
                 onClick={() => {
-                  if (item.kind === "task-list") {
+                  if (item.kind === "workspace-list") {
+                    if (item.id === "templates") {
+                      onOpenTemplateList?.()
+                      return
+                    }
                     if (onOpenTaskList) onOpenTaskList()
                     else onNavigateObject("task")
                     return
                   }
-                  // Collapsed rail: expand sidebar chrome via toggle, then expand section.
-                  onSidebarToggle?.()
-                  setSectionsExpanded((prev) => {
-                    const next = { ...prev, [item.section]: true }
-                    writeSectionsExpanded(next)
-                    return next
-                  })
+                  onNavigateObject(item.object)
                 }}
                 className={cn(
                   "flex w-full items-center justify-center rounded-md px-0 py-2 text-gray-700 transition-colors hover:bg-gray-100",
@@ -1158,28 +1173,35 @@ export function SidebarHomeFeed({
       </div>
       <ul className="space-y-0.5 px-1 pb-1">
         {SIDEBAR_NAV_ROWS.map((item) => {
-          if (item.kind === "task-list") {
+          if (item.kind === "workspace-list") {
+            const openList = () => {
+              if (item.id === "templates") {
+                onOpenTemplateList?.()
+                return
+              }
+              if (onOpenTaskList) onOpenTaskList()
+              else onNavigateObject("task")
+            }
             return (
-              <li key="tasks">
+              <li key={item.id}>
                 <NavRow
                   icon={item.icon}
                   label={item.name}
-                  onClick={() => {
-                    if (onOpenTaskList) onOpenTaskList()
-                    else onNavigateObject("task")
-                  }}
+                  onClick={openList}
                   trailing={
-                    <button
-                      type="button"
-                      onClick={(event) => {
-                        event.stopPropagation()
-                        handleCreate(item.createType)
-                      }}
-                      className="mr-1 inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-md text-gray-500 opacity-0 transition-opacity hover:bg-gray-200 hover:text-gray-800 group-hover:opacity-100 focus-visible:opacity-100"
-                      aria-label={`Add ${item.name}`}
-                    >
-                      <Plus className="h-4 w-4" />
-                    </button>
+                    item.createType ? (
+                      <button
+                        type="button"
+                        onClick={(event) => {
+                          event.stopPropagation()
+                          handleCreate(item.createType!)
+                        }}
+                        className="mr-1 inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-md text-gray-500 opacity-0 transition-opacity hover:bg-gray-200 hover:text-gray-800 group-hover:opacity-100 focus-visible:opacity-100"
+                        aria-label={`Add ${item.name}`}
+                      >
+                        <Plus className="h-4 w-4" />
+                      </button>
+                    ) : null
                   }
                 />
               </li>
@@ -1200,10 +1222,11 @@ export function SidebarHomeFeed({
               <NavRow
                 icon={item.icon}
                 label={item.name}
-                active={expanded}
+                active={isObjectActive(item.object)}
                 expandable
                 expanded={expanded}
-                onClick={() => toggleSection(item.section)}
+                onClick={() => onNavigateObject(item.object)}
+                onToggleExpand={() => toggleSection(item.section)}
                 badge={
                   item.object === "mention" && hasUnseenMentions ? (
                     <span className="h-2 w-2 rounded-full bg-blue-500" aria-hidden />

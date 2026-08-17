@@ -45,6 +45,13 @@ interface TaskTableHeaderProps<T> {
   onResizeHandleDoubleClick?: (columnId: string) => void
   /** Default widths for reset; keyed by column id */
   defaultWidthsRef?: React.MutableRefObject<Record<string, number>>
+  /** Biblioteca-style master checkbox outside the table (left of Title). */
+  bulkSelect?: {
+    visible: boolean
+    checked: boolean
+    indeterminate: boolean
+    onToggleAll: (checked: boolean) => void
+  }
 }
 
 interface SortableHeaderCellProps {
@@ -59,6 +66,7 @@ interface SortableHeaderCellProps {
   isColumnDragging?: boolean
   onResizeHandleDoubleClick?: (columnId: string) => void
   defaultWidthsRef?: React.MutableRefObject<Record<string, number>>
+  bulkSelect?: TaskTableHeaderProps<unknown>['bulkSelect']
 }
 
 function SortableHeaderCell({
@@ -73,6 +81,7 @@ function SortableHeaderCell({
   isColumnDragging = false,
   onResizeHandleDoubleClick,
   defaultWidthsRef,
+  bulkSelect,
 }: SortableHeaderCellProps) {
   const {
     attributes,
@@ -123,6 +132,8 @@ function SortableHeaderCell({
     [colId, onResizeHandleDoubleClick],
   )
 
+  const showMasterCheckbox = false
+
   return (
     <th
       ref={setNodeRef}
@@ -134,8 +145,9 @@ function SortableHeaderCell({
         'task-cell group/header-cell',
         isSpacer && 'task-spacer-cell p-0',
         !isSpacer &&
-          'task-header-cell relative select-none px-3 py-2 text-left text-sm font-medium text-gray-500',
-        colId === 'title' && 'task-cell--sticky',
+          'task-header-cell relative select-none py-2 text-left text-sm font-medium text-gray-500',
+        !isSpacer && (colId === 'title' ? 'pl-0 pr-3' : 'px-3'),
+        colId === 'title' && 'task-cell--sticky overflow-visible',
       )}
       {...(isDraggable ? attributes : {})}
     >
@@ -143,7 +155,27 @@ function SortableHeaderCell({
         <div className="task-header-drop-indicator" style={{ left: 0 }} />
       )}
       {!isSpacer && (
-        <div className="flex h-full w-full items-center gap-1">
+        <div className="flex h-full w-full items-center gap-2">
+          {showMasterCheckbox ? (
+            <input
+              type="checkbox"
+              data-no-dnd
+              aria-label="Select all tasks"
+              className="h-4 w-4 shrink-0 rounded border-gray-300 text-gray-900 accent-gray-900 focus:ring-gray-400"
+              checked={bulkSelect!.checked}
+              ref={(el) => {
+                if (el) el.indeterminate = bulkSelect!.indeterminate
+              }}
+              onPointerDown={stopDnd}
+              onMouseDown={stopDnd}
+              onTouchStart={stopDnd}
+              onChange={(e) => {
+                e.stopPropagation()
+                bulkSelect!.onToggleAll(e.target.checked)
+              }}
+              onClick={(e) => e.stopPropagation()}
+            />
+          ) : null}
           <div className="flex min-w-0 flex-1 items-center">
             {flexRender(header.column.columnDef.header, header.getContext())}
           </div>
@@ -153,7 +185,8 @@ function SortableHeaderCell({
               aria-label={`Reorder ${getColumnLabel(colId)} column`}
               className={cn(
                 'task-header-draggable flex shrink-0 cursor-grab rounded p-0.5 text-gray-400',
-                'opacity-0 transition-opacity hover:text-gray-600 group-hover/header-cell:opacity-100 active:cursor-grabbing',
+                'opacity-0 transition-opacity hover:text-gray-600',
+                '[@media(hover:hover)]:group-hover/header-cell:opacity-100 active:cursor-grabbing',
                 isDragging && 'task-header-dragging opacity-100',
               )}
               {...listeners}
@@ -180,7 +213,17 @@ function SortableHeaderCell({
   )
 }
 
-export function TaskTableHeader<T>({ table, columns, gridTemplateColumns, onColumnOrderChange, overColId, isColumnDragging, onResizeHandleDoubleClick, defaultWidthsRef }: TaskTableHeaderProps<T>) {
+export function TaskTableHeader<T>({
+  table,
+  columns,
+  gridTemplateColumns,
+  onColumnOrderChange,
+  overColId,
+  isColumnDragging,
+  onResizeHandleDoubleClick,
+  defaultWidthsRef,
+  bulkSelect,
+}: TaskTableHeaderProps<T>) {
   // Single source of truth: iterate columns prop (orderedColumns from TaskList) to match body row order
   const orderedHeaders = React.useMemo(() => {
     const headerGroup = table.getHeaderGroups()[0]
@@ -229,6 +272,7 @@ export function TaskTableHeader<T>({ table, columns, gridTemplateColumns, onColu
                 isColumnDragging={isColumnDragging}
                 onResizeHandleDoubleClick={onResizeHandleDoubleClick}
                 defaultWidthsRef={defaultWidthsRef}
+                bulkSelect={bulkSelect}
               />
             )
           })}

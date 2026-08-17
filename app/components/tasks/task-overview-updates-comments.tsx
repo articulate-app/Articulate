@@ -40,7 +40,7 @@ export function TaskOverviewUpdatesComments({
   const [feedFilter, setFeedFilter] = useState<OverviewFeedFilter>("all")
   const [filterThreadId, setFilterThreadId] = useState<number | null>(null)
   const [isExpanded, setIsExpanded] = useState(false)
-  const [composerExpanded, setComposerExpanded] = useState(false)
+  const [composerExpanded, setComposerExpanded] = useState(true)
   const [composerDock, setComposerDock] = useState<HTMLElement | null>(null)
 
   const handleVisible = useCallback(() => {
@@ -82,7 +82,7 @@ export function TaskOverviewUpdatesComments({
   useEffect(() => {
     previewThreadFetchKeyRef.current = null
     setIsExpanded(false)
-    setComposerExpanded(false)
+    setComposerExpanded(true)
     setFeedFilter("all")
     setFilterThreadId(null)
   }, [taskIdNum])

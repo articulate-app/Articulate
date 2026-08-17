@@ -34,7 +34,8 @@ import { TaskTableHeader, getColumnLabel, stopDnd } from './task-table-header'
 import {
   DndContext,
   DragOverlay,
-  PointerSensor,
+  MouseSensor,
+  TouchSensor,
   useSensor,
   useSensors,
   type DragStartEvent,
@@ -74,9 +75,10 @@ import {
 import { UserAvatar } from "@/components/UserAvatar";
 import { ProjectBadge } from "@/components/ProjectBadge";
 import { getImageUrl } from "../../lib/public-media";
-import { formatDateDisplay, formatCompactDateDisplay, toISODate } from "../../lib/utils";
+import { formatCompactDateDisplay, toISODate } from "../../lib/utils";
 import { InlineDateEditor } from "./InlineDateEditor";
 import { InlineSelect } from "./InlineSelect";
+import { TaskStatusPill } from "./task-list-visuals";
 import { patchTaskInGroupTasksCaches } from '../../../src/hooks/use-task-group-tasks-query';
 import type { TaskCardColorMode } from '@/lib/task-card-colors';
 import {
@@ -100,11 +102,16 @@ interface TaskListProps {
   pageSize?: number
   /** Render bulk actions into an existing toolbar node instead of a new row. */
   bulkActionsHost?: HTMLElement | null
+  /**
+   * When false, the list is not its own scroller — the parent pane scrolls
+   * (native bars at the pane edges; sticky filters live outside this component).
+   */
+  nestedScroll?: boolean
 }
 
-// Shared date display: dd/mm/yyyy (pt-PT locale) for consistency between hover and edit
+// Shared date display: omit year for current-year dates (dd/mmm), full date otherwise
 function formatDateWithYear(dateString: string | null | undefined): string {
-  return formatDateDisplay(dateString) || "";
+  return formatCompactDateDisplay(dateString) || "";
 }
 
 // Helper function to format date
@@ -521,19 +528,70 @@ export function SubtaskRows({ parentId, taskColumns, gridTemplateColumns, onTask
  * Hysteresis margin (px) for leaving compact mode: once compact, the pane must grow this much past
  * the compact threshold before we restore the full table. Prevents flicker at the boundary.
  */
-const COMPACT_EXIT_MARGIN = 32
+const COMPACT_EXIT_MARGIN = 24
 
 /**
- * Upper bound (px) on the compact-mode trigger width. Compact rows are a *narrow-pane* fallback only:
- * the normal table has its own horizontal scroll, so once the left pane is at least this wide we
- * always show the full table (scrolling horizontally if needed) rather than staying compact. Without
- * this cap, the trigger would be the full table width (sum of every column ≈ 1800px+), which a left
- * pane almost never reaches even when maximized — so compact would never turn off after expanding the
- * pane or closing the middle/right panes. Sized to comfortably show the title + a couple of columns.
+ * Compact rows only on truly narrow panes (phone / collapsed preview).
+ * Split panes shrink column widths to fit instead of collapsing the table.
  */
-const COMPACT_MAX_ENTER_WIDTH = 720
+const COMPACT_MAX_ENTER_WIDTH = 420
 
-export function TaskList({ onTaskSelect, expandMainTaskId, selectedTaskId, editFields, isMultiselectMode: externalIsMultiselectMode, onToggleMultiselect, bulkActionsHost = null }: TaskListProps) {
+const COLUMN_FIT_MIN_WIDTHS: Record<string, number> = {
+  select: 36,
+  list_color: 18,
+  title: 140,
+  assigned_user: 72,
+  users: 72,
+  projects: 88,
+  project_statuses: 80,
+  delivery_date: 80,
+  publication_date: 80,
+  updated_at: 80,
+  content_type_title: 88,
+  production_type_title: 88,
+  language_code: 56,
+}
+
+const TASK_LIST_ACTION_GUTTER = 36
+
+function fitColumnSizing(
+  preferred: ColumnSizingState,
+  columnIds: string[],
+  containerWidth: number,
+): ColumnSizingState {
+  if (containerWidth <= 0) return preferred
+  const ids = columnIds.filter((id) => id !== "__spacer" && id !== "select")
+  if (ids.length === 0) return preferred
+  const available = Math.max(0, containerWidth - TASK_LIST_ACTION_GUTTER)
+  const preferredSizes = ids.map(
+    (id) => preferred[id] ?? COLUMN_FIT_MIN_WIDTHS[id] ?? 80,
+  )
+  const preferredSum = preferredSizes.reduce((sum, size) => sum + size, 0)
+  const next: ColumnSizingState = { ...preferred, __spacer: TASK_LIST_ACTION_GUTTER }
+  if (preferredSum <= available) {
+    const leftover = available - preferredSum
+    next.title = (preferred.title ?? 200) + leftover
+    return next
+  }
+  const mins = ids.map((id) => COLUMN_FIT_MIN_WIDTHS[id] ?? 64)
+  const minSum = mins.reduce((sum, size) => sum + size, 0)
+  if (minSum >= available) {
+    ids.forEach((id, index) => {
+      next[id] = mins[index]
+    })
+    return next
+  }
+  const shrinkable = preferredSizes.map((size, index) => Math.max(0, size - mins[index]))
+  const shrinkableSum = shrinkable.reduce((sum, size) => sum + size, 0)
+  const need = preferredSum - available
+  ids.forEach((id, index) => {
+    const cut = shrinkableSum > 0 ? need * (shrinkable[index] / shrinkableSum) : 0
+    next[id] = Math.max(mins[index], preferredSizes[index] - cut)
+  })
+  return next
+}
+
+export function TaskList({ onTaskSelect, expandMainTaskId, selectedTaskId, editFields, isMultiselectMode: externalIsMultiselectMode, onToggleMultiselect, bulkActionsHost = null, nestedScroll = true }: TaskListProps) {
   console.log('[TaskList] RENDER');
   const routerParams = useSearchParams()
   /** Keeps list URL-driven state in sync with the address bar when using shallow history updates (no RSC navigation). */
@@ -856,13 +914,13 @@ export function TaskList({ onTaskSelect, expandMainTaskId, selectedTaskId, editF
   }, [handleTableScrollRef, scrollContainerRef])
 
   useEffect(() => {
-    const el = scrollContainerEl
+    const el = containerRef.current ?? scrollContainerEl
     if (!el) return
     const ro = new ResizeObserver(() => setContainerWidth(el.clientWidth))
     ro.observe(el)
     setContainerWidth(el.clientWidth)
     return () => ro.disconnect()
-  }, [scrollContainerEl])
+  }, [scrollContainerEl, nestedScroll])
 
   // Compact single-line rows kick in only when the normal table would need horizontal scroll, i.e.
   // its natural min width (sum of column sizes) can't fit the available scroll-container width.
@@ -965,9 +1023,8 @@ export function TaskList({ onTaskSelect, expandMainTaskId, selectedTaskId, editF
   }, [columnOrder])
 
   const sensors = useSensors(
-    useSensor(PointerSensor, {
-      activationConstraint: { distance: 5 },
-    })
+    useSensor(MouseSensor, { activationConstraint: { distance: 6 } }),
+    useSensor(TouchSensor, { activationConstraint: { delay: 350, tolerance: 6 } }),
   )
 
   const handleColumnDragStart = useCallback((event: DragStartEvent) => {
@@ -1130,6 +1187,10 @@ export function TaskList({ onTaskSelect, expandMainTaskId, selectedTaskId, editF
     }
   }
 
+  useEffect(() => {
+    if (!isMultiselectMode) setSelectedTasks(new Set())
+  }, [isMultiselectMode])
+
   const handleTaskToggle = (taskId: number) => {
     setSelectedTasks(prev => {
       const next = new Set(prev)
@@ -1262,11 +1323,41 @@ export function TaskList({ onTaskSelect, expandMainTaskId, selectedTaskId, editF
 
   // Helper to save with a specific value (for dropdowns that need immediate save)
   const handleCellSaveWithValue = async (taskId: number, field: string, value: string, taskOverride?: any) => {
+    const task = taskOverride || taskListViewTasks.find(t => t.id === taskId)
+    if (!task) return
+
+    // Skip no-op writes (esp. dates: click without change must not flip/persist).
+    if (field === 'delivery_date' || field === 'publication_date') {
+      if ((toISODate(value) || '') === (toISODate((task as any)[field]) || '')) {
+        handleCellCancel()
+        return
+      }
+    } else if (field === 'assigned_user') {
+      const prev = task.assigned_to_id != null ? String(task.assigned_to_id) : ''
+      if (String(value ?? '') === prev) {
+        handleCellCancel()
+        return
+      }
+    } else if (field === 'projects') {
+      const prev = task.project_id_int != null ? String(task.project_id_int) : ''
+      if (String(value ?? '') === prev) {
+        handleCellCancel()
+        return
+      }
+    } else if (field === 'project_statuses') {
+      const prev = task.project_statuses?.name ?? task.project_status_name ?? ''
+      if (String(value ?? '') === String(prev ?? '')) {
+        handleCellCancel()
+        return
+      }
+    } else if (field === 'title' && String(value ?? '') === String(task.title ?? '')) {
+      handleCellCancel()
+      return
+    }
+
     const previousValue = editingValue
     setEditingValue(value)
     // Use the passed value directly instead of editingValue state
-    const task = taskOverride || taskListViewTasks.find(t => t.id === taskId)
-    if (!task) return
 
     let updateData: any = {}
     let optimisticTask: any = { ...task }
@@ -1563,6 +1654,16 @@ export function TaskList({ onTaskSelect, expandMainTaskId, selectedTaskId, editF
 
     const task = taskOverride || taskListViewTasks.find(t => t.id === taskId)
     if (!task) return
+
+    if (field === 'delivery_date' || field === 'publication_date') {
+      if ((toISODate(editingValue) || '') === (toISODate((task as any)[field]) || '')) {
+        handleCellCancel()
+        return
+      }
+    } else if (field === 'title' && String(editingValue ?? '') === String(task.title ?? '')) {
+      handleCellCancel()
+      return
+    }
 
     let updateData: any = {}
     let optimisticTask: any = { ...task }
@@ -1950,8 +2051,9 @@ export function TaskList({ onTaskSelect, expandMainTaskId, selectedTaskId, editF
   const measureCellWidth = useCallback((taskId: number, field: string, el: HTMLElement | null) => {
     if (!el) return
     const w = el.getBoundingClientRect().width
+    if (!Number.isFinite(w) || w <= 0) return
     const maxW = Math.min(520, (typeof window !== 'undefined' ? window.innerWidth : 520) - 24)
-    cellWidthsRef.current.set(cellId(taskId, field), Math.min(maxW, Math.max(160, w)))
+    cellWidthsRef.current.set(cellId(taskId, field), Math.min(maxW, w))
   }, [])
   const getMeasuredWidth = useCallback((taskId: number, field: string): number | undefined => {
     return cellWidthsRef.current.get(cellId(taskId, field))
@@ -1969,9 +2071,8 @@ export function TaskList({ onTaskSelect, expandMainTaskId, selectedTaskId, editF
         handleCellCancel()
       }
       setActiveHoverId(cellId(taskId, field))
-      // Some fields (e.g. delivery/publication date) keep the visual hover affordance but must NOT
-      // auto-open their editor/calendar on hover — they open only via click or keyboard activation.
-      if (options?.openOnHover === false) return
+      // Default: hover is visual affordance only. Editors open on click / keyboard.
+      if (options?.openOnHover !== true) return
       scheduleHoverEdit(taskId, field, currentValue)
     },
     [scheduleHoverEdit, handleCellCancel],
@@ -2092,54 +2193,6 @@ export function TaskList({ onTaskSelect, expandMainTaskId, selectedTaskId, editF
   )
 
   const taskColumns: ColumnDef<any>[] = [
-    // Add checkbox column when in multiselect mode
-    ...(isMultiselectMode ? [{
-      id: 'select',
-      header: () => (
-        <input
-          type="checkbox"
-          data-no-dnd
-          onPointerDown={stopDnd}
-          onMouseDown={stopDnd}
-          onTouchStart={stopDnd}
-          className="rounded border-gray-300 text-blue-600 focus:ring-blue-500"
-          onChange={(e) => {
-            if (e.target.checked) {
-              // Select all visible tasks
-              const allTaskIds = taskListViewTasks.map(task => Number(task.id))
-              setSelectedTasks(new Set(allTaskIds))
-            } else {
-              setSelectedTasks(new Set())
-            }
-          }}
-          checked={selectedTasks.size > 0 && selectedTasks.size === taskListViewTasks.length}
-          ref={(el) => {
-            if (el) {
-              el.indeterminate = selectedTasks.size > 0 && selectedTasks.size < taskListViewTasks.length
-            }
-          }}
-        />
-      ),
-      cell: (info: any) => (
-        (info.row.original?.kind === 'suggestion')
-          ? null
-          : (
-            <input
-              type="checkbox"
-              checked={selectedTasks.has(info.row.original.id)}
-              onChange={(e) => {
-                e.stopPropagation()
-                handleTaskToggle(info.row.original.id)
-              }}
-              className="rounded border-gray-300 text-blue-600 focus:ring-blue-500"
-            />
-          )
-      ),
-      size: 56,
-      minSize: 56,
-      maxSize: 56,
-      enableResizing: false,
-    }] : []),
     {
       accessorKey: 'title',
       header: () => (
@@ -2186,11 +2239,11 @@ export function TaskList({ onTaskSelect, expandMainTaskId, selectedTaskId, editF
               data-active-editor
               data-inline-editor
             >
-              {!isCompactTitle && (
+              {!isCompactTitle && subtaskChevron ? (
                 <div className="flex h-5 w-5 shrink-0 items-center justify-center">
-                  {subtaskChevron ?? <span className="block h-5 w-5" aria-hidden />}
+                  {subtaskChevron}
                 </div>
-              )}
+              ) : null}
               <div
                 className={cn(
                   'min-w-0 overflow-visible',
@@ -2212,7 +2265,7 @@ export function TaskList({ onTaskSelect, expandMainTaskId, selectedTaskId, editF
                     }
                   }}
                   onClick={(e) => e.stopPropagation()}
-                  className="w-full min-w-0 rounded border border-gray-500 bg-white px-1 py-0 text-sm leading-none focus:outline-none focus:ring-1 focus:ring-gray-500 overflow-visible"
+                  className="w-full min-w-0 border-0 bg-transparent px-0 py-0 text-sm leading-none shadow-none outline-none ring-0 focus:outline-none focus:ring-0 overflow-visible caret-gray-900"
                   style={{ textOverflow: 'clip' }}
                   autoFocus={editIntent !== 'hover' && !isScrolling}
                 />
@@ -2229,11 +2282,11 @@ export function TaskList({ onTaskSelect, expandMainTaskId, selectedTaskId, editF
               isCompactTitle && 'w-full max-w-full gap-1 overflow-hidden',
             )}
           >
-            {!isCompactTitle && (
+            {!isCompactTitle && subtaskChevron ? (
               <div className="flex h-5 w-5 shrink-0 items-center justify-center">
-                {!isSuggestion && subtaskChevron ? subtaskChevron : <span className="block h-5 w-5" aria-hidden />}
+                {subtaskChevron}
               </div>
-            )}
+            ) : null}
             <div
               className={cn(
                 'flex min-w-0 items-center gap-2',
@@ -2249,8 +2302,8 @@ export function TaskList({ onTaskSelect, expandMainTaskId, selectedTaskId, editF
                   // Compact: shrink-wrap the title (like expanded) so hover/edit chrome
                   // matches text width instead of stretching across the whole column.
                   isCompactTitle ? 'inline-block w-fit max-w-full' : 'min-w-0 flex-1',
-                  'cursor-text rounded border border-transparent px-1 py-0 transition-colors hover:border-gray-300 hover:bg-white',
-                  isHoverActive(taskId, 'title') && 'bg-white border border-gray-300',
+                  'cursor-text rounded-md border border-transparent px-1 py-0.5 transition-colors hover:bg-gray-50/80',
+                  isHoverActive(taskId, 'title') && 'bg-gray-50/80',
                   // Compact rows distinguish AI suggestions by subtly muting the title (no icon) instead.
                   isCompactTitle && isSuggestion && 'text-muted-foreground'
                 )}
@@ -2338,8 +2391,14 @@ export function TaskList({ onTaskSelect, expandMainTaskId, selectedTaskId, editF
             photo: w.users?.photo ?? null,
           }))
           return (
-            <div className="task-cell relative flex shrink-0 items-center" data-active-editor data-inline-editor style={measuredW ? { width: measuredW, minWidth: 160, maxWidth: measuredW } : { minWidth: 160 }}>
-              <div className="absolute inset-0 flex items-center" style={{ paddingLeft: 8, paddingRight: 8 }}>
+            <div
+              className="task-cell relative flex shrink-0 items-center gap-2 px-1"
+              data-active-editor
+              data-inline-editor
+              style={measuredW ? { width: measuredW, maxWidth: measuredW } : undefined}
+            >
+              {leadingSlot}
+              <div className="min-w-0 flex-1">
                 <InlineSelect
                   options={assigneeOptions}
                   value={currentUserId}
@@ -2347,13 +2406,8 @@ export function TaskList({ onTaskSelect, expandMainTaskId, selectedTaskId, editF
                   onBlur={() => handleCellCancel()}
                   placeholder="Select assignee"
                   emptyOption={{ value: '', label: 'Unassigned' }}
-                  showMedia="avatar"
                   autoFocus={editIntent !== 'hover' && !isScrolling}
                 />
-              </div>
-              <div className="invisible flex min-w-0 flex-1 items-center gap-2" aria-hidden>
-                {leadingSlot}
-                <span className="truncate text-sm">{displayName || '\u00A0'}</span>
               </div>
             </div>
           )
@@ -2486,8 +2540,14 @@ export function TaskList({ onTaskSelect, expandMainTaskId, selectedTaskId, editF
           const currentProjectId = editingValue ?? (task?.project_id_int ?? (Array.isArray(task?.projects) ? task.projects[0]?.id : task?.projects?.id) ?? '')
           const measuredW = getMeasuredWidth(task.id, 'projects')
           return (
-            <div className="task-cell relative flex shrink-0 items-center" data-active-editor data-inline-editor style={measuredW ? { width: measuredW, minWidth: 160, maxWidth: measuredW } : { minWidth: 160 }}>
-              <div className="absolute inset-0 flex items-center" style={{ paddingLeft: 8, paddingRight: 8 }}>
+            <div
+              className="task-cell relative flex shrink-0 items-center gap-2 px-1"
+              data-active-editor
+              data-inline-editor
+              style={measuredW ? { width: measuredW, maxWidth: measuredW } : undefined}
+            >
+              {leadingSlot}
+              <div className="min-w-0 flex-1">
                 <InlineSelect
                   options={projectOptions}
                   value={currentProjectId}
@@ -2495,14 +2555,9 @@ export function TaskList({ onTaskSelect, expandMainTaskId, selectedTaskId, editF
                   onBlur={() => handleCellCancel()}
                   placeholder="Select project"
                   emptyOption={{ value: '', label: 'No project' }}
-                  showMedia="logo"
                   autoFocus={editIntent !== 'hover' && !isScrolling}
                   debugLabel="project"
                 />
-              </div>
-              <div className="invisible flex min-w-0 flex-1 items-center gap-2" aria-hidden>
-                {leadingSlot}
-                <span className="truncate text-sm">{projectName || '\u00A0'}</span>
               </div>
             </div>
           )
@@ -2568,25 +2623,30 @@ export function TaskList({ onTaskSelect, expandMainTaskId, selectedTaskId, editF
           const measuredW = getMeasuredWidth(task.id, 'project_statuses')
           return (
             <div
-              className="task-cell relative inline-flex shrink-0"
+              className="task-cell relative flex shrink-0 items-center gap-1.5 px-1"
               data-active-editor
               data-inline-editor
-              style={measuredW ? { width: measuredW, minWidth: 160, maxWidth: measuredW } : { minWidth: 160 }}
+              style={measuredW ? { width: measuredW, maxWidth: measuredW } : undefined}
             >
-              <div className="absolute inset-0 flex items-center px-1">
+              {color ? (
+                <span
+                  className="h-2 w-2 shrink-0 rounded-full"
+                  style={{ backgroundColor: color }}
+                  aria-hidden
+                />
+              ) : (
+                <span className="h-2 w-2 shrink-0" aria-hidden />
+              )}
+              <div className="min-w-0 flex-1">
                 <InlineSelect
                   options={statusOptions}
                   value={currentStatusName}
                   onChange={(val) => handleCellSaveWithValue(task.id, 'project_statuses', String(val), task)}
                   onBlur={() => handleCellCancel()}
                   placeholder="Select status"
-                  showMedia="color"
                   autoFocus={editIntent !== 'hover' && !isScrolling}
                 />
               </div>
-              <span className="status-pill invisible inline-flex h-5 items-center justify-center rounded-full px-2 text-[11px] leading-none" aria-hidden>
-                {name || '\u00A0'}
-              </span>
             </div>
           )
         }
@@ -2619,20 +2679,13 @@ export function TaskList({ onTaskSelect, expandMainTaskId, selectedTaskId, editF
             ref={(el) => measureCellWidth(task.id, 'project_statuses', el)}
             data-editable-cell
             className={cn(
-              "task-cell status-pill inline-flex h-5 w-fit shrink-0 cursor-text items-center justify-center whitespace-nowrap rounded-full px-2 text-[11px] font-normal leading-none box-border",
-              "ring-2 transition-colors",
-              isHoverActive(task.id, 'project_statuses') ? 'ring-gray-300' : 'ring-transparent'
+              "task-cell inline-flex min-w-0 max-w-full cursor-text items-center rounded border border-transparent px-1 py-0.5 transition-colors hover:border-gray-300 hover:bg-white",
+              isHoverActive(task.id, 'project_statuses') && 'bg-white border-gray-300'
             )}
             {...(isHoverActive(task.id, 'project_statuses') && {
               'data-hover-overlay': '',
               onPointerDown: (e: React.PointerEvent) => e.stopPropagation(),
             })}
-            style={{
-              backgroundColor: color || '#e5e7eb',
-              color: color ? '#fff' : '#374151',
-              minWidth: 36,
-              textAlign: 'center',
-            }}
             title={name}
             onClick={(e) => {
               e.stopPropagation()
@@ -2643,7 +2696,7 @@ export function TaskList({ onTaskSelect, expandMainTaskId, selectedTaskId, editF
             }}
             onPointerLeave={() => handleCellHoverLeave(task.id, 'project_statuses')}
           >
-            {name}
+            <TaskStatusPill name={name} color={color} variant="plain" />
           </span>
         );
       },
@@ -2664,14 +2717,10 @@ export function TaskList({ onTaskSelect, expandMainTaskId, selectedTaskId, editF
         const task = info.row.original;
         const isEditing = editingCell?.taskId === task.id && editingCell?.field === 'delivery_date'
         const isCompactDate = !!(info as any)?.compact
-        const date = isCompactDate
-          ? formatCompactDateDisplay(task.delivery_date)
-          : formatDateWithYear(task.delivery_date);
+        const date = formatCompactDateDisplay(task.delivery_date);
 
         if (isCompactDate) {
-          const isoValue = task.delivery_date
-            ? new Date(task.delivery_date).toISOString().split('T')[0]
-            : ''
+          const isoValue = toISODate(task.delivery_date)
           return (
             <div
               className="inline-flex shrink-0 items-center"
@@ -2696,17 +2745,17 @@ export function TaskList({ onTaskSelect, expandMainTaskId, selectedTaskId, editF
                 }
                 openCalendarOnMount={false}
                 isActive={isHoverActive(task.id, 'delivery_date')}
-                className={cn(task.is_overdue ? 'font-medium text-red-600' : 'text-gray-500')}
+                className={cn(task.is_overdue ? 'text-red-600' : 'text-gray-500')}
               />
             </div>
           )
         }
         
         if (isEditing) {
-          const isoValue = editingValue || (task.delivery_date ? new Date(task.delivery_date).toISOString().split('T')[0] : '')
+          const isoValue = editingValue || (toISODate(task.delivery_date))
           const measuredW = getMeasuredWidth(task.id, 'delivery_date')
           return (
-            <div className="task-cell shrink-0" data-active-editor data-inline-editor style={measuredW ? { width: measuredW, minWidth: 160, maxWidth: measuredW } : { minWidth: 160 }}>
+            <div className="task-cell shrink-0" data-active-editor data-inline-editor style={measuredW ? { width: measuredW, maxWidth: measuredW } : undefined}>
               <InlineDateEditor
                 value={isoValue}
                 onChange={(v) => setEditingValue(v)}
@@ -2731,7 +2780,7 @@ export function TaskList({ onTaskSelect, expandMainTaskId, selectedTaskId, editF
             aria-label={`Edit delivery date${date ? `, ${date}` : ''}`}
             className={cn(
               "task-cell flex max-w-full cursor-pointer items-center truncate whitespace-nowrap overflow-hidden text-ellipsis rounded border border-transparent px-1 py-0 text-sm leading-none transition-colors hover:border-gray-300 hover:bg-white focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-gray-400",
-              task.is_overdue && "text-red-600 font-medium",
+              task.is_overdue && "text-red-600",
               isHoverActive(task.id, 'delivery_date') && 'bg-white border border-gray-300'
             )}
             {...(isHoverActive(task.id, 'delivery_date') && {
@@ -2740,23 +2789,20 @@ export function TaskList({ onTaskSelect, expandMainTaskId, selectedTaskId, editF
             })}
             onClick={(e) => {
               e.stopPropagation()
-              const dateValue = task.delivery_date ? new Date(task.delivery_date).toISOString().split('T')[0] : ''
+              const dateValue = toISODate(task.delivery_date)
               handleCellEdit(task.id, 'delivery_date', dateValue)
             }}
             onKeyDown={(e) => {
               if (e.key === 'Enter' || e.key === ' ') {
                 e.preventDefault()
                 e.stopPropagation()
-                const dateValue = task.delivery_date ? new Date(task.delivery_date).toISOString().split('T')[0] : ''
+                const dateValue = toISODate(task.delivery_date)
                 handleCellEdit(task.id, 'delivery_date', dateValue)
               }
             }}
             // Hover shows the visual affordance only; the calendar opens on click / keyboard, not hover.
             onPointerEnter={() => {
-              const dateValue = task.delivery_date
-                ? new Date(task.delivery_date).toISOString().split('T')[0]
-                : ''
-              handleCellHoverEnter(task.id, 'delivery_date', dateValue, { openOnHover: false })
+              handleCellHoverEnter(task.id, 'delivery_date', toISODate(task.delivery_date), { openOnHover: false })
             }}
             onPointerLeave={() => handleCellHoverLeave(task.id, 'delivery_date')}
             ref={(el) => measureCellWidth(task.id, 'delivery_date', el)}
@@ -2787,9 +2833,7 @@ export function TaskList({ onTaskSelect, expandMainTaskId, selectedTaskId, editF
           : formatDateWithYear(task.publication_date);
 
         if (isCompactDate) {
-          const isoValue = task.publication_date
-            ? new Date(task.publication_date).toISOString().split('T')[0]
-            : ''
+          const isoValue = toISODate(task.publication_date)
           return (
             <div
               className="inline-flex shrink-0 items-center"
@@ -2815,7 +2859,7 @@ export function TaskList({ onTaskSelect, expandMainTaskId, selectedTaskId, editF
                 openCalendarOnMount={false}
                 isActive={isHoverActive(task.id, 'publication_date')}
                 className={cn(
-                  task.is_publication_overdue ? 'font-medium text-red-600' : 'text-gray-500',
+                  task.is_publication_overdue ? 'text-red-600' : 'text-gray-500',
                 )}
               />
             </div>
@@ -2823,10 +2867,10 @@ export function TaskList({ onTaskSelect, expandMainTaskId, selectedTaskId, editF
         }
         
         if (isEditing) {
-          const isoValue = editingValue || (task.publication_date ? new Date(task.publication_date).toISOString().split('T')[0] : '')
+          const isoValue = editingValue || (toISODate(task.publication_date))
           const measuredW = getMeasuredWidth(task.id, 'publication_date')
           return (
-            <div className="task-cell shrink-0" data-active-editor data-inline-editor style={measuredW ? { width: measuredW, minWidth: 160, maxWidth: measuredW } : { minWidth: 160 }}>
+            <div className="task-cell shrink-0" data-active-editor data-inline-editor style={measuredW ? { width: measuredW, maxWidth: measuredW } : undefined}>
               <InlineDateEditor
                 value={isoValue}
                 onChange={(v) => setEditingValue(v)}
@@ -2851,7 +2895,7 @@ export function TaskList({ onTaskSelect, expandMainTaskId, selectedTaskId, editF
             aria-label={`Edit publication date${date ? `, ${date}` : ''}`}
             className={cn(
               "task-cell flex max-w-full cursor-pointer items-center truncate whitespace-nowrap overflow-hidden text-ellipsis rounded border border-transparent px-1 py-0 text-sm leading-none transition-colors hover:border-gray-300 hover:bg-white focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-gray-400",
-              task.is_publication_overdue && "text-red-600 font-medium",
+              task.is_publication_overdue && "text-red-600",
               isHoverActive(task.id, 'publication_date') && 'bg-white border border-gray-300'
             )}
             {...(isHoverActive(task.id, 'publication_date') && {
@@ -2860,23 +2904,20 @@ export function TaskList({ onTaskSelect, expandMainTaskId, selectedTaskId, editF
             })}
             onClick={(e) => {
               e.stopPropagation()
-              const dateValue = task.publication_date ? new Date(task.publication_date).toISOString().split('T')[0] : ''
+              const dateValue = toISODate(task.publication_date)
               handleCellEdit(task.id, 'publication_date', dateValue)
             }}
             onKeyDown={(e) => {
               if (e.key === 'Enter' || e.key === ' ') {
                 e.preventDefault()
                 e.stopPropagation()
-                const dateValue = task.publication_date ? new Date(task.publication_date).toISOString().split('T')[0] : ''
+                const dateValue = toISODate(task.publication_date)
                 handleCellEdit(task.id, 'publication_date', dateValue)
               }
             }}
             // Hover shows the visual affordance only; the calendar opens on click / keyboard, not hover.
             onPointerEnter={() => {
-              const dateValue = task.publication_date
-                ? new Date(task.publication_date).toISOString().split('T')[0]
-                : ''
-              handleCellHoverEnter(task.id, 'publication_date', dateValue, { openOnHover: false })
+              handleCellHoverEnter(task.id, 'publication_date', toISODate(task.publication_date), { openOnHover: false })
             }}
             onPointerLeave={() => handleCellHoverLeave(task.id, 'publication_date')}
             ref={(el) => measureCellWidth(task.id, 'publication_date', el)}
@@ -2925,7 +2966,7 @@ export function TaskList({ onTaskSelect, expandMainTaskId, selectedTaskId, editF
           const currentValue = editingValue ?? task.content_type_title ?? ''
           const measuredW = getMeasuredWidth(task.id, 'content_type_title')
           return (
-            <div className="task-cell relative shrink-0" data-active-editor data-inline-editor style={measuredW ? { width: measuredW, minWidth: 160, maxWidth: measuredW } : { minWidth: 160 }}>
+            <div className="task-cell relative shrink-0" data-active-editor data-inline-editor style={measuredW ? { width: measuredW, maxWidth: measuredW } : undefined}>
               <div className="absolute inset-0 flex items-center px-1">
                 <InlineSelect
                   options={contentTypeOptions}
@@ -2997,7 +3038,7 @@ export function TaskList({ onTaskSelect, expandMainTaskId, selectedTaskId, editF
           const currentValue = editingValue ?? task.production_type_title ?? ''
           const measuredW = getMeasuredWidth(task.id, 'production_type_title')
           return (
-            <div className="task-cell relative shrink-0" data-active-editor data-inline-editor style={measuredW ? { width: measuredW, minWidth: 160, maxWidth: measuredW } : { minWidth: 160 }}>
+            <div className="task-cell relative shrink-0" data-active-editor data-inline-editor style={measuredW ? { width: measuredW, maxWidth: measuredW } : undefined}>
               <div className="absolute inset-0 flex items-center px-1">
                 <InlineSelect
                   options={productionTypeOptions}
@@ -3069,7 +3110,7 @@ export function TaskList({ onTaskSelect, expandMainTaskId, selectedTaskId, editF
           const currentLanguageId = editingValue ?? (task.language_id ? String(task.language_id) : '')
           const measuredW = getMeasuredWidth(task.id, 'language_code')
           return (
-            <div className="task-cell relative shrink-0" data-active-editor data-inline-editor style={measuredW ? { width: measuredW, minWidth: 160, maxWidth: measuredW } : { minWidth: 160 }}>
+            <div className="task-cell relative shrink-0" data-active-editor data-inline-editor style={measuredW ? { width: measuredW, maxWidth: measuredW } : undefined}>
               <div className="absolute inset-0 flex items-center px-1">
                 <InlineSelect
                   options={languageOptions}
@@ -3563,6 +3604,11 @@ export function TaskList({ onTaskSelect, expandMainTaskId, selectedTaskId, editF
     return ordered
   }, [taskColumns, columnOrder])
 
+  const displayColumnSizing = useMemo(
+    () => fitColumnSizing(columnSizing, columnOrder, containerWidth),
+    [columnSizing, columnOrder, containerWidth],
+  )
+
   // Always call both useReactTable hooks, unconditionally
   const groupedTable = useReactTable<any>({
     data: [], // or the correct grouped data if available
@@ -3570,7 +3616,7 @@ export function TaskList({ onTaskSelect, expandMainTaskId, selectedTaskId, editF
     getCoreRowModel: getCoreRowModel(),
     columnResizeMode: 'onChange',
     columnResizeDirection: 'ltr',
-    state: { columnSizing },
+    state: { columnSizing: displayColumnSizing },
     onColumnSizingChange: handleColumnSizingChange,
     debugTable: false,
   });
@@ -3581,7 +3627,7 @@ export function TaskList({ onTaskSelect, expandMainTaskId, selectedTaskId, editF
     getRowId: (row) => `${String((row as any).entity_type)}:${String((row as any).entity_id)}`,
     columnResizeMode: 'onChange',
     columnResizeDirection: 'ltr',
-    state: { columnSizing },
+    state: { columnSizing: displayColumnSizing },
     onColumnSizingChange: handleColumnSizingChange,
     debugTable: false,
   })
@@ -3602,11 +3648,11 @@ export function TaskList({ onTaskSelect, expandMainTaskId, selectedTaskId, editF
   //  - wide tables (every column): the cap ensures a comfortably wide pane shows the full table
   //    (with its own horizontal scroll) instead of being stuck compact forever.
   // Hysteresis (COMPACT_EXIT_MARGIN) avoids oscillation right at the boundary.
-  const compactEnterWidth = Math.min(normalTableMinWidth, COMPACT_MAX_ENTER_WIDTH)
+  const compactEnterWidth = COMPACT_MAX_ENTER_WIDTH
   // Layout effect: decide compact vs expanded before paint so a single expanded frame cannot
   // stretch flex ancestors (see isCompact default / min-w-0 wrappers).
   useLayoutEffect(() => {
-    if (containerWidth <= 0 || compactEnterWidth <= 0) return
+    if (containerWidth <= 0) return
     setIsCompact((prev) =>
       prev
         ? containerWidth < compactEnterWidth + COMPACT_EXIT_MARGIN
@@ -3817,37 +3863,46 @@ export function TaskList({ onTaskSelect, expandMainTaskId, selectedTaskId, editF
   if (!hasHydrated || !hasMeasured) return null
 
   const totalSizeWithoutSpacer = normalTableMinWidth
-  const isResizing =
-    !!table.getState().columnSizingInfo?.isResizingColumn ||
-    !!groupedTable.getState().columnSizingInfo?.isResizingColumn
-  const spacerWidth = isResizing ? 0 : Math.max(containerWidth - totalSizeWithoutSpacer, 0)
-
-  // Grid layout: real columns first, spacer track at far right (leftover space invisible)
   const leafColumns = groupedTable.getAllLeafColumns()
-  const realColumns = leafColumns.filter(col => col.id !== '__spacer')
   const gridTemplateColumns = isCompact
     ? 'minmax(0, 1fr)'
-    : [
-        ...realColumns.map(col => `${col.getSize()}px`),
-        'minmax(0px, 1fr)',
-      ].join(' ')
+    : leafColumns.map((col) => `${Math.max(0, col.getSize())}px`).join(' ')
   const compactDateField: 'delivery_date' | 'publication_date' =
     routerParams.get('calendar_date_field') === 'publication' ? 'publication_date' : 'delivery_date'
+
+  const selectableTaskIds = taskListViewTasks
+    .filter((t: any) => t?.kind !== 'suggestion')
+    .map((t: any) => Number(t.id ?? t.entity_id))
+    .filter((id: number) => Number.isFinite(id))
+  const isBulkSelecting = isMultiselectMode || selectedTasks.size > 0
+  const tableMinWidth = isCompact
+    ? undefined
+    : leafColumns.reduce((sum, col) => sum + col.getSize(), 0)
+
+  const scrollClassName = nestedScroll
+    ? cn(
+        'relative min-h-0 min-w-0 flex-1 overflow-auto',
+        isCompact && 'overflow-x-hidden',
+      )
+    : 'relative min-w-0 w-full'
 
   // Mobile view
   if (isMobile) {
     return (
-      <div ref={containerRef} className="flex h-full min-h-0 min-w-0 w-full flex-col overflow-hidden bg-white">
+      <div
+        ref={containerRef}
+        className={cn(
+          'min-w-0 w-full bg-white',
+          nestedScroll ? 'flex h-full min-h-0 flex-col overflow-hidden' : '',
+        )}
+      >
         {/* Bulk Action Bar for Mobile */}
         {renderedBulkActionBar}
         {bulkDeleteDialog}
         <div
           ref={scrollContainerRef}
-          className={cn(
-            'relative min-h-0 min-w-0 flex-1 overflow-y-auto',
-            isCompact ? 'overflow-x-hidden' : 'overflow-x-auto',
-          )}
-          data-task-scroll-container
+          className={scrollClassName}
+          {...(nestedScroll ? { 'data-task-scroll-container': '' } : {})}
           style={{ width: '100%' }}
           onScroll={markScrolling}
           onWheel={markScrolling}
@@ -3866,7 +3921,12 @@ export function TaskList({ onTaskSelect, expandMainTaskId, selectedTaskId, editF
                   'task-list-grid relative z-10 border-collapse text-sm',
                   isCompact && 'task-list-grid--compact',
                 )}
-                style={{ tableLayout: 'fixed', background: 'transparent' }}
+                style={{
+                  tableLayout: 'fixed',
+                  background: 'transparent',
+                  width: tableMinWidth,
+                  minWidth: tableMinWidth,
+                }}
               >
                 {isCompact ? null : (
                   <TaskTableHeader table={groupedTable} columns={orderedTaskColumns} gridTemplateColumns={gridTemplateColumns} onColumnOrderChange={handleColumnOrderChange} overColId={overColId} isColumnDragging={isColumnDragging} onResizeHandleDoubleClick={handleResizeHandleDoubleClick} defaultWidthsRef={defaultWidthsRef} />
@@ -3884,7 +3944,7 @@ export function TaskList({ onTaskSelect, expandMainTaskId, selectedTaskId, editF
                 selectedTaskId={selectedTaskId}
                 enabled={true}
                 expandedMainTasks={expandedMainTasks}
-                isMultiselectMode={isMultiselectMode}
+                isMultiselectMode={isBulkSelecting}
                 selectedTasks={selectedTasks}
                 onTaskToggle={handleTaskToggle}
                 listColorMode={listColorModeForRows}
@@ -3909,17 +3969,29 @@ export function TaskList({ onTaskSelect, expandMainTaskId, selectedTaskId, editF
 
   // Desktop view
   return (
-    <div ref={containerRef} className="flex h-full min-h-0 min-w-0 w-full flex-col overflow-hidden bg-transparent" style={{ padding: 0, margin: 0 }}>
+    <div
+      ref={containerRef}
+      className={cn(
+        'min-h-0 min-w-0 w-full bg-transparent',
+        nestedScroll ? 'flex h-full flex-col overflow-hidden' : '',
+      )}
+      style={{ padding: 0, margin: 0 }}
+    >
       {bulkDeleteDialog}
-      {/* Always use UnifiedGroupedTaskList (grouped + ungrouped both use task_group_tasks_filtered; ungrouped = p_group_key='all'). */}
-      <div className="relative flex h-full min-h-0 min-w-0 flex-1 flex-col" style={{ padding: 0, margin: 0 }}>
+      <div
+        className={cn(
+          'relative min-w-0',
+          nestedScroll ? 'flex h-full min-h-0 flex-1 flex-col' : '',
+        )}
+        style={{ padding: 0, margin: 0 }}
+      >
         {renderedBulkActionBar}
 
         <div
           ref={desktopScrollRef}
-          data-task-scroll-container
-          className="relative min-h-0 min-w-0 flex-1 overflow-x-hidden overflow-y-auto"
-          style={{ width: '100%', padding: 0, margin: 0 }}
+          {...(nestedScroll ? { 'data-task-scroll-container': '' } : {})}
+          className={scrollClassName}
+          style={{ width: '100%', paddingTop: 0, paddingBottom: 0, margin: 0 }}
           onScroll={markScrolling}
           onWheel={markScrolling}
           onTouchMove={markScrolling}
@@ -3937,7 +4009,12 @@ export function TaskList({ onTaskSelect, expandMainTaskId, selectedTaskId, editF
                   'task-list-grid relative z-10 border-collapse text-sm',
                   isCompact && 'task-list-grid--compact',
                 )}
-                style={{ tableLayout: 'fixed', background: 'transparent' }}
+                style={{
+                  tableLayout: 'fixed',
+                  background: 'transparent',
+                  width: tableMinWidth,
+                  minWidth: tableMinWidth,
+                }}
               >
                 {isCompact ? null : (
                   <TaskTableHeader table={groupedTable} columns={orderedTaskColumns} gridTemplateColumns={gridTemplateColumns} onColumnOrderChange={handleColumnOrderChange} overColId={overColId} isColumnDragging={isColumnDragging} onResizeHandleDoubleClick={handleResizeHandleDoubleClick} defaultWidthsRef={defaultWidthsRef} />
@@ -3955,7 +4032,7 @@ export function TaskList({ onTaskSelect, expandMainTaskId, selectedTaskId, editF
                 selectedTaskId={selectedTaskId}
                 enabled={true}
                 expandedMainTasks={expandedMainTasks}
-                isMultiselectMode={isMultiselectMode}
+                isMultiselectMode={isBulkSelecting}
                 selectedTasks={selectedTasks}
                 onTaskToggle={handleTaskToggle}
                 listColorMode={listColorModeForRows}
@@ -3974,22 +4051,6 @@ export function TaskList({ onTaskSelect, expandMainTaskId, selectedTaskId, editF
             </DragOverlay>
           </DndContext>
         </div>
-        {!isCompact && (
-          <div
-            ref={handlePinnedScrollRef}
-            className="overflow-x-auto"
-            style={{
-              width: '100%',
-              height: 16,
-              position: 'sticky',
-              bottom: 0,
-              background: 'white',
-              zIndex: 10,
-            }}
-          >
-            <div style={{ width: tableScrollRef.current?.scrollWidth ?? totalSizeWithoutSpacer + spacerWidth, height: 1 }} />
-          </div>
-        )}
       </div>
     </div>
   )

@@ -1,7 +1,5 @@
 "use client"
 
-import { cn } from "@/lib/utils"
-import { CHAT_CONTENT_COLUMN_CLASS } from "../../lib/chat-content-column"
 import { TaskOverviewAttachmentsPreview } from "./task-overview-attachments-preview"
 import { TaskOverviewReviewsPreview } from "./task-overview-reviews-preview"
 import { TaskOverviewUpdatesComments } from "./task-overview-updates-comments"
@@ -55,7 +53,7 @@ export function TaskOverviewPreviews({
   seedSeo = null,
 }: TaskOverviewPreviewsProps) {
   return (
-    <section className={cn(CHAT_CONTENT_COLUMN_CLASS, "px-4 pb-0")}>
+    <>
       <TaskOverviewPreviewSection
         title="Artifacts"
         active
@@ -101,6 +99,6 @@ export function TaskOverviewPreviews({
         commentsPanelProps={commentsPanelProps}
         active
       />
-    </section>
+    </>
   )
 }

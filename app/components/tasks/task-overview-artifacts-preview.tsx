@@ -82,7 +82,7 @@ export function TaskOverviewArtifactsPreview({
         isError={artifactsQuery.isError}
         onRetry={() => void artifactsQuery.refetch()}
         isEmpty={isEmpty}
-        emptyMessage="No artifacts yet."
+        emptyMessage="Nothing here yet."
       >
         <ul className="space-y-1.5">
           {previewArtifacts.map((artifact) => {

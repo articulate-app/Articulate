@@ -1,0 +1,67 @@
+appId: com.whyarticulate.articulate
+productName: Articulate
+copyright: Copyright © Articulate / Why Articulate
+executableName: Articulate
+
+# Used with --projectDir desktop/.stage (shell-only contents).
+# Icon + entitlements are copied into .stage/build by package-mac.mjs.
+
+directories:
+  output: ../release
+  buildResources: build
+
+files:
+  - dist/**/*
+  - resources/**/*
+  - package.json
+  - "!**/node_modules/**"
+  - "!**/*.map"
+  - "!build/**"
+
+asar: true
+npmRebuild: false
+nodeGypRebuild: false
+electronVersion: 36.9.5
+
+mac:
+  category: public.app-category.business
+  icon: build/icon.icns
+  target:
+    - target: dmg
+      arch:
+        - universal
+    - target: zip
+      arch:
+        - universal
+  hardenedRuntime: true
+  gatekeeperAssess: false
+  entitlements: build/entitlements.mac.plist
+  entitlementsInherit: build/entitlements.mac.plist
+  extendInfo:
+    NSHumanReadableCopyright: Copyright © Articulate / Why Articulate
+    CFBundleDisplayName: Articulate
+    CFBundleName: Articulate
+  notarize: true
+
+dmg:
+  title: Articulate ${version}
+  artifactName: Articulate.${ext}
+  contents:
+    - x: 180
+      y: 200
+      type: file
+    - x: 460
+      y: 200
+      type: link
+      path: /Applications
+  window:
+    width: 640
+    height: 400
+
+artifactName: Articulate-${version}-mac.${ext}
+
+publish:
+  provider: github
+  owner: articulate-app
+  repo: Articulate
+  releaseType: release

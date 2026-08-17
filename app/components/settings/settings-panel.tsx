@@ -5,7 +5,7 @@ import { useSearchParams } from "next/navigation";
 import * as DialogPrimitive from "@radix-ui/react-dialog";
 import { createClientComponentClient } from "@supabase/auth-helpers-nextjs";
 import { useRouter } from "next/navigation";
-import { X, User, Bell, Shield, CreditCard, Sparkles, Users, ChevronLeft, FolderKanban, Wrench } from "lucide-react";
+import { X, User, Bell, Shield, CreditCard, Sparkles, Brain, Users, ChevronLeft, FolderKanban, Wrench } from "lucide-react";
 import { Input } from "../ui/input";
 import { Button } from "../ui/button";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "../ui/select";
@@ -18,6 +18,7 @@ import {
   DEFAULT_DAILY_CAPACITY_HOURS,
 } from "../../lib/services/user-workload-settings";
 import { AiTokenLimitsSettingsPanel } from "./ai-token-limits-settings";
+import { LearnedPreferencesSettingsPanel } from "./learned-preferences-settings";
 import { SettingsBillingPanel } from "./settings-billing-panel";
 import { SettingsTeamsPanel, type SettingsTeamsDetailState } from "./settings-teams-panel";
 import { UserProjectsSettingsSection } from "../users/user-projects-settings-section";
@@ -32,6 +33,7 @@ type SettingsCategory =
   | "teams"
   | "projects"
   | "skills"
+  | "ai-preferences"
   | "ai-limits";
 
 const CATEGORIES: { id: SettingsCategory; label: string; icon: typeof User }[] = [
@@ -42,6 +44,7 @@ const CATEGORIES: { id: SettingsCategory; label: string; icon: typeof User }[] =
   { id: "teams", label: "Teams", icon: Users },
   { id: "projects", label: "Projects", icon: FolderKanban },
   { id: "skills", label: "Skills", icon: Wrench },
+  { id: "ai-preferences", label: "AI preferences", icon: Brain },
   { id: "ai-limits", label: "AI limits", icon: Sparkles },
 ];
 
@@ -122,6 +125,7 @@ export function SettingsPanel({ open, onClose }: SettingsPanelProps) {
       || requested === "teams"
       || requested === "projects"
       || requested === "skills"
+      || requested === "ai-preferences"
       || requested === "ai-limits"
     ) {
       setActiveCategory(requested);
@@ -361,6 +365,7 @@ export function SettingsPanel({ open, onClose }: SettingsPanelProps) {
     />
   );
 
+  const renderAiPreferences = () => <LearnedPreferencesSettingsPanel />;
   const renderAiLimits = () => <AiTokenLimitsSettingsPanel />;
 
   const renderMyProjects = () => {
@@ -410,6 +415,8 @@ export function SettingsPanel({ open, onClose }: SettingsPanelProps) {
         return renderMyProjects();
       case "skills":
         return renderMySkills();
+      case "ai-preferences":
+        return renderAiPreferences();
       case "ai-limits":
         return renderAiLimits();
       default:

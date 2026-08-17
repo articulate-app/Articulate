@@ -21,6 +21,10 @@ import { normalizeBrowserUrl } from "../../app/lib/browser-coordinate"
 import { bumpDesktopBrowserHumanControl } from "../../app/lib/desktop-browser-agent-control"
 import { cn } from "../../app/lib/utils"
 import { Button } from "../../app/components/ui/button"
+import {
+  isBrowserSurfaceOverlayActive,
+  subscribeBrowserSurfaceOverlay,
+} from "../../app/lib/browser-surface-overlay"
 
 export type DesktopBrowserSurfaceProps = {
   browserId: string
@@ -59,6 +63,7 @@ export function DesktopBrowserSurface({
     controlOwner: "human",
     agentGeneration: 0,
   })
+  const [overlayActive, setOverlayActive] = useState(isBrowserSurfaceOverlayActive)
   const createdRef = useRef(false)
   const initialUrlRef = useRef(initialUrl)
   initialUrlRef.current = initialUrl
@@ -70,6 +75,10 @@ export function DesktopBrowserSurface({
   onPopupRef.current = onPopup
   const onControlChangeRef = useRef(onControlChange)
   onControlChangeRef.current = onControlChange
+
+  useEffect(() => subscribeBrowserSurfaceOverlay(() => {
+    setOverlayActive(isBrowserSurfaceOverlayActive())
+  }), [])
 
   useEffect(() => {
     const desktop = getArticulateDesktop()
@@ -176,9 +185,9 @@ export function DesktopBrowserSurface({
   useEffect(() => {
     const desktop = getArticulateDesktop()
     if (!desktop || !ready) return
-    if (active) void desktop.browser.show(browserId)
+    if (active && !overlayActive) void desktop.browser.show(browserId)
     else void desktop.browser.hide(browserId)
-  }, [active, browserId, ready])
+  }, [active, browserId, ready, overlayActive])
 
   if (!isArticulateDesktopAvailable()) {
     return (

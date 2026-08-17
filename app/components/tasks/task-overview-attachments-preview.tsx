@@ -66,7 +66,7 @@ export function TaskOverviewAttachmentsPreview({
         active={shouldLoad}
         isLoading={shouldLoad && attachmentsUpload.isUploading && totalCount === 0}
         isEmpty={isEmpty}
-        emptyMessage="Add attachment"
+        emptyMessage="Add"
         onEmptyClick={openFilePicker}
       >
         <ul className="space-y-1">
@@ -101,7 +101,7 @@ export function TaskOverviewAttachmentsPreview({
           <p className="mt-1 text-xs text-red-600">{attachmentsUpload.uploadError}</p>
         ) : null}
         <AddDashedButton
-          label="Add attachment"
+          label="Add"
           className="mt-2"
           onClick={openFilePicker}
           disabled={attachmentsUpload.isUploading}

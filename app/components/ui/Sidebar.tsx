@@ -336,6 +336,18 @@ export function Sidebar({
     onClose?.()
   }, [onClose])
 
+  const handleOpenTemplateList = useCallback(() => {
+    openWorkspaceView(
+      { type: "template-list", title: "Templates" },
+      {
+        pane: "left",
+        pathname: "/",
+        source: "sidebar-template-list-open",
+      },
+    )
+    onClose?.()
+  }, [onClose])
+
   const handleOpenListView = useCallback(
     (object: SearchObjectRoute) => {
       const listByObject: Partial<
@@ -675,6 +687,7 @@ export function Sidebar({
       hasUnseenMentions={hasUnseenMentions}
       onNavigateObject={handleNavigateObject}
       onOpenTaskList={handleOpenTaskList}
+      onOpenTemplateList={handleOpenTemplateList}
       onOpenProject={(projectId) => {
         handleProjectClick(projectId)
         onClose?.()

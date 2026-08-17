@@ -9,8 +9,8 @@ export type AddDashedButtonProps = React.ButtonHTMLAttributes<HTMLButtonElement>
 }
 
 /**
- * Shared dashed “Add …” control used across entity lists
- * (components, keywords, attachments, reviews, etc.).
+ * Small minimalist “+ Add” pill used across entity lists
+ * (attachments, reviews, artifacts, keywords, etc.).
  */
 export const AddDashedButton = React.forwardRef<HTMLButtonElement, AddDashedButtonProps>(
   ({ label = "Add", className, type = "button", ...props }, ref) => (
@@ -18,16 +18,16 @@ export const AddDashedButton = React.forwardRef<HTMLButtonElement, AddDashedButt
       ref={ref}
       type={type}
       className={cn(
-        "mt-3 inline-flex w-full items-center justify-center gap-1.5",
-        "rounded-lg border border-dashed border-border py-2.5",
-        "text-sm text-muted-foreground transition-colors",
-        "hover:border-foreground/30 hover:bg-muted/40 hover:text-foreground",
+        "mt-2 inline-flex h-7 w-auto items-center justify-center gap-1",
+        "rounded-full border border-gray-200 bg-white px-2.5",
+        "text-xs font-normal text-gray-600 transition-colors",
+        "hover:border-gray-300 hover:bg-gray-50 hover:text-gray-900",
         "disabled:pointer-events-none disabled:opacity-50",
         className,
       )}
       {...props}
     >
-      <Plus className="h-3.5 w-3.5" />
+      <Plus className="h-3 w-3" aria-hidden />
       {label}
     </button>
   ),

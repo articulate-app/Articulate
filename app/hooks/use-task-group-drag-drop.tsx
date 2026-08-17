@@ -4,7 +4,8 @@ import * as React from 'react'
 import {
   DndContext,
   DragOverlay,
-  PointerSensor,
+  MouseSensor,
+  TouchSensor,
   pointerWithin,
   useDraggable,
   useDroppable,
@@ -90,7 +91,8 @@ export function useTaskGroupDragDrop(options: UseTaskGroupDragDropOptions) {
   const pendingTaskIdsRef = React.useRef<Set<string>>(new Set())
 
   const sensors = useSensors(
-    useSensor(PointerSensor, { activationConstraint: { distance: 6 } }),
+    useSensor(MouseSensor, { activationConstraint: { distance: 6 } }),
+    useSensor(TouchSensor, { activationConstraint: { delay: 400, tolerance: 8 } }),
   )
 
   const isTaskPending = React.useCallback((taskId: number | string) => {
@@ -266,7 +268,8 @@ export function TaskGroupDragDropProvider({
   dragOverlay,
 }: TaskGroupDragDropProviderProps) {
   const sensors = useSensors(
-    useSensor(PointerSensor, { activationConstraint: { distance: 6 } }),
+    useSensor(MouseSensor, { activationConstraint: { distance: 6 } }),
+    useSensor(TouchSensor, { activationConstraint: { delay: 400, tolerance: 8 } }),
   )
 
   return (
@@ -321,7 +324,8 @@ export function TaskDragHandle({ task, sourceGroupKey, className }: TaskDragHand
       aria-label="Drag task to another group"
       className={cn(
         'inline-flex h-5 w-5 shrink-0 items-center justify-center rounded',
-        'text-muted-foreground opacity-0 group-hover/task-row:opacity-100',
+        'text-muted-foreground opacity-0',
+        '[@media(hover:hover)]:group-hover/task-row:opacity-100',
         'cursor-grab active:cursor-grabbing hover:bg-gray-100',
         isDragging && 'opacity-100',
         className,

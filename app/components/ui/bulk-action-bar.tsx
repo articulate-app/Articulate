@@ -97,30 +97,30 @@ export function BulkActionBar({
             onClick={action.onClick}
             disabled={action.disabled}
             className={cn(
-              'inline-flex h-8 shrink-0 items-center gap-1.5 rounded-full px-3 text-xs font-medium transition-colors disabled:opacity-50',
+              'inline-flex h-9 shrink-0 items-center gap-1.5 rounded-lg px-3.5 text-sm font-medium transition-colors disabled:opacity-50',
               isDestructive &&
-                'border border-red-200 bg-white text-red-600 hover:bg-red-50',
+                'border border-red-300 bg-white text-red-600 hover:bg-red-50',
               isPrimary && 'bg-gray-900 text-white hover:bg-gray-800',
               !isDestructive &&
                 !isPrimary &&
-                'border border-gray-200 bg-white text-gray-800 hover:bg-gray-50',
+                'border border-gray-300 bg-white text-gray-900 hover:bg-gray-50',
             )}
           >
-            {action.icon ? <action.icon className="h-3.5 w-3.5" /> : null}
+            {action.icon ? <action.icon className="h-4 w-4" /> : null}
             {action.label}
           </button>
         )
       })}
-      <span className="shrink-0 text-xs tabular-nums text-gray-500">
+      <span className="shrink-0 pl-1 text-sm tabular-nums text-gray-500">
         {selectedCount} selected
       </span>
       <button
         type="button"
         onClick={onClearSelection}
-        className="inline-flex h-7 w-7 shrink-0 items-center justify-center rounded text-gray-400 transition-colors hover:bg-gray-100 hover:text-gray-700"
+        className="inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-md text-gray-400 transition-colors hover:bg-gray-100 hover:text-gray-700"
         aria-label="Clear selection"
       >
-        <X className="h-3.5 w-3.5" />
+        <X className="h-4 w-4" />
       </button>
     </div>
   )
