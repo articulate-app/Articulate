@@ -2576,6 +2576,7 @@ function buildArtifactOnlySystemPrompt() {
     "ARTIFACT UPDATE FAILURES: if ai_start_artifact_build fails, fix the arguments and retry when the user request still requires an update. Never substitute a chat-only rewrite (and never change the artifact language) in place of a failed requested edit.",
     "Several tools may be used in one run. You may create records, then use their returned IDs in later tool rounds.",
     "Never invent IDs, URLs, database facts or tool results.",
+    "WRITE CLAIM GROUNDING: Never say that you corrected, changed, updated, attached, linked, saved, deleted, published, configured or otherwise mutated workspace data unless at least one corresponding mutating tool result in this run completed with ok=true and skipped=false. Read/list/search tools do not count as writes. If no write succeeded, say explicitly that nothing was changed.",
     "Artifact read/list tools return app_link, markdown_link and download_links. When mentioning an artifact in the reply, paste markdown_link exactly once on its own line (e.g. `[Title](app://artifact/<id>)`) — do not wrap it in a bullet/numbered list, and do not also print the title as plain text above/beside the link. Never paste bare app:// URLs, never paste app://ai-build/... / build_app_link, and never invent web URLs. After ai_start_artifact_build for multiple artifacts, paste every entry from data.artifacts[].markdown_link (or data.artifact_links_markdown) — one chip per artifact on its own line — not a single build link.",
     "INTERNAL LINKBUILDING (artifacts + web content): when creating or updating blog/article and similar site content where it fits the user request, include natural internal links to other blog posts and key site pages (product, category, contact, about, etc.). Resolve project_id (scope, targets, or list_visible_projects + read_project) for project_url, then use read_public_webpage on the site and blog listing/detail pages to discover factual link opportunities. Only ask the user for blog URLs after browsing fails. Never invent a site-index or crawl tool that is not in your tool list.",
     "When ai_start_artifact_build succeeds, skip empty acknowledgements like 'Build started' or 'Queued' — the build timeline already shows that. Do write short Cursor-style narration: a brief plan before tools, then a substantive reply after tools (what changed, what to check next). Keep narration visible even when an artifact build is running.",
@@ -3422,6 +3423,36 @@ function toolResultForPersistence(result: any) {
   };
 }
 
+function isMutatingToolName(name: unknown): boolean {
+  const toolName = String(name ?? "").trim();
+  return /^(?:ai_(?:update|create|save|attach|restore|duplicate|bulk_update|bulk_create|manage|start_artifact_build|set_agent_run_state)|configure_publishing_destination|publish_content|continue_publication|confirm_publication|cancel_publication|reschedule_publication|cancel_scheduled_publication|publish_scheduled_now)/.test(toolName);
+}
+
+function guardUngroundedMutationClaim(text: string, toolResults: any[]) {
+  const value = String(text ?? "").trim();
+  if (!value || !Array.isArray(toolResults) || toolResults.length === 0) {
+    return { text: value, changed: false };
+  }
+  const hasSuccessfulMutation = toolResults.some((result) =>
+    result?.ok === true
+    && result?.skipped !== true
+    && isMutatingToolName(result?.name)
+  );
+  if (hasSuccessfulMutation) return { text: value, changed: false };
+
+  const claimsMutation = /\b(?:corrigi|alterei|atualizei|associei|vinculei|liguei|anexei|adicionei|removi|eliminei|apaguei|guardei|gravei|publiquei|reagendei|cancelei|restaurei|dupliquei|configurei|fixed|changed|updated|attached|linked|removed|deleted|saved|published|rescheduled|cancelled|canceled|restored|duplicated|configured)\b/i.test(value);
+  if (!claimsMutation) return { text: value, changed: false };
+
+  const looksPortuguese = /\b(?:corrigi|alterei|atualizei|associei|vinculei|liguei|anexei|adicionei|removi|eliminei|apaguei|guardei|gravei|publiquei|reagendei|cancelei|restaurei|dupliquei|configurei)\b/i.test(value);
+  return {
+    changed: true,
+    text: looksPortuguese
+      ? "Não consegui aplicar a alteração pedida. As ferramentas executadas apenas consultaram dados ou falharam; nenhuma operação de escrita foi concluída e nada foi alterado."
+      : "I could not apply the requested change. The tools only read data or failed; no write operation completed and nothing was changed.",
+  };
+}
+
+
 async function runArtifactConversation(args: {
   db: any;
   supabaseService: any;
@@ -3614,6 +3645,18 @@ async function runArtifactConversation(args: {
   }
 
   if (clarification) assistantText = String(clarification.question ?? "").trim();
+  if (!clarification) {
+    const grounded = guardUngroundedMutationClaim(assistantText, toolResults);
+    if (grounded.changed) {
+      console.warn("ai-chat blocked ungrounded mutation claim", {
+        run_id: cleanUuidOrNull(args.ctx?.ai_run_id),
+        tool_names: toolResults.map((result) => String(result?.name ?? "")).filter(Boolean),
+      });
+      assistantText = grounded.text;
+      await args.onEvent?.({ type: "assistant_text_reset" });
+      await args.onEvent?.({ type: "assistant_text_delta", delta: assistantText });
+    }
+  }
   // Keep substantive final prose even when an artifact build was started — the
   // timeline shows the build, the bubble can still explain what is happening.
 
