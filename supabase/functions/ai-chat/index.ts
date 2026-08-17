@@ -711,12 +711,9 @@ async function fetchOpenRouter(
     try {
       const parsed = JSON.parse(rawBody);
       if (parsed && typeof parsed === "object") {
-        if (
-          accounting.tokenBased !== false && accounting.quota && accounting.defaultMaxCompletionTokens &&
-          parsed.max_output_tokens == null && parsed.max_completion_tokens == null && parsed.max_tokens == null
-        ) {
-          parsed.max_tokens = accounting.defaultMaxCompletionTokens;
-        }
+        // Do not force a provider max_tokens value. Models on OpenRouter expose
+        // different output limits; quota reservation can remain conservative
+        // without making otherwise compatible models ineligible.
         // OpenRouter includes usage automatically in the final streamed chunk.
         // Do not force deprecated usage/stream_options flags.
         delete parsed.stream_options;
