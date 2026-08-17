@@ -1,7 +1,10 @@
 "use client"
 
 import React, { useEffect, useRef, useState } from "react"
+import { useSearchParams } from "next/navigation"
 import type { AiChatUsageSnapshot } from "../../app/lib/ai/ai-chat-v2-types"
+import { getSupabaseBrowser } from "../../lib/supabase-browser"
+import { invokeEdgeFunctionFetch } from "../../app/lib/edge-functions"
 import {
   buildUsageWarningCopy,
   formatCompactTokenCount,
@@ -15,18 +18,48 @@ type AiChatUsageIndicatorProps = {
   isLoading?: boolean
 }
 
+type ContextSnapshot = {
+  run_id: string
+  model_provider: string | null
+  model_name: string | null
+  prompt_tokens: number
+  context_limit: number | null
+  percent_used: number | null
+  summarized: boolean
+  measured_at: string | null
+}
+
+function formatContextLimit(value: number | null): string {
+  if (!value || !Number.isFinite(value)) return "unknown"
+  if (value >= 1_000_000) return `${(value / 1_000_000).toFixed(value % 1_000_000 === 0 ? 0 : 1)}M`
+  return `${Math.round(value / 1_000)}k`
+}
+
 export function AiChatUsageIndicator({ usage, isLoading }: AiChatUsageIndicatorProps) {
-  const [isOpen, setIsOpen] = useState(false)
+  const searchParams = useSearchParams()
+  const [usageOpen, setUsageOpen] = useState(false)
+  const [contextOpen, setContextOpen] = useState(false)
+  const [context, setContext] = useState<ContextSnapshot | null>(null)
   const rootRef = useRef<HTMLDivElement | null>(null)
   const strictest = pickStricterUsageScope(usage)
+  const threadId =
+    searchParams.get("aiThreadId")
+    ?? searchParams.get("threadId")
+    ?? searchParams.get("ai_thread_id")
 
   useEffect(() => {
-    if (!isOpen) return
+    if (!usageOpen && !contextOpen) return
     const handlePointerDown = (event: MouseEvent) => {
-      if (!rootRef.current?.contains(event.target as Node)) setIsOpen(false)
+      if (!rootRef.current?.contains(event.target as Node)) {
+        setUsageOpen(false)
+        setContextOpen(false)
+      }
     }
     const handleKeyDown = (event: KeyboardEvent) => {
-      if (event.key === "Escape") setIsOpen(false)
+      if (event.key === "Escape") {
+        setUsageOpen(false)
+        setContextOpen(false)
+      }
     }
     document.addEventListener("mousedown", handlePointerDown, true)
     document.addEventListener("keydown", handleKeyDown, true)
@@ -34,61 +67,167 @@ export function AiChatUsageIndicator({ usage, isLoading }: AiChatUsageIndicatorP
       document.removeEventListener("mousedown", handlePointerDown, true)
       document.removeEventListener("keydown", handleKeyDown, true)
     }
-  }, [isOpen])
+  }, [contextOpen, usageOpen])
 
-  if (isLoading && !usage) {
+  useEffect(() => {
+    if (!threadId) {
+      setContext(null)
+      return
+    }
+    let cancelled = false
+    const load = async () => {
+      try {
+        const supabase = getSupabaseBrowser()
+        const url = `${process.env.NEXT_PUBLIC_SUPABASE_URL}/functions/v1/ai-context-meter?thread_id=${encodeURIComponent(threadId)}`
+        const response = await invokeEdgeFunctionFetch({
+          supabase,
+          url,
+          debugLabel: "ai-context-meter",
+          init: { method: "GET" },
+          headers: { "Content-Type": "application/json" },
+        })
+        if (!response.ok) return
+        const payload = (await response.json()) as { context?: ContextSnapshot | null }
+        if (!cancelled) setContext(payload.context ?? null)
+      } catch {
+        // Context visibility is supplemental; never interfere with chat sending.
+      }
+    }
+    void load()
+    return () => {
+      cancelled = true
+    }
+  }, [threadId, usage?.user.used_tokens, usage?.team.used_tokens])
+
+  if (isLoading && !usage && !context) {
     return <span className="text-[11px] text-gray-400">Usage…</span>
   }
-  if (!usage || !strictest) return null
+  if ((!usage || !strictest) && !context) return null
 
-  const { scope, key } = strictest
-  const hasLimit = hasConfiguredTokenLimit(scope)
-  const percent = scope.percent_used ?? 0
-  const isWarning = scope.warning || scope.projected_warning
-  const isMaxed = scope.maxed_out || scope.projected_maxed_out
-  const warningCopy = buildUsageWarningCopy(scope)
+  const scope = strictest?.scope ?? null
+  const hasLimit = scope ? hasConfiguredTokenLimit(scope) : false
+  const percent = scope?.percent_used ?? 0
+  const isWarning = Boolean(scope && (scope.warning || scope.projected_warning))
+  const isMaxed = Boolean(scope && (scope.maxed_out || scope.projected_maxed_out))
+  const warningCopy = scope ? buildUsageWarningCopy(scope) : null
+  const collapsedLabel = scope
+    ? hasLimit
+      ? `${Math.round(percent)}%`
+      : `${formatCompactTokenCount(scope.used_tokens)} today`
+    : null
 
-  const meterClass = isMaxed
-    ? "bg-red-500"
-    : isWarning
-      ? "bg-amber-500"
-      : "bg-gray-400"
+  const contextPercent = context?.percent_used ?? null
+  const contextWarning = contextPercent != null && contextPercent >= 80
+  const contextCaution = contextPercent != null && contextPercent >= 60 && contextPercent < 80
+  const contextLabel = context
+    ? context.context_limit
+      ? `Context ${formatCompactTokenCount(context.prompt_tokens)} / ${formatContextLimit(context.context_limit)}`
+      : `Context ${formatCompactTokenCount(context.prompt_tokens)}`
+    : null
 
-  const collapsedLabel = hasLimit
-    ? `${Math.round(percent)}%`
-    : `${formatCompactTokenCount(scope.used_tokens)} today`
+  const meterClass = isMaxed ? "bg-red-500" : isWarning ? "bg-amber-500" : "bg-gray-400"
 
   return (
-    <div ref={rootRef} className="relative">
-      <button
-        type="button"
-        onClick={() => setIsOpen((prev) => !prev)}
-        className={`inline-flex h-7 max-w-[140px] items-center gap-1.5 rounded-sm px-1.5 text-[11px] font-medium hover:bg-gray-100/80 ${
-          isMaxed ? "text-red-700" : isWarning ? "text-amber-800" : "text-gray-500 hover:text-gray-700"
-        }`}
-        aria-haspopup="dialog"
-        aria-expanded={isOpen}
-        aria-label="AI usage today"
-        title={warningCopy ?? "Today's AI usage"}
-      >
-        {hasLimit ? (
-          <span className="inline-flex h-1.5 w-10 overflow-hidden rounded-full bg-gray-200">
-            <span
-              className={`h-full rounded-full transition-all ${meterClass}`}
-              style={{ width: `${Math.min(100, Math.max(0, percent))}%` }}
-            />
-          </span>
-        ) : null}
-        <span className="truncate">{collapsedLabel}</span>
-      </button>
-      {isOpen ? (
-        <div
-          role="dialog"
-          aria-label="AI usage details"
-          className="absolute bottom-full left-0 z-[9999] mb-1 w-56 rounded-md border border-gray-200 bg-white p-2.5 text-xs shadow-lg"
-        >
-          <UsageScopeRow label="Your usage" scope={usage.user} />
-          <UsageScopeRow label="Team usage" scope={usage.team} className="mt-2 border-t border-gray-100 pt-2" />
+    <div ref={rootRef} className="flex items-center gap-0.5">
+      {usage && strictest && scope ? (
+        <div className="relative">
+          <button
+            type="button"
+            onClick={() => {
+              setUsageOpen((prev) => !prev)
+              setContextOpen(false)
+            }}
+            className={`inline-flex h-7 max-w-[140px] items-center gap-1.5 rounded-sm px-1.5 text-[11px] font-medium hover:bg-gray-100/80 ${
+              isMaxed ? "text-red-700" : isWarning ? "text-amber-800" : "text-gray-500 hover:text-gray-700"
+            }`}
+            aria-haspopup="dialog"
+            aria-expanded={usageOpen}
+            aria-label="AI usage today"
+            title={warningCopy ?? "Today's AI usage"}
+          >
+            {hasLimit ? (
+              <span className="inline-flex h-1.5 w-10 overflow-hidden rounded-full bg-gray-200">
+                <span
+                  className={`h-full rounded-full transition-all ${meterClass}`}
+                  style={{ width: `${Math.min(100, Math.max(0, percent))}%` }}
+                />
+              </span>
+            ) : null}
+            <span className="truncate">{collapsedLabel}</span>
+          </button>
+          {usageOpen ? (
+            <div
+              role="dialog"
+              aria-label="AI usage details"
+              className="absolute bottom-full left-0 z-[9999] mb-1 w-56 rounded-md border border-gray-200 bg-white p-2.5 text-xs shadow-lg"
+            >
+              <UsageScopeRow label="Your usage" scope={usage.user} />
+              <UsageScopeRow label="Team usage" scope={usage.team} className="mt-2 border-t border-gray-100 pt-2" />
+              <div className="mt-2 border-t border-gray-100 pt-2 text-[10px] leading-4 text-gray-400">
+                Daily usage is cumulative and is separate from the model context window.
+              </div>
+            </div>
+          ) : null}
+        </div>
+      ) : null}
+
+      {context && contextLabel ? (
+        <div className="relative">
+          <button
+            type="button"
+            onClick={() => {
+              setContextOpen((prev) => !prev)
+              setUsageOpen(false)
+            }}
+            className={`inline-flex h-7 items-center gap-1.5 rounded-sm px-1.5 text-[11px] font-medium hover:bg-gray-100/80 ${
+              contextWarning ? "text-red-700" : contextCaution ? "text-amber-800" : "text-gray-500 hover:text-gray-700"
+            }`}
+            aria-haspopup="dialog"
+            aria-expanded={contextOpen}
+            aria-label="AI context window"
+            title="Context used by the latest model call"
+          >
+            {context.context_limit && contextPercent != null ? (
+              <span className="inline-flex h-1.5 w-8 overflow-hidden rounded-full bg-gray-200">
+                <span
+                  className={`h-full rounded-full transition-all ${contextWarning ? "bg-red-500" : contextCaution ? "bg-amber-500" : "bg-gray-400"}`}
+                  style={{ width: `${Math.min(100, Math.max(0, contextPercent))}%` }}
+                />
+              </span>
+            ) : null}
+            <span>{contextLabel}</span>
+            {contextPercent != null ? <span className="text-gray-400">· {Math.round(contextPercent)}%</span> : null}
+          </button>
+          {contextOpen ? (
+            <div
+              role="dialog"
+              aria-label="AI context details"
+              className="absolute bottom-full left-0 z-[9999] mb-1 w-64 rounded-md border border-gray-200 bg-white p-2.5 text-xs shadow-lg"
+            >
+              <div className="font-medium text-gray-800">Context window</div>
+              <div className="mt-1 text-gray-600">
+                {formatExactTokenCount(context.prompt_tokens)} tokens in the latest model input
+              </div>
+              {context.context_limit ? (
+                <div className="mt-0.5 text-gray-500">
+                  {Math.round(contextPercent ?? 0)}% of {formatExactTokenCount(context.context_limit)} available
+                </div>
+              ) : (
+                <div className="mt-0.5 text-gray-500">Context limit is not yet known for this model.</div>
+              )}
+              {context.model_name ? (
+                <div className="mt-1 text-gray-400">Model: {context.model_name}</div>
+              ) : null}
+              {context.summarized ? (
+                <div className="mt-2 rounded bg-gray-50 px-2 py-1.5 text-[11px] text-gray-600">
+                  Older conversation has been summarized to preserve context space.
+                </div>
+              ) : null}
+              <div className="mt-2 border-t border-gray-100 pt-2 text-[10px] leading-4 text-gray-400">
+                This is the context sent to the latest model call, not all tokens ever used in this conversation.
+              </div>
+            </div>
+          ) : null}
         </div>
       ) : null}
     </div>
@@ -109,18 +248,14 @@ function UsageScopeRow({
   return (
     <div className={className}>
       <div className="font-medium text-gray-800">{label}</div>
-      <div className="mt-0.5 text-gray-600">
-        {formatExactTokenCount(scope.used_tokens)} tokens used today
-      </div>
+      <div className="mt-0.5 text-gray-600">{formatExactTokenCount(scope.used_tokens)} tokens used today</div>
       {hasLimit ? (
         <>
           <div className="mt-1 text-gray-500">
             {percent != null ? `${Math.round(percent)}% of daily allowance` : "Daily allowance configured"}
           </div>
           {scope.remaining_tokens != null ? (
-            <div className="text-gray-500">
-              {formatExactTokenCount(scope.remaining_tokens)} remaining
-            </div>
+            <div className="text-gray-500">{formatExactTokenCount(scope.remaining_tokens)} remaining</div>
           ) : null}
         </>
       ) : null}
