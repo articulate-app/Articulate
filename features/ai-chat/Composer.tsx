@@ -2780,7 +2780,7 @@ export function Composer({
               <AiChatModelPicker modelKey={modelKey} onModelKeyChange={setModelKey} disabled={isSending} />
             ) : null}
             {variant !== "inlineEdit" ? (
-              <AiChatUsageIndicator usage={threadUsage} isLoading={isThreadUsageLoading} />
+              <AiChatUsageIndicator threadId={threadId} usage={threadUsage} isLoading={isThreadUsageLoading} />
             ) : null}
           </div>
           <div className="flex items-center gap-1.5">

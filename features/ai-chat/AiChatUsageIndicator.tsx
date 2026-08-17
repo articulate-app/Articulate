@@ -14,6 +14,7 @@ import {
 } from "./ai-chat-usage"
 
 type AiChatUsageIndicatorProps = {
+  threadId?: string | null
   usage: AiChatUsageSnapshot | null | undefined
   isLoading?: boolean
 }
@@ -35,17 +36,13 @@ function formatContextLimit(value: number | null): string {
   return `${Math.round(value / 1_000)}k`
 }
 
-export function AiChatUsageIndicator({ usage, isLoading }: AiChatUsageIndicatorProps) {
-  const searchParams = useSearchParams()
+export function AiChatUsageIndicator({ threadId, usage, isLoading }: AiChatUsageIndicatorProps) {
   const [usageOpen, setUsageOpen] = useState(false)
   const [contextOpen, setContextOpen] = useState(false)
   const [context, setContext] = useState<ContextSnapshot | null>(null)
   const rootRef = useRef<HTMLDivElement | null>(null)
   const strictest = pickStricterUsageScope(usage)
-  const threadId =
-    searchParams.get("aiThreadId")
-    ?? searchParams.get("threadId")
-    ?? searchParams.get("ai_thread_id")
+  const activeThreadId = threadId?.trim() || null
 
   useEffect(() => {
     if (!usageOpen && !contextOpen) return
@@ -70,7 +67,7 @@ export function AiChatUsageIndicator({ usage, isLoading }: AiChatUsageIndicatorP
   }, [contextOpen, usageOpen])
 
   useEffect(() => {
-    if (!threadId) {
+    if (!activeThreadId) {
       setContext(null)
       return
     }
@@ -78,7 +75,7 @@ export function AiChatUsageIndicator({ usage, isLoading }: AiChatUsageIndicatorP
     const load = async () => {
       try {
         const supabase = getSupabaseBrowser()
-        const url = `${process.env.NEXT_PUBLIC_SUPABASE_URL}/functions/v1/ai-context-meter?thread_id=${encodeURIComponent(threadId)}`
+        const url = `${process.env.NEXT_PUBLIC_SUPABASE_URL}/functions/v1/ai-context-meter?thread_id=${encodeURIComponent(activeThreadId)}`
         const response = await invokeEdgeFunctionFetch({
           supabase,
           url,
@@ -97,7 +94,7 @@ export function AiChatUsageIndicator({ usage, isLoading }: AiChatUsageIndicatorP
     return () => {
       cancelled = true
     }
-  }, [threadId, usage?.user.used_tokens, usage?.team.used_tokens])
+  }, [activeThreadId, usage?.user.used_tokens, usage?.team.used_tokens])
 
   if (isLoading && !usage && !context) {
     return <span className="text-[11px] text-gray-400">Usage…</span>

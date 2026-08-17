@@ -3663,6 +3663,9 @@ export function ChatWindow({
                 }
                 runFailureCard={
                   m.role === "assistant"
+                  // A failed turn remains in run history, but once the user has
+                  // continued successfully it should not stay as a live Retry card.
+                  && messageIndex > latestUserMessageIndex
                   && (m as InFlightAssistantMessage).terminal_state
                   && ((m as InFlightAssistantMessage).terminal_state?.kind === "failed"
                     || (m as InFlightAssistantMessage).terminal_state?.kind === "interrupted") ? (
