@@ -2498,7 +2498,7 @@ async function openRouterModelMetadata(model: string): Promise<OpenRouterModelMe
     return openRouterModelMetadataCache.models.get(model) ?? { supportsTools: false, contextLength: null };
   }
   try {
-    const response = await fetch("https://openrouter.ai/api/v1/models", {
+    const response = await fetch("https://openrouter.ai/api/v1/models?supported_parameters=tools", {
       headers: { Authorization: `Bearer ${OPENROUTER_API_KEY}` },
       signal: AbortSignal.timeout(10000),
     });
@@ -3068,7 +3068,7 @@ async function refreshThreadContextSummary(supabaseService: any, threadId: strin
         messages: [
           {
             role: "system",
-            content: "You maintain a rolling summary of an AI workspace chat thread. Merge the previous summary (if any) with the new messages into ONE compact structured summary in the conversation's dominant language. Use exactly these headings: GOALS, DECISIONS, CONSTRAINTS, WORKSPACE ENTITIES, COMPLETED ACTIONS, OPEN ITEMS. Under each heading use concise bullets and omit empty headings only when truly irrelevant. Preserve exact names, IDs, agreed deliverable formats, task/project/artifact references and unresolved dependencies. Keep thread-specific style constraints when they matter to this work, but do not turn generic cross-thread user preferences into thread memory. Max ~450 words. Output only the structured summary.",
+            content: "You maintain a rolling summary of an AI workspace chat thread. Merge the previous summary (if any) with the new messages into ONE compact structured summary in the conversation's dominant language. Use exactly these headings: GOALS, DECISIONS, CONSTRAINTS, WORKSPACE ENTITIES, COMPLETED ACTIONS, OPEN ITEMS. Under each heading use concise bullets and omit empty headings only when truly irrelevant. Preserve exact names, IDs, agreed deliverable formats, task/project/artifact references and unresolved dependencies. Keep thread-specific style constraints when they matter to this work, but do not turn generic cross-thread user preferences into thread memory. Max ~350 words. Output only the structured summary.",
           },
           {
             role: "user",
@@ -4211,7 +4211,7 @@ async function handleAiChatRequest(req: Request) {
       ? openRouterMetadata?.supportsTools === true
       : resolvedModel.provider === "openai";
     const modelContextLimit = resolvedModel.provider === "openrouter"
-      ? openRouterMetadata?.contextLength ?? null
+      ? null
       : nativeModelContextLimit(resolvedModel.provider, resolvedModel.model);
     const selectedTools = modelSupportsTools ? MODEL_TOOLS : [];
     // Static system prompt first (stable prompt-cache prefix); volatile per-turn
