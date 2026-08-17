@@ -3633,6 +3633,7 @@ async function runArtifactConversation(args: {
   let assistantText = "";
   let usage: any = null;
   let markedFirstToken = false;
+  let maxContextEstimatedTokens = estimateContextTokens({ messages: conversation, tools: args.tools });
   const streamStartedAtMs = args.streamStartedAtMs ?? performance.now();
 
   for (let round = 0; round < 10; round++) {
@@ -3654,6 +3655,10 @@ async function runArtifactConversation(args: {
       if (!isOpenRouter) payload.parallel_tool_calls = true;
     }
     if (!isOpenRouter) payload.stream_options = { include_usage: true };
+    maxContextEstimatedTokens = Math.max(
+      maxContextEstimatedTokens,
+      estimateContextTokens({ messages: conversation, tools: args.tools }),
+    );
 
     args.trace.mark(`${args.provider}_round_${round + 1}_request`);
     const response = isOpenRouter
@@ -3847,6 +3852,7 @@ async function runArtifactConversation(args: {
     buildIds: [...new Set(buildIds)],
     clarification,
     usage,
+    maxContextEstimatedTokens,
     streamStats: args.streamStats ?? null,
   };
 }
@@ -3869,6 +3875,7 @@ async function persistAssistantMessage(args: {
   streamStats?: OutboundStreamStats | null;
   contextComposition?: Record<string, number> | null;
   contextLimit?: number | null;
+  contextActiveEstimatedTokens?: number | null;
 }) {
   const costs = await computeCost(args.supabaseService, args.provider, args.model, args.usage);
   const hasVisibleText = Boolean(args.text?.trim()) || Boolean(args.clarification);
@@ -3925,9 +3932,15 @@ async function persistAssistantMessage(args: {
         cache_hit_rate: (args.usage?.prompt_tokens ?? 0) > 0
           ? (args.usage?.cached_prompt_tokens ?? 0) / args.usage.prompt_tokens
           : null,
-        context_composition: args.contextComposition ?? null,
+        context_composition: args.contextComposition
+          ? {
+              ...args.contextComposition,
+              active_tool_loop: Math.max(0, (args.contextActiveEstimatedTokens ?? 0) - (args.contextComposition.total_estimated_tokens ?? 0)),
+            }
+          : null,
         context_limit: args.contextLimit ?? null,
         context_estimated_prompt_tokens: args.contextComposition?.total_estimated_tokens ?? null,
+        context_active_estimated_tokens: args.contextActiveEstimatedTokens ?? args.contextComposition?.total_estimated_tokens ?? null,
         build_ids: args.buildIds,
         ...(stream
           ? {
@@ -4266,6 +4279,7 @@ async function handleAiChatRequest(req: Request) {
         text: result.assistantText, usage: result.usage, toolResults: result.toolResults, buildIds: result.buildIds,
         clarification: result.clarification, latencyMs, scope, streamStats: result.streamStats ?? streamStats,
         contextComposition, contextLimit: modelContextLimit,
+        contextActiveEstimatedTokens: result.maxContextEstimatedTokens ?? contextComposition.total_estimated_tokens,
       });
       scheduleThreadContextSummary(supabaseService, threadId);
       return { assistant, run_id: activeRunId, ...result };

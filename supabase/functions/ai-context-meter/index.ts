@@ -93,15 +93,20 @@ Deno.serve(async (req: Request) => {
     return Response.json({ context: null }, { headers: { ...corsHeaders, "Cache-Control": "no-store" } })
   }
 
-  const promptTokens = Math.round(positiveNumber(latest.metrics?.usage_prompt_tokens) ?? 0)
+  const providerPromptTokensTotal = Math.round(positiveNumber(latest.metrics?.usage_prompt_tokens) ?? 0)
+  const activePromptTokens = Math.round(
+    positiveNumber(latest.metrics?.context_active_estimated_tokens)
+      ?? positiveNumber(latest.metrics?.context_estimated_prompt_tokens)
+      ?? providerPromptTokensTotal,
+  )
   const modelProvider = String(latest.model_provider ?? "")
   const modelName = String(latest.model_name ?? "")
   const measuredContextLimit = positiveNumber(latest.metrics?.context_limit)
   const contextLimit = measuredContextLimit ?? await resolveContextLimit(modelProvider, modelName)
-  const percentUsed = contextLimit ? Math.min(100, (promptTokens / contextLimit) * 100) : null
+  const percentUsed = contextLimit ? Math.min(100, (activePromptTokens / contextLimit) * 100) : null
   const cachedPromptTokens = Math.round(Number(latest.metrics?.cached_prompt_tokens ?? 0) || 0)
   const cacheWriteTokens = Math.round(Number(latest.metrics?.cache_write_tokens ?? 0) || 0)
-  const cacheHitRate = promptTokens > 0 ? cachedPromptTokens / promptTokens : null
+  const cacheHitRate = providerPromptTokensTotal > 0 ? cachedPromptTokens / providerPromptTokensTotal : null
   const status = percentUsed == null ? null : percentUsed >= 80 ? "high" : percentUsed >= 55 ? "compacting" : "healthy"
 
   return Response.json({
@@ -109,7 +114,8 @@ Deno.serve(async (req: Request) => {
       run_id: latest.id,
       model_provider: modelProvider || null,
       model_name: modelName || null,
-      prompt_tokens: promptTokens,
+      prompt_tokens: activePromptTokens,
+      provider_prompt_tokens_total: providerPromptTokensTotal,
       context_limit: contextLimit,
       percent_used: percentUsed,
       status,
