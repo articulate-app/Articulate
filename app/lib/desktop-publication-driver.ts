@@ -130,10 +130,14 @@ async function executeAction(args: {
   action: ClientAgentAction
   observation: DesktopObservation
 }): Promise<{ ok: boolean; dropped?: boolean; reason?: string }> {
-  const element =
-    "index" in args.action
-      ? args.observation.elements.find((candidate) => candidate.index === args.action.index)
+  const elementIndex =
+    args.action.type === "click" || args.action.type === "type"
+      ? args.action.index
       : null
+  const element =
+    elementIndex == null
+      ? null
+      : args.observation.elements.find((candidate) => candidate.index === elementIndex)
 
   if (args.action.type === "click") {
     if (!element) return { ok: false, reason: "element_not_found" }
