@@ -14,9 +14,43 @@ const CONTEXT_LIMITS: Record<string, number> = {
   "claude-sonnet-4-6": 200_000,
 }
 
+let openRouterContextCache: { expiresAt: number; limits: Map<string, number> } | null = null
+
 function positiveNumber(value: unknown): number | null {
   const parsed = Number(value)
   return Number.isFinite(parsed) && parsed > 0 ? parsed : null
+}
+
+async function resolveContextLimit(provider: string, modelName: string): Promise<number | null> {
+  const known = CONTEXT_LIMITS[modelName]
+  if (known) return known
+  if (provider !== "openrouter" || !modelName) return null
+
+  const now = Date.now()
+  if (!openRouterContextCache || openRouterContextCache.expiresAt <= now) {
+    const key = Deno.env.get("OPENROUTER_API_KEY") ?? ""
+    if (!key) return null
+    try {
+      const response = await fetch("https://openrouter.ai/api/v1/models", {
+        headers: { Authorization: `Bearer ${key}` },
+        signal: AbortSignal.timeout(10_000),
+      })
+      if (!response.ok) throw new Error(`openrouter_models_failed:${response.status}`)
+      const payload = await response.json()
+      const limits = new Map<string, number>()
+      for (const row of Array.isArray(payload?.data) ? payload.data : []) {
+        const id = typeof row?.id === "string" ? row.id.trim() : ""
+        const limit = positiveNumber(row?.context_length)
+        if (id && limit) limits.set(id, limit)
+      }
+      openRouterContextCache = { expiresAt: now + 5 * 60 * 1000, limits }
+    } catch (error) {
+      console.warn("ai-context-meter OpenRouter catalog lookup failed", { error: String(error) })
+      return null
+    }
+  }
+
+  return openRouterContextCache.limits.get(modelName) ?? null
 }
 
 Deno.serve(async (req: Request) => {
@@ -60,14 +94,15 @@ Deno.serve(async (req: Request) => {
   }
 
   const promptTokens = Math.round(positiveNumber(latest.metrics?.usage_prompt_tokens) ?? 0)
+  const modelProvider = String(latest.model_provider ?? "")
   const modelName = String(latest.model_name ?? "")
-  const contextLimit = CONTEXT_LIMITS[modelName] ?? null
+  const contextLimit = await resolveContextLimit(modelProvider, modelName)
   const percentUsed = contextLimit ? Math.min(100, (promptTokens / contextLimit) * 100) : null
 
   return Response.json({
     context: {
       run_id: latest.id,
-      model_provider: latest.model_provider ?? null,
+      model_provider: modelProvider || null,
       model_name: modelName || null,
       prompt_tokens: promptTokens,
       context_limit: contextLimit,
