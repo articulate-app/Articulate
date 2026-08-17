@@ -61,3 +61,18 @@ export async function createAiPreference(args: {
   if (error) throw error
   return data
 }
+
+export async function changeAiPreferenceScope(args: {
+  id: string
+  scope: AiPreferenceScope
+  projectId?: number | null
+}) {
+  const supabase = createClientComponentClient()
+  const { data, error } = await supabase.rpc("ai_change_preference_scope_v1", {
+    p_preference_id: args.id,
+    p_scope: args.scope,
+    p_project_id: args.projectId ?? null,
+  })
+  if (error) throw error
+  return data
+}
