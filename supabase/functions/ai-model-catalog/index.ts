@@ -17,6 +17,8 @@ type CatalogModel = {
   recommended: boolean
   selectable: boolean
   lab_only: boolean
+  supports_tools: boolean
+  supported_parameters: string[]
   input_price_per_million: number | null
   output_price_per_million: number | null
 }
@@ -32,6 +34,8 @@ const nativeModels: CatalogModel[] = [
     recommended: true,
     selectable: true,
     lab_only: false,
+    supports_tools: true,
+    supported_parameters: ["tools", "tool_choice", "reasoning", "max_tokens"],
     input_price_per_million: 5,
     output_price_per_million: 30,
   },
@@ -45,6 +49,8 @@ const nativeModels: CatalogModel[] = [
     recommended: true,
     selectable: true,
     lab_only: false,
+    supports_tools: true,
+    supported_parameters: ["tools", "tool_choice", "reasoning", "max_tokens"],
     input_price_per_million: 0.75,
     output_price_per_million: 4.5,
   },
@@ -99,6 +105,9 @@ Deno.serve(async (req: Request) => {
           if (!id) continue
           const inputPrice = pricePerMillion(row?.pricing?.prompt)
           const outputPrice = pricePerMillion(row?.pricing?.completion)
+          const supportedParameters = Array.isArray(row?.supported_parameters)
+            ? row.supported_parameters.map((value: unknown) => String(value ?? "").trim()).filter(Boolean)
+            : []
           models.push({
             key: `openrouter:${id}`,
             label: typeof row?.name === "string" && row.name.trim() ? row.name.trim() : id,
@@ -107,8 +116,13 @@ Deno.serve(async (req: Request) => {
             tier: inferTier(inputPrice, outputPrice),
             context_limit: finite(row?.context_length),
             recommended: false,
-            selectable: false,
-            lab_only: true,
+            // Every model discovered through OpenRouter is selectable/testable.
+            // Capability metadata tells the chat runtime whether native tool calling
+            // can be used for that model; it is not a gate on model availability.
+            selectable: true,
+            lab_only: false,
+            supports_tools: supportedParameters.includes("tools"),
+            supported_parameters: supportedParameters,
             input_price_per_million: inputPrice,
             output_price_per_million: outputPrice,
           })
