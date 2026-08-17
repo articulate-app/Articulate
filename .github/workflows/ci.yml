@@ -26,7 +26,16 @@ jobs:
 
     - name: Apply OpenRouter ai-chat source patch
       if: github.event_name == 'push'
-      run: node scripts/patch-ai-chat-openrouter.mjs
+      shell: bash
+      run: |
+        python3 - <<'PY'
+        from pathlib import Path
+        p = Path('scripts/patch-ai-chat-openrouter.mjs')
+        s = p.read_text()
+        s = s.replace('const OPENAI_API_KEY = Deno.env.get("OPENAI_API_KEY");\\n\\n\\n\\nconst ANTHROPIC_API_KEY', 'const OPENAI_API_KEY = Deno.env.get("OPENAI_API_KEY");\\n\\n\\nconst ANTHROPIC_API_KEY')
+        p.write_text(s)
+        PY
+        node scripts/patch-ai-chat-openrouter.mjs
 
     - name: Commit patched ai-chat source
       if: github.event_name == 'push'
