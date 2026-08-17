@@ -601,6 +601,12 @@ function WorkspaceTaskListViewInner({ paneId }: { paneId: WorkspacePaneId }) {
       ) : null}
       </div>
 
+      {viewMode === "list" && badges.length > 0 ? (
+        <div className="shrink-0">
+          <FilterBadges badges={badges} onClearAll={onClearAll} className="mb-0" />
+        </div>
+      ) : null}
+
       <TaskFilters
         isOpen={isFilterPaneOpen}
         onClose={() => setIsFilterPaneOpen(false)}

@@ -38,6 +38,22 @@ function toHeadersMap(headers?: HeadersInit): Record<string, string> {
   return { ...headers }
 }
 
+function routeEdgeFunctionUrl(url: string): string {
+  try {
+    const parsed = new URL(url)
+    if (parsed.pathname.endsWith("/functions/v1/ai-chat")) {
+      parsed.pathname = parsed.pathname.replace(
+        /\/functions\/v1\/ai-chat$/,
+        "/functions/v1/ai-chat-with-preferences",
+      )
+      return parsed.toString()
+    }
+  } catch {
+    // Preserve the original URL and let fetch surface malformed URLs normally.
+  }
+  return url
+}
+
 async function isInvalidJwtResponse(response: Response): Promise<boolean> {
   if (response.status === 401) return true
   if (response.ok) return false
@@ -56,7 +72,7 @@ async function runFetchWithToken(
 ): Promise<Response> {
   const mergedHeaders = toHeadersMap(headers)
   mergedHeaders.Authorization = `Bearer ${token}`
-  return fetch(url, {
+  return fetch(routeEdgeFunctionUrl(url), {
     ...init,
     headers: mergedHeaders,
   })

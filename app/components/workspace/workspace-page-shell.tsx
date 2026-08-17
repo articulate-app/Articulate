@@ -70,7 +70,7 @@ export function WorkspacePageShell({
     <div
       ref={scrollRef}
       {...(taskScrollContainer ? { "data-task-scroll-container": "" } : {})}
-      className={cn("h-full min-h-0 overflow-auto bg-white", className)}
+      className={cn("h-full min-h-0 overflow-auto bg-white [scrollbar-gutter:stable]", className)}
     >
       <div className={column}>
         <div className="flex items-start justify-between gap-3">
