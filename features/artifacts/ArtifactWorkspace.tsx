@@ -91,6 +91,14 @@ import {
   readArtifactAttachDragData,
 } from "./artifact-attach-dnd"
 import { ArtifactVersionHistoryPopover } from "./artifact-version-history-popover"
+import {
+  isArtifactDraftNoopAgainstBase,
+  resolveSavedLiveArtifactBase,
+} from "./artifact-live-save-base"
+import {
+  applyArtifactCachePatch,
+  artifactCachePatchFromSavedLivePreview,
+} from "./artifact-query-cache"
 
 export type ArtifactWorkspaceProps = {
   /** Task workspace when taskId is set. */
@@ -541,6 +549,22 @@ export function ArtifactWorkspace({
     }
   }, [artifacts, pruneConsumedSavedPreviews])
 
+  useEffect(() => {
+    const knownIds = new Set(artifacts.map((artifact) => artifact.id))
+    for (const artifact of artifacts) {
+      const live = liveByArtifactId.get(artifact.id) ?? null
+      const patch = artifactCachePatchFromSavedLivePreview(live, artifact)
+      if (!patch) continue
+      applyArtifactCachePatch(queryClient, patch)
+    }
+    for (const live of liveByArtifactId.values()) {
+      if (knownIds.has(live.artifactId)) continue
+      const patch = artifactCachePatchFromSavedLivePreview(live, null)
+      if (!patch) continue
+      applyArtifactCachePatch(queryClient, patch)
+    }
+  }, [artifacts, liveByArtifactId, queryClient])
+
   // Rebase or drop local drafts when the server version moves ahead.
   // Never wipe a dirty draft that still differs from the server — that is how
   // keystrokes typed during autosave were getting discarded after invalidate.
@@ -921,18 +945,16 @@ export function ArtifactWorkspace({
     if (!base) return
     const live = liveByArtifactIdRef.current.get(artifactId)
     if (live && live.phase !== "saved" && live.phase !== "failed") return
+    const effectiveBase = resolveSavedLiveArtifactBase(base, live)
 
     const expectedVersion = Math.max(
-      base.current_version ?? 0,
+      effectiveBase.current_version ?? 0,
       knownServerVersionByIdRef.current[artifactId] ?? 0,
       draft.baseVersion ?? 0,
     )
     if (expectedVersion <= 0) return
     // TipTap echo after AI/list sync — don't write a no-op revision.
-    if (
-      draft.contentText === (base.content_text ?? "")
-      && JSON.stringify(draft.contentJson) === JSON.stringify(base.content_json)
-    ) {
+    if (isArtifactDraftNoopAgainstBase(draft, effectiveBase)) {
       setDraftByArtifactId((prev) => {
         if (!prev[artifactId]) return prev
         const next = { ...prev }
@@ -946,18 +968,18 @@ export function ArtifactWorkspace({
     setConflictMessage(null)
     try {
       const result = await saveWorkspaceArtifact({
-        artifactId: base.id,
+        artifactId: effectiveBase.id,
         expectedVersion,
         snapshot: {
-          title: base.title,
-          status: base.status,
+          title: effectiveBase.title,
+          status: effectiveBase.status,
           content_text: draft.contentText,
-          content_json: draft.contentJson ?? base.content_json,
-          asset_data: base.asset_data,
+          content_json: draft.contentJson ?? effectiveBase.content_json,
+          asset_data: effectiveBase.asset_data,
         },
         changeSource: "manual",
         changedBy: currentUserIdRef.current,
-        aiThreadId: base.ai_thread_id,
+        aiThreadId: effectiveBase.ai_thread_id,
       })
       if (
         isArtifactRevisionConflictError(result) ||
@@ -998,6 +1020,9 @@ export function ArtifactWorkspace({
           knownServerVersionByIdRef.current[artifactId] ?? 0,
           result.version_number,
         )
+      }
+      if ("snapshot" in result && result.snapshot) {
+        applyArtifactCachePatch(queryClient, result.snapshot)
       }
       // Drop draft only if it still matches what we saved (no newer keystrokes).
       setDraftByArtifactId((prev) => {
@@ -1084,6 +1109,7 @@ export function ArtifactWorkspace({
       if (trimmed === previous) return
       const live = liveByArtifactIdRef.current.get(artifact.id)
       if (live && live.phase !== "saved") return
+      const effectiveArtifact = resolveSavedLiveArtifactBase(artifact, live)
       if (savingArtifactIdsRef.current.has(artifact.id)) {
         pendingResaveIdsRef.current.add(artifact.id)
         return
@@ -1093,18 +1119,18 @@ export function ArtifactWorkspace({
       setConflictMessage(null)
       try {
         const result = await saveWorkspaceArtifact({
-          artifactId: artifact.id,
-          expectedVersion: artifact.current_version,
+          artifactId: effectiveArtifact.id,
+          expectedVersion: effectiveArtifact.current_version,
           snapshot: {
             title: trimmed,
-            status: artifact.status,
-            content_text: draft?.contentText ?? artifact.content_text,
-            content_json: draft?.contentJson ?? artifact.content_json,
-            asset_data: artifact.asset_data,
+            status: effectiveArtifact.status,
+            content_text: draft?.contentText ?? effectiveArtifact.content_text,
+            content_json: draft?.contentJson ?? effectiveArtifact.content_json,
+            asset_data: effectiveArtifact.asset_data,
           },
           changeSource: "manual",
           changedBy: currentUserIdRef.current,
-          aiThreadId: artifact.ai_thread_id,
+          aiThreadId: effectiveArtifact.ai_thread_id,
           changeSummary: "Renamed artifact",
         })
         if (
@@ -1117,6 +1143,9 @@ export function ArtifactWorkspace({
           return
         }
         updateCenterTabTitle(buildCenterPaneTabKey("artifact", artifact.id), trimmed)
+        if ("snapshot" in result && result.snapshot) {
+          applyArtifactCachePatch(queryClient, result.snapshot)
+        }
         await invalidateArtifactLists()
       } catch (error) {
         setConflictMessage(error instanceof Error ? error.message : "Failed to rename artifact")
@@ -1128,7 +1157,7 @@ export function ArtifactWorkspace({
         }
       }
     },
-    [invalidateArtifactLists, updateCenterTabTitle],
+    [invalidateArtifactLists, queryClient, updateCenterTabTitle],
   )
 
   const handleConfirmDelete = useCallback(async () => {
@@ -1540,7 +1569,7 @@ export function ArtifactWorkspace({
                   // sequence+updatedAt remount TipTap on every preview upsert (cards flash).
                   const editorForceKey = isLiveBusy
                     ? `${artifact.id}:live:${live?.buildId ?? "building"}`
-                    : `${artifact.id}:v:${artifact.current_version ?? 0}`
+                    : `${display.id}:v:${display.current_version ?? 0}`
                   const effectivelyExpanded = collapsedStackIds.has(artifact.id)
                     ? false
                     : expandedStackIds.has(artifact.id)

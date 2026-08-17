@@ -640,6 +640,9 @@ function AiPaneInner({ isOpen, onClose, onExpand, initialScope = 'global', proje
   // Update URL when active thread changes (only when pane is open)
   useEffect(() => {
     if (disableUrlSync) return
+    // When the caller explicitly requested a new thread, do not let the
+    // previous active chat win the URL race before the bootstrap effect runs.
+    if (forceNewThread) return
     if (active && isOpen) {
       // Never put optimistic/temp ids in the URL.
       if (!isPersistedAiThreadId(active.id)) return
@@ -677,7 +680,7 @@ function AiPaneInner({ isOpen, onClose, onExpand, initialScope = 'global', proje
         previousActiveIdRef.current = active.id
       }
     }
-  }, [active?.id, disableUrlSync, isOpen, searchParams, navigateToThreadId])
+  }, [active?.id, disableUrlSync, forceNewThread, isOpen, searchParams, navigateToThreadId])
 
   const handleNewChat = async () => {
     if (isCreating || creatingLockRef.current) return
@@ -1193,7 +1196,7 @@ function AiPaneInner({ isOpen, onClose, onExpand, initialScope = 'global', proje
   // Inline mode - render without modal overlay
   if (inline) {
     return (
-      <div className="h-full flex flex-col bg-white">
+      <div className="h-full flex flex-col overflow-hidden bg-white">
         {/* Peer right-pane mode: shared RightPaneTabBar owns AI chat + Browser tabs. */}
         {hideOuterTabStrip ? null : (
         <div className={`${AI_PANE_TAB_ROW_CLASS} shrink-0`}>
@@ -1336,7 +1339,7 @@ function AiPaneInner({ isOpen, onClose, onExpand, initialScope = 'global', proje
         )}
         
         {/* Main chat area */}
-        <div className="flex-1 min-h-0">
+        <div className="flex-1 min-h-0 overflow-hidden">
             {active ? (
               <ChatWindow 
                 thread={active} 
@@ -1382,11 +1385,11 @@ function AiPaneInner({ isOpen, onClose, onExpand, initialScope = 'global', proje
   return (
     <div className="fixed inset-0 z-50 bg-black/50" onClick={onClose}>
       <div 
-        className="fixed right-0 top-0 h-full w-[600px] bg-white border-l border-gray-200 shadow-lg z-50 flex flex-col"
+        className="fixed right-0 top-0 z-50 flex h-full w-[600px] flex-col overflow-hidden border-l border-gray-200 bg-white shadow-lg"
         onClick={(e) => e.stopPropagation()}
         style={{ width: '600px', minWidth: '600px', maxWidth: '600px' }}
       >
-        <div className="h-full flex flex-col">
+        <div className="h-full flex flex-col overflow-hidden">
           {/* Simplified header with tabs on left, controls on right */}
           <div className={`${AI_PANE_TAB_ROW_CLASS} shrink-0`}>
             {/* Left side: Tabs */}
@@ -1525,7 +1528,7 @@ function AiPaneInner({ isOpen, onClose, onExpand, initialScope = 'global', proje
         </div>
           
           {/* Main chat area */}
-          <div className="flex-1 min-h-0">
+          <div className="flex-1 min-h-0 overflow-hidden">
             {active ? (
               <ChatWindow
                 thread={active}
@@ -1561,5 +1564,3 @@ function AiPaneInner({ isOpen, onClose, onExpand, initialScope = 'global', proje
     </div>
   )
 }
-
-

@@ -580,6 +580,8 @@ export function ChatWindow({
   const updateVisibility = useUpdateVisibility()
   const chatEndRef = useRef<HTMLDivElement>(null)
   const scrollContainerRef = useRef<HTMLDivElement>(null)
+  const scrollRoomRef = useRef<HTMLDivElement>(null)
+  const composerDockRef = useRef<HTMLDivElement>(null)
   const latestUserMessageRef = useRef<HTMLDivElement>(null)
   const prevLastUserMessageIdRef = useRef<string | null>(null)
   const userMessageScrollAnchorUntilRef = useRef(0)
@@ -589,6 +591,7 @@ export function ChatWindow({
   // during assistant streaming, so sends without an immediate stream (or after
   // stream ends) could not scroll the bubble to the top and left it clipped.
   const [keepUserMessageScrollRoom, setKeepUserMessageScrollRoom] = useState(false)
+  const [composerDockHeight, setComposerDockHeight] = useState(0)
   const {
     showJumpToBottom,
     scrollUserMessageIntoView,
@@ -2548,6 +2551,21 @@ export function ChatWindow({
   )
   const isChatEmpty = !isMessagesLoading && allMessages.length === 0
 
+  useEffect(() => {
+    const node = composerDockRef.current
+    if (!node) {
+      setComposerDockHeight(0)
+      return
+    }
+    const update = () => {
+      setComposerDockHeight(Math.ceil(node.getBoundingClientRect().height))
+    }
+    update()
+    const observer = new ResizeObserver(update)
+    observer.observe(node)
+    return () => observer.disconnect()
+  }, [isChatEmpty, thread.id])
+
   const activeClarification = useMemo(() => {
     const candidate = pendingClarification ?? resolveActiveClarificationFromMessages(allMessages)
     if (!candidate) return null
@@ -3176,7 +3194,7 @@ export function ChatWindow({
     ignoreUserScrollReleaseUntilRef.current = performance.now() + 2800
     // Imperative padding BEFORE measuring scroll — React class toggle lags one paint
     // and is the main reason long threads fail to pin the new user message at top.
-    ensureChatScrollRoom(scrollContainerRef.current, true)
+    ensureChatScrollRoom(scrollRoomRef.current, true)
     setKeepUserMessageScrollRoom(true)
     // Comfort-view pins the user message near the top with bottom padding, so
     // the viewport is intentionally not "near bottom". Hide the jump chip —
@@ -3194,7 +3212,7 @@ export function ChatWindow({
     const releaseTimer = window.setTimeout(() => {
       if (performance.now() >= userMessageScrollAnchorUntilRef.current) {
         setKeepUserMessageScrollRoom(false)
-        ensureChatScrollRoom(scrollContainerRef.current, false)
+        ensureChatScrollRoom(scrollRoomRef.current, false)
       }
     }, 20200)
 
@@ -3282,8 +3300,9 @@ export function ChatWindow({
 
     const observer = new ResizeObserver(reanchorIfNeeded)
     observer.observe(messageElement)
-    // Padding / preview growth changes the container's scrollHeight; re-anchor then.
-    if (container) observer.observe(container)
+    // Padding / preview growth changes the scroll-room height; re-anchor then.
+    if (scrollRoomRef.current) observer.observe(scrollRoomRef.current)
+    else if (container) observer.observe(container)
 
     return () => {
       observer.disconnect()
@@ -3352,24 +3371,22 @@ export function ChatWindow({
           Drop files to attach
         </div>
       ) : null}
-      <div
-        className={
-          isChatEmpty
-            ? "relative flex min-h-0 flex-1 flex-col justify-center"
-            : "relative flex min-h-0 flex-1 flex-col"
-        }
-      >
-        {!isChatEmpty ? (
-          <>
+      <div className="relative flex min-h-0 flex-1 flex-col">
         <div
-        ref={scrollContainerRef}
-        className={`flex-1 overflow-x-hidden overflow-y-auto p-4 min-h-0 min-w-0 max-w-full${
-          keepUserMessageScrollRoom || isAssistantStreaming
-            ? " pb-[70vh] md:pb-[60vh]"
-            : ""
-        }`}
-      >
-        <div className={`${CHAT_CONTENT_COLUMN_CLASS} space-y-4`}>
+          ref={scrollContainerRef}
+          className="relative min-h-0 flex-1 overflow-x-hidden overflow-y-auto"
+        >
+          <div className="flex min-h-full flex-col">
+            {!isChatEmpty ? (
+              <div className="min-w-0 px-4 pt-4">
+                <div
+                  ref={scrollRoomRef}
+                  className={`${CHAT_CONTENT_COLUMN_CLASS} space-y-4 pb-4${
+                    keepUserMessageScrollRoom || isAssistantStreaming
+                      ? " pb-[70vh] md:pb-[60vh]"
+                      : ""
+                  }`}
+                >
         {allMessages.map((m, messageIndex) => {
           const editPreviewKeys = (m.role === "assistant"
             ? editStreamKeysByAssistantId.get(m.id) ?? []
@@ -3719,8 +3736,95 @@ export function ChatWindow({
             />
           )
         })()}
-        <div ref={chatEndRef} />
+                  <div
+                    aria-hidden="true"
+                    className="pointer-events-none shrink-0"
+                    style={{ height: composerDockHeight > 0 ? composerDockHeight + 8 : 0 }}
+                  />
+                  <div ref={chatEndRef} />
+                </div>
+              </div>
+            ) : (
+              <div className="flex-1" />
+            )}
+          </div>
         </div>
+        <div
+          ref={composerDockRef}
+          className={`absolute bottom-0 left-0 right-0 z-10 bg-white${isChatEmpty ? "" : " border-t border-gray-100"}`}
+        >
+          <div className={isChatEmpty ? "w-full shrink-0 px-4 pb-4 pt-2" : "p-4 flex-shrink-0"}>
+            <div className={CHAT_CONTENT_COLUMN_CLASS}>
+              {hasPersistedThreadId && isUsageSendBlocked(threadUsage) ? (
+                <AiChatUsageLimitCard usage={threadUsage} canReviewLimits={canReviewLimits} />
+              ) : null}
+              {isChatEmpty ? (
+                <div className="mb-4 text-center">
+                  <h2 className="text-lg font-medium tracking-tight text-gray-900">
+                    {(() => {
+                      if (!isPlaceholderAiThreadTitle(thread.title) && thread.title?.trim()) {
+                        return thread.title.trim()
+                      }
+                      const firstName = (fullName || "").trim().split(/\s+/)[0]
+                      return firstName
+                        ? `What do you want to build, ${firstName}?`
+                        : "What do you want to build?"
+                    })()}
+                  </h2>
+                </div>
+              ) : null}
+              <Composer
+                threadId={thread.id}
+                taskId={taskId}
+                onOptimistic={handleOptimistic}
+                onAssistantStreamStart={handleAssistantStreamStart}
+                onAssistantStreamChunk={handleAssistantStreamChunk}
+                onAssistantStreamReset={handleAssistantStreamReset}
+                onAssistantStreamStatus={handleAssistantStreamStatus}
+                onAssistantStreamComplete={handleAssistantStreamComplete}
+                onAssistantStreamError={handleAssistantStreamError}
+                onAiChatAction={handleAiChatAction}
+                onThreadTitleEvent={handleThreadTitleEvent}
+                onAssetEvent={handleAssistantStreamAsset}
+                onMessageOutputEvent={handleAssistantMessageOutput}
+                onComponentOutputEvent={handleAssistantComponentOutput}
+                onComponentEditPreviewEvent={handleComponentEditPreviewEvent}
+                onAiChangePreviewEvent={handleAiChangePreviewEvent}
+                onComponentLibraryTraceEvent={handleComponentLibraryTraceEvent}
+                onComponentPlanTraceEvent={handleComponentPlanTraceEvent}
+                onRequestPlanEvent={handleRequestPlanEvent}
+                onExecutionTraceEvent={handleExecutionTraceEvent}
+                onAiChatV2RunEvent={handleAiChatV2RunEvent}
+                onRunId={handleRunId}
+                onRunTerminalState={handleRunTerminalState}
+                onUsageUpdate={(usage) => {
+                  if (usage) applyUsageSnapshot(usage)
+                }}
+                threadUsage={threadUsage}
+                isThreadUsageLoading={isThreadUsageLoading || !hasPersistedThreadId}
+                isSendBlockedByUsage={isUsageSendBlocked(threadUsage) || !hasPersistedThreadId}
+                canReviewLimits={canReviewLimits}
+                threadScope={threadScope}
+                inFlightTurnRef={inFlightTurnRef}
+                activeChannelId={activeChannelId}
+                preFillMessage={chatContext?.preFillMessage}
+                mode={chatContext?.mode}
+                componentId={chatContext?.componentId}
+                autoRun={hasPersistedThreadId ? chatContext?.autoRun : false}
+                activeFieldContext={effectiveActiveFieldContext}
+                ambientContext={ambientContext}
+                ambientTaskTitle={ambientTaskTitle}
+                clarificationFollowUpRef={clarificationFollowUpRef}
+                onClarificationFollowUpSent={undefined}
+                onScopeModeChange={onScopeModeChange}
+                mentionDirectSeed={mentionDirectSeed}
+                droppedFiles={droppedFiles}
+                onDroppedFilesHandled={() => setDroppedFiles([])}
+                streamAbortRef={streamAbortRef}
+                isAssistantStreaming={isAssistantStreaming}
+              />
+            </div>
+          </div>
         </div>
         {showJumpToBottom && !keepUserMessageScrollRoom ? (
           <button
@@ -3736,80 +3840,6 @@ export function ChatWindow({
             </span>
           </button>
         ) : null}
-          </>
-        ) : null}
-      <div className={isChatEmpty ? "w-full shrink-0 px-4 pb-4 pt-2" : "p-4 flex-shrink-0"}>
-        <div className={CHAT_CONTENT_COLUMN_CLASS}>
-        {hasPersistedThreadId && isUsageSendBlocked(threadUsage) ? (
-          <AiChatUsageLimitCard usage={threadUsage} canReviewLimits={canReviewLimits} />
-        ) : null}
-        {isChatEmpty ? (
-          <div className="mb-4 text-center">
-            <h2 className="text-lg font-medium tracking-tight text-gray-900">
-              {(() => {
-                if (!isPlaceholderAiThreadTitle(thread.title) && thread.title?.trim()) {
-                  return thread.title.trim()
-                }
-                const firstName = (fullName || "").trim().split(/\s+/)[0]
-                return firstName
-                  ? `What do you want to build, ${firstName}?`
-                  : "What do you want to build?"
-              })()}
-            </h2>
-          </div>
-        ) : null}
-        <Composer
-          threadId={thread.id}
-          taskId={taskId}
-          onOptimistic={handleOptimistic}
-          onAssistantStreamStart={handleAssistantStreamStart}
-          onAssistantStreamChunk={handleAssistantStreamChunk}
-          onAssistantStreamReset={handleAssistantStreamReset}
-          onAssistantStreamStatus={handleAssistantStreamStatus}
-          onAssistantStreamComplete={handleAssistantStreamComplete}
-          onAssistantStreamError={handleAssistantStreamError}
-          onAiChatAction={handleAiChatAction}
-          onThreadTitleEvent={handleThreadTitleEvent}
-          onAssetEvent={handleAssistantStreamAsset}
-          onMessageOutputEvent={handleAssistantMessageOutput}
-          onComponentOutputEvent={handleAssistantComponentOutput}
-          onComponentEditPreviewEvent={handleComponentEditPreviewEvent}
-          onAiChangePreviewEvent={handleAiChangePreviewEvent}
-          onComponentLibraryTraceEvent={handleComponentLibraryTraceEvent}
-          onComponentPlanTraceEvent={handleComponentPlanTraceEvent}
-          onRequestPlanEvent={handleRequestPlanEvent}
-          onExecutionTraceEvent={handleExecutionTraceEvent}
-          onAiChatV2RunEvent={handleAiChatV2RunEvent}
-          onRunId={handleRunId}
-          onRunTerminalState={handleRunTerminalState}
-          onUsageUpdate={(usage) => {
-            if (usage) applyUsageSnapshot(usage)
-          }}
-          threadUsage={threadUsage}
-          isThreadUsageLoading={isThreadUsageLoading || !hasPersistedThreadId}
-          isSendBlockedByUsage={isUsageSendBlocked(threadUsage) || !hasPersistedThreadId}
-          canReviewLimits={canReviewLimits}
-          threadScope={threadScope}
-          inFlightTurnRef={inFlightTurnRef}
-          activeChannelId={activeChannelId}
-          preFillMessage={chatContext?.preFillMessage}
-          mode={chatContext?.mode}
-          componentId={chatContext?.componentId}
-          autoRun={hasPersistedThreadId ? chatContext?.autoRun : false}
-          activeFieldContext={effectiveActiveFieldContext}
-          ambientContext={ambientContext}
-          ambientTaskTitle={ambientTaskTitle}
-          clarificationFollowUpRef={clarificationFollowUpRef}
-          onClarificationFollowUpSent={undefined}
-          onScopeModeChange={onScopeModeChange}
-          mentionDirectSeed={mentionDirectSeed}
-          droppedFiles={droppedFiles}
-          onDroppedFilesHandled={() => setDroppedFiles([])}
-          streamAbortRef={streamAbortRef}
-          isAssistantStreaming={isAssistantStreaming}
-        />
-        </div>
-      </div>
       </div>
       <SelectionAskAiMenu
         containerSelector='[data-ai-selectable="chat-message"]'
@@ -3819,5 +3849,3 @@ export function ChatWindow({
     </div>
   )
 }
-
-
