@@ -4,9 +4,7 @@ import { useCallback, useSyncExternalStore } from "react"
 import { getSupabaseBrowser } from "../../lib/supabase-browser"
 import { invokeEdgeFunctionFetch } from "../../app/lib/edge-functions"
 
-/** Friendly model key sent to ai-chat. Normal UI values come from the authenticated model catalog. */
 export type AiChatModelKey = string
-
 export type AiChatModelTier = "economy" | "balanced" | "premium"
 
 export type AiChatCatalogModel = {
@@ -17,6 +15,7 @@ export type AiChatCatalogModel = {
   tier: AiChatModelTier
   context_limit: number | null
   recommended: boolean
+  recommendation_tag?: string | null
   selectable: boolean
   lab_only: boolean
   supports_tools?: boolean
@@ -37,12 +36,8 @@ export type AiChatModelCatalog = {
   models: AiChatCatalogModel[]
 }
 
-export type AiChatModelOption = {
-  key: AiChatModelKey
-  label: string
-}
+export type AiChatModelOption = { key: AiChatModelKey; label: string }
 
-/** Offline fallback when the dynamic catalog is unavailable. */
 export const AI_CHAT_MODEL_OPTIONS: AiChatModelOption[] = [
   { key: "auto", label: "Auto" },
   { key: "openai.gpt-5.5", label: "OpenAI GPT-5.5" },
@@ -52,12 +47,31 @@ export const AI_CHAT_MODEL_OPTIONS: AiChatModelOption[] = [
 export const DEFAULT_AI_CHAT_MODEL_KEY: AiChatModelKey = "auto"
 
 const STORAGE_KEY = "ai-chat-model-key-v3"
+const PINNED_STORAGE_KEY = "ai-chat-pinned-models-v1"
+const RECENT_STORAGE_KEY = "ai-chat-recent-models-v1"
 const SAFE_MODEL_KEY = /^(auto|[a-z0-9._:/-]{2,220})$/i
+const MAX_PINNED = 12
+const MAX_RECENT = 5
 
 function normalizeModelKey(value: string | null | undefined): AiChatModelKey {
   const trimmed = value?.trim() ?? ""
   if (trimmed && SAFE_MODEL_KEY.test(trimmed)) return trimmed
   return DEFAULT_AI_CHAT_MODEL_KEY
+}
+
+function readStoredModelList(key: string): string[] {
+  if (typeof window === "undefined") return []
+  try {
+    const raw = JSON.parse(window.localStorage.getItem(key) ?? "[]")
+    if (!Array.isArray(raw)) return []
+    return raw.map((value) => normalizeModelKey(String(value))).filter((value) => value !== "auto")
+  } catch {
+    return []
+  }
+}
+
+function writeStoredModelList(key: string, values: string[]) {
+  try { window.localStorage.setItem(key, JSON.stringify(values)) } catch { /* private mode / quota */ }
 }
 
 let currentModelKey: AiChatModelKey = DEFAULT_AI_CHAT_MODEL_KEY
@@ -68,11 +82,8 @@ let catalogPromise: Promise<AiChatModelCatalog> | null = null
 function hydrateOnce(): void {
   if (hasHydrated || typeof window === "undefined") return
   hasHydrated = true
-  try {
-    currentModelKey = normalizeModelKey(window.localStorage.getItem(STORAGE_KEY))
-  } catch {
-    currentModelKey = DEFAULT_AI_CHAT_MODEL_KEY
-  }
+  try { currentModelKey = normalizeModelKey(window.localStorage.getItem(STORAGE_KEY)) }
+  catch { currentModelKey = DEFAULT_AI_CHAT_MODEL_KEY }
 }
 
 export async function fetchAiChatModelCatalog(options?: { force?: boolean }): Promise<AiChatModelCatalog> {
@@ -94,54 +105,58 @@ export async function fetchAiChatModelCatalog(options?: { force?: boolean }): Pr
       auto_strategies: Array.isArray(payload.auto_strategies) ? payload.auto_strategies : [],
       models: Array.isArray(payload.models) ? payload.models : [],
     }
-  })().catch((error) => {
-    catalogPromise = null
-    throw error
-  })
+  })().catch((error) => { catalogPromise = null; throw error })
   return catalogPromise
 }
 
-/** Non-hook read of the persisted selection (safe outside React, e.g. auto-run build calls). */
 export function getAiChatModelKey(): AiChatModelKey {
   hydrateOnce()
   return currentModelKey
 }
 
+export function getPinnedAiChatModelKeys(): string[] { return readStoredModelList(PINNED_STORAGE_KEY).slice(0, MAX_PINNED) }
+export function getRecentAiChatModelKeys(): string[] { return readStoredModelList(RECENT_STORAGE_KEY).slice(0, MAX_RECENT) }
+
+export function togglePinnedAiChatModelKey(key: string): string[] {
+  const normalized = normalizeModelKey(key)
+  if (normalized === "auto") return getPinnedAiChatModelKeys()
+  const current = getPinnedAiChatModelKeys()
+  const next = current.includes(normalized)
+    ? current.filter((item) => item !== normalized)
+    : [normalized, ...current].slice(0, MAX_PINNED)
+  writeStoredModelList(PINNED_STORAGE_KEY, next)
+  return next
+}
+
+function noteRecentModelKey(key: string) {
+  const normalized = normalizeModelKey(key)
+  if (normalized === "auto") return
+  const next = [normalized, ...getRecentAiChatModelKeys().filter((item) => item !== normalized)].slice(0, MAX_RECENT)
+  writeStoredModelList(RECENT_STORAGE_KEY, next)
+}
+
 export function setAiChatModelKey(next: AiChatModelKey): void {
   const normalized = normalizeModelKey(next)
   hasHydrated = true
+  noteRecentModelKey(normalized)
   if (normalized === currentModelKey) return
   currentModelKey = normalized
-  try {
-    window.localStorage.setItem(STORAGE_KEY, normalized)
-  } catch {
-    /* ignore quota / private mode */
-  }
+  try { window.localStorage.setItem(STORAGE_KEY, normalized) } catch { /* ignore */ }
   for (const listener of listeners) listener()
 }
 
 function subscribe(listener: () => void): () => void {
   hydrateOnce()
   listeners.add(listener)
-  return () => {
-    listeners.delete(listener)
-  }
+  return () => { listeners.delete(listener) }
 }
 
 export function getAiChatModelLabel(key: AiChatModelKey): string {
   return AI_CHAT_MODEL_OPTIONS.find((option) => option.key === key)?.label ?? (key === "auto" ? "Auto" : key.replace(/^openrouter:/, ""))
 }
 
-/** Shared, persisted model selection kept in sync across every AI chat surface. */
-export function useAiChatModelSelection(): {
-  modelKey: AiChatModelKey
-  setModelKey: (key: AiChatModelKey) => void
-} {
-  const modelKey = useSyncExternalStore(
-    subscribe,
-    getAiChatModelKey,
-    () => DEFAULT_AI_CHAT_MODEL_KEY,
-  )
+export function useAiChatModelSelection(): { modelKey: AiChatModelKey; setModelKey: (key: AiChatModelKey) => void } {
+  const modelKey = useSyncExternalStore(subscribe, getAiChatModelKey, () => DEFAULT_AI_CHAT_MODEL_KEY)
   const setModelKey = useCallback((next: AiChatModelKey) => setAiChatModelKey(next), [])
   return { modelKey, setModelKey }
 }
