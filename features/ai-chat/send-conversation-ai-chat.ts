@@ -313,6 +313,15 @@ export async function sendConversationAiChatStream(args: SendConversationAiChatS
     const supabase = getSupabaseBrowser()
     const diagnostics = createAiChatRunDiagnosticsTracker()
     diagnostics.markRequestSent()
+    // Runtime capabilities come from the trusted Electron preload bridge, not
+    // from the user message. Keep them in the existing ambient context channel
+    // so every normal AI chat entry point carries the same execution facts.
+    const { getDesktopClientRuntimeContext } = await import("../../app/lib/articulate-desktop")
+    const runtimeContext = await getDesktopClientRuntimeContext()
+    const resolvedAmbientContext = {
+      ...(ambientContext ?? {}),
+      ...runtimeContext,
+    }
     const requestBody = JSON.stringify({
       thread_id: threadId,
       message: trimmed,
@@ -382,7 +391,7 @@ export async function sendConversationAiChatStream(args: SendConversationAiChatS
         ? { selected_artifact_context: sanitizedSelectedArtifactContext }
         : {}),
       model_key: modelKey ?? DEFAULT_AI_CHAT_MODEL_KEY,
-      ...(ambientContext ? { ambient_context: ambientContext } : {}),
+      ambient_context: resolvedAmbientContext,
       ...(clarificationResponse ? { clarification_response: clarificationResponse } : {}),
       auto_run: autoRun,
       stream,

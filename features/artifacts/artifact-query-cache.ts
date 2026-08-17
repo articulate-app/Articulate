@@ -7,6 +7,7 @@ import type {
   ThreadArtifactsListResult,
 } from "../../app/lib/artifacts/artifact-types"
 import type { AiBuildArtifactPreviewEntry } from "../../app/store/ai-build-artifact-preview-store"
+import { shouldUseSavedLiveArtifactBase } from "./artifact-live-save-base"
 
 export type ArtifactCachePatch = Partial<TaskArtifact> & Pick<TaskArtifact, "id">
 
@@ -166,7 +167,7 @@ export function artifactCachePatchFromSavedLivePreview(
   if (!live || live.phase !== "saved") return null
   const liveVersion = live.currentVersion ?? 0
   const currentVersion = current?.current_version ?? 0
-  if (current && liveVersion <= currentVersion) return null
+  if (current && !shouldUseSavedLiveArtifactBase(current, live)) return null
   return {
     id: live.artifactId,
     task_id: live.taskId ?? current?.task_id ?? null,

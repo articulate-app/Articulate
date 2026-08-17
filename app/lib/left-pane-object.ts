@@ -79,7 +79,7 @@ export function leftPaneObjectLabel(value: LeftPaneObject): string {
   if (value === "projects") return "Projects"
   if (value === "mentions") return "Mentions"
   if (value === "users") return "Users"
-  if (value === "artifacts") return "Artifacts"
+  if (value === "artifacts") return "Outputs"
   return "AI chats"
 }
 

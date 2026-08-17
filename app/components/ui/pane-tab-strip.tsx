@@ -13,7 +13,6 @@ import { cn } from "@/lib/utils"
 import {
   AI_PANE_TAB_ACTIVE_CLASS,
   AI_PANE_TAB_CHIP_CLASS,
-  AI_PANE_TAB_FILLER_CLASS,
   AI_PANE_TAB_INACTIVE_CLASS,
   AI_PANE_TAB_SCROLL_CLASS,
   AI_PANE_TAB_SELECTED_CLASS,
@@ -350,7 +349,7 @@ export function PaneTabStrip({
       onDragLeave={handleDragLeave}
       onDrop={handleDrop}
     >
-      <div ref={scrollRef} className={AI_PANE_TAB_SCROLL_CLASS}>
+      <div ref={scrollRef} className={`${AI_PANE_TAB_SCROLL_CLASS} flex-1`}>
         <div className={AI_PANE_TAB_STRIP_CLASS}>
           {tabs.length === 0 && dropInsertIndex === 0 ? <DropInsertLine /> : null}
           {tabs.map((tab, tabIndex) => {
@@ -407,7 +406,7 @@ export function PaneTabStrip({
         </div>
       </div>
       <div
-        className={AI_PANE_TAB_FILLER_CLASS}
+        className="min-h-0 w-0 flex-none self-stretch"
         aria-hidden
         onDragOver={handleStripDragOver}
       />

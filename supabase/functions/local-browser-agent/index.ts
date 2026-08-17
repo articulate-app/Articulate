@@ -69,6 +69,32 @@ type AgentStepResponse = {
   action: BrowserAction | null
   actions: BrowserAction[]
   message: string
+  /** Publication runs use this to update the shared backend state machine. */
+  publication_phase?:
+    | "needs_user"
+    | "awaiting_publish_confirmation"
+    | "scheduled"
+    | "published"
+    | "failed"
+    | "uncertain"
+    | null
+  external_url?: string | null
+  external_id?: string | null
+  schedule_strategy?: "external" | "internal" | null
+}
+
+function publicationPhase(raw: unknown): AgentStepResponse["publication_phase"] {
+  const value = String(raw ?? "").trim()
+  return [
+    "needs_user",
+    "awaiting_publish_confirmation",
+    "scheduled",
+    "published",
+    "failed",
+    "uncertain",
+  ].includes(value)
+    ? (value as NonNullable<AgentStepResponse["publication_phase"]>)
+    : null
 }
 
 function json(body: unknown, status = 200): Response {
@@ -214,6 +240,19 @@ async function callOpenAi(systemPrompt: string, userPrompt: string): Promise<Age
     action: actions[0] ?? null,
     actions,
     message: String(parsed.message || "").slice(0, 800),
+    publication_phase: publicationPhase(parsed.publication_phase ?? parsed.phase),
+    external_url:
+      typeof parsed.external_url === "string" && /^https?:\/\//i.test(parsed.external_url)
+        ? parsed.external_url.slice(0, 2000)
+        : null,
+    external_id:
+      typeof parsed.external_id === "string" && parsed.external_id.trim()
+        ? parsed.external_id.trim().slice(0, 500)
+        : null,
+    schedule_strategy:
+      parsed.schedule_strategy === "external" || parsed.schedule_strategy === "internal"
+        ? parsed.schedule_strategy
+        : null,
   }
 }
 
@@ -251,10 +290,10 @@ Deno.serve(async (req) => {
         : null
 
     const systemPrompt = [
-      "You are a careful browser navigation agent for Articulate's LOCAL browser.",
+      "You are a careful browser navigation agent for Articulate's connected browser.",
       "You may return a SHORT multi-action plan (1–6 actions) for predictable sequences.",
       "HARD RULES:",
-      "- Do NOT create, edit, save, delete, or publish content.",
+      "- Follow the task's allowed scope. A publication preparation task may create and fill a draft/editor, but it must never perform the final irreversible Publish/Send/Schedule action unless the task explicitly says the user confirmed it.",
       "- Do NOT fill password fields or ask for passwords.",
       "- If login/captcha/2FA is required, status=needs_user.",
       "- Prefer a known entry_url navigate as the first action when provided and not already there.",
@@ -262,7 +301,8 @@ Deno.serve(async (req) => {
       "- Never invent element indexes that are not in the provided state.",
       "- After a navigate that changes the page substantially, end the plan (driver will re-ask).",
       "- Keep plans short: click → wait → click is good; 6+ speculative steps is not.",
-      "Return JSON: { thought, status, actions, message }",
+      "For publication tasks, when status=done also return publication_phase: needs_user | awaiting_publish_confirmation | scheduled | published | failed | uncertain, plus external_url/external_id/schedule_strategy when known.",
+      "Return JSON: { thought, status, actions, message, publication_phase? }",
       "status: continue | needs_user | done | failed",
       "actions when status=continue: array of",
       '{type:"navigate",url}|{type:"back"}|{type:"forward"}|{type:"reload"}|{type:"click",index}|{type:"type",index,text,submit?}|{type:"scroll",direction,amount?}|{type:"wait",ms?}',

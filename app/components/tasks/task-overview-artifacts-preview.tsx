@@ -75,7 +75,7 @@ export function TaskOverviewArtifactsPreview({
   return (
     <div ref={ref}>
       <TaskOverviewPreviewSection
-        title="Artifacts"
+        title="Outputs"
         onViewAll={onViewAll}
         active={shouldLoad}
         isLoading={shouldLoad && artifactsQuery.isLoading}
@@ -86,7 +86,7 @@ export function TaskOverviewArtifactsPreview({
       >
         <ul className="space-y-1.5">
           {previewArtifacts.map((artifact) => {
-            const title = artifact.title?.trim() || "Untitled artifact"
+            const title = artifact.title?.trim() || "Untitled output"
             const preview = artifact.content_preview?.trim() || null
             return (
               <li key={artifact.id}>
@@ -135,7 +135,7 @@ export function TaskOverviewArtifactsPreview({
             className="mt-2 text-xs text-blue-600 hover:underline"
             onClick={onViewAll}
           >
-            View all artifacts
+            View all outputs
           </button>
         ) : null}
       </TaskOverviewPreviewSection>

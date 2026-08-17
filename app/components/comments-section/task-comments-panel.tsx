@@ -750,21 +750,14 @@ export function TaskCommentsInputPart(props: TaskCommentsPanelProps) {
           </>
         ) : (
           <div className="flex h-9 items-center gap-1.5">
-            {pendingQuote ? (
-              <button
-                type="button"
-                onClick={openSelectionComment}
-                className="inline-flex h-9 w-9 shrink-0 items-center justify-center rounded-md border border-gray-200 bg-white text-gray-600 hover:border-gray-300 hover:bg-gray-50 hover:text-gray-900"
-                aria-label="Comment on selection"
-                title="Comment on selection"
-              >
-                <MessageSquare className="h-4 w-4" aria-hidden />
-              </button>
-            ) : null}
             <button
               type="button"
               className="flex h-9 min-w-0 flex-1 items-center rounded-md border border-gray-200 bg-white px-3 text-left text-sm text-muted-foreground hover:border-gray-300 hover:bg-gray-50"
               onClick={() => {
+                if (pendingQuote) {
+                  openSelectionComment()
+                  return
+                }
                 setExpanded(true)
                 setLocalFocusToken((token) => token + 1)
               }}

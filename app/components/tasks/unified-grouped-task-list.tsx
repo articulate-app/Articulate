@@ -63,7 +63,7 @@ interface UnifiedGroupedTaskListProps<T> {
   onTaskToggle?: (taskId: number) => void
   /** Always show outside checkbox on hover (directory style); when false, only in multiselect mode. */
   showOutsideSelectionControls?: boolean
-  onRenameTask?: (task: Record<string, unknown>) => void
+  onRenameTask?: (task: Record<string, unknown>, title: string) => void
   onDeleteTask?: (task: Record<string, unknown>) => void
   onChangeTaskProject?: (task: Record<string, unknown>, projectId: string) => void
   projectOptions?: TaskRowProjectOption[]
@@ -1499,11 +1499,6 @@ export function UnifiedGroupedTaskList<T>({
                       }}
                       className="inline-flex min-w-0 max-w-full items-center gap-1.5 text-left"
                     >
-                      {item.isExpanded ? (
-                        <ChevronDown className="h-4 w-4 shrink-0 text-gray-400" />
-                      ) : (
-                        <ChevronRight className="h-4 w-4 shrink-0 text-gray-400" />
-                      )}
                       <span className="min-w-0 truncate text-sm font-normal text-gray-500">
                         <TaskGroupHeaderLabel
                           groupBy={effectiveGroupBy}
@@ -1513,6 +1508,11 @@ export function UnifiedGroupedTaskList<T>({
                           directoryStyle
                         />
                       </span>
+                      {item.isExpanded ? (
+                        <ChevronDown className="h-4 w-4 shrink-0 text-gray-400" />
+                      ) : (
+                        <ChevronRight className="h-4 w-4 shrink-0 text-gray-400" />
+                      )}
                       {typeof item.taskCount === 'number' ? (
                         <span className="shrink-0 text-xs font-normal tabular-nums text-gray-400">
                           {item.taskCount}
@@ -1546,7 +1546,7 @@ export function UnifiedGroupedTaskList<T>({
                 ))}
               {/* Title column: group label, sticky-left like Title */}
               <td
-                className="task-cell task-cell--sticky task-group-label bg-transparent px-3 pb-1.5 pt-6"
+                className="task-cell task-cell--sticky task-group-label bg-transparent pl-0 pr-3 pb-1.5 pt-6"
                 data-col="title"
               >
                 <div className="flex w-full items-center gap-1.5">
@@ -1559,11 +1559,6 @@ export function UnifiedGroupedTaskList<T>({
                     }}
                     className="inline-flex min-w-0 max-w-full items-center gap-1.5 text-left"
                   >
-                    {item.isExpanded ? (
-                      <ChevronDown className="h-4 w-4 shrink-0 text-gray-400" />
-                    ) : (
-                      <ChevronRight className="h-4 w-4 shrink-0 text-gray-400" />
-                    )}
                     <span className="min-w-0 truncate text-sm font-normal text-gray-500">
                       <TaskGroupHeaderLabel
                         groupBy={effectiveGroupBy}
@@ -1573,6 +1568,11 @@ export function UnifiedGroupedTaskList<T>({
                         directoryStyle
                       />
                     </span>
+                    {item.isExpanded ? (
+                      <ChevronDown className="h-4 w-4 shrink-0 text-gray-400" />
+                    ) : (
+                      <ChevronRight className="h-4 w-4 shrink-0 text-gray-400" />
+                    )}
                     {typeof item.taskCount === 'number' ? (
                       <span className="shrink-0 text-xs font-normal tabular-nums text-gray-400">
                         {item.taskCount}
@@ -1776,7 +1776,8 @@ export function UnifiedGroupedTaskList<T>({
             <TaskRowActionsMenu
               projects={projectOptions}
               currentProjectId={(task as any)?.project_id_int ?? null}
-              onRename={() => onRenameTask?.(task as Record<string, unknown>)}
+              currentTitle={(task as any)?.title ?? ""}
+              onRename={(title) => onRenameTask?.(task as Record<string, unknown>, title)}
               onChangeProject={(projectId) =>
                 onChangeTaskProject?.(task as Record<string, unknown>, projectId)
               }
@@ -1952,4 +1953,3 @@ export function UnifiedGroupedTaskList<T>({
     </TaskGroupDragDropProvider>
   )
 }
-

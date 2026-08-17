@@ -94,6 +94,7 @@ import { ArtifactVersionHistoryPopover } from "./artifact-version-history-popove
 import {
   isArtifactDraftNoopAgainstBase,
   resolveSavedLiveArtifactBase,
+  shouldUseSavedLiveArtifactBase,
 } from "./artifact-live-save-base"
 import {
   applyArtifactCachePatch,
@@ -114,6 +115,8 @@ export type ArtifactWorkspaceProps = {
   layout?: "stack" | "navigator"
   /** Hide the local "Artifacts" heading when nested under an outer section title. */
   hideHeading?: boolean
+  /** Optional project label used in compact output metadata when the workspace already knows it. */
+  contextProjectName?: string | null
   /** Overview: selected artifact text becomes a reference above the pinned comment composer. */
   onArtifactTextSelectForComment?: (selection: {
     artifactId: string
@@ -402,6 +405,7 @@ export function ArtifactWorkspace({
   className,
   layout = "navigator",
   hideHeading = false,
+  contextProjectName = null,
   onArtifactTextSelectForComment,
 }: ArtifactWorkspaceProps) {
   const queryClient = useQueryClient()
@@ -575,18 +579,25 @@ export function ArtifactWorkspace({
       for (const artifact of artifacts) {
         const draft = next[artifact.id]
         if (!draft) continue
-        const serverVersion = artifact.current_version ?? 0
-        if (draft.baseVersion >= serverVersion) continue
+        const live = liveByArtifactId.get(artifact.id) ?? null
+        const effectiveArtifact = resolveSavedLiveArtifactBase(artifact, live)
+        const serverVersion = effectiveArtifact.current_version ?? 0
 
         const matchesServer =
-          draft.contentText === (artifact.content_text ?? "")
-          && JSON.stringify(draft.contentJson) === JSON.stringify(artifact.content_json)
+          draft.contentText === (effectiveArtifact.content_text ?? "")
+          && JSON.stringify(draft.contentJson) === JSON.stringify(effectiveArtifact.content_json)
 
-        if (matchesServer) {
+        const savedLiveEchoDraft =
+          shouldUseSavedLiveArtifactBase(artifact, live)
+          && isArtifactDraftNoopAgainstBase(draft, artifact)
+
+        if (matchesServer || savedLiveEchoDraft) {
           delete next[artifact.id]
           changed = true
           continue
         }
+
+        if (draft.baseVersion >= serverVersion) continue
 
         // Keep local edits; rebase so the next save targets the new version.
         next[artifact.id] = { ...draft, baseVersion: serverVersion }
@@ -594,7 +605,7 @@ export function ArtifactWorkspace({
       }
       return changed ? next : prev
     })
-  }, [artifacts])
+  }, [artifacts, liveByArtifactId])
 
   const liveOnlyArtifacts = useMemo(() => {
     const known = new Set(artifacts.map((row) => row.id))
@@ -720,23 +731,19 @@ export function ArtifactWorkspace({
     : null
   const displaySelected = useMemo<TaskArtifact | null>(() => {
     if (!selectedArtifact) return null
+    const savedLiveShouldOverride =
+      !!selectedLive && shouldUseSavedLiveArtifactBase(selectedArtifact, selectedLive)
     const draft = draftByArtifactId[selectedArtifact.id]
     const draftIsStale =
-      !!draft && draft.baseVersion < (selectedArtifact.current_version ?? 0)
+      !!draft
+      && (
+        draft.baseVersion < (selectedArtifact.current_version ?? 0)
+        || (savedLiveShouldOverride && isArtifactDraftNoopAgainstBase(draft, selectedArtifact))
+      )
     // Only overlay saved live content when it is newer than the list row.
     const withLive =
-      selectedLive
-      && selectedLive.phase === "saved"
-      && selectedLive.currentVersion != null
-      && selectedLive.currentVersion > (selectedArtifact.current_version ?? 0)
-        ? {
-            ...selectedArtifact,
-            title: selectedLive.title ?? selectedArtifact.title,
-            content_text: selectedLive.contentText || selectedArtifact.content_text,
-            content_json: selectedLive.contentJson ?? selectedArtifact.content_json,
-            asset_data: selectedLive.assetData ?? selectedArtifact.asset_data,
-            current_version: selectedLive.currentVersion ?? selectedArtifact.current_version,
-          }
+      savedLiveShouldOverride
+        ? resolveSavedLiveArtifactBase(selectedArtifact, selectedLive)
         : selectedLive && selectedLive.phase !== "saved" && selectedLive.phase !== "failed"
           ? { ...selectedArtifact, title: selectedLive.title ?? selectedArtifact.title }
           : selectedArtifact
@@ -1070,21 +1077,43 @@ export function ArtifactWorkspace({
 
   const updateDraft = (artifactId: string, patch: Partial<ArtifactDraft>, fallback: TaskArtifact) => {
     if (Date.now() < (conflictCooldownUntilByIdRef.current[artifactId] ?? 0)) return
+    const authoritativeBase = resolveSavedLiveArtifactBase(
+      allArtifactsRef.current.find((row) => row.id === artifactId) ?? fallback,
+      liveByArtifactIdRef.current.get(artifactId) ?? null,
+    )
     const serverVersion = Math.max(
-      fallback.current_version ?? 0,
+      authoritativeBase.current_version ?? 0,
       knownServerVersionByIdRef.current[artifactId] ?? 0,
     )
-    setDraftByArtifactId((prev) => ({
-      ...prev,
-      [artifactId]: {
-        contentText: patch.contentText ?? prev[artifactId]?.contentText ?? fallback.content_text ?? "",
+    let shouldScheduleSave = false
+    setDraftByArtifactId((prev) => {
+      const nextDraft = {
+        contentText:
+          patch.contentText
+          ?? prev[artifactId]?.contentText
+          ?? authoritativeBase.content_text
+          ?? "",
         contentJson:
           patch.contentJson !== undefined
             ? patch.contentJson
-            : (prev[artifactId]?.contentJson ?? fallback.content_json ?? null),
+            : (prev[artifactId]?.contentJson ?? authoritativeBase.content_json ?? null),
         baseVersion: serverVersion,
-      },
-    }))
+      }
+
+      if (isArtifactDraftNoopAgainstBase(nextDraft, authoritativeBase)) {
+        if (!prev[artifactId]) return prev
+        const next = { ...prev }
+        delete next[artifactId]
+        return next
+      }
+
+      shouldScheduleSave = true
+      return {
+        ...prev,
+        [artifactId]: nextDraft,
+      }
+    })
+    if (!shouldScheduleSave) return
     debouncedSaveRef.current(artifactId)
   }
 
@@ -1379,7 +1408,9 @@ export function ArtifactWorkspace({
   if (!taskId && !projectId && !aiThreadId) return null
 
   const heading =
-    taskId != null ? "Artifacts" : projectId != null ? "Project artifacts" : "Chat artifacts"
+    taskId != null ? "Outputs" : projectId != null ? "Project artifacts" : "Chat artifacts"
+  const resolvedProjectName =
+    contextProjectName?.trim() || projectMetaQuery.data?.project_name?.trim() || projectQuery.data?.project_name?.trim() || null
 
   const titleValueFor = (artifact: TaskArtifact) =>
     titleDraftById[artifact.id] ?? artifact.title ?? ""
@@ -1430,9 +1461,14 @@ export function ArtifactWorkspace({
                   isSelected ? "text-gray-300" : "text-gray-500",
                 )}
               >
-                <span>{artifact.artifact_type}</span>
                 {artifact.updated_at ? (
                   <span>{getActivityRelativeTimeLabel(artifact.updated_at)}</span>
+                ) : null}
+                {artifact.project_id != null && resolvedProjectName ? (
+                  <span className="truncate">{resolvedProjectName}</span>
+                ) : null}
+                {!artifact.updated_at && !(artifact.project_id != null && resolvedProjectName) ? (
+                  <span>{artifact.artifact_type}</span>
                 ) : null}
                 {isPreview ? <span>Preview</span> : null}
               </div>
@@ -1527,10 +1563,8 @@ export function ArtifactWorkspace({
                 {allArtifacts.map((artifact, index) => {
                   const live = liveByArtifactId.get(artifact.id) ?? null
                   const draft = draftByArtifactId[artifact.id]
-                  const liveIsNewer =
-                    !!live
-                    && live.currentVersion != null
-                    && live.currentVersion > (artifact.current_version ?? 0)
+                  const savedLiveShouldOverride =
+                    !!live && shouldUseSavedLiveArtifactBase(artifact, live)
                   const isLiveBusy = isArtifactLiveEditLocked(live)
                   // Keep the saved baseline while AI is generating so rich text does not
                   // disappear. Only overlay a newer saved live snapshot after persist.
@@ -1538,25 +1572,25 @@ export function ArtifactWorkspace({
                     !!live
                     && !isLiveBusy
                     && !live.streaming
-                    && !!live.contentJson
-                    && live.phase === "saved"
-                    && liveIsNewer
+                    && savedLiveShouldOverride
                   // Only treat draft as stale when a newer AI live snapshot should win.
                   // Version lag after autosave must keep showing local edits (rebase handles save).
-                  const draftIsStale = !!draft && liveIsNewer
+                  const draftIsStale =
+                    !!draft
+                    && (
+                      draft.baseVersion < (artifact.current_version ?? 0)
+                      || (
+                        savedLiveShouldOverride
+                        && isArtifactDraftNoopAgainstBase(draft, artifact)
+                      )
+                    )
                   const display: TaskArtifact = {
                     ...artifact,
                     ...(isLiveBusy
                       ? { title: live!.title ?? artifact.title }
                       : {}),
                     ...(useLiveContent
-                      ? {
-                          title: live!.title ?? artifact.title,
-                          content_text: live!.contentText || artifact.content_text,
-                          content_json: live!.contentJson ?? artifact.content_json,
-                          asset_data: live!.assetData ?? artifact.asset_data,
-                          current_version: live!.currentVersion ?? artifact.current_version,
-                        }
+                      ? resolveSavedLiveArtifactBase(artifact, live)
                       : {}),
                     ...(draft && !draftIsStale
                       ? {
@@ -1660,7 +1694,7 @@ export function ArtifactWorkspace({
                                 placeholder="Untitled artifact"
                                 aria-label="Artifact title"
                               />
-                              <span className="mt-0.5 block text-[11px] text-gray-500">
+                              <span className="mt-0.5 block text-[10px] text-gray-500">
                                 {display.artifact_type ? `${display.artifact_type} · ` : ""}
                                 {!isLiveBusy && display.updated_at ? (
                                   <ArtifactVersionHistoryPopover
@@ -1888,7 +1922,7 @@ export function ArtifactWorkspace({
                       placeholder="Untitled artifact"
                       aria-label="Artifact title"
                     />
-                    <p className="mt-0.5 text-[11px] text-gray-500">
+                    <p className="mt-0.5 text-[10px] text-gray-500">
                       {displaySelected.updated_at ? (
                         <ArtifactVersionHistoryPopover
                           artifactId={displaySelected.id}
@@ -1980,7 +2014,9 @@ export function ArtifactWorkspace({
                 </div>
               </div>
             ) : (
-              <p className="p-3 text-sm text-gray-500">Select an artifact</p>
+              <p className="p-3 text-sm text-gray-500">
+                {taskId != null ? "Select an output" : "Select an artifact"}
+              </p>
             )}
           </div>
         </div>

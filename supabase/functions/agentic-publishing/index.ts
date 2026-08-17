@@ -25,6 +25,7 @@ import {
   BrowserAgentError,
   resolveBrowserProvider,
   isLocalBrowserProvider,
+  isDesktopBrowserProvider,
 } from "../_shared/browser-agent/index.ts"
 import type {
   BrowserAgentProvider,
@@ -336,10 +337,14 @@ function isCloudConfigured(): boolean {
 }
 
 function parseDesktopAvailability(body: Record<string, unknown>): boolean {
+  // Desktop execution is only available when the renderer/preload handshake
+  // confirms that this client can both host and control the native browser.
+  // Never infer it from a user-authored instruction or a destination record.
   return (
-    body.desktop_available === true ||
-    body.desktopAvailable === true ||
-    String(body.browser_execution_mode ?? body.execution_mode ?? "").toLowerCase() === "desktop"
+    String(body.client_runtime ?? "").toLowerCase() === "desktop" &&
+    (body.desktop_available === true || body.desktopAvailable === true) &&
+    body.native_browser_available === true &&
+    body.desktop_browser_control === true
   )
 }
 
@@ -376,6 +381,13 @@ function getProvider(providerName: BrowserAgentProviderName | string | null = "b
 }
 
 function getProviderForRun(run: Record<string, unknown>): BrowserAgentProvider {
+  if (isDesktopBrowserProvider(run.provider)) {
+    throw new BrowserAgentError(
+      "provider_client_driven",
+      "This publication is executed by the connected Articulate Desktop client.",
+      { provider: "articulate_desktop" },
+    )
+  }
   return getProvider(asString(run.provider) ?? "browser_use")
 }
 
@@ -549,6 +561,9 @@ function publicRun(row: Record<string, unknown>) {
     destination_id: row.destination_id,
     started_by: row.started_by,
     provider: row.provider,
+    execution_location:
+      asString(row.execution_location) ??
+      (isDesktopBrowserProvider(row.provider) ? "client" : "server"),
     status: row.status,
     publish_mode: row.publish_mode ?? "now",
     scheduled_at: scheduledAt,
@@ -585,6 +600,11 @@ function publicRun(row: Record<string, unknown>) {
       start_url_source: asString(metadata.start_url_source),
       pending_schedule_strategy: parseScheduleStrategy(metadata.pending_schedule_strategy),
       stale_schedule: Boolean(metadata.stale_schedule),
+      desktop_browser: Boolean(metadata.desktop_browser),
+      desktop_browser_id: asString(metadata.desktop_browser_id),
+      desktop_agent_task: asString(metadata.desktop_agent_task),
+      desktop_confirm_task: asString(metadata.desktop_confirm_task),
+      client_execution: asRecord(metadata.client_execution),
     },
     created_at: row.created_at,
     updated_at: row.updated_at,
@@ -2347,8 +2367,99 @@ Deno.serve(async (req) => {
     if (action === "complete_destination_connect" || action === "verify_destination") {
       const destinationId = uuidOrNull(body.destination_id)
       if (!destinationId) return json({ error: { code: "invalid_request", message: "destination_id is required" } }, 400)
-      const destination = await loadDestination(service, destinationId)
+      let destination = await loadDestination(service, destinationId)
       await assertCanAccessDestination(userClient, destination, actorUserId)
+
+      // Desktop authentication is completed by the human in the same native
+      // WebContentsView. The Edge Function records the handoff and frozen-task
+      // continuation; it must never create a Browser Use session to verify it.
+      const desktopRunId = uuidOrNull(body.publication_run_id)
+      if (desktopRunId) {
+        let pending = await loadRun(service, desktopRunId)
+        await assertCanAccessRun(userClient, pending, actorUserId)
+        if (isDesktopBrowserProvider(pending.provider)) {
+          if (String(pending.destination_id) !== destinationId) {
+            return json({ error: { code: "invalid_request", message: "Publication belongs to another destination." } }, 409)
+          }
+          const userConfirmed = body.user_confirmed === true || body.force === true
+          if (!userConfirmed) {
+            return json({
+              ok: true,
+              authenticated: false,
+              pending: false,
+              message: `Finish signing in to ${destination.name} in the Desktop browser, then confirm.`,
+              destination: publicDestination(destination),
+              run: publicRun(pending),
+              resumed_publication: false,
+            })
+          }
+          const pendingMeta = asRecord(pending.metadata) ?? {}
+          const sourceSnapshot =
+            asRecord(pending.source_snapshot) ??
+            asRecord(asRecord(pending.result)?.artifact) ??
+            {}
+          const publishingArtifact = {
+            id: asString(sourceSnapshot.id) ?? desktopRunId,
+            type: asString(sourceSnapshot.type) ?? "document",
+            title: asString(sourceSnapshot.title) ?? undefined,
+            content: asString(sourceSnapshot.content) ?? undefined,
+            excerpt: asString(sourceSnapshot.excerpt) ?? undefined,
+            slug: asString(sourceSnapshot.slug) ?? undefined,
+            seo: asRecord(sourceSnapshot.seo) as { title?: string; description?: string } | undefined,
+            media: Array.isArray(sourceSnapshot.media) ? (sourceSnapshot.media as never[]) : undefined,
+            metadata: asRecord(sourceSnapshot.metadata) ?? undefined,
+          }
+          const resumeTask = buildResumePublicationAfterAuthTask({
+            destination: destinationTaskContext(destination, asString(publishingArtifact.type)),
+            artifact: publishingArtifact,
+            files: [],
+          })
+          destination = await updateDestination(service, destinationId, {
+            status: "connected" satisfies PublishingDestinationStatus,
+            last_connected_at: new Date().toISOString(),
+            last_verified_at: new Date().toISOString(),
+          })
+          pending = await updateRun(service, desktopRunId, {
+            execution_location: "client",
+            status: "starting",
+            error_code: null,
+            error_message: null,
+            metadata: {
+              ...pendingMeta,
+              desktop_browser: true,
+              desktop_agent_task: resumeTask,
+              awaiting_destination_auth: false,
+              user_has_control: false,
+              phase_message: "Continuing publication in Articulate Desktop…",
+              client_execution: {
+                ...(asRecord(pendingMeta.client_execution) ?? {}),
+                type: "desktop_browser",
+                operation: "continue_publication",
+                status: "requested",
+                requested_at: new Date().toISOString(),
+              },
+            },
+            activity: appendActivity(
+              Array.isArray(pending.activity) ? (pending.activity as PublicationActivityEvent[]) : [],
+              "Continuing",
+            ),
+          })
+          return json({
+            ok: true,
+            authenticated: true,
+            pending: false,
+            message: `Connected to ${destination.name}. Continuing publication…`,
+            destination: publicDestination(destination),
+            run: publicRun(pending),
+            resumed_publication: true,
+            execution: {
+              type: "desktop_browser",
+              operation: "continue_publication",
+              status: "awaiting_client_execution",
+            },
+          })
+        }
+      }
       const provider = getProvider()
       const metadata = asRecord(destination.metadata) ?? {}
       const profileId = asString(destination.provider_profile_id)
@@ -2761,8 +2872,9 @@ Deno.serve(async (req) => {
       let run = await loadRun(service, runId)
       await assertCanAccessRun(userClient, run, actorUserId)
       if (action === "sync_publication") {
-        // Local runs are advanced by the browser client via report_local_publication.
-        if (!isLocalBrowserProvider(run.provider)) {
+        // Client runs are advanced by the renderer against the visible browser;
+        // the Edge Function must never attempt to instantiate Electron.
+        if (!isLocalBrowserProvider(run.provider) && !isDesktopBrowserProvider(run.provider)) {
           const provider = getProviderForRun(run)
           run = await syncProviderRun(service, provider, run)
         }
@@ -2770,22 +2882,31 @@ Deno.serve(async (req) => {
       return json({
         ok: true,
         run: publicRun(run),
-        browser_label: isLocalBrowserProvider(run.provider) ? "Local" : "Cloud",
+        browser_label: isDesktopBrowserProvider(run.provider)
+          ? "Desktop"
+          : isLocalBrowserProvider(run.provider)
+            ? "Local"
+            : "Cloud",
       })
     }
 
-    if (action === "report_local_publication") {
+    if (action === "report_local_publication" || action === "report_desktop_publication") {
       const runId = uuidOrNull(body.run_id ?? body.publication_run_id)
       if (!runId) return json({ error: { code: "invalid_request", message: "run_id is required" } }, 400)
       let run = await loadRun(service, runId)
       await assertCanAccessRun(userClient, run, actorUserId)
-      if (!isLocalBrowserProvider(run.provider)) {
+      const desktopRun = isDesktopBrowserProvider(run.provider)
+      const localRun = isLocalBrowserProvider(run.provider)
+      if (!localRun && !desktopRun) {
         return json({
           error: {
             code: "invalid_request",
-            message: "This publication is not using the local browser provider.",
+            message: "This publication is not using a client browser provider.",
           },
         }, 409)
+      }
+      if (action === "report_desktop_publication" && !desktopRun) {
+        return json({ error: { code: "invalid_request", message: "This run is not using Articulate Desktop." } }, 409)
       }
 
       const metadata = asRecord(run.metadata) ?? {}
@@ -2808,7 +2929,11 @@ Deno.serve(async (req) => {
           ? (nextStatusRaw as PublicationRunStatus)
           : null
 
-      const bridgeSessionId = asString(body.bridge_session_id ?? body.provider_session_id)
+      const clientBrowserId = asString(
+        desktopRun
+          ? body.desktop_browser_id ?? body.browser_id ?? body.provider_session_id
+          : body.bridge_session_id ?? body.provider_session_id,
+      )
       const phaseMessage = asString(body.phase_message ?? body.message)
       const externalUrl = asString(body.external_url)
       const externalId = asString(body.external_id)
@@ -2818,20 +2943,46 @@ Deno.serve(async (req) => {
       const patch: Record<string, unknown> = {
         metadata: {
           ...metadata,
-          local_browser: true,
+          ...(desktopRun ? { desktop_browser: true } : { local_browser: true }),
           phase_message: phaseMessage ?? metadata.phase_message ?? null,
           awaiting_destination_auth: body.awaiting_destination_auth === true,
           user_has_control:
             body.user_has_control === true ||
             nextStatus === "needs_user" ||
             nextStatus === "awaiting_publish_confirmation",
-          bridge_session_id: bridgeSessionId ?? metadata.bridge_session_id ?? null,
-          last_local_agent_status: asString(body.agent_status),
-          last_local_agent_thought: asString(body.thought),
+          ...(desktopRun
+            ? {
+                desktop_browser_id: clientBrowserId ?? metadata.desktop_browser_id ?? null,
+                desktop_agent_status: asString(body.agent_status),
+                desktop_agent_thought: asString(body.thought),
+                client_execution: {
+                  ...(asRecord(metadata.client_execution) ?? {}),
+                  type: "desktop_browser",
+                  operation:
+                    asString(body.execution_operation) ??
+                    asString(asRecord(metadata.client_execution)?.operation) ??
+                    "prepare_publication",
+                  status:
+                    nextStatus === "needs_user"
+                      ? "needs_user"
+                      : ["published", "failed", "cancelled", "uncertain", "scheduled"].includes(nextStatus ?? "")
+                        ? "completed"
+                        : "running",
+                  updated_at: new Date().toISOString(),
+                },
+              }
+            : {
+                bridge_session_id: clientBrowserId ?? metadata.bridge_session_id ?? null,
+                last_local_agent_status: asString(body.agent_status),
+                last_local_agent_thought: asString(body.thought),
+              }),
           ...(scheduleStrategy ? { pending_schedule_strategy: scheduleStrategy } : {}),
         },
       }
-      if (bridgeSessionId) patch.provider_session_id = bridgeSessionId
+      if (clientBrowserId) {
+        patch.provider_session_id = clientBrowserId
+        if (desktopRun) patch.provider_browser_id = clientBrowserId
+      }
       if (nextStatus) {
         if (!canTransitionPublicationStatus(String(run.status) as PublicationRunStatus, nextStatus)) {
           // Allow idempotent same-status updates from the local driver.
@@ -2895,7 +3046,7 @@ Deno.serve(async (req) => {
       return json({
         ok: true,
         run: publicRun(run),
-        browser_label: "Local",
+        browser_label: desktopRun ? "Desktop" : "Local",
       })
     }
 
@@ -3150,6 +3301,7 @@ Deno.serve(async (req) => {
             destination_id: destinationId,
             started_by: actorUserId,
             provider: "articulate_desktop",
+            execution_location: resolved.executionLocation,
             status: needsAuthentication ? "needs_user" : "starting",
             publish_mode: publishMode,
             scheduled_at: scheduledAt ? scheduledAt.toISOString() : null,
@@ -3177,6 +3329,13 @@ Deno.serve(async (req) => {
               browser_provider_reason: resolved.reason,
               desktop_browser: true,
               desktop_agent_task: task,
+              client_execution: {
+                type: "desktop_browser",
+                operation: "prepare_publication",
+                status: "requested",
+                requested_at: new Date().toISOString(),
+                client_session_id: asString(body.desktop_session_id),
+              },
               phase_message: needsAuthentication
                 ? connectMessage
                 : "Browser running in Articulate Desktop",
@@ -3209,6 +3368,11 @@ Deno.serve(async (req) => {
             start_url: destCtx.startUrl,
             task,
             profile_id: profileId,
+          },
+          execution: {
+            type: "desktop_browser",
+            operation: "prepare_publication",
+            status: "awaiting_client_execution",
           },
         })
       }

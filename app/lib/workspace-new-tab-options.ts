@@ -5,10 +5,7 @@
 import type { WorkspaceViewType } from "./workspace-view"
 import type { WorkspaceListViewType } from "./workspace-list-views"
 
-export type WorkspaceNewTabListActionType = Exclude<
-  WorkspaceListViewType,
-  "artifact-list"
->
+export type WorkspaceNewTabListActionType = WorkspaceListViewType
 
 export type WorkspaceNewTabToolActionType =
   | "research"
@@ -34,6 +31,7 @@ export const WORKSPACE_NEW_TAB_LIST_ACTIONS: readonly WorkspaceNewTabQuickAction
   { type: "mention-list", label: "Inbox" },
   { type: "user-list", label: "Users" },
   { type: "ai-thread-list", label: "AI chats" },
+  { type: "artifact-list", label: "Outputs" },
 ] as const
 
 /** Tools / compose actions in the shared `+` menu. */
@@ -60,6 +58,7 @@ export const WORKSPACE_NEW_TAB_VIEW_TYPES: readonly WorkspaceViewType[] = [
   "mention-list",
   "user-list",
   "ai-thread-list",
+  "artifact-list",
   "task",
   "project",
   "user",

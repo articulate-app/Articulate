@@ -143,7 +143,7 @@ export function resolveActiveCenterPaneTab(args: {
                 ? "AI chats"
                 : centerView === "template-list"
                   ? "Templates"
-                  : "Artifacts",
+                  : "Outputs",
     }
   }
 

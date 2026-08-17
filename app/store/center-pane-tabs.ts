@@ -80,7 +80,7 @@ function normalizeTitle(title: string | null | undefined, kind: CenterPaneTabKin
   if (kind === "mention-list") return "Inbox"
   if (kind === "user-list") return "Users"
   if (kind === "ai-thread-list") return "AI chats"
-  if (kind === "artifact-list") return "Artifacts"
+  if (kind === "artifact-list") return "Outputs"
   if (kind === "template-list") return "Templates"
   if (kind === "search-results") return "Search"
   if (kind === "suggestion") return `Suggestion ${id}`

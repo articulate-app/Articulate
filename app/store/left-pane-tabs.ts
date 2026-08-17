@@ -64,6 +64,18 @@ function normalizeTitle(kind: LeftPaneTabKind, title?: string | null, id?: strin
   return kind
 }
 
+function isPlaceholderTitle(kind: LeftPaneTabKind, title: string, id: string): boolean {
+  return title === normalizeTitle(kind, null, id)
+}
+
+export function isLeftPaneTabPlaceholderTitle(
+  title: string,
+  kind: LeftPaneTabKind,
+  id: string,
+): boolean {
+  return isPlaceholderTitle(kind, title, id)
+}
+
 const DEFAULT_AI_TAB: LeftPaneTab = {
   key: buildLeftPaneTabKey("ai", AI_WORKSPACE_TAB_ID),
   kind: "ai",
@@ -93,6 +105,15 @@ export const useLeftPaneTabsStore = create<LeftPaneTabsState>()(
           }
           let tabs = state.tabs
           if (existing) {
+            if (
+              isPlaceholderTitle(kind, nextTitle, normalizedId) &&
+              !isPlaceholderTitle(kind, existing.title, normalizedId)
+            ) {
+              return {
+                ...state,
+                activeKey: activate ? key : state.activeKey,
+              }
+            }
             tabs = state.tabs.map((tab) =>
               tab.key === key
                 ? {
