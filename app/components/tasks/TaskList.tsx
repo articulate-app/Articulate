@@ -431,7 +431,7 @@ export function SubtaskRows({ parentId, taskColumns, gridTemplateColumns, onTask
                   task={subtask}
                   columns={taskColumns}
                   dateField={compactDateField}
-                  isMultiselectMode={isBulkSelecting}
+                  isMultiselectMode={isMultiselectMode}
                   isTaskSelected={isChecked}
                   onTaskToggle={onTaskToggle}
                 />
