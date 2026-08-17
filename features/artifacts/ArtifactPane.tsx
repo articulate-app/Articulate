@@ -107,6 +107,11 @@ import {
   buildHtmlEmailContentJson,
   isHtmlEmailArtifact,
 } from "./artifact-html-document"
+import {
+  applyArtifactCachePatch,
+  artifactCachePatchFromSavedLivePreview,
+} from "./artifact-query-cache"
+import { resolveSavedLiveArtifactBase } from "./artifact-live-save-base"
 import { isArtifactLiveEditLocked } from "./artifact-live-edit-lock"
 import { exportArtifactAsDocx } from "./artifact-docx-export"
 import {
@@ -265,6 +270,12 @@ export function ArtifactPane({
       contentText: snapshot.content_text,
     })
   }, [artifactId, ensureBeforeBaseline, livePreview, snapshot])
+
+  useEffect(() => {
+    const patch = artifactCachePatchFromSavedLivePreview(livePreview, snapshot)
+    if (!patch) return
+    applyArtifactCachePatch(queryClient, patch)
+  }, [livePreview, queryClient, snapshot])
   const viewedVersionNumber =
     version
     ?? snapshot?.current_version
@@ -557,18 +568,19 @@ export function ArtifactPane({
       pendingAutosaveRef.current = true
       return
     }
+    const effectiveArtifact = resolveSavedLiveArtifactBase(displayArtifact, livePreview)
     const expectedVersion = Math.max(
-      displayArtifact.current_version ?? 0,
+      effectiveArtifact.current_version ?? 0,
       knownServerVersionRef.current,
     )
     if (expectedVersion <= 0) return
     // Drop no-op autosaves (TipTap echo after force-sync).
-    const nextText = draftContentTextRef.current ?? displayArtifact.content_text
-    const nextJson = draftContentJsonRef.current ?? displayArtifact.content_json
+    const nextText = draftContentTextRef.current ?? effectiveArtifact.content_text
+    const nextJson = draftContentJsonRef.current ?? effectiveArtifact.content_json
     if (
-      nextText === displayArtifact.content_text
-      && JSON.stringify(nextJson) === JSON.stringify(displayArtifact.content_json)
-      && (draftTitleRef.current.trim() || displayArtifact.title) === displayArtifact.title
+      nextText === effectiveArtifact.content_text
+      && JSON.stringify(nextJson) === JSON.stringify(effectiveArtifact.content_json)
+      && (draftTitleRef.current.trim() || effectiveArtifact.title) === effectiveArtifact.title
     ) {
       return
     }
@@ -578,18 +590,18 @@ export function ArtifactPane({
     setConflictMessage(null)
     try {
       const result = await saveWorkspaceArtifact({
-        artifactId: displayArtifact.id,
+        artifactId: effectiveArtifact.id,
         expectedVersion,
         snapshot: {
-          title: draftTitleRef.current.trim() || displayArtifact.title,
-          status: displayArtifact.status,
+          title: draftTitleRef.current.trim() || effectiveArtifact.title,
+          status: effectiveArtifact.status,
           content_text: nextText,
           content_json: nextJson,
-          asset_data: displayArtifact.asset_data,
+          asset_data: effectiveArtifact.asset_data,
         },
         changeSource: "manual",
         changedBy: currentUserId,
-        aiThreadId: displayArtifact.ai_thread_id,
+        aiThreadId: effectiveArtifact.ai_thread_id,
       })
       if (
         isArtifactRevisionConflictError(result) ||
@@ -623,6 +635,9 @@ export function ArtifactPane({
           knownServerVersionRef.current,
           result.version_number,
         )
+      }
+      if ("snapshot" in result && result.snapshot) {
+        applyArtifactCachePatch(queryClient, result.snapshot)
       }
       await queryClient.invalidateQueries({ queryKey: ["artifact", artifactId] })
       await queryClient.invalidateQueries({ queryKey: ["artifact-versions", artifactId] })

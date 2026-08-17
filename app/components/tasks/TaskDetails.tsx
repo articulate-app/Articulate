@@ -560,6 +560,7 @@ export function TaskDetails({
   useEffect(() => {
     if (activeTaskTab !== "comments") {
       setIsThreadView(false)
+      setCommentsComposerExpanded(false)
     }
   }, [activeTaskTab])
   
@@ -578,6 +579,7 @@ export function TaskDetails({
     setIsThreadView(false);
     setSelectedThreadId(null);
     setCommentsStatusFilter("all");
+    setCommentsComposerExpanded(false);
     setAllTaskMentions(seededMentions);
     if (taskThreadId) {
       setThreadsList([{
@@ -661,6 +663,7 @@ export function TaskDetails({
   } | null>(null)
   const [pendingArtifactTextQuote, setPendingArtifactTextQuote] = useState<string | null>(null)
   const [commentsComposerFocusToken, setCommentsComposerFocusToken] = useState(0)
+  const [commentsComposerExpanded, setCommentsComposerExpanded] = useState(false)
   const taskDetailsLayoutRef = useRef<HTMLDivElement | null>(null)
   const [activeChannelId, setActiveChannelId] = useState<number | null>(null)
 
@@ -1149,7 +1152,10 @@ export function TaskDetails({
   const dueDateInputRef = useRef<HTMLInputElement>(null)
   const publicationDateInputRef = useRef<HTMLInputElement>(null)
   const commentInputRef = useRef<HTMLDivElement>(null)
+  const overviewCommentDockRef = useRef<HTMLDivElement>(null)
   const [briefingEditorHeight, setBriefingEditorHeight] = useState(220)
+  const [overviewCommentDockHeight, setOverviewCommentDockHeight] = useState(0)
+  const [commentInputDockHeight, setCommentInputDockHeight] = useState(0)
   const briefingResizeStartYRef = useRef(0)
   const briefingResizeStartHeightRef = useRef(220)
   const [hasMountedSuggestionBriefingEditor, setHasMountedSuggestionBriefingEditor] = useState(false)
@@ -1173,6 +1179,33 @@ export function TaskDetails({
       window.cancelAnimationFrame(raf)
     }
   }, [isSuggestionMode])
+
+  useEffect(() => {
+    const measures: Array<{
+      node: HTMLDivElement | null
+      setHeight: Dispatch<SetStateAction<number>>
+    }> = [
+      { node: overviewCommentDockRef.current, setHeight: setOverviewCommentDockHeight },
+      { node: commentInputRef.current, setHeight: setCommentInputDockHeight },
+    ]
+    const observers: ResizeObserver[] = []
+    for (const { node, setHeight } of measures) {
+      if (!node) {
+        setHeight(0)
+        continue
+      }
+      const update = () => {
+        setHeight(Math.ceil(node.getBoundingClientRect().height))
+      }
+      update()
+      const observer = new ResizeObserver(update)
+      observer.observe(node)
+      observers.push(observer)
+    }
+    return () => {
+      observers.forEach((observer) => observer.disconnect())
+    }
+  }, [activeTaskTab, commentsComposerExpanded, isSuggestionMode, taskIdNum])
 
   // Task query key for cache updates (must match useTaskDetails in TasksLayout)
   const taskQueryKey =
@@ -2990,7 +3023,7 @@ export function TaskDetails({
 
   return (
     <>
-    <div
+      <div
         ref={setTaskDetailsContainerRef}
         onFocusCapture={handleTaskDetailsFocusCapture}
         className={cn(
@@ -3893,12 +3926,23 @@ export function TaskDetails({
               }}
             />
           ) : null}
+          {!isSuggestionMode && commentsPanelProps ? (
+            <div
+              aria-hidden="true"
+              className="pointer-events-none shrink-0"
+              style={{ height: overviewCommentDockHeight > 0 ? overviewCommentDockHeight + 8 : 0 }}
+            />
+          ) : null}
           </section>
             </div>
             {!isSuggestionMode && commentsPanelProps ? (
               <div
                 id={TASK_OVERVIEW_COMMENT_DOCK_ID}
-                className={cn(CHAT_CONTENT_COLUMN_CLASS, "shrink-0 border-t border-gray-100 bg-white px-4 py-2")}
+                ref={overviewCommentDockRef}
+                className={cn(
+                  CHAT_CONTENT_COLUMN_CLASS,
+                  "absolute bottom-0 left-0 right-0 z-10 border-t border-gray-100 bg-white px-4 py-2",
+                )}
               />
             ) : null}
           </div>
@@ -3907,13 +3951,18 @@ export function TaskDetails({
             {activeTaskTab === "comments" && commentsPanelProps ? (
               <section className={cn(CHAT_CONTENT_COLUMN_CLASS, "flex min-h-0 flex-1 flex-col p-4 pb-0")}>
                 <h3 className="mb-3 shrink-0 text-base font-medium text-gray-900">Comments</h3>
-                <div className="flex min-h-0 flex-1 flex-col gap-2">
+                <div className="relative flex min-h-0 flex-1 flex-col gap-2">
                   <div className="min-h-0 flex-1 overflow-y-auto">
                     <TaskCommentsListPart {...commentsPanelProps} focusOnly />
+                    <div
+                      aria-hidden="true"
+                      className="pointer-events-none shrink-0"
+                      style={{ height: commentInputDockHeight > 0 ? commentInputDockHeight + 8 : 0 }}
+                    />
                   </div>
                   <div
                     ref={commentInputRef}
-                    className="shrink-0 border-t border-gray-100 bg-white pt-1"
+                    className="absolute bottom-0 left-0 right-0 z-10 border-t border-gray-100 bg-white pt-1"
                     data-ai-field-type="comment_input"
                     data-ai-field-label="Comment"
                     onFocusCapture={() =>
@@ -3927,11 +3976,16 @@ export function TaskDetails({
                   >
                     <TaskCommentsInputPart
                       {...commentsPanelProps}
+                      minimalComposer
+                      composerExpanded={commentsComposerExpanded}
+                      onComposerExpandedChange={setCommentsComposerExpanded}
                       onCommentAdded={() => {
                         void handleViewThreadHistory({ force: true })
                       }}
                     />
-                    <TaskCommentsFooterPart {...commentsPanelProps} />
+                    {commentsComposerExpanded ? (
+                      <TaskCommentsFooterPart {...commentsPanelProps} />
+                    ) : null}
                   </div>
                 </div>
               </section>
@@ -4123,4 +4177,4 @@ export function TaskDetails({
     </div>
     </>
   )
-} 
+}

@@ -120,6 +120,14 @@
   .artifact-rich-diff-body .artifact-diff-block-del li {
     list-style-position: inside;
   }
+  /*
+   * TipTap list items render as <li><p>…</p></li>. With inside markers, that block
+   * paragraph pushes the text onto the next line and leaves the bullet orphaned.
+   */
+  .artifact-rich-diff-body .rte-prose li > p:first-child {
+    display: inline;
+    margin: 0;
+  }
   .artifact-rich-diff-body .artifact-diff-block-del,
   .artifact-rich-diff-body .artifact-diff-block-del * {
     text-decoration: line-through;
