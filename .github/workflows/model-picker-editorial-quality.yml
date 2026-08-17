@@ -1,0 +1,42 @@
+name: Model picker editorial quality
+
+on:
+  push:
+    branches: [ feature/model-picker-editorial-quality-2026-08-17 ]
+
+permissions:
+  contents: write
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: npm
+      - name: Apply editorial quality prompt patch
+        run: node scripts/patch-editorial-quality.mjs
+      - name: Commit prompt updates
+        run: |
+          if git diff --quiet -- supabase/functions/ai-chat/index.ts supabase/functions/ai-artifact-worker/index.ts; then
+            echo "No prompt patch needed"
+          else
+            git config user.name "articulate-app"
+            git config user.email "app@whyarticulate.com"
+            git add supabase/functions/ai-chat/index.ts supabase/functions/ai-artifact-worker/index.ts
+            git commit -m "Add editorial quality defaults"
+            git push origin HEAD:feature/model-picker-editorial-quality-2026-08-17
+          fi
+      - run: npm ci
+      - run: npm run lint
+      - run: npm run build
+        env:
+          NEXT_PUBLIC_SUPABASE_URL: ${{ secrets.NEXT_PUBLIC_SUPABASE_URL }}
+          NEXT_PUBLIC_SUPABASE_ANON_KEY: ${{ secrets.NEXT_PUBLIC_SUPABASE_ANON_KEY }}
+          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+          NEXT_PUBLIC_SITE_URL: ${{ secrets.NEXT_PUBLIC_SITE_URL }}
