@@ -28,12 +28,12 @@ const nativeModels: CatalogModel[] = [
     provider: "openai",
     external_id: "gpt-5.5",
     tier: "premium",
-    context_limit: 400_000,
+    context_limit: 1_050_000,
     recommended: true,
     selectable: true,
     lab_only: false,
-    input_price_per_million: 2.5,
-    output_price_per_million: 15,
+    input_price_per_million: 5,
+    output_price_per_million: 30,
   },
   {
     key: "openai.gpt-5.4-mini",
@@ -107,8 +107,6 @@ Deno.serve(async (req: Request) => {
             tier: inferTier(inputPrice, outputPrice),
             context_limit: finite(row?.context_length),
             recommended: false,
-            // Discovery is live now; production chat selection is enabled only after
-            // the OpenRouter tools/streaming adapter passes the Model Lab benchmark.
             selectable: false,
             lab_only: true,
             input_price_per_million: inputPrice,
