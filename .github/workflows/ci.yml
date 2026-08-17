@@ -6,58 +6,25 @@ on:
   pull_request:
     branches: [ main ]
 
-permissions:
-  contents: write
-
 jobs:
   build:
     runs-on: ubuntu-latest
 
     steps:
     - uses: actions/checkout@v4
-      with:
-        fetch-depth: 0
-
+    
     - name: Setup Node.js
       uses: actions/setup-node@v4
       with:
         node-version: '20'
         cache: 'npm'
-
-    - name: Apply OpenRouter ai-chat source patch
-      if: github.event_name == 'push'
-      shell: bash
-      run: |
-        python3 - <<'PY'
-        from pathlib import Path
-        p = Path('scripts/patch-ai-chat-openrouter.mjs')
-        s = p.read_text()
-        s = s.replace('const OPENAI_API_KEY = Deno.env.get("OPENAI_API_KEY");\\n\\n\\n\\nconst ANTHROPIC_API_KEY', 'const OPENAI_API_KEY = Deno.env.get("OPENAI_API_KEY");\\n\\n\\nconst ANTHROPIC_API_KEY')
-        p.write_text(s)
-        PY
-        node scripts/patch-ai-chat-openrouter.mjs
-        node scripts/patch-openrouter-no-forced-max.mjs
-
-    - name: Commit patched ai-chat source
-      if: github.event_name == 'push'
-      shell: bash
-      run: |
-        if git diff --quiet -- supabase/functions/ai-chat/index.ts; then
-          echo "No ai-chat source patch needed"
-          exit 0
-        fi
-        git config user.name "articulate-app"
-        git config user.email "app@whyarticulate.com"
-        git add supabase/functions/ai-chat/index.ts
-        git commit -m "Keep all OpenRouter models compatible"
-        git push origin HEAD:main
-
+    
     - name: Install dependencies
       run: npm ci
-
+    
     - name: Run linting
       run: npm run lint
-
+    
     - name: Build project
       run: npm run build
       env:
