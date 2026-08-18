@@ -11,6 +11,10 @@ import {
   type ArtifactSelectionLike,
 } from "./artifact-selection-patch.ts";
 import { brandKitForAiFromProject } from "../_shared/project-brand-kit.ts";
+import {
+  decideArtifactRevisionConflictRetry,
+  isArtifactRevisionConflictValue,
+} from "../_shared/artifact-revision-conflict.ts";
 
 function cleanPersistedArtifactMetadata(meta: unknown): Record<string, unknown> {
   const next =
@@ -1006,8 +1010,7 @@ Deno.serve(async (request) => {
       });
     };
 
-    const isRevisionConflict = (value: unknown) =>
-      /revision_conflict|artifact_revision_conflict/i.test(String(value ?? ""));
+    const isRevisionConflict = (value: unknown) => isArtifactRevisionConflictValue(value);
 
     const persistSnapshot = async (args: {
       snapshot: any;
@@ -1126,30 +1129,30 @@ Deno.serve(async (request) => {
         change_summary: args.changeSummary.slice(0, 1000),
       }, toolContext);
 
-      // At most one in-process retry with a fresh version. Never requeue storms.
+      // Never bump expected_version and rewrite the same snapshot. That
+      // last-write-wins retry overwrites concurrent user/agent edits.
       if (result?.ok === false && isRevisionConflict(result?.error ?? result?.data?.error)) {
-        const { data: freshArtifact } = await supabase
-          .from("artifacts")
-          .select("current_version")
-          .eq("id", artifactId)
-          .maybeSingle();
-        const freshVersion = Number(freshArtifact?.current_version);
-        if (Number.isInteger(freshVersion)) {
-          expectedVersion = freshVersion;
-          if (context?.artifact) context.artifact.current_version = freshVersion;
-          if (context?.unit?.input_snapshot) {
-            context.unit.input_snapshot.expected_version = freshVersion;
-          }
-          result = await callAiTools(authorization, "ai_save_build_artifact_internal", {
-            build_id: buildId,
-            unit_id: unitId,
-            lease_token: leaseToken,
-            artifact_id: artifactId,
-            expected_version: freshVersion,
-            snapshot,
-            change_summary: args.changeSummary.slice(0, 1000),
-          }, toolContext);
+        const decision = decideArtifactRevisionConflictRetry({
+          freshVersion: null,
+          hasRebuiltSnapshotFromLatest: false,
+        });
+        if (decision.action === "reject") {
+          throw new ArtifactBuildError(
+            "artifact_revision_conflict",
+            String(result?.error ?? result?.data?.error ?? "artifact_revision_conflict"),
+            false,
+          );
         }
+        expectedVersion = decision.expectedVersion;
+        result = await callAiTools(authorization, "ai_save_build_artifact_internal", {
+          build_id: buildId,
+          unit_id: unitId,
+          lease_token: leaseToken,
+          artifact_id: artifactId,
+          expected_version: decision.expectedVersion,
+          snapshot,
+          change_summary: args.changeSummary.slice(0, 1000),
+        }, toolContext);
       }
 
       if (result?.ok === false && isRevisionConflict(result?.error ?? result?.data?.error)) {

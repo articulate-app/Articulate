@@ -6,6 +6,10 @@ import {
   formatBrandKitForMediaPrompt,
   type BrandTemplateVisualRef,
 } from "../_shared/project-brand-kit.ts";
+import {
+  decideArtifactRevisionConflictRetry,
+  isArtifactRevisionConflictValue,
+} from "../_shared/artifact-revision-conflict.ts";
 
 const SUPABASE_URL = Deno.env.get("SUPABASE_URL")!;
 const SUPABASE_ANON_KEY = Deno.env.get("SUPABASE_ANON_KEY")!;
@@ -985,30 +989,26 @@ async function finalizeArtifact(args: { supabase: any; service: any; context: an
   });
   const isSoftConflict = (payload: unknown) => {
     const row = payload && typeof payload === "object" ? payload as Record<string, unknown> : null
-    return row?.ok === false && (
-      row?.code === "artifact_revision_conflict"
-      || /revision_conflict|artifact_revision_conflict/i.test(String(row?.message ?? row?.error ?? ""))
-    )
+    return row?.ok === false && isArtifactRevisionConflictValue(row)
   }
-  // One in-process retry with a fresh version only — never stack blind retries.
+  // Never bump expected_version and rewrite the same snapshot. That
+  // last-write-wins retry overwrites concurrent user/agent edits.
   if (
-    (error && /revision_conflict|artifact_revision_conflict/i.test(String(error.message ?? "")))
+    (error && isArtifactRevisionConflictValue(error.message))
     || isSoftConflict(save)
   ) {
-    const { data: freshArtifact } = await args.supabase
-      .from("artifacts")
-      .select("current_version")
-      .eq("id", artifact.id)
-      .maybeSingle();
-    const freshVersion = Number(freshArtifact?.current_version);
-    if (Number.isInteger(freshVersion)) {
-      expectedVersion = freshVersion;
+    const decision = decideArtifactRevisionConflictRetry({
+      freshVersion: null,
+      hasRebuiltSnapshotFromLatest: false,
+    });
+    if (decision.action === "retry") {
+      expectedVersion = decision.expectedVersion;
       ;({ data: save, error } = await args.supabase.rpc("ai_save_build_artifact_v2", {
         p_build_id: args.buildId,
         p_unit_id: args.unitId,
         p_lease_token: args.leaseToken,
         p_artifact_id: artifact.id,
-        p_expected_version: freshVersion,
+        p_expected_version: decision.expectedVersion,
         p_snapshot: snapshot,
         p_change_summary: `Generated ${generatedAssets.length} media asset(s)`,
       }));
