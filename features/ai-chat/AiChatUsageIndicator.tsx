@@ -240,11 +240,11 @@ export function AiChatUsageIndicator({ threadId, usage, isLoading }: AiChatUsage
                 ) : null}
               </div>
               <div className="mt-1 text-gray-600">
-                {formatExactTokenCount(context.prompt_tokens)} tokens in the latest model input
+                {formatCompactTokenCount(context.prompt_tokens)} tokens in the latest model input
               </div>
               {context.context_limit ? (
                 <div className="mt-0.5 text-gray-500">
-                  {Math.round(contextPercent ?? 0)}% of {formatExactTokenCount(context.context_limit)} available
+                  {Math.round(contextPercent ?? 0)}% of {formatCompactTokenCount(context.context_limit)} available
                 </div>
               ) : (
                 <div className="mt-0.5 text-gray-500">Context limit is not yet known for this model.</div>
@@ -257,7 +257,7 @@ export function AiChatUsageIndicator({ threadId, usage, isLoading }: AiChatUsage
                     .map(([label, value]) => (
                       <div key={label} className="flex items-center justify-between gap-4 py-0.5">
                         <span className="text-gray-500">{label}</span>
-                        <span className="tabular-nums text-gray-700">{formatExactTokenCount(Number(value ?? 0))}</span>
+                        <span className="tabular-nums text-gray-700">{formatCompactTokenCount(Number(value ?? 0))}</span>
                       </div>
                     ))}
                 </div>
@@ -274,13 +274,13 @@ export function AiChatUsageIndicator({ threadId, usage, isLoading }: AiChatUsage
                   {context.cached_prompt_tokens != null ? (
                     <div className="flex items-center justify-between gap-4 py-0.5">
                       <span className="text-gray-500">Cached input</span>
-                      <span className="tabular-nums text-gray-700">{formatExactTokenCount(context.cached_prompt_tokens)}</span>
+                      <span className="tabular-nums text-gray-700">{formatCompactTokenCount(context.cached_prompt_tokens)}</span>
                     </div>
                   ) : null}
                   {context.cache_write_tokens != null && context.cache_write_tokens > 0 ? (
                     <div className="flex items-center justify-between gap-4 py-0.5">
                       <span className="text-gray-500">Cache write</span>
-                      <span className="tabular-nums text-gray-700">{formatExactTokenCount(context.cache_write_tokens)}</span>
+                      <span className="tabular-nums text-gray-700">{formatCompactTokenCount(context.cache_write_tokens)}</span>
                     </div>
                   ) : null}
                 </div>

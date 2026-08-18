@@ -3433,14 +3433,14 @@ export function ChatWindow({
       <div className="relative flex min-h-0 flex-1 flex-col">
         <div
           ref={scrollContainerRef}
-          className="relative min-h-0 flex-1 overflow-x-hidden overflow-y-auto"
+          className="relative min-h-0 flex-1 scroll-pb-32 overflow-x-hidden overflow-y-auto"
         >
           <div className="flex min-h-full flex-col">
             {!isChatEmpty ? (
               <div className="min-w-0 flex-1 px-4 pt-4">
                 <div
                   ref={scrollRoomRef}
-                  className={`${CHAT_CONTENT_COLUMN_CLASS} space-y-4 pb-4${
+                  className={`${CHAT_CONTENT_COLUMN_CLASS} space-y-4 pb-28${
                     keepUserMessageScrollRoom || isAssistantStreaming
                       ? " pb-[70vh] md:pb-[60vh]"
                       : ""
@@ -3808,7 +3808,7 @@ export function ChatWindow({
         {!isChatEmpty ? (
           <div
             ref={composerDockRef}
-            className="z-10 shrink-0 border-t border-gray-100 bg-white"
+            className="z-10 shrink-0 bg-white"
           >
             {composerBody}
           </div>
@@ -3817,7 +3817,7 @@ export function ChatWindow({
           <button
             type="button"
             onClick={jumpToBottom}
-            className="absolute bottom-4 right-4 z-10 inline-flex h-9 w-9 items-center justify-center rounded-full border border-border bg-background text-foreground shadow-md transition-colors hover:bg-accent"
+            className="absolute bottom-32 right-4 z-20 inline-flex h-9 w-9 items-center justify-center rounded-full border border-border bg-background text-foreground shadow-md transition-colors hover:bg-accent md:bottom-28"
             aria-label="Scroll to latest messages"
             title="Scroll to latest"
           >

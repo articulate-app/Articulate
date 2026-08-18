@@ -2785,24 +2785,36 @@ export function Composer({
           </div>
           <div className="flex items-center gap-1.5">
             {isAssistantStreaming ? (
-              <button
-                type="button"
-                onClick={() => {
-                  const runId = inFlightTurnRef?.current?.runId
-                  if (runId) {
-                    void cancelAiChatRun(runId).finally(() => {
-                      streamAbortRef?.current?.abort()
-                    })
-                    return
-                  }
-                  streamAbortRef?.current?.abort()
-                }}
-                className="inline-flex h-6 w-6 items-center justify-center rounded-full bg-gray-900 text-white hover:bg-gray-800"
-                aria-label="Stop generating"
-                title="Stop generating"
-              >
-                <Square className="h-3 w-3 fill-current" />
-              </button>
+              <>
+                <button
+                  type="button"
+                  onClick={() => void send()}
+                  disabled={isSendBlockedByUsage}
+                  className="inline-flex h-6 w-6 items-center justify-center rounded-full border border-gray-200 bg-white text-gray-700 hover:bg-gray-50 disabled:opacity-50"
+                  aria-label="Queue message"
+                  title={isSendBlockedByUsage ? "Daily AI token limit reached" : "Queue message"}
+                >
+                  <ArrowUp className="h-3.5 w-3.5" />
+                </button>
+                <button
+                  type="button"
+                  onClick={() => {
+                    const runId = inFlightTurnRef?.current?.runId
+                    if (runId) {
+                      void cancelAiChatRun(runId).finally(() => {
+                        streamAbortRef?.current?.abort()
+                      })
+                      return
+                    }
+                    streamAbortRef?.current?.abort()
+                  }}
+                  className="inline-flex h-6 w-6 items-center justify-center rounded-full bg-gray-900 text-white hover:bg-gray-800"
+                  aria-label="Stop generating"
+                  title="Stop generating"
+                >
+                  <Square className="h-3 w-3 fill-current" />
+                </button>
+              </>
             ) : (
               <button
                 type="button"
