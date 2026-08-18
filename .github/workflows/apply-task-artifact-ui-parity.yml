@@ -10,19 +10,51 @@ permissions:
 
 jobs:
   patch:
-    if: ${{ !contains(github.event.head_commit.message, '[ui-parity]') }}
+    if: ${{ !contains(github.event.head_commit.message, '[ui-parity') }}
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
+
       - name: Apply patch
-        run: node scripts/patch-task-artifact-ui-parity.mjs
+        run: |
+          set +e
+          node scripts/patch-task-artifact-ui-parity.mjs > ui-parity-run.log 2>&1
+          code=$?
+          cat ui-parity-run.log
+          echo "patch_exit=$code" >> "$GITHUB_ENV"
+          exit 0
+
       - name: Validate diff
+        if: env.patch_exit == '0'
         run: git diff --check
+
       - name: Typecheck
-        run: npx tsc --noEmit
+        if: env.patch_exit == '0'
+        run: |
+          set +e
+          npx tsc --noEmit >> ui-parity-run.log 2>&1
+          code=$?
+          tail -n 200 ui-parity-run.log
+          echo "typecheck_exit=$code" >> "$GITHUB_ENV"
+          exit 0
+
+      - name: Persist diagnostic on failure
+        if: env.patch_exit != '0' || env.typecheck_exit != '0'
+        run: |
+          printf '\npatch_exit=%s\ntypecheck_exit=%s\n' "$patch_exit" "$typecheck_exit" >> ui-parity-run.log
+          git config user.name "articulate-app"
+          git config user.email "app@whyarticulate.com"
+          mkdir -p .github/diagnostics
+          cp ui-parity-run.log .github/diagnostics/ui-parity-last-error.log
+          git add .github/diagnostics/ui-parity-last-error.log
+          git commit -m "[ui-parity-debug] Capture task artifact patch failure" || true
+          git push origin HEAD:main
+          exit 1
+
       - name: Commit patch
+        if: env.patch_exit == '0' && env.typecheck_exit == '0'
         run: |
           if git diff --quiet; then
             echo "No patch changes"
