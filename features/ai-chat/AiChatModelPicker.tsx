@@ -1,7 +1,7 @@
 "use client"
 
 import React, { useEffect, useMemo, useRef, useState } from "react"
-import { Check, ChevronDown, Search, Star } from "lucide-react"
+import { Check, ChevronDown, Pin, Search } from "lucide-react"
 import {
   AI_CHAT_MODEL_OPTIONS,
   fetchAiChatModelCatalog,
@@ -41,6 +41,7 @@ export function AiChatModelPicker({ modelKey, onModelKeyChange, disabled }: AiCh
   const [pinnedKeys, setPinnedKeys] = useState<string[]>([])
   const [recentKeys, setRecentKeys] = useState<string[]>([])
   const rootRef = useRef<HTMLDivElement | null>(null)
+  const searchRef = useRef<HTMLInputElement | null>(null)
 
   useEffect(() => {
     setPinnedKeys(getPinnedAiChatModelKeys())
@@ -54,6 +55,8 @@ export function AiChatModelPicker({ modelKey, onModelKeyChange, disabled }: AiCh
 
   useEffect(() => {
     if (!isOpen) return
+    setQuery("")
+    requestAnimationFrame(() => searchRef.current?.focus())
     const handlePointerDown = (event: MouseEvent) => {
       if (!rootRef.current?.contains(event.target as Node)) setIsOpen(false)
     }
@@ -114,7 +117,7 @@ export function AiChatModelPicker({ modelKey, onModelKeyChange, disabled }: AiCh
         key={model.key}
         type="button"
         onClick={() => choose(model.key)}
-        className={`group flex w-full items-center gap-2 rounded px-2 py-1.5 text-left text-xs hover:bg-gray-50 ${isSelected ? "font-medium text-gray-900" : "text-gray-600"}`}
+        className={`group flex w-full items-center gap-2 rounded-md px-2.5 py-2 text-left text-xs transition-colors hover:bg-gray-50 ${isSelected ? "font-medium text-gray-900" : "text-gray-600"}`}
       >
         <span className="min-w-0 flex-1">
           <span className="flex min-w-0 items-center gap-1.5">
@@ -122,7 +125,7 @@ export function AiChatModelPicker({ modelKey, onModelKeyChange, disabled }: AiCh
             {model.recommendation_tag ? <span className="shrink-0 rounded bg-gray-100 px-1 py-0.5 text-[9px] font-medium text-gray-500">{model.recommendation_tag}</span> : null}
           </span>
           <span className="mt-0.5 block truncate text-[10px] font-normal text-gray-400">
-            {[context ? `${context} context` : null, input && output ? `Input ${input} · Output ${output} / 1M tokens` : null, model.supports_tools === false ? "Chat only" : null].filter(Boolean).join(" · ")}
+            {[context ? `${context} context` : null, input && output ? `Input ${input} · Output ${output} / 1M` : null, model.supports_tools === false ? "Chat only" : null].filter(Boolean).join(" · ")}
           </span>
         </span>
         <span className="flex shrink-0 items-center gap-1">
@@ -138,9 +141,9 @@ export function AiChatModelPicker({ modelKey, onModelKeyChange, disabled }: AiCh
                 togglePin(event as unknown as React.MouseEvent, model.key)
               }
             }}
-            className={`rounded p-0.5 ${isPinned ? "text-amber-500" : "text-gray-300 opacity-0 group-hover:opacity-100"}`}
+            className={`rounded p-1 transition-colors ${isPinned ? "text-gray-700" : "text-gray-300 opacity-0 group-hover:opacity-100"}`}
           >
-            <Star className="h-3.5 w-3.5" fill={isPinned ? "currentColor" : "none"} aria-hidden />
+            <Pin className="h-3.5 w-3.5" fill={isPinned ? "currentColor" : "none"} aria-hidden />
           </span>
           {isSelected ? <Check className="h-3.5 w-3.5" aria-hidden /> : null}
         </span>
@@ -149,8 +152,8 @@ export function AiChatModelPicker({ modelKey, onModelKeyChange, disabled }: AiCh
   }
 
   const section = (title: string, items: AiChatCatalogModel[]) => items.length ? (
-    <div className="border-t border-gray-100 p-1.5">
-      <div className="px-1.5 pb-1 text-[10px] font-medium uppercase tracking-wide text-gray-400">{title}</div>
+    <div className="px-1.5 pb-1.5">
+      <div className="px-2 pb-1 pt-1.5 text-[10px] font-medium text-gray-400">{title}</div>
       {items.map(renderModel)}
     </div>
   ) : null
@@ -165,34 +168,47 @@ export function AiChatModelPicker({ modelKey, onModelKeyChange, disabled }: AiCh
       </button>
 
       {isOpen ? (
-        <div role="dialog" aria-label="AI model picker" className="absolute bottom-full left-0 z-[9999] mb-1 w-[390px] overflow-hidden rounded-md border border-gray-200 bg-white shadow-lg">
-          <div className="p-1.5">
-            <button type="button" onClick={() => choose("auto")}
-              className={`flex w-full items-center justify-between rounded px-2 py-1.5 text-left text-xs hover:bg-gray-50 ${modelKey === "auto" ? "font-medium text-gray-900" : "text-gray-600"}`}>
-              <span><span className="block">Auto</span><span className="block text-[10px] font-normal text-gray-400">Balanced routing</span></span>
-              {modelKey === "auto" ? <Check className="h-3.5 w-3.5" aria-hidden /> : null}
-            </button>
+        <div role="dialog" aria-label="AI model picker" className="fixed inset-x-3 bottom-3 z-[9999] max-h-[75vh] overflow-hidden rounded-xl border border-gray-200 bg-white shadow-xl md:absolute md:inset-x-auto md:bottom-full md:left-0 md:mb-1 md:w-[390px] md:rounded-lg md:shadow-lg">
+          <div className="p-2">
+            <div className="relative">
+              <Search className="pointer-events-none absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-gray-400" aria-hidden />
+              <input
+                ref={searchRef}
+                value={query}
+                onChange={(event) => setQuery(event.target.value)}
+                placeholder="Search models"
+                className="h-9 w-full rounded-md border-0 bg-gray-50 pl-8 pr-3 text-xs outline-none placeholder:text-gray-400 focus:bg-gray-100/80"
+              />
+            </div>
           </div>
 
-          {!query.trim() ? section("Pinned", pinned) : null}
-          {!query.trim() ? section("Recent", recent) : null}
-          {!query.trim() ? section("Recommended", recommended) : null}
-
-          <div className="border-t border-gray-100 p-1.5">
-            <div className="relative mb-1.5">
-              <Search className="pointer-events-none absolute left-2 top-1/2 h-3 w-3 -translate-y-1/2 text-gray-400" aria-hidden />
-              <input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Search all models…"
-                className="h-7 w-full rounded border border-gray-200 bg-white pl-7 pr-2 text-xs outline-none placeholder:text-gray-400 focus:border-gray-300" />
-            </div>
-            <div className="flex items-center justify-between px-1.5 pb-1">
-              <span className="text-[10px] font-medium uppercase tracking-wide text-gray-400">{query.trim() ? "Search results" : "More models"}</span>
-              <span className="text-[10px] text-gray-400">{searchResults.length}</span>
-            </div>
-            <div className="max-h-60 overflow-y-auto">
-              {catalogError ? <div className="px-2 py-2 text-xs text-gray-400">Could not load the model catalog.</div>
-                : searchResults.length === 0 ? <div className="px-2 py-2 text-xs text-gray-400">No matching models.</div>
-                : searchResults.map(renderModel)}
-            </div>
+          <div className="max-h-[calc(75vh-56px)] overflow-y-auto px-0.5 pb-1.5 md:max-h-[420px]">
+            {query.trim() ? (
+              <div className="px-1.5 pb-1.5">
+                <div className="flex items-center justify-between px-2 pb-1 pt-1 text-[10px] font-medium text-gray-400">
+                  <span>Search results</span>
+                  <span>{searchResults.length}</span>
+                </div>
+                {catalogError ? <div className="px-2.5 py-3 text-xs text-gray-400">Could not load the model catalog.</div>
+                  : searchResults.length === 0 ? <div className="px-2.5 py-3 text-xs text-gray-400">No matching models.</div>
+                  : searchResults.map(renderModel)}
+              </div>
+            ) : (
+              <>
+                <div className="px-1.5 pb-1.5">
+                  <button type="button" onClick={() => choose("auto")}
+                    className={`flex w-full items-center justify-between rounded-md px-2.5 py-2 text-left text-xs transition-colors hover:bg-gray-50 ${modelKey === "auto" ? "font-medium text-gray-900" : "text-gray-600"}`}>
+                    <span><span className="block">Auto</span><span className="block text-[10px] font-normal text-gray-400">Balanced routing</span></span>
+                    {modelKey === "auto" ? <Check className="h-3.5 w-3.5" aria-hidden /> : null}
+                  </button>
+                </div>
+                {section("Pinned", pinned)}
+                {section("Recent", recent)}
+                {section("Recommended", recommended)}
+                {searchResults.length ? section("More models", searchResults) : null}
+                {catalogError ? <div className="px-4 py-2 text-xs text-gray-400">Could not load the complete model catalog.</div> : null}
+              </>
+            )}
           </div>
         </div>
       ) : null}
