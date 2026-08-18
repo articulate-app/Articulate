@@ -1,1 +1,0 @@
-Trigger the task/artifact UI parity workflow after the workflow definition is present on main.
