@@ -1,0 +1,36 @@
+name: Apply workspace list header alignment patch
+
+on:
+  push:
+    branches:
+      - main
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    if: ${{ !contains(github.event.head_commit.message, '[list-header]') }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Apply patch
+        run: node scripts/patch-workspace-list-header.mjs
+      - name: Validate diff
+        run: git diff --check
+      - name: Commit patch
+        run: |
+          if git diff --quiet; then
+            echo "No patch changes"
+            exit 0
+          fi
+          git config user.name "articulate-app"
+          git config user.email "app@whyarticulate.com"
+          git add app/components/workspace/workspace-page-shell.tsx \
+                  app/components/workspace/workspace-object-list-view.tsx \
+                  app/components/workspace/workspace-template-list-view.tsx \
+                  app/components/workspace/workspace-task-list-view.tsx
+          git commit -m "[list-header] Align workspace list headers and task sorting"
+          git push origin HEAD:main
