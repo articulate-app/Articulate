@@ -34,7 +34,7 @@ jobs:
         if: env.patch_exit == '0'
         run: |
           set +e
-          npx tsc --noEmit >> ui-parity-run.log 2>&1
+          npx -p typescript@5.3.3 tsc --noEmit >> ui-parity-run.log 2>&1
           code=$?
           tail -n 200 ui-parity-run.log
           echo "typecheck_exit=$code" >> "$GITHUB_ENV"
