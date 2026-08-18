@@ -95,8 +95,11 @@ export function formatAssistantContentForDisplay(
     )
   }
 
+  // Plain assistant output is Markdown. Render it with the chat-specific marked
+  // instance so single newlines are preserved (`breaks: true`) instead of being
+  // flattened by the rich-text normalizer.
   const normalized = prepareAssistantMarkdownForDisplay(raw, labels)
-  return decorateAppEntityAnchorsAsChips(normalizeMixedRichText(normalized))
+  return decorateAppEntityAnchorsAsChips(String(assistantMarked.parse(normalized)))
 }
 
 export function markdownFromAssistantBlocks(blocks: MarkdownBlockLike[]): string {
