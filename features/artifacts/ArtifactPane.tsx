@@ -1432,6 +1432,9 @@ export function ArtifactPane({
               channelId={displayArtifact.channel_id}
               contentText={draftContentText ?? displayArtifact.content_text}
               contentJson={draftContentJson ?? displayArtifact.content_json}
+              metadata={displayArtifact.metadata}
+              assetData={displayArtifact.asset_data}
+              aiThreadId={displayArtifact.ai_thread_id}
               readOnly={isLivePreview}
               onContentChange={({ contentText, contentJson }) => {
                 if (isLivePreview) return

@@ -4,6 +4,7 @@ import React, { useCallback, useEffect, useMemo, useRef, useState } from "react"
 import { useQuery, useQueryClient } from "@tanstack/react-query"
 import { createClientComponentClient } from "@supabase/auth-helpers-nextjs"
 import { ArtifactSeoPanel } from "../../artifacts/artifact-seo-panel"
+import { ArtifactSeoDetailsPanel, type ArtifactSeoDetailSection } from "../../artifacts/artifact-seo-details"
 import { listTaskArtifacts, saveWorkspaceArtifact } from "../../../app/lib/services/artifacts"
 import type { ArtifactContentJson } from "../../../app/lib/artifacts/artifact-types"
 import {
@@ -37,7 +38,7 @@ type TaskSeoAndAiSeoTabProps = {
   } | null
 }
 
-type SeoPane = "keywords" | "links"
+type SeoPane = "navigation" | "keywords" | "links" | "meta" | "prompts" | "images"
 
 type CheckLinksFunctionResult = {
   input?: string
@@ -369,8 +370,12 @@ export function TaskSeoAndAiSeoTab({
     <div className={cn("flex flex-wrap items-center gap-1.5", embedded ? "mb-3" : "mb-4")}>
       {(
         [
+          { value: "navigation" as const, label: "Navigation" },
           { value: "keywords" as const, label: "Keywords" },
           { value: "links" as const, label: "Links" },
+          { value: "meta" as const, label: "Meta info" },
+          { value: "prompts" as const, label: "Prompts" },
+          { value: "images" as const, label: "Image info" },
         ] as const
       ).map((option) => (
         <button
@@ -410,7 +415,7 @@ export function TaskSeoAndAiSeoTab({
           seedSeo={seedSeo}
           contentText={artifactsContentText}
         />
-      ) : (
+      ) : seoPane === "links" ? (
         <SeoLinkSummaryList
           items={sortedLinkSummaryItems}
           statusByUrl={linkStatusByUrl}
@@ -432,6 +437,25 @@ export function TaskSeoAndAiSeoTab({
                 }
           }
         />
+      ) : artifactsQuery.isLoading ? (
+        <div className="space-y-2">
+          <div className="h-9 animate-pulse rounded bg-gray-100" />
+          <div className="h-20 animate-pulse rounded bg-gray-50" />
+        </div>
+      ) : artifacts.length === 0 ? (
+        <p className="text-sm text-gray-500">No artifacts in this task yet.</p>
+      ) : (
+        <div className="space-y-5">
+          {artifacts.map((artifact) => (
+            <ArtifactSeoDetailsPanel
+              key={`${seoPane}:${artifact.id}`}
+              artifact={artifact}
+              section={seoPane as ArtifactSeoDetailSection}
+              readOnly={readOnly}
+              showArtifactTitle
+            />
+          ))}
+        </div>
       )}
     </div>
   )

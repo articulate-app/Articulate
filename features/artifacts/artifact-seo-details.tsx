@@ -18,7 +18,6 @@ type EditableArtifactSeoSnapshot = Pick<
   TaskArtifact,
   | "id"
   | "title"
-  | "status"
   | "content_text"
   | "content_json"
   | "asset_data"
@@ -173,7 +172,6 @@ export function ArtifactSeoDetailsPanel({
         expectedVersion,
         snapshot: {
           title: current.title,
-          status: current.status,
           content_text: current.content_text,
           content_json: current.content_json,
           asset_data: patch.assetData !== undefined ? patch.assetData : current.asset_data,

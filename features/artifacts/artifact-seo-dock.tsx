@@ -5,7 +5,7 @@ import { useQuery } from "@tanstack/react-query"
 import { createClientComponentClient } from "@supabase/auth-helpers-nextjs"
 import { AlertTriangle, X } from "lucide-react"
 import { cn } from "../../app/lib/utils"
-import type { ArtifactContentJson } from "../../app/lib/artifacts/artifact-types"
+import type { ArtifactAssetData, ArtifactContentJson } from "../../app/lib/artifacts/artifact-types"
 import {
   parseKeywordTokens,
   taskSeoQueryKey,
@@ -18,6 +18,7 @@ import {
   isMediaOrStorageUrl,
 } from "../tasks/lib/link-summary-url-extraction"
 import { extractArtifactOutline } from "./extract-artifact-outline"
+import { ArtifactNavigationPanel, ArtifactSeoDetailsPanel } from "./artifact-seo-details"
 import {
   artifactHtmlSource,
   artifactPlainText,
@@ -52,6 +53,9 @@ type ArtifactSeoDockProps = {
   channelId?: number | null
   contentText?: string | null
   contentJson?: ArtifactContentJson | null
+  metadata?: Record<string, unknown> | null
+  assetData?: ArtifactAssetData | null
+  aiThreadId?: string | null
   readOnly?: boolean
   onContentChange?: (next: {
     contentText: string | null
@@ -138,10 +142,17 @@ function StatusChip({
  *   (same presence as task-details SEO sections).
  */
 export function ArtifactSeoDock({
+  artifactId,
+  artifactVersion,
+  artifactTitle = null,
   taskId,
+  projectId = null,
   channelId = null,
   contentText = null,
   contentJson = null,
+  metadata = null,
+  assetData = null,
+  aiThreadId = null,
   readOnly = false,
   onContentChange,
   className,
@@ -150,7 +161,7 @@ export function ArtifactSeoDock({
   const supabase = createClientComponentClient()
   const enabled = taskId != null && taskId > 0
 
-  const [openPanel, setOpenPanel] = useState<"nav" | "keywords" | "links" | null>(null)
+  const [openPanel, setOpenPanel] = useState<"nav" | "keywords" | "links" | "meta" | "prompts" | "images" | null>(null)
   const [linkStatusByUrl, setLinkStatusByUrl] = useState<Record<string, LinkStatusResult>>({})
   const linkStatusCacheRef = useRef<Map<string, LinkStatusResult>>(new Map())
 
@@ -379,34 +390,30 @@ export function ArtifactSeoDock({
     [readOnly, onContentChange, contentText, contentJson],
   )
 
-  const togglePanel = useCallback((panel: "nav" | "keywords" | "links") => {
+  const togglePanel = useCallback((panel: "nav" | "keywords" | "links" | "meta" | "prompts" | "images") => {
     setOpenPanel((prev) => (prev === panel ? null : panel))
   }, [])
 
-  const navList =
-    outline.length === 0 ? (
-      <p className="text-sm text-gray-500">No headings yet.</p>
-    ) : (
-      <ul className="space-y-0.5">
-        {outline.map((row) => (
-          <li key={row.id}>
-            <button
-              type="button"
-              className={cn(
-                "flex w-full items-center gap-2 rounded px-1.5 py-1 text-left text-sm hover:bg-gray-50",
-                row.level === 2 && "pl-4",
-                row.level === 3 && "pl-7",
-                row.level >= 4 && "pl-9",
-              )}
-              onClick={() => scrollToHeading(row.text)}
-            >
-              <span className="w-5 shrink-0 text-[11px] text-gray-400">H{row.level}</span>
-              <span className="truncate text-gray-800">{row.text}</span>
-            </button>
-          </li>
-        ))}
-      </ul>
-    )
+  const detailArtifact = {
+    id: artifactId,
+    title: artifactTitle,
+    content_text: contentText,
+    content_json: contentJson,
+    asset_data: assetData,
+    metadata,
+    current_version: artifactVersion,
+    task_id: taskId ?? null,
+    project_id: projectId ?? null,
+    ai_thread_id: aiThreadId,
+  }
+
+  const navList = (
+    <ArtifactNavigationPanel
+      artifactId={artifactId}
+      contentText={contentText}
+      contentJson={contentJson}
+    />
+  )
 
   const keywordsPanel = (
     <ArtifactSeoPanel
@@ -475,6 +482,18 @@ export function ArtifactSeoDock({
           </div>
           {linksPanel}
         </section>
+        <section className="space-y-2">
+          <h3 className="text-base font-medium text-gray-900">Meta info</h3>
+          <ArtifactSeoDetailsPanel artifact={detailArtifact} section="meta" readOnly={readOnly} />
+        </section>
+        <section className="space-y-2">
+          <h3 className="text-base font-medium text-gray-900">Prompts</h3>
+          <ArtifactSeoDetailsPanel artifact={detailArtifact} section="prompts" readOnly={readOnly} />
+        </section>
+        <section className="space-y-2">
+          <h3 className="text-base font-medium text-gray-900">Image info</h3>
+          <ArtifactSeoDetailsPanel artifact={detailArtifact} section="images" readOnly={readOnly} />
+        </section>
       </div>
     )
   }
@@ -527,13 +546,16 @@ export function ArtifactSeoDock({
             </span>
           ) : null}
         </StatusChip>
+        <StatusChip active={openPanel === "meta"} onClick={() => togglePanel("meta")}>Meta info</StatusChip>
+        <StatusChip active={openPanel === "prompts"} onClick={() => togglePanel("prompts")}>Prompts</StatusChip>
+        <StatusChip active={openPanel === "images"} onClick={() => togglePanel("images")}>Image info</StatusChip>
       </div>
 
       {openPanel ? (
         <div className="absolute inset-x-0 bottom-full z-30 flex max-h-[min(28rem,60vh)] flex-col border-t border-gray-200 bg-white shadow-[0_-8px_24px_rgba(15,23,42,0.08)]">
           <div className="flex shrink-0 items-center justify-between gap-2 px-3 py-1.5">
             <span className="text-[11px] font-medium uppercase tracking-wide text-gray-500">
-              {openPanel === "nav" ? "Navigation" : openPanel === "keywords" ? "Keywords" : "Links"}
+              {openPanel === "nav" ? "Navigation" : openPanel === "keywords" ? "Keywords" : openPanel === "links" ? "Links" : openPanel === "meta" ? "Meta info" : openPanel === "prompts" ? "Prompts" : "Image info"}
             </span>
             <button
               type="button"
@@ -549,6 +571,9 @@ export function ArtifactSeoDock({
             {openPanel === "nav" ? navList : null}
             {openPanel === "keywords" ? keywordsPanel : null}
             {openPanel === "links" ? linksPanel : null}
+            {openPanel === "meta" ? <ArtifactSeoDetailsPanel artifact={detailArtifact} section="meta" readOnly={readOnly} /> : null}
+            {openPanel === "prompts" ? <ArtifactSeoDetailsPanel artifact={detailArtifact} section="prompts" readOnly={readOnly} /> : null}
+            {openPanel === "images" ? <ArtifactSeoDetailsPanel artifact={detailArtifact} section="images" readOnly={readOnly} /> : null}
           </div>
         </div>
       ) : null}
