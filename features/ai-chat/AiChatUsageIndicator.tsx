@@ -19,13 +19,31 @@ type AiChatUsageIndicatorProps = {
   isLoading?: boolean
 }
 
+type ContextComposition = {
+  system?: number | null
+  tools?: number | null
+  summary?: number | null
+  recent_messages?: number | null
+  turn_context?: number | null
+  current_request?: number | null
+  active_tool_loop?: number | null
+  total_estimated_tokens?: number | null
+}
+
 type ContextSnapshot = {
   run_id: string
   model_provider: string | null
   model_name: string | null
   prompt_tokens: number
+  provider_prompt_tokens_total?: number | null
   context_limit: number | null
   percent_used: number | null
+  status?: "healthy" | "compacting" | "high" | string | null
+  composition?: ContextComposition | null
+  estimated_prompt_tokens?: number | null
+  cached_prompt_tokens?: number | null
+  cache_write_tokens?: number | null
+  cache_hit_rate?: number | null
   summarized: boolean
   measured_at: string | null
 }
@@ -36,6 +54,19 @@ function formatContextLimit(value: number | null): string {
   return `${Math.round(value / 1_000)}k`
 }
 
+function contextRows(context: ContextSnapshot) {
+  const composition = context.composition ?? {}
+  return [
+    ["System", composition.system],
+    ["Tools", composition.tools],
+    ["Conversation", composition.recent_messages],
+    ["Thread summary", composition.summary],
+    ["Turn context", composition.turn_context],
+    ["Current request", composition.current_request],
+    ["Active tool loop", composition.active_tool_loop],
+  ] as Array<[string, number | null | undefined]>
+}
+
 export function AiChatUsageIndicator({ threadId, usage, isLoading }: AiChatUsageIndicatorProps) {
   const [usageOpen, setUsageOpen] = useState(false)
   const [contextOpen, setContextOpen] = useState(false)
@@ -43,6 +74,7 @@ export function AiChatUsageIndicator({ threadId, usage, isLoading }: AiChatUsage
   const rootRef = useRef<HTMLDivElement | null>(null)
   const strictest = pickStricterUsageScope(usage)
   const activeThreadId = threadId?.trim() || null
+  useSearchParams()
 
   useEffect(() => {
     if (!usageOpen && !contextOpen) return
@@ -156,7 +188,7 @@ export function AiChatUsageIndicator({ threadId, usage, isLoading }: AiChatUsage
             <div
               role="dialog"
               aria-label="AI usage details"
-              className="absolute bottom-full left-0 z-[9999] mb-1 w-56 rounded-md border border-gray-200 bg-white p-2.5 text-xs shadow-lg"
+              className="fixed inset-x-3 bottom-3 z-[9999] rounded-xl border border-gray-200 bg-white p-3 text-xs shadow-xl md:absolute md:inset-x-auto md:bottom-full md:left-0 md:mb-1 md:w-56 md:rounded-md md:p-2.5 md:shadow-lg"
             >
               <UsageScopeRow label="Your usage" scope={usage.user} />
               <UsageScopeRow label="Team usage" scope={usage.team} className="mt-2 border-t border-gray-100 pt-2" />
@@ -199,9 +231,14 @@ export function AiChatUsageIndicator({ threadId, usage, isLoading }: AiChatUsage
             <div
               role="dialog"
               aria-label="AI context details"
-              className="absolute bottom-full left-0 z-[9999] mb-1 w-64 rounded-md border border-gray-200 bg-white p-2.5 text-xs shadow-lg"
+              className="fixed inset-x-3 bottom-3 z-[9999] max-h-[70vh] overflow-y-auto rounded-xl border border-gray-200 bg-white p-3 text-xs shadow-xl md:absolute md:inset-x-auto md:bottom-full md:left-0 md:mb-1 md:w-72 md:rounded-md md:p-2.5 md:shadow-lg"
             >
-              <div className="font-medium text-gray-800">Context window</div>
+              <div className="flex items-center justify-between gap-3">
+                <div className="font-medium text-gray-800">Context window</div>
+                {context.status ? (
+                  <span className="text-[10px] capitalize text-gray-400">{context.status}</span>
+                ) : null}
+              </div>
               <div className="mt-1 text-gray-600">
                 {formatExactTokenCount(context.prompt_tokens)} tokens in the latest model input
               </div>
@@ -212,13 +249,45 @@ export function AiChatUsageIndicator({ threadId, usage, isLoading }: AiChatUsage
               ) : (
                 <div className="mt-0.5 text-gray-500">Context limit is not yet known for this model.</div>
               )}
-              {context.model_name ? (
-                <div className="mt-1 text-gray-400">Model: {context.model_name}</div>
-              ) : null}
-              {context.summarized ? (
-                <div className="mt-2 rounded bg-gray-50 px-2 py-1.5 text-[11px] text-gray-600">
-                  Older conversation has been summarized to preserve context space.
+
+              {contextRows(context).some(([, value]) => Number(value) > 0) ? (
+                <div className="mt-3 border-t border-gray-100 pt-2">
+                  {contextRows(context)
+                    .filter(([, value]) => Number(value) > 0)
+                    .map(([label, value]) => (
+                      <div key={label} className="flex items-center justify-between gap-4 py-0.5">
+                        <span className="text-gray-500">{label}</span>
+                        <span className="tabular-nums text-gray-700">{formatExactTokenCount(Number(value ?? 0))}</span>
+                      </div>
+                    ))}
                 </div>
+              ) : null}
+
+              {context.cache_hit_rate != null || context.cached_prompt_tokens != null ? (
+                <div className="mt-3 border-t border-gray-100 pt-2">
+                  {context.cache_hit_rate != null ? (
+                    <div className="flex items-center justify-between gap-4 py-0.5">
+                      <span className="text-gray-500">Cache hit</span>
+                      <span className="tabular-nums text-gray-700">{Math.round(context.cache_hit_rate * 100)}%</span>
+                    </div>
+                  ) : null}
+                  {context.cached_prompt_tokens != null ? (
+                    <div className="flex items-center justify-between gap-4 py-0.5">
+                      <span className="text-gray-500">Cached input</span>
+                      <span className="tabular-nums text-gray-700">{formatExactTokenCount(context.cached_prompt_tokens)}</span>
+                    </div>
+                  ) : null}
+                  {context.cache_write_tokens != null && context.cache_write_tokens > 0 ? (
+                    <div className="flex items-center justify-between gap-4 py-0.5">
+                      <span className="text-gray-500">Cache write</span>
+                      <span className="tabular-nums text-gray-700">{formatExactTokenCount(context.cache_write_tokens)}</span>
+                    </div>
+                  ) : null}
+                </div>
+              ) : null}
+
+              {context.model_name ? (
+                <div className="mt-2 text-[10px] text-gray-400">Model: {context.model_name}</div>
               ) : null}
               <div className="mt-2 border-t border-gray-100 pt-2 text-[10px] leading-4 text-gray-400">
                 This is the context sent to the latest model call, not all tokens ever used in this conversation.
