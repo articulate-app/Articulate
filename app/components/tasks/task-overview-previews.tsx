@@ -23,7 +23,7 @@ type TaskOverviewPreviewsProps = {
   onNavigateTab?: (
     tab: "attachments" | "reviews" | "activity" | "comments" | "artifacts" | "seo",
   ) => void
-  commentsPanelProps?: TaskCommentsPanelProps
+  commentsPanelProps?: TaskCommentsPanelProps | null
   /** Kept optional for call-site compatibility; unused after overview artifact cards. */
   onActiveFieldChange?: (context: AiActiveFieldContext) => void
   onArtifactTextSelectForComment?: (selection: {
