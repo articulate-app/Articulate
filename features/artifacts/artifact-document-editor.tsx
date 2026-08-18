@@ -18,6 +18,8 @@ import {
   isHtmlEmailArtifact,
 } from "./artifact-html-document"
 import { ArtifactHtmlDocumentFromArtifact } from "./artifact-html-document-view"
+import { useArtifactCollaboration } from "../../app/hooks/use-artifact-collaboration"
+import { shouldLockArtifactDuringAiGeneration } from "../../app/lib/collaboration/editor-sync"
 
 function htmlToPlainText(html: string): string {
   if (typeof document === "undefined") {
@@ -311,6 +313,9 @@ export function ArtifactDocumentEditor({
   onOpenFullscreen,
   hideHtmlToolbar = false,
 }: ArtifactDocumentEditorProps) {
+  const collaboration = useArtifactCollaboration(artifact)
+  const collaborative = collaboration.enabled && Boolean(collaboration.document)
+  const effectiveReadOnly = shouldLockArtifactDuringAiGeneration(collaborative) ? readOnly : false
   const initialBlocks = useMemo(
     () => extractArtifactBlocks(artifact.content_json),
     [artifact.content_json],
@@ -337,7 +342,7 @@ export function ArtifactDocumentEditor({
 
   // When the parent force-syncs (AI save / version / find-replace), apply derived
   // HTML in this same render so TipTap receives the new value with the new key.
-  const forceKeyChanged = resolvedForceKey !== lastForceKeyRef.current
+  const forceKeyChanged = !collaborative && resolvedForceKey !== lastForceKeyRef.current
   if (forceKeyChanged) {
     lastForceKeyRef.current = resolvedForceKey
     if (richHtml !== derivedRichHtml) setRichHtml(derivedRichHtml)
@@ -398,7 +403,7 @@ export function ArtifactDocumentEditor({
       || Boolean(singleRichTextHtml(initialBlocks))
     )
 
-  if (readOnly && !preferReadonlyTipTap) {
+  if (effectiveReadOnly && !preferReadonlyTipTap && !collaborative) {
     return (
       <div className={cn("min-w-0", className)} {...selectableProps}>
         <ArtifactDocumentRenderer
@@ -473,12 +478,26 @@ export function ArtifactDocumentEditor({
           placeholder="Write artifact content…"
           className={AI_CHAT_PREVIEW_BODY_WRAPPER_CLASS}
           disableInlineMediaControls={false}
-          readOnly={readOnly}
-          forceContentKey={resolvedForceKey}
+          readOnly={effectiveReadOnly}
+          forceContentKey={collaborative ? null : resolvedForceKey}
+          collaborationDocument={collaboration.document}
           onInsertAttachment={async (file) =>
             uploadArtifactInlineAttachment(artifact.id, file)
           }
         />
+        {collaborative ? (
+          <p className="px-1 pt-1 text-[11px] text-muted-foreground" data-collab-status={collaboration.status}>
+            {collaboration.status === "synced"
+              ? "Synced"
+              : collaboration.status === "syncing"
+                ? "Syncing…"
+                : collaboration.status === "offline"
+                  ? "Offline"
+                  : collaboration.status === "error"
+                    ? "Sync error"
+                    : "Connecting…"}
+          </p>
+        ) : null}
       </div>
     )
   }

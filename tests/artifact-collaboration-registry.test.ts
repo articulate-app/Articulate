@@ -15,13 +15,9 @@ describe("artifact collaboration provider registry", () => {
   it("reuses one Y.Doc when two views mount the same artifact", () => {
     const first = acquireArtifactCollabSession({
       artifactId: "2f1c6b7a-3c4d-4e5f-a678-90abcedf1234",
-      token: "jwt",
-      websocketUrl: "ws://localhost:1234",
     })
     const second = acquireArtifactCollabSession({
       artifactId: "2f1c6b7a-3c4d-4e5f-a678-90abcedf1234",
-      token: "jwt",
-      websocketUrl: "ws://localhost:1234",
     })
 
     expect(second.document).toBe(first.document)
@@ -42,44 +38,44 @@ describe("artifact collaboration provider registry", () => {
       }
     }
 
-    acquireArtifactCollabSession({
-      artifactId,
-      token: "jwt",
-      websocketUrl: "ws://localhost:1234",
-      createProvider,
-    })
-    acquireArtifactCollabSession({
-      artifactId,
-      token: "jwt",
-      websocketUrl: "ws://localhost:1234",
-      createProvider,
-    })
+    acquireArtifactCollabSession({ artifactId, createProvider })
+    acquireArtifactCollabSession({ artifactId, createProvider })
 
     expect(created).toHaveLength(1)
     expect(releaseArtifactCollabSession(artifactId)).toBe(false)
     expect(peekArtifactCollabSession(artifactId)?.refs).toBe(1)
     expect(destroyed).toHaveLength(0)
+    firstViewStillWorks(artifactId)
     expect(releaseArtifactCollabSession(artifactId)).toBe(true)
     expect(peekArtifactCollabSession(artifactId)).toBeNull()
     expect(destroyed).toHaveLength(1)
   })
 })
 
+function firstViewStillWorks(artifactId: string) {
+  const session = peekArtifactCollabSession(artifactId)
+  expect(session).not.toBeNull()
+  session?.document.getText("shared").insert(0, "still-alive")
+  expect(session?.document.getText("shared").toString()).toBe("still-alive")
+}
+
 describe("artifact collaboration feature gate", () => {
-  it("keeps the snapshot editor unless a rich-text artifact is explicitly enabled", () => {
-    expect(shouldUseArtifactCollaboration({ artifactType: "document" })).toBe(false)
+  it("keeps the snapshot editor unless a TipTap-compatible editor is explicitly enabled", () => {
+    expect(shouldUseArtifactCollaboration({})).toBe(false)
     expect(shouldUseArtifactCollaboration({
-      artifactType: "document",
       collabEnabled: true,
     })).toBe(true)
     expect(shouldUseArtifactCollaboration({
-      artifactType: "image",
+      contentJson: { blocks: [{ type: "image" }] },
       collabEnabled: true,
     })).toBe(false)
     expect(shouldUseArtifactCollaboration({
-      artifactType: "document",
       contentFormat: "html_email",
       envEnabled: true,
     })).toBe(false)
+    expect(shouldUseArtifactCollaboration({
+      metadata: { editor_kind: "rich_text" },
+      envEnabled: true,
+    })).toBe(true)
   })
 })

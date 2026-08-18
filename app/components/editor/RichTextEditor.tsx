@@ -13,6 +13,9 @@ import Table from "@tiptap/extension-table";
 import TableRow from "@tiptap/extension-table-row";
 import TableCell from "@tiptap/extension-table-cell";
 import TableHeader from "@tiptap/extension-table-header";
+import Collaboration from "@tiptap/extension-collaboration";
+import type { Doc as YDoc } from "yjs";
+import { canReplaceCollaborativeEditorContent } from "../../lib/collaboration/editor-sync";
 import { CommentMark } from "./CommentMark";
 import { EditorToolbar } from "./EditorToolbar";
 import { CompactToolbar } from "./CompactToolbar";
@@ -480,6 +483,8 @@ export interface RichTextEditorProps {
    * Used for AI/version bumps so the open artifact updates without a manual refresh.
    */
   forceContentKey?: string | number | null;
+  /** When set, TipTap binds to this Y.Doc and never calls setContent. */
+  collaborationDocument?: YDoc | null;
 }
 
 export const RichTextEditor: React.FC<RichTextEditorProps> = ({
@@ -508,6 +513,7 @@ export const RichTextEditor: React.FC<RichTextEditorProps> = ({
   enableOutputLinkNavigation = false,
   fromAiChat = false,
   forceContentKey = null,
+  collaborationDocument = null,
 }) => {
   const pathname = usePathname();
   const resolveElementTarget = React.useCallback((rawTarget: EventTarget | null): Element | null => {
@@ -704,7 +710,10 @@ export const RichTextEditor: React.FC<RichTextEditorProps> = ({
   const editor = useEditor({
     editable: !readOnly,
     extensions: [
-      StarterKit.configure({ heading: { levels: [1, 2, 3] } }),
+      StarterKit.configure({
+        heading: { levels: [1, 2, 3] },
+        history: collaborationDocument ? false : undefined,
+      }),
       AttachmentBlock.configure({
         disableInlineMediaControls,
       }),
@@ -724,8 +733,11 @@ export const RichTextEditor: React.FC<RichTextEditorProps> = ({
       TaskList,
       TaskItem.configure({ nested: true }),
       CommentMark,
+      ...(collaborationDocument
+        ? [Collaboration.configure({ document: collaborationDocument })]
+        : []),
     ],
-    content: value ?? "",
+    content: collaborationDocument ? undefined : value ?? "",
     onUpdate: ({ editor: localEditor }) => onChange?.(localEditor.getHTML()),
     onFocus: ({ editor: localEditor }) => {
       onEditorFocus?.(localEditor);
@@ -1001,6 +1013,7 @@ export const RichTextEditor: React.FC<RichTextEditorProps> = ({
 
   React.useEffect(() => {
     if (!editor) return;
+    if (!canReplaceCollaborativeEditorContent(Boolean(collaborationDocument))) return;
     const current = editor.getHTML();
     const next = value ?? "";
     const forceKey = forceContentKey ?? null;
@@ -1035,7 +1048,7 @@ export const RichTextEditor: React.FC<RichTextEditorProps> = ({
         // Selection restore is best-effort across structural HTML changes.
       }
     }
-  }, [editor, value, forceContentKey]);
+  }, [collaborationDocument, editor, forceContentKey, value]);
 
   React.useEffect(() => {
     if (!editor) return;

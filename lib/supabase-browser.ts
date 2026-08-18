@@ -6,7 +6,7 @@ let browserClient: SupabaseClient | null = null
 
 export function getSupabaseBrowser(): SupabaseClient {
   if (!browserClient) {
-    browserClient = createClientComponentClient()
+    browserClient = createClientComponentClient() as unknown as SupabaseClient
   }
   return browserClient
 }

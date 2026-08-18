@@ -52,12 +52,13 @@ export function BillableTasksSection({ ctxType, ctxId, title, onTaskClick, onExp
         .range(0, 49)
 
       if (error) throw error
-      setTasks((data || []) as any[])
-      setTotalCount(typeof count === 'number' ? count : ((data || []).length))
+      const rows = (Array.isArray(data) ? data : data ? [data] : []) as any[]
+      setTasks(rows)
+      setTotalCount(typeof count === 'number' ? count : rows.length)
       
       // Notify parent component that data has been loaded
       if (onDataLoaded) {
-        onDataLoaded((data || []) as any[], typeof count === 'number' ? count : ((data || []).length))
+        onDataLoaded(rows, typeof count === 'number' ? count : rows.length)
       }
     } catch (err: any) {
       console.error('Error fetching billable tasks:', err)
@@ -106,8 +107,9 @@ export function BillableTasksSection({ ctxType, ctxId, title, onTaskClick, onExp
         .order('delivery_date', { ascending: false })
 
       if (error) throw error
+      const exportRows = (Array.isArray(data) ? data : data ? [data] : []) as any[]
 
-      const csvData = (data || []).map(task => ({
+      const csvData = exportRows.map(task => ({
         'Task ID': task.task_id,
         'Title': task.title,
         'Delivery Date': task.delivery_date,
@@ -137,8 +139,9 @@ export function BillableTasksSection({ ctxType, ctxId, title, onTaskClick, onExp
         .order('delivery_date', { ascending: false })
 
       if (error) throw error
+      const exportRows = (Array.isArray(data) ? data : data ? [data] : []) as any[]
 
-      const xlsxData = (data || []).map(task => ({
+      const xlsxData = exportRows.map(task => ({
         'Task ID': task.task_id,
         'Title': task.title,
         'Delivery Date': task.delivery_date,

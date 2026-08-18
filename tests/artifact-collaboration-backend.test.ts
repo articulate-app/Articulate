@@ -1,6 +1,10 @@
 import { describe, expect, it } from "vitest"
 import * as Y from "yjs"
-import { isCollabExcludedContentFormat, isCollabRichTextArtifactType } from "../app/lib/collaboration/eligible-types"
+import { resolveCollaborationAuth } from "../app/lib/collaboration/auth"
+import {
+  isCollaborativeRichTextEditorKind,
+  resolveArtifactEditorKind,
+} from "../app/lib/collaboration/editor-kind"
 import { assertCollabDocumentSize, COLLAB_MAX_DOCUMENT_BYTES } from "../app/lib/collaboration/limits"
 import {
   artifactCollaborationRoom,
@@ -13,7 +17,7 @@ import {
   resolveYdocSeedSource,
   shouldWaitForYdocSeed,
 } from "../app/lib/collaboration/seed-policy"
-import { resolveCollaborationAuth } from "../services/collaboration/src/auth"
+import { canAccessArtifactCollabTopic } from "../app/lib/collaboration/topic-access"
 
 describe("artifact collaboration rooms", () => {
   it("parses a stable artifact room and rejects other names", () => {
@@ -26,11 +30,22 @@ describe("artifact collaboration rooms", () => {
 })
 
 describe("collaboration eligibility", () => {
-  it("allows first-wave rich-text types and excludes html email", () => {
-    expect(isCollabRichTextArtifactType("document")).toBe(true)
-    expect(isCollabRichTextArtifactType("article")).toBe(true)
-    expect(isCollabRichTextArtifactType("image")).toBe(false)
-    expect(isCollabExcludedContentFormat("html_email")).toBe(true)
+  it("uses editor kind and content format, never artifact_type", () => {
+    expect(resolveArtifactEditorKind({
+      metadata: { editor_kind: "rich_text" },
+    })).toBe("rich_text")
+    expect(resolveArtifactEditorKind({
+      metadata: { content_format: "tiptap_json" },
+    })).toBe("rich_text")
+    expect(resolveArtifactEditorKind({
+      metadata: { content_format: "html_email" },
+    })).toBe("html_email")
+    expect(resolveArtifactEditorKind({
+      content_json: { blocks: [{ type: "image" }] },
+    })).toBe("image")
+    expect(isCollaborativeRichTextEditorKind("rich_text")).toBe(true)
+    expect(isCollaborativeRichTextEditorKind("html_email")).toBe(false)
+    expect(isCollaborativeRichTextEditorKind("image")).toBe(false)
   })
 })
 
@@ -71,6 +86,7 @@ describe("collaboration auth", () => {
         can_read: true,
         can_write: false,
         collab_enabled: false,
+        editor_kind: "rich_text",
         user_id: 41,
         full_name: "Ada",
         photo: null,
@@ -100,10 +116,51 @@ describe("collaboration auth", () => {
           can_read: true,
           can_write: true,
           collab_enabled: false,
+          editor_kind: "rich_text",
           user_id: 1,
         },
       }),
     ).toThrow(/collab_disabled/)
+  })
+})
+
+describe("realtime topic authorization", () => {
+  const topic = "artifact:2f1c6b7a-3c4d-4e5f-a678-90abcedf1234"
+
+  it("blocks channel access without artifact permission", () => {
+    expect(canAccessArtifactCollabTopic({
+      topic,
+      action: "receive",
+      hasArtifactAccess: false,
+      canWrite: false,
+    })).toBe(false)
+    expect(canAccessArtifactCollabTopic({
+      topic: "public-room",
+      action: "receive",
+      hasArtifactAccess: true,
+      canWrite: true,
+    })).toBe(false)
+  })
+
+  it("lets read-only users receive and track presence but not broadcast", () => {
+    expect(canAccessArtifactCollabTopic({
+      topic,
+      action: "receive",
+      hasArtifactAccess: true,
+      canWrite: false,
+    })).toBe(true)
+    expect(canAccessArtifactCollabTopic({
+      topic,
+      action: "presence",
+      hasArtifactAccess: true,
+      canWrite: false,
+    })).toBe(true)
+    expect(canAccessArtifactCollabTopic({
+      topic,
+      action: "send",
+      hasArtifactAccess: true,
+      canWrite: false,
+    })).toBe(false)
   })
 })
 

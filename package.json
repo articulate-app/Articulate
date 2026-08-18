@@ -13,9 +13,7 @@
     "desktop:release": "npm run desktop:compile:prod && node desktop/package-mac.mjs --publish always",
     "desktop:dev": "node desktop/build.mjs && concurrently -k -n next,electron -c blue,magenta \"next dev -H 127.0.0.1 -p 3010\" \"wait-on tcp:127.0.0.1:3010 && electron desktop/dist/main.js\"",
     "desktop:electron": "node desktop/build.mjs && electron desktop/dist/main.js",
-    "desktop:devtools": "node desktop/build.mjs && ARTICULATE_DESKTOP_DEVTOOLS=1 wait-on tcp:127.0.0.1:3010 && electron desktop/dist/main.js",
-    "collab:dev": "npm run dev --prefix services/collaboration",
-    "collab:start": "npm run start --prefix services/collaboration"
+    "desktop:devtools": "node desktop/build.mjs && ARTICULATE_DESKTOP_DEVTOOLS=1 wait-on tcp:127.0.0.1:3010 && electron desktop/dist/main.js"
   },
   "keywords": [],
   "author": "",
@@ -49,12 +47,13 @@
     "@supabase/auth-helpers-nextjs": "^0.8.7",
     "@supabase/postgrest-js": "^1.19.4",
     "@supabase/ssr": "^0.6.1",
-    "@supabase/supabase-js": "^2.52.0",
+    "@supabase/supabase-js": "2.91.0",
     "@tanstack/react-query": "^5.75.1",
     "@tanstack/react-table": "^8.11.6",
     "@tanstack/react-virtual": "^3.0.1",
     "@tiptap/core": "^2.27.2",
     "@tiptap/extension-bubble-menu": "^2.27.2",
+    "@tiptap/extension-collaboration": "2.27.2",
     "@tiptap/extension-highlight": "^2.27.2",
     "@tiptap/extension-link": "^2.27.2",
     "@tiptap/extension-placeholder": "^2.27.2",
@@ -110,6 +109,7 @@
     "typesense": "^2.0.3",
     "use-debounce": "^10.0.4",
     "uuid": "^9.0.1",
+    "y-indexeddb": "9.0.12",
     "yjs": "^13.6.27",
     "zod": "^3.24.3",
     "zustand": "^5.0.4"

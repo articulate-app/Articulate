@@ -75,6 +75,7 @@ interface LegacyRichTextEditorProps {
   fromAiChat?: boolean;
   /** Force TipTap to accept external value updates (AI/version bumps). */
   forceContentKey?: string | number | null;
+  collaborationDocument?: import("yjs").Doc | null;
 }
 
 function stripHtmlToText(html: string): string {
@@ -116,6 +117,7 @@ export function RichTextEditor({
   enableOutputLinkNavigation = false,
   fromAiChat = false,
   forceContentKey = null,
+  collaborationDocument = null,
 }: LegacyRichTextEditorProps) {
   const wrapperRef = React.useRef<HTMLDivElement | null>(null);
   const lastKnownValueRef = React.useRef<string>(value ?? "");
@@ -192,6 +194,7 @@ export function RichTextEditor({
         onChange={handleChange}
         placeholder={placeholder}
         forceContentKey={forceContentKey}
+        collaborationDocument={collaborationDocument}
         className={`flex flex-col ${autoGrow ? "h-auto" : "h-full min-h-0"} ${editorWrapperClassName ?? ""}`}
         editorClassName={editorClassName}
         onAIAction={onAiActionClick ? handleAIAction : undefined}

@@ -1,16 +1,18 @@
 import * as Y from "yjs"
 import { artifactCollaborationRoom } from "./room"
+import type { ArtifactCollabProvider } from "./supabase-provider"
 
 export type ArtifactCollabProviderLike = {
   disconnect?: () => void
   destroy?: () => void
+  connect?: () => Promise<void> | void
 }
 
 export type ArtifactCollabSession = {
   artifactId: string
   room: string
   document: Y.Doc
-  provider: ArtifactCollabProviderLike | null
+  provider: ArtifactCollabProviderLike | ArtifactCollabProvider | null
   refs: number
 }
 
@@ -18,9 +20,7 @@ export type CreateArtifactCollabProvider = (args: {
   artifactId: string
   room: string
   document: Y.Doc
-  token: string
-  websocketUrl: string
-}) => ArtifactCollabProviderLike
+}) => ArtifactCollabProviderLike | ArtifactCollabProvider
 
 const sessions = new Map<string, ArtifactCollabSession>()
 
@@ -44,8 +44,6 @@ function destroyProvider(provider: ArtifactCollabProviderLike | null): void {
  */
 export function acquireArtifactCollabSession(args: {
   artifactId: string
-  token: string
-  websocketUrl: string
   createProvider?: CreateArtifactCollabProvider
 }): ArtifactCollabSession {
   const artifactId = args.artifactId.trim()
@@ -60,13 +58,7 @@ export function acquireArtifactCollabSession(args: {
   const document = new Y.Doc()
   const room = artifactCollaborationRoom(artifactId)
   const provider = args.createProvider
-    ? args.createProvider({
-        artifactId,
-        room,
-        document,
-        token: args.token,
-        websocketUrl: args.websocketUrl,
-      })
+    ? args.createProvider({ artifactId, room, document })
     : null
 
   const session: ArtifactCollabSession = {
