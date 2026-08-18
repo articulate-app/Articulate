@@ -40,9 +40,9 @@ export function TasksPaneMoreMenu({
             aria-label={ariaLabel}
           >
             {triggerIcon === "sort" ? (
-              <ArrowUpDown className="h-3.5 w-3.5" />
+              <ArrowUpDown className="h-3.5 w-3.5" strokeWidth={1.75} />
             ) : (
-              <MoreHorizontal className="h-3.5 w-3.5" />
+              <MoreHorizontal className="h-3.5 w-3.5" strokeWidth={1.75} />
             )}
           </button>
         </DropdownMenuTrigger>

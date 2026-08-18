@@ -281,3 +281,27 @@ export function findBrowserTabForPublication(
   }
   return null
 }
+
+/** Find an open browser tab already bound to an AI Chat browser session. */
+export function findBrowserTabForAiSession(
+  tabs: RightPaneTab[],
+  args: {
+    browserSessionId?: string | null
+    browserId?: string | null
+  },
+): RightPaneTab | null {
+  if (args.browserSessionId) {
+    const bySession = tabs.find(
+      (tab) =>
+        tab.kind === "browser" && tab.browser?.aiOperationId === args.browserSessionId,
+    )
+    if (bySession) return bySession
+  }
+  if (args.browserId) {
+    const byBrowser = tabs.find(
+      (tab) => tab.kind === "browser" && tab.browser?.browserId === args.browserId,
+    )
+    if (byBrowser) return byBrowser
+  }
+  return null
+}

@@ -64,28 +64,53 @@ const OBSERVE_SCRIPT = `(() => {
     const isPassword = focusedType === 'password'
     focusedValuePreview = isPassword ? (v ? '[redacted]' : '') : v.slice(0, 120)
   }
-  const candidates = Array.from(document.querySelectorAll('a,button,input,textarea,select,[role="button"],[contenteditable="true"]'))
+  const candidates = Array.from(document.querySelectorAll('a,button,input,textarea,select,[role="button"],[role="link"],[contenteditable="true"]'))
   const elements = []
+  const seenHrefs = new Set()
   for (const el of candidates) {
-    if (elements.length >= 40) break
+    if (elements.length >= 48) break
     const rect = el.getBoundingClientRect()
     if (rect.width < 2 || rect.height < 2) continue
     if (rect.bottom < 0 || rect.right < 0 || rect.top > window.innerHeight || rect.left > window.innerWidth) continue
     const style = window.getComputedStyle(el)
     if (style.visibility === 'hidden' || style.display === 'none' || Number(style.opacity) === 0) continue
     const text = (el.innerText || el.getAttribute('aria-label') || el.getAttribute('placeholder') || '').trim().slice(0, 80)
+    const href = el.tagName === 'A' ? el.href || null : (el.closest && el.closest('a[href]') ? el.closest('a[href]').href : null)
+    if (href) seenHrefs.add(href)
     elements.push({
       index: elements.length,
       tag: el.tagName.toLowerCase(),
       role: el.getAttribute('role'),
       name: el.getAttribute('name') || el.id || null,
       text: text || null,
-      href: el.tagName === 'A' ? el.href || null : null,
+      href,
       x: Math.round(rect.left + rect.width / 2),
       y: Math.round(rect.top + rect.height / 2),
       width: Math.round(rect.width),
       height: Math.round(rect.height),
     })
+  }
+  if (elements.length < 48) {
+    for (const a of Array.from(document.querySelectorAll('a[href]'))) {
+      if (elements.length >= 48) break
+      const href = a.href || ''
+      if (!href || seenHrefs.has(href)) continue
+      const rect = a.getBoundingClientRect()
+      if (rect.width < 2 || rect.height < 2) continue
+      seenHrefs.add(href)
+      elements.push({
+        index: elements.length,
+        tag: 'a',
+        role: a.getAttribute('role'),
+        name: a.id || null,
+        text: (a.innerText || a.getAttribute('aria-label') || '').trim().slice(0, 80) || null,
+        href,
+        x: Math.round(rect.left + rect.width / 2),
+        y: Math.round(rect.top + rect.height / 2),
+        width: Math.round(rect.width),
+        height: Math.round(rect.height),
+      })
+    }
   }
   const pageTextPreview = (document.body && document.body.innerText ? document.body.innerText : '').replace(/\\s+/g, ' ').trim().slice(0, 1500)
   return {

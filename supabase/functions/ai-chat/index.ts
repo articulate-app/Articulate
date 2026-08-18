@@ -1141,7 +1141,7 @@ const TOOLS = [
     type: "function",
     function: {
       name: "read_public_webpage",
-      description: "Read a public webpage or public URL. Use this to browse a project website (from project_url via read_project), blog indexes, and individual pages for research, linkbuilding, or grounding. For internal linkbuilding, discover opportunities yourself by reading the project site and relevant blog posts with this tool — do not ask the user for URLs until browsing fails.",
+      description: "Read a public webpage or public URL. First-pass research only — not a live browser. Returns extracted text plus links when present. If browser_fallback_recommended is true, specific resource hrefs are missing, or the page looks like a JS-heavy listing/search view, escalate with open_browser / use_browser and extract verified hrefs. Never invent URLs from a known pattern.",
       parameters: {
         type: "object",
         properties: {
@@ -1258,6 +1258,55 @@ const TOOLS = [
             nullable: true,
             description: "When true, include each entity's top posts. Default false.",
           },
+        },
+        required: [],
+      },
+    },
+  },
+
+  {
+    type: "function",
+    function: {
+      name: "open_browser",
+      description: "Open a live browser for the user in chat / the right pane. Use when they ask to open, browse, visit, or look at a website, or when you need a visual browser session before further actions. Prefers the connected Desktop/local browser when CLIENT EXECUTION CAPABILITIES says it is available; otherwise uses Cloud. Returns browser_session_id / browser_id — pass those to use_browser to keep acting in the SAME session. Do not paste Live View / CDP URLs into the reply; the UI embeds the browser.",
+      parameters: {
+        type: "object",
+        properties: {
+          url: { type: "string", nullable: true, description: "Start URL. Bare hosts like example.com are accepted. Defaults to https://www.google.com/." },
+          title: { type: "string", nullable: true, description: "Optional short tab title." },
+        },
+        required: [],
+      },
+    },
+  },
+
+  {
+    type: "function",
+    function: {
+      name: "use_browser",
+      description: "Continue in an already-open AI browser session (same tab). You are the only reasoning agent — issue concrete Playwright-style commands, never a natural-language instruct/agent task. Commands: navigate, back, forward, reload, status, close, click, type, press, scroll, wait, snapshot, get_text, get_links, extract, verify_url. After open_browser, pass browser_session_id / browser_id to keep the SAME session. Prefer snapshot/get_links/extract to read rendered JS pages. Never invent specific resource URLs; only return hrefs from tool results with verified=true.",
+      parameters: {
+        type: "object",
+        properties: {
+          browser_session_id: { type: "string", nullable: true, description: "Stable session id from open_browser." },
+          browser_id: { type: "string", nullable: true, description: "Provider browser id from open_browser / use_browser." },
+          session_id: { type: "string", nullable: true, description: "Optional Cloud session id if already known." },
+          command: {
+            type: "string",
+            enum: ["navigate", "back", "forward", "reload", "status", "close", "click", "type", "press", "scroll", "wait", "snapshot", "get_text", "get_links", "extract", "verify_url"],
+            nullable: true,
+            description: "Defaults to navigate when url is set, otherwise snapshot.",
+          },
+          url: { type: "string", nullable: true, description: "Required for navigate and verify_url." },
+          selector: { type: "string", nullable: true, description: "CSS selector for click/type/extract." },
+          text: { type: "string", nullable: true, description: "Click-by-visible-text, or text to type." },
+          index: { type: "integer", nullable: true, description: "Visible element index from the last snapshot." },
+          key: { type: "string", nullable: true, description: "Key for press (e.g. Enter)." },
+          clear: { type: "boolean", nullable: true, description: "Clear the focused/selected field before type." },
+          delta_x: { type: "integer", nullable: true },
+          delta_y: { type: "integer", nullable: true },
+          ms: { type: "integer", nullable: true, description: "Wait duration, max 15000." },
+          limit: { type: "integer", nullable: true, description: "Max links to return." },
         },
         required: [],
       },
@@ -1469,14 +1518,45 @@ const TOOLS = [
     type: "function",
     function: {
       name: "continue_publication",
-      description: "Resume an active publication after user input (or after the user answered a browser-agent clarification in chat). Pass the user's natural-language instruction. Do not invent browser selectors.",
+      description: "Resume an active publication after user input (or after the user signed in / answered a clarification). Then continue the SAME browser_id with use_browser. Do not invent browser selectors.",
       parameters: {
         type: "object",
         properties: {
           publication_run_id: { type: "string", description: "UUID of the active publication run." },
-          instruction: { type: "string", nullable: true, description: "User instruction for the publishing agent (e.g. “use Blog”)." },
+          instruction: { type: "string", nullable: true, description: "User instruction for the next browser step (e.g. “use Blog”)." },
         },
         required: ["publication_run_id"],
+      },
+    },
+  },
+
+  {
+    type: "function",
+    function: {
+      name: "update_publication_progress",
+      description: "Update the publication_run state machine after you observe the live CMS with use_browser. Use phase=needs_user when login/captcha/2FA is required (never send credentials). Use awaiting_publish_confirmation when the draft is ready and the irreversible Publish/Send must wait for the user. Use published/scheduled/uncertain/failed after verification. Do not invent external URLs.",
+      parameters: {
+        type: "object",
+        properties: {
+          publication_run_id: { type: "string" },
+          phase: {
+            type: "string",
+            enum: [
+              "needs_user",
+              "awaiting_publish_confirmation",
+              "scheduled",
+              "published",
+              "failed",
+              "uncertain",
+            ],
+          },
+          message: { type: "string", nullable: true },
+          external_url: { type: "string", nullable: true },
+          external_id: { type: "string", nullable: true },
+          current_url: { type: "string", nullable: true },
+          schedule_strategy: { type: "string", enum: ["external", "internal"], nullable: true },
+        },
+        required: ["publication_run_id", "phase"],
       },
     },
   },
@@ -2752,7 +2832,10 @@ function buildArtifactOnlySystemPrompt() {
     "HTML NEWSLETTER / EMAIL CODE: when the user asks for a newsletter in HTML (or to follow an HTML email template), create/update an artifact with artifact_role=newsletter_html and instruct the worker to return a complete email-ready HTML document (doctype/head/style + nested presentation tables). Do not ask for copy-only unless the user explicitly wants copy without HTML. The UI can preview and edit raw HTML — do not flatten email HTML into a simple TipTap table or prose blocks.",
     "For task/project/user names, inspect factual candidates with read/search tools and choose the best semantic match. Ask only when the candidates are genuinely ambiguous.",
     "SOCIAL / COMPETITION STATS: when the user asks about social followers, engagement, posts, impressions, share of voice, or competitor social performance for a brand/project, resolve the project (list_visible_projects or project_name) then call read_project_social_stats. Use list_project_social_profiles to see which networks/accounts are linked. Never invent follower or engagement numbers — only report tool results. Default periods are the last 30 days unless the user specifies otherwise; pass date_from/date_to and set include_timeseries=true only when they ask about trends over time.",
-    "PUBLISHING: when the user asks to publish/post/send content to a website, blog, CMS, newsletter destination or similar, resolve the project, then list_publishing_destinations. Choose the destination semantically from factual candidates — tolerate misspellings and multilingual wording. Ask only when candidates are genuinely ambiguous. If NO suitable destination exists, treat that as a solvable dependency: ask only for genuinely missing platform/URL info; once the user provides it (e.g. “é squarespace account.squarespace.com”), call configure_publishing_destination with start_url + service_or_platform + project context and include pending_publication with the original publish payload (inline content or artifact_id) so publication continues automatically after sign-in. NEVER tell the user to open Publishing Settings / Integrations to add a destination manually. Pass artifact_id when publishing an existing artifact; otherwise pass structured content inline — do not create a task/project/artifact merely to publish. For “publish now” use publish_mode=now. For later times, resolve ISO scheduled_at + IANA timezone (default Europe/Lisbon when Portugal context is clear) with publish_mode=scheduled. When CLIENT EXECUTION CAPABILITIES says desktop_browser_control=true, Articulate's native Desktop browser is available for interactive browser work: publish_content will hand that work to the connected client automatically. Do not claim that no local browser is available and do not select Cloud merely because a destination previously used Browser Use. Cloud is appropriate for web clients, unattended work, or an explicit Cloud request. When there is an active publication, use get_publication_state / continue_publication / confirm_publication / cancel_publication. If the user says they signed in / finished login, call continue_publication on the awaiting-auth run. For scheduled items use list_scheduled_publications, reschedule_publication, cancel_scheduled_publication, publish_scheduled_now. If status is awaiting_publish_confirmation and the user explicitly confirms, call confirm_publication. Explicit setup requests (“add our Squarespace blog”, “connect Articulate for publishing”) use the same configure_publishing_destination tool. BROWSER PREVIEW: when configure_publishing_destination / publish_content returns a live browser session, the chat UI shows an embedded preview automatically — do NOT paste live.browser-use.com / CDP / Live View URLs into the reply as external links. You may mention the destination entry URL (e.g. lovable.dev/…) as configuration context, but never as a substitute for the in-chat browser preview.",
+    "BROWSER: when the user asks to open a website, browse, look something up in a live browser, or continue clicking/navigating in the browser you already opened, call open_browser then use_browser on the returned browser_session_id / browser_id. Keep the same session. You are the only reasoning agent — never call instruct and never delegate navigation to another browser agent. Use concrete commands (navigate, click, type, snapshot, get_links, extract, verify_url). Prefer Desktop/local when CLIENT EXECUTION CAPABILITIES says native_browser_available or desktop_browser_control is true; Cloud is the fallback. Desktop page state may arrive as ambient browser_observations with verified links — treat those as tool-verified hrefs. The UI shows the live browser in chat and the right pane — never paste Live View / CDP URLs. Publishing destinations still use publish_content / configure_publishing_destination, not open_browser.",
+    "RESEARCH ESCALATION: prefer google_top_results then read_public_webpage. If read_public_webpage returns browser_fallback_recommended=true, missing specific resource hrefs, a JS-heavy/collection page, or the user asked for a specific image/product/post, open_browser / use_browser on the same query and extract real hrefs from the rendered page. Do not guess.",
+    "NEVER INVENT URLS: Never construct, infer, guess or synthetically modify a URL for a specific image, asset, product, post, article or resource. Specific resource URLs must come directly from a verifiable tool source (search results, API, page DOM, browser navigation, or existing content). If a specific URL cannot be obtained, say so. Never manufacture an ID from a known URL pattern. Only cite hrefs returned by tools with verified=true, or exact URLs the user supplied.",
+    "PUBLISHING: when the user asks to publish/post/send content to a website, blog, CMS, newsletter destination or similar, resolve the project, then list_publishing_destinations. Choose the destination semantically from factual candidates — tolerate misspellings and multilingual wording. Ask only when candidates are genuinely ambiguous. If NO suitable destination exists, treat that as a solvable dependency: ask only for genuinely missing platform/URL info; once the user provides it (e.g. “é squarespace account.squarespace.com”), call configure_publishing_destination with start_url + service_or_platform + project context and include pending_publication with the original publish payload (inline content or artifact_id) so publication continues automatically after sign-in. NEVER tell the user to open Publishing Settings / Integrations to add a destination manually. Pass artifact_id when publishing an existing artifact; otherwise pass structured content inline — do not create a task/project/artifact merely to publish. For “publish now” use publish_mode=now. For later times, resolve ISO scheduled_at + IANA timezone (default Europe/Lisbon when Portugal context is clear) with publish_mode=scheduled. When CLIENT EXECUTION CAPABILITIES says desktop_browser_control=true, Articulate's native Desktop browser is available for interactive browser work: publish_content will hand that work to the connected client automatically. Do not claim that no local browser is available and do not select Cloud merely because a destination previously used Browser Use. Cloud is appropriate for web clients, unattended work, or an explicit Cloud request. When there is an active publication, use get_publication_state / continue_publication / confirm_publication / cancel_publication. If the user says they signed in / finished login, call continue_publication on the awaiting-auth run. For scheduled items use list_scheduled_publications, reschedule_publication, cancel_scheduled_publication, publish_scheduled_now. If status is awaiting_publish_confirmation and the user explicitly confirms, call confirm_publication. Explicit setup requests (“add our Squarespace blog”, “connect Articulate for publishing”) use the same configure_publishing_destination tool. After publish_content returns a live browser, continue with use_browser on that same session — you drive the CMS. Do not expect a second browser agent. BROWSER PREVIEW: when configure_publishing_destination / publish_content returns a live browser session, the chat UI shows an embedded preview automatically — do NOT paste live.browser-use.com / CDP / Live View URLs into the reply as external links. You may mention the destination entry URL (e.g. lovable.dev/…) as configuration context, but never as a substitute for the in-chat browser preview. After publish_content, you own CMS navigation: call use_browser on the returned browser_id, then update_publication_progress. Never call Browser Use Agent /runs or instruct.",
     "SELECTED ARTIFACT CONTEXT: when present, it identifies an artifact (and optional span/region). Pass the full selection object unchanged on updates when relevant. It is location/intent context only — not a lock to that span. The artifact worker sees the full document and should make any related edits needed for coherence. Act according to the user request.",
     "IN-PLACE UPDATE OWNERSHIP: for operation=update with artifact_id, omit ambient project_id/task_id unless they are already the artifact's own task/project. Do not attach a project_id just because the thread is scoped to a project — that fails with artifact_target_not_in_project for task-owned artifacts.",
     "ARTIFACT UPDATE FAILURES: if ai_start_artifact_build fails, fix the arguments and retry when the user request still requires an update. Never substitute a chat-only rewrite (and never change the artifact language) in place of a failed requested edit.",
@@ -2946,6 +3029,7 @@ async function loadRecentThreadArtifacts(db: any, threadId: string) {
 
 function conversationContentFromAiMessage(row: any): string {
   const contentJson = parseJsonObjectMaybe(row.content_json) ?? {};
+  if (String(contentJson.output_kind ?? "") === "execution_event") return "";
   const primary = String(contentJson.internal_message ?? row.content ?? "").trim();
   if (primary) return primary.slice(0, 30000);
 
@@ -3143,9 +3227,128 @@ async function refreshThreadContextSummary(supabaseService: any, threadId: strin
       console.warn("ai-chat thread summary update failed", { thread_id: threadId, error: updateError.message });
       return;
     }
+    await persistContextSummaryExecutionEvent(supabaseService, threadId, {
+      untilMessageId: String(last.id),
+      foldedMessages: toSummarize.length,
+    });
     console.log("ai-chat thread summary refreshed", { thread_id: threadId, folded_messages: toSummarize.length });
   } catch (error) {
     console.warn("ai-chat thread summary refresh failed", { thread_id: threadId, error: String(error) });
+  }
+}
+
+const CONTEXT_SUMMARY_EXECUTION_TEXT = "Conversation summarized to preserve context";
+
+function contextSummaryExecutionStepId(untilMessageId: string): string {
+  return `context_summary:${untilMessageId}`;
+}
+
+function messageHasContextSummaryExecutionEvent(row: any, stepId: string): boolean {
+  const contentJson = parseJsonObjectMaybe(row?.content_json) ?? {};
+  const traces = Array.isArray(contentJson.execution_traces)
+    ? contentJson.execution_traces
+    : contentJson.execution_trace != null
+      ? [contentJson.execution_trace]
+      : [];
+  return traces.some((item: any) => String(item?.step_id ?? "") === stepId);
+}
+
+/** Persist a timeline event (not assistant prose) when context is compacted. */
+async function persistContextSummaryExecutionEvent(
+  supabaseService: any,
+  threadId: string,
+  args: { untilMessageId: string; foldedMessages: number },
+) {
+  const untilMessageId = String(args.untilMessageId ?? "").trim();
+  if (!untilMessageId) return;
+  const stepId = contextSummaryExecutionStepId(untilMessageId);
+  const event = {
+    type: "execution_trace",
+    sequence: Date.now(),
+    emitted_at: new Date().toISOString(),
+    step_id: stepId,
+    phase: "completed",
+    category: "planning",
+    text: CONTEXT_SUMMARY_EXECUTION_TEXT,
+    details: {
+      source: "thread_context_summary",
+      until_message_id: untilMessageId,
+      folded_messages: args.foldedMessages,
+    },
+  };
+
+  try {
+    const { data: recent, error: recentError } = await supabaseService
+      .from("ai_messages")
+      .select("id,role,content_json")
+      .eq("thread_id", threadId)
+      .order("created_at", { ascending: false })
+      .limit(30);
+    if (recentError) {
+      console.warn("ai-chat context summary event lookup failed", {
+        thread_id: threadId,
+        error: recentError.message,
+      });
+      return;
+    }
+    const rows = Array.isArray(recent) ? recent : [];
+    if (rows.some((row: any) => messageHasContextSummaryExecutionEvent(row, stepId))) return;
+
+    const target = rows.find((row: any) => {
+      if (row?.role !== "assistant") return false;
+      const contentJson = parseJsonObjectMaybe(row.content_json) ?? {};
+      const outputKind = String(contentJson.output_kind ?? "");
+      const uiVisibility = String(contentJson.ui_visibility ?? "").toLowerCase();
+      if (outputKind === "execution_event") return false;
+      if (outputKind === "artifact_build_control" || outputKind === "build_ack") return false;
+      if (uiVisibility === "hidden") return false;
+      return true;
+    });
+
+    if (target?.id) {
+      const contentJson = parseJsonObjectMaybe(target.content_json) ?? {};
+      const traces = Array.isArray(contentJson.execution_traces) ? contentJson.execution_traces : [];
+      const { error: updateError } = await supabaseService
+        .from("ai_messages")
+        .update({
+          content_json: {
+            ...contentJson,
+            execution_traces: [...traces, event],
+          },
+        })
+        .eq("id", target.id);
+      if (updateError) {
+        console.warn("ai-chat context summary event update failed", {
+          thread_id: threadId,
+          error: updateError.message,
+        });
+      }
+      return;
+    }
+
+    const { error: insertError } = await supabaseService
+      .from("ai_messages")
+      .insert({
+        thread_id: threadId,
+        role: "assistant",
+        content: "",
+        content_json: {
+          output_kind: "execution_event",
+          ui_visibility: "visible",
+          execution_traces: [event],
+        },
+      });
+    if (insertError) {
+      console.warn("ai-chat context summary event insert failed", {
+        thread_id: threadId,
+        error: insertError.message,
+      });
+    }
+  } catch (error) {
+    console.warn("ai-chat context summary event persist failed", {
+      thread_id: threadId,
+      error: String(error),
+    });
   }
 }
 
@@ -3571,6 +3774,7 @@ function toolResultForPersistence(result: any) {
   const toolName = String(result?.name ?? "");
   const isPublishingTool = [
     "publish_content",
+    "update_publication_progress",
     "configure_publishing_destination",
     "continue_publication",
     "confirm_publication",
@@ -3579,6 +3783,7 @@ function toolResultForPersistence(result: any) {
     "cancel_scheduled_publication",
     "cancel_publication",
   ].includes(toolName);
+  const isBrowserTool = toolName === "open_browser" || toolName === "use_browser";
 
   // Publishing previews need live_view_url / destination ids in the persisted summary
   // so the chat UI can render PublicationBrowserPreviewCard (full tool data is otherwise dropped).
@@ -3600,6 +3805,24 @@ function toolResultForPersistence(result: any) {
         continuing_publication: data.continuing_publication === true,
       }
     : {};
+  const browserSummary = isBrowserTool && data && typeof data === "object"
+    ? {
+        browser_session_id: data.browser_session_id ?? data.browserSessionId ?? null,
+        browser_id: data.browser_id ?? data.browserId ?? null,
+        session_id: data.session_id ?? data.sessionId ?? null,
+        live_view_url: data.live_view_url ?? data.liveViewUrl ?? null,
+        start_url: data.start_url ?? data.startUrl ?? data.url ?? null,
+        current_url: data.current_url ?? data.currentUrl ?? data.url ?? null,
+        title: data.title ?? data.page_title ?? null,
+        provider: data.provider ?? null,
+        browser_label: data.browser_label ?? data.browserLabel ?? null,
+        status: data.status ?? null,
+        show_browser_preview: data.show_browser_preview !== false,
+        open_browser_tab: data.open_browser_tab === true || toolName === "open_browser",
+        desktop_browser: data.desktop_browser ?? null,
+        desktop_command: data.desktop_command ?? null,
+      }
+    : {};
 
   return {
     name: toolName,
@@ -3616,13 +3839,14 @@ function toolResultForPersistence(result: any) {
       action: data.action ?? null,
       title: data.title ?? null,
       ...publishingSummary,
+      ...browserSummary,
     }) : compactToolValue(data),
   };
 }
 
 function isMutatingToolName(name: unknown): boolean {
   const toolName = String(name ?? "").trim();
-  return /^(?:ai_(?:update|create|save|attach|restore|duplicate|bulk_update|bulk_create|manage|start_artifact_build|set_agent_run_state)|configure_publishing_destination|publish_content|continue_publication|confirm_publication|cancel_publication|reschedule_publication|cancel_scheduled_publication|publish_scheduled_now)/.test(toolName);
+  return /^(?:ai_(?:update|create|save|attach|restore|duplicate|bulk_update|bulk_create|manage|start_artifact_build|set_agent_run_state)|configure_publishing_destination|publish_content|update_publication_progress|continue_publication|confirm_publication|cancel_publication|reschedule_publication|cancel_scheduled_publication|publish_scheduled_now)/.test(toolName);
 }
 
 function guardUngroundedMutationClaim(text: string, toolResults: any[]) {
@@ -3791,6 +4015,7 @@ async function runArtifactConversation(args: {
       toolResults.push(result);
       const publishingTools = new Set([
         "publish_content",
+        "update_publication_progress",
         "configure_publishing_destination",
         "continue_publication",
         "confirm_publication",
@@ -3817,6 +4042,26 @@ async function runArtifactConversation(args: {
             continuing_publication: publishingData.continuing_publication === true,
           }
         : null;
+      const browserPreview = (toolName === "open_browser" || toolName === "use_browser") && result?.ok && publishingData
+        ? {
+            tool_name: toolName,
+            ok: true,
+            browser_session_id: publishingData.browser_session_id ?? publishingData.browserSessionId ?? null,
+            browser_id: publishingData.browser_id ?? publishingData.browserId ?? null,
+            session_id: publishingData.session_id ?? publishingData.sessionId ?? null,
+            live_view_url: publishingData.live_view_url ?? publishingData.liveViewUrl ?? null,
+            start_url: publishingData.start_url ?? publishingData.url ?? null,
+            current_url: publishingData.current_url ?? publishingData.url ?? null,
+            title: publishingData.title ?? null,
+            provider: publishingData.provider ?? null,
+            browser_label: publishingData.browser_label ?? null,
+            status: publishingData.status ?? null,
+            show_browser_preview: true,
+            open_browser_tab: publishingData.open_browser_tab === true || toolName === "open_browser",
+            desktop_browser: publishingData.desktop_browser ?? null,
+            desktop_command: publishingData.desktop_command ?? null,
+          }
+        : null;
       const timelineSummary = summarizeToolResultForTimeline(toolName, result);
       args.onEvent?.({
         type: "tool_finished",
@@ -3833,6 +4078,7 @@ async function runArtifactConversation(args: {
         entities: timelineSummary.entities,
         data_summary: timelineSummary.data_summary,
         ...(publishingPreview ? { publishing_preview: publishingPreview } : {}),
+        ...(browserPreview ? { browser_preview: browserPreview } : {}),
       });
       conversation.push({
         role: "tool",
@@ -4491,6 +4737,10 @@ async function handleAiChatRequest(req: Request) {
               payload.publishing_preview && typeof payload.publishing_preview === "object"
                 ? payload.publishing_preview
                 : null;
+            const browserPreview =
+              payload.browser_preview && typeof payload.browser_preview === "object"
+                ? payload.browser_preview
+                : null;
             await enqueueBytes(encoder.encode(`${STREAM_EXECUTION_TRACE_PREFIX}${JSON.stringify({
               type: "execution_trace",
               sequence,
@@ -4506,6 +4756,7 @@ async function handleAiChatRequest(req: Request) {
                 ...(toolIndex != null ? { tool_index: toolIndex } : {}),
                 source: "ai_status",
                 ...(publishingPreview ? { publishing_preview: publishingPreview } : {}),
+                ...(browserPreview ? { browser_preview: browserPreview } : {}),
               },
             })}\n`));
           }

@@ -50,6 +50,11 @@ import {
   reconcileRunStatusToTerminal,
 } from "./ai-chat-run-api"
 import { reduceRunTerminalState } from "./ai-run-terminal"
+import {
+  buildHydratedFailedAssistantMessage,
+  fetchOrphanedAiChatRunForUserMessage,
+  shouldHydrateOrphanedAiRun,
+} from "./hydrate-orphaned-ai-run"
 import { buildAiChatV2RequestFields } from "./build-ai-run-targets"
 import { taskChannelBootstrapQueryKey } from "../../app/hooks/use-task-channel-bootstrap"
 import { ContentSavedInlineCard } from "./content-saved-inline-card"
@@ -114,6 +119,7 @@ import { AiChangePreviewCard } from "./AiChangePreviewCard"
 import { OrchestratedBuildCard } from "./OrchestratedBuildCard"
 import { ExecutionTimeline } from "./ExecutionTimeline"
 import {
+  executionTracesFromMessageContentJson,
   shouldSuppressGenericStatusText,
   type AiExecutionTraceEntity,
 } from "./execution-trace"
@@ -131,8 +137,16 @@ import {
   mergeAssistantContentJsonPreservingMeta,
   publishingPreviewToToolResult,
 } from "./discover-publish-content"
+import {
+  browserPreviewToToolResult,
+  discoverAiBrowserFromMessageContentJson,
+} from "./discover-ai-browser"
 import { openBrowserTabForPublication } from "../artifacts/open-browser-tab-for-publication"
+import { openBrowserTabForAiSession } from "../artifacts/open-browser-tab-for-ai"
+import { applyAiDesktopBrowserCommand } from "../artifacts/apply-ai-desktop-browser-command"
 import { PublicationBrowserPreviewCard } from "./PublicationBrowserPreviewCard"
+import { AiBrowserPreviewCard } from "./AiBrowserPreviewCard"
+import { useRightPaneTabsStore } from "../../app/store/right-pane-tabs"
 import { useOrchestratedBuildPoll } from "./use-orchestrated-build-poll"
 import { ComponentPlanTraceCards } from "./ComponentPlanTraceCards"
 import { RequestPlanCard } from "./RequestPlanCard"
@@ -167,6 +181,7 @@ import { dispatchTasksShallowNavigation } from "../../app/lib/tasks-shallow-nav"
 import { usePathname } from "next/navigation"
 import { isPlaceholderAiThreadTitle } from "./ai-thread-title"
 import { ensureChatScrollRoom, useChatScrollFollow } from "./use-chat-scroll-follow"
+import { useOverflowGutterWidth } from "../../app/hooks/use-overflow-gutter-width"
 
 interface ChatWindowProps {
   thread: AiThread
@@ -582,6 +597,8 @@ export function ChatWindow({
   const scrollContainerRef = useRef<HTMLDivElement>(null)
   const scrollRoomRef = useRef<HTMLDivElement>(null)
   const composerDockRef = useRef<HTMLDivElement>(null)
+  const [composerDockHeight, setComposerDockHeight] = useState(0)
+  const composerGutterWidth = useOverflowGutterWidth(scrollContainerRef)
   const latestUserMessageRef = useRef<HTMLDivElement>(null)
   const prevLastUserMessageIdRef = useRef<string | null>(null)
   const userMessageScrollAnchorUntilRef = useRef(0)
@@ -1423,6 +1440,63 @@ export function ChatWindow({
               content_json: {
                 ...existing,
                 publishing_preview: preview,
+                tool_results: [...existingTools, toolRow],
+              },
+            }
+          }),
+        )
+      }
+      const browserPreview =
+        event.details
+        && typeof event.details === "object"
+        && !Array.isArray(event.details)
+        && (event.details as Record<string, unknown>).browser_preview
+        && typeof (event.details as Record<string, unknown>).browser_preview === "object"
+          ? ((event.details as Record<string, unknown>).browser_preview as Record<string, unknown>)
+          : null
+      if (browserPreview && (event.phase === "completed" || event.phase === "warning")) {
+        const toolRow = browserPreviewToToolResult(browserPreview)
+        setPendingMsgs((prev) =>
+          prev.map((message) => {
+            if (message.id !== tempId || message.role !== "assistant") return message
+            const existing =
+              message.content_json
+              && typeof message.content_json === "object"
+              && !Array.isArray(message.content_json)
+                ? (message.content_json as Record<string, unknown>)
+                : { blocks: normalizeAiRenderableBlocks(message.content_json) }
+            const existingTools = Array.isArray(existing.tool_results)
+              ? [...(existing.tool_results as unknown[])]
+              : []
+            const sessionId =
+              typeof (toolRow.data_summary as Record<string, unknown> | undefined)
+                ?.browser_session_id === "string"
+                ? String(
+                    (toolRow.data_summary as Record<string, unknown>).browser_session_id,
+                  )
+                : null
+            const already = existingTools.some((row) => {
+              if (!row || typeof row !== "object") return false
+              const name = (row as Record<string, unknown>).name
+              const summary = (row as Record<string, unknown>).data_summary
+              if (!summary || typeof summary !== "object") return false
+              const rowSummary = summary as Record<string, unknown>
+              const nextSummary = toolRow.data_summary as Record<string, unknown>
+              return (
+                name === toolRow.name
+                && sessionId != null
+                && rowSummary.browser_session_id === sessionId
+                && rowSummary.current_url === nextSummary.current_url
+                && rowSummary.live_view_url === nextSummary.live_view_url
+                && JSON.stringify(rowSummary.desktop_command) === JSON.stringify(nextSummary.desktop_command)
+              )
+            })
+            if (already) return message
+            return {
+              ...message,
+              content_json: {
+                ...existing,
+                browser_preview: browserPreview,
                 tool_results: [...existingTools, toolRow],
               },
             }
@@ -2299,14 +2373,19 @@ export function ChatWindow({
       const failedAssistant = pendingMsgs.find(
         (message) => message.id === assistantMessageId && message.role === "assistant",
       ) as InFlightAssistantMessage | undefined
-      const clientRequestId =
-        failedAssistant?.client_request_id
-        ?? inFlightTurnRef.current?.clientRequestId
-        ?? null
-      if (!userMessage?.content?.trim() || !clientRequestId) return
+      // A retry must mint a new request id. Reusing the failed run's id
+      // replays the stored failure instead of starting a new generation.
+      const clientRequestId = crypto.randomUUID()
+      if (!userMessage?.content?.trim() || !failedAssistant) return
 
       setPendingMsgs((prev) => prev.filter((message) => message.id !== assistantMessageId))
       setAssistantActivity(null)
+      inFlightTurnRef.current = {
+        clientRequestId,
+        assistantTempId: null,
+        runId: null,
+        terminalState: null,
+      }
 
       const v2Request = buildAiChatV2RequestFields({
         clientRequestId,
@@ -2436,6 +2515,51 @@ export function ChatWindow({
     useAiOrchestratedBuildStore.getState().clearInactiveBuildsExceptThread(thread.id)
     useAiBuildComponentPreviewStore.getState().clearExceptThread(thread.id)
   }, [thread.id, onThreadTitlePreview])
+
+  // After a refresh mid-generation the user message is persisted but the
+  // assistant bubble is not. Rehydrate the failed/interrupted run as a Retry card.
+  useEffect(() => {
+    if (!hasPersistedThreadId || isMessagesLoading || isAssistantStreaming) return
+    const lastMessage = (messages ?? []).at(-1) ?? null
+    if (!lastMessage || lastMessage.role !== "user") return
+    const hasInFlightAssistant = pendingMsgs.some((message) => message.role === "assistant")
+    if (hasInFlightAssistant) return
+
+    let cancelled = false
+    void (async () => {
+      const run = await fetchOrphanedAiChatRunForUserMessage({
+        threadId: thread.id,
+        userMessageId: lastMessage.id,
+      })
+      if (cancelled) return
+      if (!shouldHydrateOrphanedAiRun({ lastMessage, hasInFlightAssistant: false, run })) return
+      const assistant = buildHydratedFailedAssistantMessage({
+        threadId: thread.id,
+        run: run!,
+      })
+      inFlightTurnRef.current = {
+        clientRequestId: assistant.client_request_id ?? crypto.randomUUID(),
+        assistantTempId: assistant.id,
+        runId: run!.id,
+        terminalState: assistant.terminal_state ?? null,
+      }
+      setPendingMsgs((prev) => {
+        if (prev.some((message) => message.role === "assistant")) return prev
+        return [...prev, assistant]
+      })
+    })()
+
+    return () => {
+      cancelled = true
+    }
+  }, [
+    hasPersistedThreadId,
+    isAssistantStreaming,
+    isMessagesLoading,
+    messages,
+    pendingMsgs,
+    thread.id,
+  ])
 
   const headerChips = useMemo(() => {
     const chips: string[] = []
@@ -2864,6 +2988,93 @@ export function ChatWindow({
     }
   }, [allMessages])
 
+  const browserTabs = useRightPaneTabsStore((s) => s.tabs)
+  const openedAiBrowserFingerprintsRef = useRef<Map<string, string>>(new Map())
+  const appliedDesktopCommandsRef = useRef<Set<string>>(new Set())
+  const activatedAiBrowserSessionsRef = useRef<Set<string>>(new Set())
+
+  useEffect(() => {
+    for (const message of allMessages) {
+      if (message.role !== "assistant") continue
+      const discovered = discoverAiBrowserFromMessageContentJson(message.content_json)
+      for (const item of discovered) {
+        const fingerprint = [
+          item.browserId ?? "",
+          item.liveViewUrl ?? "",
+          item.currentUrl ?? "",
+          item.provider ?? "",
+          item.desktopCommand?.command ?? "",
+          item.desktopCommand?.url ?? "",
+        ].join("|")
+        const previous = openedAiBrowserFingerprintsRef.current.get(item.browserSessionId)
+        const shouldActivate =
+          item.openBrowserTab === true
+          && !activatedAiBrowserSessionsRef.current.has(item.browserSessionId)
+        if (shouldActivate) {
+          activatedAiBrowserSessionsRef.current.add(item.browserSessionId)
+        }
+        if (previous !== fingerprint) {
+          openedAiBrowserFingerprintsRef.current.set(item.browserSessionId, fingerprint)
+          openBrowserTabForAiSession({
+            browserSessionId: item.browserSessionId,
+            browserId: item.browserId,
+            sessionId: item.sessionId,
+            liveViewUrl: item.liveViewUrl,
+            startUrl: item.startUrl,
+            currentUrl: item.currentUrl,
+            title: item.title,
+            provider: item.provider,
+            activate: shouldActivate,
+          })
+        } else if (shouldActivate) {
+          openBrowserTabForAiSession({
+            browserSessionId: item.browserSessionId,
+            browserId: item.browserId,
+            sessionId: item.sessionId,
+            liveViewUrl: item.liveViewUrl,
+            startUrl: item.startUrl,
+            currentUrl: item.currentUrl,
+            title: item.title,
+            provider: item.provider,
+            activate: true,
+          })
+        }
+
+        const cmd = item.desktopCommand
+        if (!cmd) continue
+        const commandKey = `${item.browserSessionId}:${cmd.command}:${cmd.url ?? ""}:${cmd.selector ?? ""}:${cmd.text ?? ""}:${cmd.index ?? ""}`
+        if (appliedDesktopCommandsRef.current.has(commandKey)) continue
+        void applyAiDesktopBrowserCommand(item).then((applied) => {
+          if (applied) appliedDesktopCommandsRef.current.add(commandKey)
+        })
+      }
+    }
+  }, [allMessages, browserTabs])
+
+  const aiBrowserPreviewsByAssistantId = useMemo(() => {
+    const map = new Map<string, ReturnType<typeof discoverAiBrowserFromMessageContentJson>>()
+    const remember = (
+      messageId: string | null | undefined,
+      discovered: ReturnType<typeof discoverAiBrowserFromMessageContentJson>,
+    ) => {
+      if (!messageId || discovered.length === 0) return
+      const existing = map.get(messageId) ?? []
+      const bySession = new Map(existing.map((item) => [item.browserSessionId, item]))
+      for (const item of discovered) bySession.set(item.browserSessionId, item)
+      map.set(messageId, Array.from(bySession.values()))
+    }
+    for (const message of allMessages) {
+      if (message.role !== "assistant") continue
+      const discovered = discoverAiBrowserFromMessageContentJson(message.content_json).filter(
+        (item) => item.showBrowserPreview,
+      )
+      remember(message.id, discovered)
+      const reconciledId = (message as InFlightAssistantMessage).reconciled_message_id
+      remember(reconciledId, discovered)
+    }
+    return map
+  }, [allMessages])
+
   const publicationPreviewsByAssistantId = useMemo(() => {
     const map = new Map<string, ReturnType<typeof discoverPublishContentFromMessageContentJson>>()
     const remember = (
@@ -2922,6 +3133,22 @@ export function ChatWindow({
       }
     }
   }, [orchestratedBuildEntries, thread.id])
+
+  // Restore persisted execution events (e.g. context compaction) into the timeline.
+  useLayoutEffect(() => {
+    const store = useAiExecutionTraceStore.getState()
+    for (const message of allMessages) {
+      if (message.role !== "assistant" && message.role !== "system") continue
+      const traces = executionTracesFromMessageContentJson(message.content_json)
+      for (const payload of traces) {
+        store.upsertFromStreamEvent({
+          threadId: thread.id,
+          assistantMessageId: message.id,
+          payload,
+        })
+      }
+    }
+  }, [allMessages, thread.id])
 
   const changePreviewKeysByAssistantId = useMemo(() => {
     const map = new Map<string, string[]>()
@@ -3342,6 +3569,21 @@ export function ChatWindow({
     }
   }
 
+  useEffect(() => {
+    const node = composerDockRef.current
+    if (!node || isChatEmpty) {
+      setComposerDockHeight(0)
+      return
+    }
+    const update = () => {
+      setComposerDockHeight(Math.ceil(node.getBoundingClientRect().height))
+    }
+    update()
+    const observer = new ResizeObserver(update)
+    observer.observe(node)
+    return () => observer.disconnect()
+  }, [isChatEmpty, thread.id])
+
   const composerBody = (
     <div className={isChatEmpty ? "w-full px-4 py-6" : "p-4 flex-shrink-0"}>
       <div className={CHAT_CONTENT_COLUMN_CLASS}>
@@ -3430,21 +3672,17 @@ export function ChatWindow({
           Drop files to attach
         </div>
       ) : null}
-      <div className="relative flex min-h-0 flex-1 flex-col">
+      <div className="relative min-h-0 flex-1 overflow-hidden">
         <div
           ref={scrollContainerRef}
-          className="relative min-h-0 flex-1 scroll-pb-32 overflow-x-hidden overflow-y-auto"
+          className="absolute inset-0 overflow-x-hidden overflow-y-auto [scrollbar-gutter:stable]"
         >
           <div className="flex min-h-full flex-col">
             {!isChatEmpty ? (
               <div className="min-w-0 flex-1 px-4 pt-4">
                 <div
                   ref={scrollRoomRef}
-                  className={`${CHAT_CONTENT_COLUMN_CLASS} space-y-4 pb-28${
-                    keepUserMessageScrollRoom || isAssistantStreaming
-                      ? " pb-[70vh] md:pb-[60vh]"
-                      : ""
-                  }`}
+                  className={`${CHAT_CONTENT_COLUMN_CLASS} space-y-4 pb-3`}
                 >
         {allMessages.map((m, messageIndex) => {
           const editPreviewKeys = (m.role === "assistant"
@@ -3689,6 +3927,39 @@ export function ChatWindow({
                     </div>
                   )
                 })()}
+                browserPreview={(() => {
+                  const reconciledId = (m as InFlightAssistantMessage).reconciled_message_id
+                  const items = [
+                    ...(aiBrowserPreviewsByAssistantId.get(m.id) ?? []),
+                    ...((reconciledId
+                      ? aiBrowserPreviewsByAssistantId.get(reconciledId)
+                      : null) ?? []),
+                  ].filter(
+                    (item, index, all) =>
+                      all.findIndex((row) => row.browserSessionId === item.browserSessionId)
+                      === index,
+                  )
+                  if (items.length === 0) return null
+                  return (
+                    <div className="space-y-2 w-full min-w-0 max-w-full">
+                      {items.map((item) => (
+                        <AiBrowserPreviewCard
+                          key={`${m.id}:${item.browserSessionId}`}
+                          browserSessionId={item.browserSessionId}
+                          browserId={item.browserId}
+                          sessionId={item.sessionId}
+                          liveViewUrl={item.liveViewUrl}
+                          startUrl={item.startUrl}
+                          currentUrl={item.currentUrl}
+                          title={item.title}
+                          provider={item.provider}
+                          browserLabel={item.browserLabel}
+                          status={item.status}
+                        />
+                      ))}
+                    </div>
+                  )
+                })()}
                 changePreview={
                   !hasExecutionTimeline && visibleChangePreviewGroups.length > 0 ? (
                     <div className="space-y-2 w-full min-w-0 max-w-full">
@@ -3796,6 +4067,11 @@ export function ChatWindow({
           )
         })()}
                   <div ref={chatEndRef} />
+                  <div
+                    aria-hidden="true"
+                    className="pointer-events-none shrink-0"
+                    style={{ height: composerDockHeight > 0 ? composerDockHeight + 8 : 0 }}
+                  />
                 </div>
               </div>
             ) : (
@@ -3805,19 +4081,12 @@ export function ChatWindow({
             )}
           </div>
         </div>
-        {!isChatEmpty ? (
-          <div
-            ref={composerDockRef}
-            className="z-10 shrink-0 bg-white"
-          >
-            {composerBody}
-          </div>
-        ) : null}
         {showJumpToBottom && !keepUserMessageScrollRoom ? (
           <button
             type="button"
             onClick={jumpToBottom}
-            className="absolute bottom-32 right-4 z-20 inline-flex h-9 w-9 items-center justify-center rounded-full border border-border bg-background text-foreground shadow-md transition-colors hover:bg-accent md:bottom-28"
+            className="absolute z-20 inline-flex h-9 w-9 items-center justify-center rounded-full border border-border bg-background text-foreground shadow-md transition-colors hover:bg-accent [scrollbar-gutter:stable]"
+            style={{ bottom: Math.max(12, composerDockHeight + 12), right: 16 }}
             aria-label="Scroll to latest messages"
             title="Scroll to latest"
           >
@@ -3826,6 +4095,19 @@ export function ChatWindow({
               <span className="absolute -right-1 -top-1 h-2 w-2 rounded-full bg-primary" aria-hidden />
             </span>
           </button>
+        ) : null}
+        {!isChatEmpty ? (
+          <div
+            className="pointer-events-none absolute inset-0 z-10 flex flex-col justify-end"
+            style={{ paddingRight: composerGutterWidth }}
+          >
+            <div
+              ref={composerDockRef}
+              className="pointer-events-auto bg-white"
+            >
+              {composerBody}
+            </div>
+          </div>
         ) : null}
       </div>
       <SelectionAskAiMenu

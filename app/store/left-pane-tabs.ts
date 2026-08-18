@@ -215,7 +215,7 @@ export const useLeftPaneTabsStore = create<LeftPaneTabsState>()(
 )
 
 export function toLeftPaneTabStripItems(tabs: LeftPaneTab[]) {
-  return tabs.map((tab) => ({ key: tab.key, label: tab.title }))
+  return tabs.map((tab) => ({ key: tab.key, label: tab.title, kind: tab.kind }))
 }
 
 /** Ensure a default AI tab exists (empty left pane after close-all). */

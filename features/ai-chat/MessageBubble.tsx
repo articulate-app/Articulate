@@ -78,6 +78,8 @@ interface MessageBubbleProps {
   orchestratedBuild?: React.ReactNode
   /** Compact Live View preview for an AI-initiated publication run. */
   publicationPreview?: React.ReactNode
+  /** Compact live browser preview for an AI-opened chat browser session. */
+  browserPreview?: React.ReactNode
   /** "Component sources checked" / "Structure decision" trace cards, rendered above previews. */
   traceCards?: React.ReactNode
   /** Request Plan V3 execution-plan audit card (live or persisted). */
@@ -345,6 +347,7 @@ export function MessageBubble({
   changePreview = null,
   orchestratedBuild = null,
   publicationPreview = null,
+  browserPreview = null,
   traceCards = null,
   requestPlanCard = null,
   executionTimeline = null,
@@ -599,6 +602,7 @@ export function MessageBubble({
   const hasChangePreview = Boolean(changePreview) && !isMine
   const hasOrchestratedBuild = Boolean(orchestratedBuild) && !isMine
   const hasPublicationPreview = Boolean(publicationPreview) && !isMine
+  const hasBrowserPreview = Boolean(browserPreview) && !isMine
   const hasTraceCards = Boolean(traceCards) && !isMine
   const hasRequestPlanCard = Boolean(requestPlanCard) && !isMine
   const hasExecutionTimeline = Boolean(executionTimeline) && !isMine
@@ -760,6 +764,9 @@ export function MessageBubble({
           ) : null}
           {hasPublicationPreview && !isEditing ? (
             <div className="mb-3 w-full min-w-0 max-w-full">{publicationPreview}</div>
+          ) : null}
+          {hasBrowserPreview && !isEditing ? (
+            <div className="mb-3 w-full min-w-0 max-w-full">{browserPreview}</div>
           ) : null}
           {hasChangePreview && !isEditing ? (
             <div className="mb-3 w-full min-w-0 max-w-full">{changePreview}</div>

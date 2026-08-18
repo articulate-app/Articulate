@@ -1,6 +1,9 @@
 import { beforeEach, describe, expect, it } from "vitest"
 import {
+  CONTEXT_SUMMARY_EXECUTION_TEXT,
+  buildContextSummaryExecutionTraceEvent,
   executionTraceEventToStep,
+  executionTracesFromMessageContentJson,
   findStepIdForIncomingPreview,
   mapBuildEventToExecutionTraceSteps,
   mergeExecutionTraceStep,
@@ -48,6 +51,45 @@ describe("normalizeExecutionTraceEvent", () => {
 
   it("rejects payloads that are not execution_trace", () => {
     expect(normalizeExecutionTraceEvent({ type: "request_plan", step_id: "x" })).toBeNull()
+  })
+})
+
+describe("context summary execution event", () => {
+  it("builds a completed planning step for chat history", () => {
+    const event = buildContextSummaryExecutionTraceEvent({
+      untilMessageId: "msg-fold-1",
+      foldedMessages: 12,
+      emittedAt: "2026-08-18T12:00:00.000Z",
+      sequence: 99,
+    })
+    expect(event).toMatchObject({
+      type: "execution_trace",
+      step_id: "context_summary:msg-fold-1",
+      phase: "completed",
+      category: "planning",
+      text: CONTEXT_SUMMARY_EXECUTION_TEXT,
+    })
+    expect(event.details).toMatchObject({
+      source: "thread_context_summary",
+      until_message_id: "msg-fold-1",
+      folded_messages: 12,
+    })
+  })
+
+  it("reads persisted traces from message content_json", () => {
+    const event = buildContextSummaryExecutionTraceEvent({
+      untilMessageId: "msg-fold-2",
+      emittedAt: "2026-08-18T12:00:00.000Z",
+      sequence: 7,
+    })
+    expect(executionTracesFromMessageContentJson({
+      output_kind: "text",
+      execution_traces: [event],
+    })).toEqual([event])
+    expect(executionTracesFromMessageContentJson({
+      execution_trace: event,
+    })).toEqual([event])
+    expect(executionTracesFromMessageContentJson({ tool_results: [] })).toEqual([])
   })
 })
 

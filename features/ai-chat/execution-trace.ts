@@ -176,6 +176,46 @@ export function normalizeExecutionTraceEvent(raw: unknown): AiExecutionTraceEven
   }
 }
 
+export const CONTEXT_SUMMARY_EXECUTION_TEXT = "Conversation summarized to preserve context"
+
+/** Durable execution event written when the thread context window is compacted. */
+export function buildContextSummaryExecutionTraceEvent(args: {
+  untilMessageId: string
+  foldedMessages?: number
+  emittedAt?: string
+  sequence?: number
+}): AiExecutionTraceEvent {
+  const untilMessageId = args.untilMessageId.trim()
+  return {
+    type: "execution_trace",
+    sequence: args.sequence ?? Date.now(),
+    emitted_at: args.emittedAt ?? new Date().toISOString(),
+    step_id: `context_summary:${untilMessageId}`,
+    phase: "completed",
+    category: "planning",
+    text: CONTEXT_SUMMARY_EXECUTION_TEXT,
+    details: {
+      source: "thread_context_summary",
+      until_message_id: untilMessageId,
+      ...(typeof args.foldedMessages === "number" ? { folded_messages: args.foldedMessages } : {}),
+    },
+  }
+}
+
+/** Reads persisted execution-trace rows from assistant `content_json` (survives reload). */
+export function executionTracesFromMessageContentJson(contentJson: unknown): AiExecutionTraceEvent[] {
+  const record = asRecord(contentJson)
+  if (!record) return []
+  const raw = Array.isArray(record.execution_traces)
+    ? record.execution_traces
+    : record.execution_trace != null
+      ? [record.execution_trace]
+      : []
+  return raw
+    .map((item) => normalizeExecutionTraceEvent(item))
+    .filter((item): item is AiExecutionTraceEvent => item != null)
+}
+
 export function executionTraceEventToStep(
   event: AiExecutionTraceEvent,
   source: AiExecutionTraceStep["source"] = "stream",
@@ -350,6 +390,30 @@ const TOOL_TRACE_COPY: Record<
     completed: "Clarification ready.",
     failed: "Clarification failed.",
   },
+  open_browser: {
+    category: "discovery",
+    started: "Opening a browser…",
+    completed: "Browser opened.",
+    failed: "Could not open the browser.",
+  },
+  use_browser: {
+    category: "discovery",
+    started: "Using the open browser…",
+    completed: "Finished the browser action.",
+    failed: "Browser action failed.",
+  },
+  use_browser_snapshot: {
+    category: "discovery",
+    started: "Inspecting the live page…",
+    completed: "Captured the live page.",
+    failed: "Could not inspect the live page.",
+  },
+  use_browser_get_links: {
+    category: "discovery",
+    started: "Collecting links from the live page…",
+    completed: "Collected verified page links.",
+    failed: "Could not collect page links.",
+  },
 }
 
 function categorizeToolName(toolName: string): AiExecutionTraceCategory {
@@ -433,7 +497,11 @@ export function statusPayloadToExecutionTraceEvent(
     : toolIndex != null
       ? `tool:${round}:${toolName}:${toolIndex}`
       : `tool:${round}:${toolName}`
-  const publishingPreview = asRecord(record.publishing_preview)
+  const detailsRecord = asRecord(record.details)
+  const publishingPreview =
+    asRecord(record.publishing_preview) ?? asRecord(detailsRecord?.publishing_preview)
+  const browserPreview =
+    asRecord(record.browser_preview) ?? asRecord(detailsRecord?.browser_preview)
   const entitiesRaw = Array.isArray(record.entities) ? record.entities : []
   const entities = entitiesRaw
     .map((item) => normalizeEntity(item))
@@ -461,6 +529,7 @@ export function statusPayloadToExecutionTraceEvent(
       ...(resultSummary ? { result_summary: resultSummary } : {}),
       ...(dataSummary ? { data_summary: dataSummary } : {}),
       ...(publishingPreview ? { publishing_preview: publishingPreview } : {}),
+      ...(browserPreview ? { browser_preview: browserPreview } : {}),
     },
   }
 }

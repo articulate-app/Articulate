@@ -300,30 +300,42 @@ function InlineSelectInner({
     )
   }
 
+  const selectedMedia = showMedia !== 'none' && selected && valueKey !== ''
+    ? renderOptionMedia(selected)
+    : null
+
   return (
     <Popover open={open} onOpenChange={handleOpenChange}>
       <PopoverAnchor asChild>
-        <div data-inline-editor className="w-full">
-        <input
-          ref={inputRef}
-          type="text"
-          value={search}
-          onChange={(e) => setSearch(e.target.value)}
-          onFocus={() => setOpen(true)}
-          onKeyDown={(e) => {
-            if (e.key === 'Escape') {
-              closeAndExit()
-            }
-          }}
-          onMouseDown={(e) => e.stopPropagation()}
-          onPointerDown={(e) => e.stopPropagation()}
-          placeholder={selected ? selected.label : placeholder}
+        <div
+          data-inline-editor
           className={cn(
-            'w-full h-8 px-1.5 py-0.5 bg-white border border-gray-500 rounded text-sm placeholder:text-gray-500',
-            'focus:outline-none focus:ring-1 focus:ring-gray-500',
-            className
+            'w-full',
+            selectedMedia && 'flex items-center gap-1.5 rounded border border-gray-500 bg-white px-1.5',
           )}
-        />
+        >
+          {selectedMedia}
+          <input
+            ref={inputRef}
+            type="text"
+            value={search}
+            onChange={(e) => setSearch(e.target.value)}
+            onFocus={() => setOpen(true)}
+            onKeyDown={(e) => {
+              if (e.key === 'Escape') {
+                closeAndExit()
+              }
+            }}
+            onMouseDown={(e) => e.stopPropagation()}
+            onPointerDown={(e) => e.stopPropagation()}
+            placeholder={selected ? selected.label : placeholder}
+            className={cn(
+              selectedMedia
+                ? 'h-8 min-w-0 flex-1 border-0 bg-transparent px-0 py-0.5 text-sm placeholder:text-gray-500 focus:outline-none focus:ring-0'
+                : 'h-8 w-full rounded border border-gray-500 bg-white px-1.5 py-0.5 text-sm placeholder:text-gray-500 focus:outline-none focus:ring-1 focus:ring-gray-500',
+              className
+            )}
+          />
         </div>
       </PopoverAnchor>
       <PopoverContent

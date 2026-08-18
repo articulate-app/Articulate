@@ -19,12 +19,16 @@ import {
   AI_PANE_TAB_STRIP_CLASS,
 } from "../../../features/ai-chat/tab-strip-tokens"
 import type { WorkspacePaneId } from "../../lib/workspace-view"
+import { resolveWorkspaceTabKind } from "../../lib/workspace-tab-icon"
+import { WorkspaceTabKindIcon } from "../workspace/workspace-tab-kind-icon"
 
 export type PaneTabStripItem = {
   key: string
   label: string
   /** Optional leading icon (keep ≤12px so it fits the compact chip). */
   icon?: ReactNode
+  /** Object kind — used to show the matching workspace icon when `icon` is omitted. */
+  kind?: string
 }
 
 export type PaneTabDropMeta = {
@@ -373,9 +377,9 @@ export function PaneTabStrip({
                   )}
                   onClick={(event) => handleTabClick(tab.key, event)}
                 >
-                  {tab.icon ? (
+                  {tab.icon || resolveWorkspaceTabKind(tab) ? (
                     <span className="inline-flex h-3 w-3 shrink-0 items-center justify-center text-current opacity-70 [&>svg]:h-3 [&>svg]:w-3">
-                      {tab.icon}
+                      {tab.icon ?? <WorkspaceTabKindIcon kind={resolveWorkspaceTabKind(tab)} />}
                     </span>
                   ) : null}
                   <span className="min-w-0 flex-1 truncate" title={tab.label}>

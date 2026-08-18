@@ -4,6 +4,25 @@ import { BrowserAgentError } from "./types.ts"
 
 export * from "./types.ts"
 export { BrowserUseProvider } from "./providers/browser-use.ts"
+export {
+  BROWSER_CONTROLLER_COMMANDS,
+  BROWSER_ERROR_CODES,
+  BROWSER_INSPECT_COMMANDS,
+  compactBrowserResult,
+  desktopObservationToResult,
+  emptyBrowserResult,
+  isBrowserControllerCommand,
+  type BrowserControllerCommand,
+  type BrowserControllerInput,
+  type BrowserControllerResult,
+} from "./controller.ts"
+export {
+  filterVerifiedResourceUrls,
+  isVerifiedPageHref,
+  looksLikeCollectionOrSearchUrl,
+  looksLikeSpecificResourceUrl,
+  recommendBrowserFallback,
+} from "./url-verification.ts"
 /**
  * @deprecated LocalBridgeProvider is disconnected from runtime resolution.
  * The module remains for historical reference only — do not instantiate for new work.
@@ -20,7 +39,7 @@ export {
   type BrowserProviderOperation,
 } from "./resolve-browser-provider.ts"
 
-export type CreateBrowserAgentProviderOptions = {
+export type CreateBrowserProviderOptions = {
   provider?: BrowserAgentProviderName | string | null
   apiKey?: string | null
   baseUrl?: string | null
@@ -29,15 +48,15 @@ export type CreateBrowserAgentProviderOptions = {
 }
 
 /**
- * Factory for server-side browser agent providers.
+ * Factory for server-side browser runtime providers.
  *
  * `articulate_desktop` is client-driven (Electron main process) — it is not
  * instantiated on the edge. Callers must treat it as a pending-desktop response.
  *
  * `browser_use_local` is legacy and throws — do not create new local-bridge sessions.
  */
-export function createBrowserAgentProvider(
-  options: CreateBrowserAgentProviderOptions = {},
+export function createBrowserProvider(
+  options: CreateBrowserProviderOptions = {},
 ): BrowserAgentProvider {
   const name = String(options.provider ?? "browser_use").trim() || "browser_use"
   if (name === "browser_use") {
@@ -65,7 +84,12 @@ export function createBrowserAgentProvider(
   }
   throw new BrowserAgentError(
     "provider_unsupported",
-    `Browser agent provider "${name}" is not implemented`,
+    `Browser provider "${name}" is not implemented`,
     { provider: name as BrowserAgentProviderName },
   )
 }
+
+/** @deprecated Use createBrowserProvider. */
+export const createBrowserAgentProvider = createBrowserProvider
+/** @deprecated Use CreateBrowserProviderOptions. */
+export type CreateBrowserAgentProviderOptions = CreateBrowserProviderOptions

@@ -519,6 +519,42 @@ export async function cancelPublication(runId: string): Promise<PublicationRun> 
   return data.run
 }
 
+/** Articulate AI publication reasoning step — not a second browser agent. */
+export async function requestPublicationReasonStep(input: {
+  task: string
+  state: {
+    url: string
+    title?: string
+    note?: string
+    text?: string
+    elements?: Array<Record<string, unknown>>
+  }
+  history?: Array<{ thought?: string; action?: unknown; result?: string }>
+  step?: number
+  entryUrl?: string | null
+  allowFinalPublish?: boolean
+}): Promise<{
+  thought?: string
+  status: "continue" | "needs_user" | "done" | "failed"
+  action: unknown
+  actions: unknown[]
+  message?: string
+  publication_phase?: string | null
+  external_url?: string | null
+  external_id?: string | null
+  schedule_strategy?: "external" | "internal" | null
+}> {
+  return invokePublishingAction({
+    action: "publication_reason_step",
+    task: input.task,
+    state: input.state,
+    history: input.history ?? [],
+    step: input.step,
+    entry_url: input.entryUrl ?? null,
+    allow_final_publish: input.allowFinalPublish === true,
+  })
+}
+
 /** Report a state transition from the native Electron browser executor. */
 export async function reportDesktopPublication(args: {
   runId: string

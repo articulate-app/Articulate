@@ -11,7 +11,7 @@ export type BrowserViewportSize = {
   height: number
 }
 
-/** Stable desktop remote screen for NEW Browser Use Agent V4 sessions. */
+/** Stable desktop remote screen for new Cloud browser sessions. */
 export const BROWSER_USE_SCREEN_WIDTH = 1440
 export const BROWSER_USE_SCREEN_HEIGHT = 900
 

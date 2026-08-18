@@ -16,17 +16,25 @@
  *   sync_publication | get_publication |
  *   list_publications | take_control | continue_after_user | confirm_publication |
  *   cancel_publication | dispatch_scheduled_publications | reschedule_publication |
- *   publish_scheduled_now | report_local_publication
+ *   publish_scheduled_now | report_local_publication | act_browser |
+ *   publication_reason_step | update_publication_progress
+ * Browser Use Agent /runs is removed. Articulate AI owns navigation via Browser Tools.
  */
 import "jsr:@supabase/functions-js/edge-runtime.d.ts"
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2"
 import {
-  createBrowserAgentProvider,
+  createBrowserProvider,
   BrowserAgentError,
   resolveBrowserProvider,
   isLocalBrowserProvider,
   isDesktopBrowserProvider,
+  isBrowserControllerCommand,
 } from "../_shared/browser-agent/index.ts"
+import type { BrowserControllerResult } from "../_shared/browser-agent/controller.ts"
+import {
+  callArticulateReasonStep,
+  type ArticulateBrowserAction,
+} from "../_shared/publishing/articulate-reason-step.ts"
 import type {
   BrowserAgentProvider,
   BrowserAgentProviderName,
@@ -53,12 +61,10 @@ import {
   learnDestinationMemoryFromRun,
   mapInlineContentToPublishingArtifact,
   canTransitionPublicationStatus,
-  deriveActivityFromEvents,
   mapAgentPhaseToStatus,
   mapArtifactToPublishingArtifact,
   mergeDestinationMemoryPatch,
   normalizeIanaTimezone,
-  parseAgentPublicationResult,
   parseDestinationMemory,
   parsePublishMode,
   parseScheduleStrategy,
@@ -133,7 +139,7 @@ function parseBrowserViewport(value: unknown): { width: number; height: number }
 }
 
 /**
- * Stable desktop remote screen for NEW Browser Use Agent V4 sessions.
+ * Stable desktop remote screen for new Cloud browser sessions.
  * Must stay in sync with app/lib/publishing/browser-viewport.ts
  * (BROWSER_USE_SCREEN_WIDTH / BROWSER_USE_SCREEN_HEIGHT).
  * Pane UI size must never drive this — viewer Fit/Fill is client-only.
@@ -242,17 +248,166 @@ async function createBrowserWithCapacity(
   }
 }
 
-async function startRunWithCapacity(
+async function openCloudBrowserForPublication(
   provider: BrowserAgentProvider,
-  input: Parameters<BrowserAgentProvider["startRun"]>[0],
-) {
-  try {
-    return await provider.startRun(input)
-  } catch (error) {
-    if (!isConcurrentSessionLimitError(error)) throw error
-    await stopActiveBrowsersForCapacity(provider)
-    return await provider.startRun(input)
+  input: {
+    profileId?: string | null
+    startUrl: string
+    screen?: { width: number; height: number } | null
+    proxyCountryCode?: string | null
+    timeoutMinutes?: number
+  },
+): Promise<{
+  browserId: string
+  liveViewUrl: string | null
+  snapshot: BrowserControllerResult | null
+  status: string
+}> {
+  const browser = await createBrowserWithCapacity(provider, {
+    profileId: input.profileId,
+    timeoutMinutes: input.timeoutMinutes ?? 90,
+    proxyCountryCode: input.proxyCountryCode,
+    startUrl: input.startUrl,
+    screen: input.screen,
+  })
+  const aligned = await alignLiveViewToPane(provider, {
+    liveViewUrl: browser.liveViewUrl,
+    browserId: browser.id,
+    screen: input.screen,
+  })
+  const browserId = aligned.browserId ?? browser.id
+  let snapshot: BrowserControllerResult | null = null
+  if (typeof provider.actOnBrowser === "function") {
+    snapshot = await provider.actOnBrowser(browserId, { command: "snapshot" })
   }
+  return {
+    browserId,
+    liveViewUrl: aligned.liveViewUrl ?? browser.liveViewUrl ?? null,
+    snapshot,
+    status: browser.status,
+  }
+}
+
+function actionToControllerInput(action: ArticulateBrowserAction): {
+  command: Parameters<NonNullable<BrowserAgentProvider["actOnBrowser"]>>[1]["command"]
+  url?: string | null
+  text?: string | null
+  index?: number | null
+  ms?: number | null
+  deltaY?: number | null
+} {
+  if (action.type === "navigate") return { command: "navigate", url: action.url }
+  if (action.type === "click") return { command: "click", index: action.index }
+  if (action.type === "type") return { command: "type", index: action.index, text: action.text }
+  if (action.type === "scroll") {
+    return { command: "scroll", deltaY: action.direction === "up" ? -Math.abs(action.amount ?? 600) : Math.abs(action.amount ?? 600) }
+  }
+  if (action.type === "wait") return { command: "wait", ms: action.ms ?? 400 }
+  if (action.type === "back") return { command: "back" }
+  if (action.type === "forward") return { command: "forward" }
+  return { command: "reload" }
+}
+
+async function snapshotPublicationBrowser(
+  provider: BrowserAgentProvider,
+  browserId: string | null,
+): Promise<BrowserControllerResult | null> {
+  if (!browserId || typeof provider.actOnBrowser !== "function") return null
+  return provider.actOnBrowser(browserId, { command: "snapshot" })
+}
+
+async function runArticulatePublishLoop(
+  service: ReturnType<typeof serviceClient>,
+  provider: BrowserAgentProvider,
+  runRow: Record<string, unknown>,
+  input: {
+    task: string
+    entryUrl?: string | null
+    allowFinalPublish: boolean
+    maxSteps?: number
+  },
+): Promise<Record<string, unknown>> {
+  const runId = String(runRow.id)
+  const browserId = asString(runRow.provider_browser_id)
+  if (!browserId || typeof provider.actOnBrowser !== "function") {
+    return updateRun(service, runId, {
+      status: "failed",
+      error_code: "browser_unavailable",
+      error_message: "Publication browser session is missing.",
+      completed_at: new Date().toISOString(),
+    })
+  }
+  const history: Array<{ thought?: string; action?: ArticulateBrowserAction; result?: string }> = []
+  let current = runRow
+  const maxSteps = Math.min(Math.max(input.maxSteps ?? 16, 1), 24)
+  for (let step = 1; step <= maxSteps; step += 1) {
+    const snapshot = await provider.actOnBrowser(browserId, { command: "snapshot" })
+    if (snapshot.auth_required && !input.allowFinalPublish) {
+      return applyPublicationProgress(service, current, {
+        phase: "needs_user",
+        message: "Sign in directly in this browser. Articulate does not receive or store your login credentials.",
+        currentUrl: snapshot.url,
+      })
+    }
+    const reasoned = await callArticulateReasonStep(
+      {
+        task: input.task,
+        url: snapshot.url,
+        title: snapshot.title,
+        elements: snapshot.elements,
+        text: snapshot.text,
+        history,
+        step,
+        entryUrl: input.entryUrl,
+        allowFinalPublish: input.allowFinalPublish,
+      },
+      { apiKey: Deno.env.get("OPENAI_API_KEY"), model: "gpt-4.1-mini" },
+    )
+    if (reasoned.status === "needs_user") {
+      return applyPublicationProgress(service, current, {
+        phase: "needs_user",
+        message: reasoned.message || "Take control of the browser to continue.",
+        currentUrl: snapshot.url,
+      })
+    }
+    if (reasoned.status === "failed") {
+      return applyPublicationProgress(service, current, {
+        phase: input.allowFinalPublish ? "uncertain" : "failed",
+        message: reasoned.message || "Publication browser step failed.",
+        currentUrl: snapshot.url,
+      })
+    }
+    if (reasoned.status === "done") {
+      return applyPublicationProgress(service, current, {
+        phase: reasoned.publication_phase ?? (input.allowFinalPublish ? "uncertain" : "awaiting_publish_confirmation"),
+        message: reasoned.message,
+        externalUrl: reasoned.external_url,
+        externalId: reasoned.external_id,
+        scheduleStrategy: reasoned.schedule_strategy,
+        currentUrl: snapshot.url,
+      })
+    }
+    for (const action of reasoned.actions) {
+      const acted = await provider.actOnBrowser(browserId, actionToControllerInput(action))
+      history.push({
+        thought: reasoned.thought,
+        action,
+        result: acted.ok ? acted.url : acted.error ?? "failed",
+      })
+      if (acted.auth_required) {
+        current = await applyPublicationProgress(service, current, {
+          phase: "needs_user",
+          message: "Sign in directly in this browser. Articulate does not receive or store your login credentials.",
+          currentUrl: acted.url,
+        })
+        return current
+      }
+    }
+  }
+  return applyPublicationProgress(service, current, {
+    phase: input.allowFinalPublish ? "uncertain" : "awaiting_publish_confirmation",
+    message: "Stopped after the browser step budget. Review the live browser.",
+  })
 }
 
 function isMissingProfileError(error: unknown): boolean {
@@ -372,7 +527,7 @@ function getProvider(providerName: BrowserAgentProviderName | string | null = "b
       "Local Browser Bridge is deprecated. Re-open this publication with Desktop or Cloud.",
     )
   }
-  return createBrowserAgentProvider({
+  return createBrowserProvider({
     provider: "browser_use",
     apiKey: BROWSER_USE_API_KEY,
     baseUrl: BROWSER_USE_BASE_URL,
@@ -497,6 +652,100 @@ function publicDestination(row: Record<string, unknown>) {
     memory: publicDestinationMemory(row.memory),
     metadata: safeMeta,
   }
+}
+
+async function applyPublicationProgress(
+  service: ReturnType<typeof serviceClient>,
+  runRow: Record<string, unknown>,
+  input: {
+    phase: string
+    message?: string | null
+    externalUrl?: string | null
+    externalId?: string | null
+    entryUrl?: string | null
+    scheduleStrategy?: "external" | "internal" | null
+    currentUrl?: string | null
+  },
+): Promise<Record<string, unknown>> {
+  const runId = String(runRow.id)
+  const currentStatus = String(runRow.status) as PublicationRunStatus
+  const metadata = { ...(asRecord(runRow.metadata) ?? {}) }
+  const nextStatus = mapAgentPhaseToStatus(input.phase, currentStatus)
+  if (input.currentUrl) metadata.last_browser_url = input.currentUrl
+  if (input.message) metadata.phase_message = input.message
+  if (input.entryUrl) metadata.last_entry_url = input.entryUrl
+  metadata.browser_control = "articulate_ai"
+  const activity = appendActivity(
+    Array.isArray(runRow.activity) ? (runRow.activity as PublicationActivityEvent[]) : [],
+    input.phase === "needs_user"
+      ? "Waiting for user"
+      : input.phase === "awaiting_publish_confirmation"
+        ? "Waiting for confirmation"
+        : input.phase === "published"
+          ? "Published"
+          : input.phase === "scheduled"
+            ? "Scheduled"
+            : input.phase === "uncertain"
+              ? "Publication uncertain"
+              : "Updating publication",
+  )
+  const patch: Record<string, unknown> = {
+    metadata,
+    activity,
+    error_message: input.message ?? null,
+  }
+  if (canTransitionPublicationStatus(currentStatus, nextStatus)) {
+    patch.status = nextStatus
+  }
+  if (input.externalUrl) patch.external_url = input.externalUrl
+  if (input.externalId) patch.external_id = input.externalId
+  if (input.scheduleStrategy) patch.schedule_strategy = input.scheduleStrategy
+  if (nextStatus === "needs_user") {
+    metadata.user_has_control = true
+    metadata.user_question = {
+      kind: /sign in|log in|password|captcha|2fa/i.test(String(input.message ?? ""))
+        ? "authentication"
+        : "clarification",
+      message: input.message ?? "Take control of the browser to continue.",
+      asked_at: new Date().toISOString(),
+    }
+    patch.error_code = "authentication_required"
+  }
+  if (nextStatus === "awaiting_publish_confirmation") {
+    metadata.user_question = null
+    patch.error_code = null
+    patch.error_message = null
+  }
+  if (nextStatus === "published" || nextStatus === "scheduled") {
+    patch.error_code = null
+    patch.completed_at = nextStatus === "published" ? new Date().toISOString() : null
+    if (nextStatus === "scheduled") patch.live_view_url = null
+  }
+  if (nextStatus === "uncertain" || nextStatus === "failed") {
+    const outcome = resolvePostPublishOutcome({
+      currentStatus,
+      phase: nextStatus,
+      errorCode: nextStatus === "uncertain" ? "uncertain" : "publication_failed",
+    })
+    patch.status = outcome.status
+    patch.error_code = outcome.errorCode
+    patch.completed_at = new Date().toISOString()
+  }
+  const updated = await updateRun(service, runId, patch)
+  try {
+    if (input.entryUrl || input.externalUrl) {
+      const destination = await loadDestination(service, String(runRow.destination_id))
+      const sourceSnapshot = asRecord(runRow.source_snapshot) ?? {}
+      await maybeLearnDestinationMemory(service, destination, {
+        contentType: asString(sourceSnapshot.type) ?? asString(metadata.content_type),
+        entryUrl: input.entryUrl ?? input.currentUrl,
+        publicationUrl: nextStatus === "published" ? input.externalUrl : null,
+      })
+    }
+  } catch {
+    // learning is best-effort
+  }
+  return updated
 }
 
 function destinationTaskContext(destination: Record<string, unknown>, contentType?: string | null) {
@@ -877,398 +1126,58 @@ async function syncProviderRun(
   runRow: Record<string, unknown>,
 ): Promise<Record<string, unknown>> {
   const runId = String(runRow.id)
-  const providerRunId = asString(runRow.provider_run_id)
   const currentStatus = String(runRow.status) as PublicationRunStatus
-
-  // Zombie / stalled local runs: active status but no provider run that can make progress.
-  // Give claimed/starting runs a grace window — scheduled dispatch creates the Browser Use
-  // session after claim, and sync must not race that startup into a false failure.
-  if (!providerRunId) {
-    if (["queued", "starting", "running", "publishing", "verifying"].includes(currentStatus)) {
-      const metadata = asRecord(runRow.metadata) ?? {}
-      const startedHint =
-        asString(runRow.execution_started_at) ??
-        asString(runRow.started_at) ??
-        asString(metadata.claimed_for_execution_at) ??
-        asString(runRow.updated_at)
-      const startedMs = startedHint ? Date.parse(startedHint) : NaN
-      const ageMs = Number.isFinite(startedMs) ? Date.now() - startedMs : Number.POSITIVE_INFINITY
-      const startupGraceMs = 3 * 60_000
-      if (ageMs < startupGraceMs) {
-        return runRow
-      }
-      return updateRun(service, runId, {
-        status: "failed",
-        error_code: "agent_failed",
-        error_message:
-          "Publication could not start a remote browser session. Try publishing again.",
-        completed_at: new Date().toISOString(),
-        metadata: {
-          ...metadata,
-          reconcile_reason: "missing_provider_run_id",
-          last_provider_error: "No active Browser Use run is attached to this publication.",
-        },
-        activity: appendActivity(
-          Array.isArray(runRow.activity) ? (runRow.activity as PublicationActivityEvent[]) : [],
-          "Publication failed",
-        ),
-      })
-    }
-    return runRow
-  }
+  const browserId = asString(runRow.provider_browser_id)
+  const metadata = { ...(asRecord(runRow.metadata) ?? {}) }
 
   if (["published", "failed", "cancelled", "uncertain"].includes(currentStatus) && !asString(runRow.live_view_url)) {
     return runRow
   }
 
-  const status = await provider.getRunStatus(providerRunId)
-  const eventsPage = await provider.getEvents({
-    runId: providerRunId,
-    after: positiveInt(asRecord(runRow.metadata)?.events_cursor) ?? undefined,
-    limit: 100,
-  })
-  let activity = deriveActivityFromEvents(
-    eventsPage.events,
-    Array.isArray(runRow.activity) ? (runRow.activity as PublicationActivityEvent[]) : [],
-  )
-  const live = await provider.getLiveView(providerRunId, asString(runRow.provider_browser_id))
-  const metadata = { ...(asRecord(runRow.metadata) ?? {}) }
-  if (eventsPage.nextAfter != null) metadata.events_cursor = eventsPage.nextAfter
-  const screen = parseBrowserViewport(metadata.browser_viewport) ??
-    parseBrowserViewport({
-      width: metadata.requested_screen_width,
-      height: metadata.requested_screen_height,
-    })
-  const aligned = await alignLiveViewToPane(provider, {
-    liveViewUrl: live.liveViewUrl,
-    browserId: live.browserId ?? asString(runRow.provider_browser_id),
-    agentSessionId: asString(runRow.provider_session_id),
-    screen,
-  })
-  if (aligned.browserId) {
-    metadata.provider_browser_id = aligned.browserId
-  }
-
-  const patch: Record<string, unknown> = {
-    activity,
-    metadata,
-  }
-  if (aligned.liveViewUrl) patch.live_view_url = aligned.liveViewUrl
-  if (aligned.browserId) patch.provider_browser_id = aligned.browserId
-
-  if (status === "queued" || status === "dispatching" || status === "running") {
-    if (canTransitionPublicationStatus(currentStatus, "running") && currentStatus !== "needs_user" && currentStatus !== "awaiting_publish_confirmation") {
-      patch.status = currentStatus === "queued" || currentStatus === "starting" ? "running" : currentStatus
-    }
-    return updateRun(service, runId, patch)
-  }
-
-  const full = await provider.getRun(providerRunId)
-  const parsed = parseAgentPublicationResult(full.result)
-  const phase = parsed?.phase
-  metadata.last_provider_status = status
-  metadata.last_provider_error = full.error ?? null
-
-  if (status === "cancelled") {
-    patch.status = "cancelled"
-    patch.error_code = "cancelled"
-    patch.error_message = userFacingErrorMessage("cancelled")
-    patch.completed_at = new Date().toISOString()
-    return updateRun(service, runId, { ...patch, metadata })
-  }
-
-  if (status === "failed") {
-    patch.status = "failed"
-    patch.error_code = "agent_failed"
-    patch.error_message = userFacingErrorMessage("agent_failed", full.error)
-    patch.completed_at = new Date().toISOString()
-    return updateRun(service, runId, { ...patch, metadata })
-  }
-
-  // completed
-  if (!phase) {
-    // Agent finished without structured result — treat as needs inspection if publish may have started.
-    if (metadata.final_publish_attempted) {
-      patch.status = "uncertain"
-      patch.error_code = "uncertain"
-      patch.error_message = userFacingErrorMessage("uncertain")
-      patch.completed_at = new Date().toISOString()
-    } else {
-      patch.status = "needs_user"
-      patch.error_code = null
-      patch.error_message = "The agent stopped. Review the browser and continue when ready."
-      metadata.phase_message = patch.error_message
-    }
-    activity = appendActivity(activity, patch.status === "uncertain" ? "Publication uncertain" : "Waiting for user")
-    patch.activity = activity
-    return updateRun(service, runId, { ...patch, metadata, result: { raw: full.result ?? null } })
-  }
-
-  activity = activityFromLabels(parsed.activity, activity)
-  metadata.phase_message = parsed.message ?? null
-  const nextStatus = mapAgentPhaseToStatus(phase, currentStatus)
-
-  if (phase === "awaiting_publish_confirmation") {
-    activity = appendActivity(activity, "Waiting for confirmation")
-    metadata.user_question = null
-    const suggestedStrategy =
-      parseScheduleStrategy((parsed as { schedule_strategy?: unknown }).schedule_strategy) ??
-      parseScheduleStrategy(metadata.pending_schedule_strategy) ??
-      (String(runRow.publish_mode) === "scheduled" ? "external" : null)
-    if (suggestedStrategy) metadata.pending_schedule_strategy = suggestedStrategy
-    const updated = await updateRun(service, runId, {
-      ...patch,
-      status: "awaiting_publish_confirmation",
-      activity,
-      metadata,
-      ...(suggestedStrategy ? { schedule_strategy: suggestedStrategy } : {}),
-      error_code: null,
-      error_message: null,
-      result: parsed,
-    })
+  if (browserId) {
     try {
-      const destination = await loadDestination(service, String(runRow.destination_id))
-      const sourceSnapshot = asRecord(runRow.source_snapshot) ?? {}
-      // Before final publish, agent "external_url" is often the editor/draft URL — treat as entry.
-      await maybeLearnDestinationMemory(service, destination, {
-        contentType: asString(sourceSnapshot.type) ?? asString(metadata.content_type),
-        entryUrl:
-          asString((parsed as { entry_url?: string | null }).entry_url) ??
-          asString(parsed.external_url) ??
-          asString(metadata.last_browser_url),
-        publicationUrl: null,
-      })
-    } catch {
-      // Learning is best-effort.
-    }
-    return updated
-  }
-
-  if (phase === "scheduled") {
-    const strategy =
-      parseScheduleStrategy((parsed as { schedule_strategy?: unknown }).schedule_strategy) ??
-      parseScheduleStrategy(runRow.schedule_strategy) ??
-      "external"
-    activity = appendActivity(activity, strategy === "external" ? "Scheduled externally" : "Scheduled")
-    const updated = await updateRun(service, runId, {
-      ...patch,
-      status: "scheduled",
-      schedule_strategy: strategy,
-      scheduled_external_at: strategy === "external" ? (runRow.scheduled_at ?? null) : null,
-      external_url: parsed.external_url ?? runRow.external_url ?? null,
-      external_id: parsed.external_id ?? runRow.external_id ?? null,
-      live_view_url: null,
-      provider_run_id: null,
-      error_code: null,
-      error_message: null,
-      completed_at: null,
-      activity,
-      metadata: {
-        ...metadata,
-        user_question: null,
-        user_has_control: false,
-        final_publish_attempted: strategy === "external" ? true : Boolean(metadata.final_publish_attempted),
-        phase_message: parsed.message ?? "Scheduled",
-        pending_schedule_strategy: null,
-      },
-      result: parsed,
-    })
-    // Release browser resources after a successful external schedule.
-    const browserId = asString(runRow.provider_browser_id)
-    if (browserId) {
-      try {
-        await provider.stopBrowser(browserId)
-      } catch {
-        // ignore
-      }
-    }
-    return updated
-  }
-
-  if (phase === "needs_user") {
-    const questionMessage =
-      parsed.message ??
-      userFacingErrorMessage(parsed.error_code ?? "authentication_required", parsed.message)
-    const isAuth =
-      parsed.error_code === "authentication_required" ||
-      Boolean(metadata.awaiting_destination_auth)
-    metadata.user_question = {
-      kind: isAuth ? "authentication" : "clarification",
-      message: questionMessage,
-      asked_at: new Date().toISOString(),
-      auto_answered: false,
-    }
-
-    // Auto-answer non-auth clarifications from destination memory when possible.
-    if (!isAuth && asString(runRow.provider_session_id)) {
-      try {
-        const destination = await loadDestination(service, String(runRow.destination_id))
-        const sourceSnapshot = asRecord(runRow.source_snapshot) ?? {}
-        const autoAnswer = resolveAutoAnswerFromDestinationMemory({
-          question: questionMessage,
-          memory: parseDestinationMemory(destination.memory),
-          contentType: asString(sourceSnapshot.type) ?? asString(metadata.content_type),
-        })
-        if (autoAnswer) {
-          metadata.user_question = {
-            ...metadata.user_question,
-            auto_answered: true,
-            auto_answer: autoAnswer,
+      const browser = await provider.getBrowser(browserId)
+      const patch: Record<string, unknown> = { metadata }
+      if (browser?.liveViewUrl) patch.live_view_url = browser.liveViewUrl
+      if (!browser || browser.status === "stopped") {
+        metadata.browser_active = false
+        if (["queued", "starting"].includes(currentStatus)) {
+          const startedHint =
+            asString(runRow.execution_started_at) ??
+            asString(runRow.started_at) ??
+            asString(metadata.claimed_for_execution_at) ??
+            asString(runRow.updated_at)
+          const startedMs = startedHint ? Date.parse(startedHint) : NaN
+          const ageMs = Number.isFinite(startedMs) ? Date.now() - startedMs : Number.POSITIVE_INFINITY
+          if (ageMs > 3 * 60_000) {
+            return updateRun(service, runId, {
+              status: "failed",
+              error_code: "browser_session_expired",
+              error_message: "The publication browser session is no longer active.",
+              completed_at: new Date().toISOString(),
+              metadata,
+            })
           }
-          const continueText = buildContinueAfterUserTask(autoAnswer)
-          const sessionId = String(runRow.provider_session_id)
-          const providerRun = await provider.continueRun({
-            sessionId,
-            text: continueText,
-          })
-          const live = await provider.getLiveView(providerRun.id)
-          activity = appendActivity(activity, "Continuing from destination memory")
-          logPub("destination_memory_auto_answer", {
-            publication_run_id: runId,
-            destination_id: destination.id,
-            answer_preview: autoAnswer.slice(0, 120),
-          })
-          return updateRun(service, runId, {
-            ...patch,
-            provider_run_id: providerRun.id,
-            provider_session_id: providerRun.sessionId || sessionId,
-            status: "running",
-            live_view_url: live.liveViewUrl ?? patch.live_view_url ?? runRow.live_view_url,
-            error_code: null,
-            error_message: null,
-            activity,
-            metadata: {
-              ...metadata,
-              user_has_control: false,
-              phase_message: autoAnswer,
-            },
-            result: parsed,
-          })
         }
-      } catch (autoError) {
-        logPub("destination_memory_auto_answer_failed", {
-          publication_run_id: runId,
-          message: sanitizeLogText((autoError as Error).message),
-        })
+      } else {
+        metadata.browser_active = true
       }
+      return updateRun(service, runId, patch)
+    } catch (error) {
+      logPub("sync_browser_status_failed", {
+        publication_run_id: runId,
+        message: sanitizeLogText(error instanceof Error ? error.message : String(error)),
+      })
+      return runRow
     }
-
-    activity = appendActivity(activity, "Waiting for user")
-    return updateRun(service, runId, {
-      ...patch,
-      status: "needs_user",
-      activity,
-      metadata,
-      error_code: (parsed.error_code as PublicationErrorCode) ?? (isAuth ? "authentication_required" : null),
-      error_message: questionMessage,
-      result: parsed,
-    })
   }
 
-  if (phase === "published" || phase === "uncertain" || phase === "failed") {
-    // External schedule cancellation completed.
-    if (metadata.cancelling_external_schedule && (phase === "published" || parsed.error_code === "cancelled")) {
-      activity = appendActivity(activity, "External schedule cancelled")
-      return updateRun(service, runId, {
-        ...patch,
-        status: "cancelled",
-        error_code: "cancelled",
-        error_message: parsed.message ?? userFacingErrorMessage("cancelled"),
-        completed_at: new Date().toISOString(),
-        live_view_url: null,
-        activity,
-        metadata: {
-          ...metadata,
-          user_question: null,
-          cancelling_external_schedule: false,
-          phase_message: parsed.message ?? "External schedule cancelled",
-        },
-        result: parsed,
-      })
-    }
-
-    // External schedule confirm succeeded but agent returned scheduled via published? handled above.
-    if (metadata.confirming_external_schedule && phase === "published") {
-      activity = appendActivity(activity, "Scheduled externally")
-      const updated = await updateRun(service, runId, {
-        ...patch,
-        status: "scheduled",
-        schedule_strategy: "external",
-        scheduled_external_at: runRow.scheduled_at ?? null,
-        external_url: parsed.external_url ?? runRow.external_url ?? null,
-        external_id: parsed.external_id ?? runRow.external_id ?? null,
-        live_view_url: null,
-        provider_run_id: null,
-        error_code: null,
-        error_message: null,
-        completed_at: null,
-        activity,
-        metadata: {
-          ...metadata,
-          confirming_external_schedule: false,
-          user_question: null,
-          phase_message: parsed.message ?? "Scheduled externally",
-        },
-        result: parsed,
-      })
-      const browserId = asString(runRow.provider_browser_id)
-      if (browserId) {
-        try {
-          await provider.stopBrowser(browserId)
-        } catch {
-          // ignore
-        }
-      }
-      return updated
-    }
-
-    const outcome = resolvePostPublishOutcome({
-      currentStatus: metadata.final_publish_attempted ? "publishing" : currentStatus,
-      phase,
-      errorCode: parsed.error_code,
-    })
-    if (outcome.status === "published") {
-      activity = appendActivity(activity, "Publication complete")
-    } else if (outcome.status === "uncertain") {
-      activity = appendActivity(activity, "Publication uncertain")
-    }
-    const terminalAt = new Date().toISOString()
-    const updated = await updateRun(service, runId, {
-      ...patch,
-      status: outcome.status,
-      external_url: parsed.external_url ?? runRow.external_url ?? null,
-      external_id: parsed.external_id ?? runRow.external_id ?? null,
-      error_code: outcome.errorCode,
-      error_message: outcome.errorCode ? userFacingErrorMessage(outcome.errorCode, parsed.message) : null,
-      completed_at: terminalAt,
-      published_at: outcome.status === "published" ? terminalAt : runRow.published_at ?? null,
-      activity,
-      metadata: {
-        ...metadata,
-        user_question: null,
-      },
-      result: parsed,
-    })
-    if (outcome.status === "published" || outcome.status === "uncertain") {
-      try {
-        const destination = await loadDestination(service, String(runRow.destination_id))
-        const sourceSnapshot = asRecord(runRow.source_snapshot) ?? {}
-        await maybeLearnDestinationMemory(service, destination, {
-          contentType: asString(sourceSnapshot.type) ?? asString(metadata.content_type),
-          entryUrl:
-            asString((parsed as { entry_url?: string | null }).entry_url) ??
-            asString(metadata.last_browser_url),
-          publicationUrl: asString(parsed.external_url) ?? asString(runRow.external_url),
-        })
-      } catch {
-        // Learning is best-effort.
-      }
-    }
-    return updated
+  if (["queued", "starting"].includes(currentStatus)) {
+    return runRow
   }
-
-  return updateRun(service, runId, { ...patch, metadata, result: parsed ?? {}, activity })
+  return runRow
 }
+
 
 async function executeInternalScheduledRun(
   service: ReturnType<typeof serviceClient>,
@@ -1341,16 +1250,12 @@ async function executeInternalScheduledRun(
     timezone,
   })
 
-  let providerRun: Awaited<ReturnType<BrowserAgentProvider["startRun"]>>
+  let opened: Awaited<ReturnType<typeof openCloudBrowserForPublication>>
   try {
-    providerRun = await startRunWithCapacity(provider, {
-      task,
-      workspaceId: workspace.id,
+    opened = await openCloudBrowserForPublication(provider, {
       profileId,
-      attachedFileIds: files.map((file) => file.id),
+      startUrl: destCtx.startUrl,
       proxyCountryCode,
-      record: false,
-      maxCostUsd: 8,
       screen,
     })
   } catch (startError) {
@@ -1371,7 +1276,7 @@ async function executeInternalScheduledRun(
     }
     return updateRun(service, runId, {
       status: "failed",
-      error_code: "agent_failed",
+      error_code: "browser_unavailable",
       error_message: message || "Could not start scheduled publication browser session.",
       completed_at: new Date().toISOString(),
       metadata: {
@@ -1381,27 +1286,12 @@ async function executeInternalScheduledRun(
     })
   }
 
-  let liveViewUrl: string | null = null
-  let providerBrowserId: string | null = null
-  for (let attempt = 0; attempt < 15; attempt += 1) {
-    const live = await provider.getLiveView(providerRun.id)
-    if (live.liveViewUrl) {
-      const aligned = await alignLiveViewToPane(provider, {
-        liveViewUrl: live.liveViewUrl,
-        browserId: live.browserId,
-        agentSessionId: providerRun.sessionId,
-        screen,
-      })
-      liveViewUrl = aligned.liveViewUrl
-      providerBrowserId = aligned.browserId
-      break
-    }
-    await new Promise((r) => setTimeout(r, 1000))
-  }
+  const liveViewUrl = opened.liveViewUrl
+  const providerBrowserId = opened.browserId
 
   const updated = await updateRun(service, runId, {
-    provider_run_id: providerRun.id,
-    provider_session_id: providerRun.sessionId,
+    provider_run_id: null,
+    provider_session_id: providerBrowserId,
     provider_workspace_id: workspace.id,
     provider_browser_id: providerBrowserId,
     status: "running",
@@ -1431,10 +1321,16 @@ async function executeInternalScheduledRun(
   logPub("scheduled_publication_executing", {
     publication_run_id: runId,
     destination_id: destination.id,
-    provider_run_id: providerRun.id,
+    provider_browser_id: providerBrowserId,
     scheduled_at: scheduledAtIso,
+    browser_control: "articulate_ai",
   })
-  return updated
+  return runArticulatePublishLoop(service, provider, updated, {
+    task,
+    entryUrl: destCtx.startUrl,
+    allowFinalPublish: true,
+    maxSteps: 20,
+  })
 }
 
 Deno.serve(async (req) => {
@@ -1765,47 +1661,29 @@ Deno.serve(async (req) => {
           body.proxy_country_code,
           asRecord(destination.metadata),
         )
-        const connectRun = await startRunWithCapacity(provider, {
-          task: buildConnectNavigateTask({
-            name: destinationName,
-            startUrl: connectStartUrl,
-          }),
+        const connectOpened = await openCloudBrowserForPublication(provider, {
           profileId,
+          startUrl: connectStartUrl,
           proxyCountryCode,
-          record: false,
           screen,
         })
-        let connectBrowserId: string | null = null
-        for (let attempt = 0; attempt < 20; attempt += 1) {
-          const live = await provider.getLiveView(connectRun.id)
-          if (live.liveViewUrl) {
-            const aligned = await alignLiveViewToPane(provider, {
-              liveViewUrl: live.liveViewUrl,
-              browserId: live.browserId,
-              agentSessionId: connectRun.sessionId,
-              screen,
-            })
-            liveViewUrl = aligned.liveViewUrl
-            connectBrowserId = aligned.browserId
-            break
-          }
-          await new Promise((r) => setTimeout(r, 1000))
-        }
+        liveViewUrl = connectOpened.liveViewUrl
+        const connectBrowserId = connectOpened.browserId
         if (!liveViewUrl) {
           try {
-            await provider.cancelRun(connectRun.id)
+            await provider.stopBrowser(connectOpened.browserId)
           } catch {
             // ignore
           }
           return json({
             error: {
-              code: "agent_failed",
+              code: "browser_unavailable",
               message: "Remote browser started but no Live View URL was returned. Try again.",
             },
           }, 502)
         }
-        connectRunId = connectRun.id
-        connectSessionId = connectRun.sessionId
+        connectRunId = null
+        connectSessionId = connectOpened.browserId
         connecting = true
         destination = await updateDestination(service, destinationId, {
           provider_profile_id: profileId,
@@ -2228,6 +2106,122 @@ Deno.serve(async (req) => {
       })
     }
 
+    if (action === "act_browser") {
+      const command = asString(body.command)
+      if (!isBrowserControllerCommand(command)) {
+        return json({ error: { code: "invalid_request", message: "Unsupported browser command" } }, 400)
+      }
+      let browserId = asString(body.browser_id)
+      const runId = uuidOrNull(body.run_id)
+      if (runId) {
+        const runRow = await loadRun(service, runId)
+        await assertCanAccessRun(userClient, runRow, actorUserId)
+        browserId = browserId ?? asString(runRow.provider_browser_id)
+      } else if (!browserId) {
+        return json({ error: { code: "invalid_request", message: "browser_id or run_id is required" } }, 400)
+      }
+      const provider = getProvider("browser_use")
+      if (typeof provider.actOnBrowser !== "function") {
+        return json({ error: { code: "browser_unavailable", message: "Browser control is not available" } }, 502)
+      }
+      const acted = await provider.actOnBrowser(browserId, {
+        command,
+        url: asString(body.url),
+        selector: asString(body.selector),
+        text: asString(body.text),
+        index: Number.isFinite(Number(body.index)) ? Number(body.index) : null,
+        key: asString(body.key),
+        clear: body.clear === true,
+        deltaX: Number.isFinite(Number(body.delta_x ?? body.deltaX)) ? Number(body.delta_x ?? body.deltaX) : null,
+        deltaY: Number.isFinite(Number(body.delta_y ?? body.deltaY)) ? Number(body.delta_y ?? body.deltaY) : null,
+        ms: Number.isFinite(Number(body.ms)) ? Number(body.ms) : null,
+        limit: Number.isFinite(Number(body.limit)) ? Number(body.limit) : null,
+      })
+      logPub("browser_acted", {
+        command,
+        provider: "browser_use",
+        browser_id: browserId,
+        ok: acted.ok,
+        url: acted.url,
+        error_code: acted.error_code,
+      })
+      return json({
+        ok: acted.ok,
+        provider: "browser_use",
+        browser_label: "Cloud",
+        browser_id: browserId,
+        command,
+        ...acted,
+        show_browser_preview: true,
+      })
+    }
+
+    if (action === "run_browser") {
+      return json({
+        error: {
+          code: "instruct_removed",
+          message: "Browser Use Agent is removed. Use act_browser / use_browser commands instead.",
+        },
+      }, 410)
+    }
+
+    if (action === "publication_reason_step") {
+      const task = asString(body.task)
+      const state = asRecord(body.state) ?? {}
+      const url = asString(state.url)
+      if (!task || !url) {
+        return json({ error: { code: "invalid_request", message: "task and state.url are required" } }, 400)
+      }
+      const history = Array.isArray(body.history) ? body.history : []
+      const reasoned = await callArticulateReasonStep(
+        {
+          task,
+          url,
+          title: asString(state.title),
+          elements: Array.isArray(state.elements) ? state.elements : [],
+          text: asString(state.note ?? state.text),
+          history: history as never,
+          step: Number.isFinite(Number(body.step)) ? Number(body.step) : history.length + 1,
+          entryUrl: asString(body.entry_url ?? body.entryUrl),
+          allowFinalPublish: body.allow_final_publish === true || body.allowFinalPublish === true,
+        },
+        { apiKey: Deno.env.get("OPENAI_API_KEY"), model: "gpt-4.1-mini" },
+      )
+      return json({
+        ok: true,
+        ...reasoned,
+        browser_control: "articulate_ai",
+      })
+    }
+
+    if (action === "update_publication_progress") {
+      const runId = uuidOrNull(body.run_id ?? body.publication_run_id)
+      if (!runId) return json({ error: { code: "invalid_request", message: "run_id is required" } }, 400)
+      const run = await loadRun(service, runId)
+      await assertCanAccessRun(userClient, run, actorUserId)
+      const phase = asString(body.phase ?? body.publication_phase)
+      if (!phase) {
+        return json({ error: { code: "invalid_request", message: "phase is required" } }, 400)
+      }
+      const updated = await applyPublicationProgress(service, run, {
+        phase,
+        message: asString(body.message),
+        externalUrl: asString(body.external_url ?? body.externalUrl),
+        externalId: asString(body.external_id ?? body.externalId),
+        entryUrl: asString(body.entry_url ?? body.entryUrl),
+        scheduleStrategy:
+          body.schedule_strategy === "external" || body.schedule_strategy === "internal"
+            ? body.schedule_strategy
+            : null,
+        currentUrl: asString(body.current_url ?? body.currentUrl),
+      })
+      return json({
+        ok: true,
+        run: publicRun(updated),
+        browser_id: asString(updated.provider_browser_id),
+      })
+    }
+
     if (action === "connect_destination") {
       const destinationId = uuidOrNull(body.destination_id)
       if (!destinationId) return json({ error: { code: "invalid_request", message: "destination_id is required" } }, 400)
@@ -2264,8 +2258,7 @@ Deno.serve(async (req) => {
         }
       }
 
-      // Human-in-the-loop connect: start a V4 agent run so we obtain a durable session_id.
-      // The agent navigates then yields for manual login. Continue uses the SAME session.
+      // Human-in-the-loop connect: open the Cloud browser and yield for manual login.
       const startUrl = String(destination.start_url)
       const destinationName = String(destination.name)
       const connectMessage =
@@ -2276,45 +2269,30 @@ Deno.serve(async (req) => {
         body.proxy_country_code,
         asRecord(destination.metadata),
       )
-      const connectRun = await startRunWithCapacity(provider, {
-        task: buildConnectNavigateTask({
-          name: destinationName,
-          startUrl,
-        }),
+      const connectOpened = await openCloudBrowserForPublication(provider, {
         profileId,
+        startUrl,
         proxyCountryCode,
-        record: false,
         screen,
       })
-
-      let liveViewUrl: string | null = null
-      let connectBrowserId: string | null = null
-      for (let attempt = 0; attempt < 20; attempt += 1) {
-        const live = await provider.getLiveView(connectRun.id)
-        if (live.liveViewUrl) {
-          const aligned = await alignLiveViewToPane(provider, {
-            liveViewUrl: live.liveViewUrl,
-            browserId: live.browserId,
-            agentSessionId: connectRun.sessionId,
-            screen,
-          })
-          liveViewUrl = aligned.liveViewUrl
-          connectBrowserId = aligned.browserId
-          break
-        }
-        await new Promise((r) => setTimeout(r, 1000))
+      const connectRun = {
+        id: null,
+        sessionId: connectOpened.browserId,
       }
+
+      const liveViewUrl = connectOpened.liveViewUrl
+      const connectBrowserId = connectOpened.browserId
 
       if (!liveViewUrl) {
         try {
-          await provider.cancelRun(connectRun.id)
+          await provider.stopBrowser(connectOpened.browserId)
         } catch {
           // ignore
         }
         return json(
           {
             error: {
-              code: "agent_failed",
+              code: "browser_unavailable",
               message: "Remote browser started but no Live View URL was returned. Try Connect again.",
             },
           },
@@ -2483,102 +2461,31 @@ Deno.serve(async (req) => {
         )
       }
 
-      // Reuse an in-flight continue/verify run on client retries.
-      let verifyRunId = asString(metadata.verify_run_id)
-      let verifySessionId = asString(metadata.verify_session_id) ?? connectSessionId
-      if (verifyRunId) {
-        try {
-          const existingStatus = await provider.getRunStatus(verifyRunId)
-          if (["completed", "failed", "cancelled"].includes(String(existingStatus))) {
-            verifyRunId = null
-          }
-        } catch {
-          verifyRunId = null
-        }
-      }
-
-      if (!verifyRunId) {
-        const verifyRun = await provider.continueRun({
-          sessionId: connectSessionId,
-          text: buildContinueAfterConnectTask(
-            {
-              name: String(destination.name),
-              startUrl: String(destination.start_url),
-              defaultStartUrl: String(destination.start_url),
-              contentType: asString(metadata.configure_content_type),
-            },
-            {
-              discoverPublishingSetup: metadata.discover_publishing_setup !== false,
-              contentType: asString(metadata.configure_content_type),
-              projectHint: asString(metadata.configure_project_hint) ??
-                asString(metadata.project_name_hint),
-            },
-          ),
-        })
-        verifyRunId = verifyRun.id
-        verifySessionId = verifyRun.sessionId || connectSessionId
-        logPub("connect_continue_run_started", {
-          destination_id: destinationId,
-          provider_profile_id: profileId,
-          provider_run_id: verifyRunId,
-          provider_session_id: verifySessionId,
-          previous_provider_session_id: connectSessionId,
-          same_session: (verifyRun.sessionId || connectSessionId) === connectSessionId,
-        })
-      }
-
-      // Poll briefly; if still running, leave destination in connecting and let the client retry.
-      let authenticated = false
-      let settled = false
-      let message = "Confirming sign-in with the agent…"
+      const verifySessionId = connectSessionId
+      const snapshot = await snapshotPublicationBrowser(
+        provider,
+        asString(metadata.connect_browser_id) ?? connectSessionId,
+      )
+      let authenticated = true
+      const settled = true
+      let message = "Destination connected. Continue in the same browser session."
       let errorCode: string | null = null
       let liveViewUrl: string | null = asString(metadata.connect_live_view_url)
-      for (let attempt = 0; attempt < 8; attempt += 1) {
-        await new Promise((r) => setTimeout(r, 1500))
-        const status = await provider.getRunStatus(verifyRunId)
-        const live = await provider.getLiveView(verifyRunId)
-        if (live.liveViewUrl) liveViewUrl = live.liveViewUrl
-        if (status !== "completed" && status !== "failed" && status !== "cancelled") continue
-        settled = true
-        const full = await provider.getRun(verifyRunId)
-        const parsed = parseAgentPublicationResult(full.result) as
-          | (ReturnType<typeof parseAgentPublicationResult> & { authenticated?: boolean })
-          | null
-        if (parsed && (parsed as { authenticated?: boolean }).authenticated === true) {
-          authenticated = true
-          message = parsed.message ?? "Destination connected."
-          errorCode = null
-          // Persist lightweight discovery from connect verify (entry URL / content type).
-          try {
-            await maybeLearnDestinationMemory(service, destination, {
-              contentType: asString(metadata.configure_content_type) ?? "article",
-              entryUrl: parsed.entry_url ?? null,
-            })
-            // Reload destination so resume uses fresh memory.
-            destination = await loadDestination(service, destinationId)
-          } catch {
-            // best-effort
-          }
-        } else if (parsed?.phase === "needs_user") {
-          authenticated = false
-          message =
-            parsed.message ??
-            `Sign in directly to ${destination.name} in this browser. Articulate does not receive or store your login credentials.`
-          errorCode = parsed.error_code ?? "authentication_required"
-        } else if (status === "failed") {
-          authenticated = false
-          message = userFacingErrorMessage("website_unreachable", full.error)
-          errorCode = "website_unreachable"
-        } else {
-          authenticated = false
-          message = parsed?.message ?? "Sign-in could not be confirmed."
-          errorCode = parsed?.error_code ?? "authentication_required"
-        }
-        break
+      if (snapshot?.auth_required && body.user_confirmed !== true && body.force !== true) {
+        authenticated = false
+        message = `Sign in directly to ${destination.name} in this browser. Articulate does not receive or store your login credentials.`
+        errorCode = "authentication_required"
+      }
+      try {
+        await maybeLearnDestinationMemory(service, destination, {
+          contentType: asString(metadata.configure_content_type) ?? "article",
+          entryUrl: snapshot?.url ?? null,
+        })
+        destination = await loadDestination(service, destinationId)
+      } catch {
+        // best-effort
       }
 
-      // Explicit UI confirmation ("I've signed in") is authoritative when the verify
-      // agent cannot confidently detect post-login UI (common with OAuth / Lovable).
       const userConfirmed = body.user_confirmed === true || body.force === true
       if (settled && !authenticated && userConfirmed) {
         authenticated = true
@@ -2586,7 +2493,6 @@ Deno.serve(async (req) => {
         errorCode = null
         logPub("verify_destination_user_confirmed", {
           destination_id: destinationId,
-          provider_run_id: verifyRunId,
           provider_session_id: verifySessionId || connectSessionId,
         })
       }
@@ -2661,48 +2567,14 @@ Deno.serve(async (req) => {
               // Same publication handoff: reuse the connect session. Omit workspaceId so V4
               // inherits the session workspace. Never pair old sessionId + unrelated workspace.
               // Files must already belong to that workspace (connect started with it).
-              let providerRun: Awaited<ReturnType<BrowserAgentProvider["startRun"]>>
-              try {
-                providerRun = await startRunWithCapacity(provider, {
-                  task: resumeTask,
-                  sessionId: activeSessionId,
-                  attachedFileIds: files.map((file) => file.id).filter(Boolean),
-                  maxCostUsd: 8,
-                })
-              } catch (resumeStartError) {
-                const msg = (resumeStartError as Error).message
-                if (!isStaleSessionError(msg)) throw resumeStartError
-                // Stale connect session — fresh browser via durable profile (never reuse old sessionId).
-                logPub("publication_resume_stale_session", {
-                  publication_run_id: pendingRunId,
-                  destination_id: destinationId,
-                  previous_provider_session_id: activeSessionId,
-                  error: sanitizeLogText(msg),
-                })
-                providerRun = await startRunWithCapacity(provider, {
-                  task: resumeTask,
-                  workspaceId: asString(pending.provider_workspace_id),
-                  profileId,
-                  attachedFileIds: files.map((file) => file.id).filter(Boolean),
-                  proxyCountryCode,
-                  record: false,
-                  maxCostUsd: 8,
-                  screen,
-                })
-              }
-              let resumeLiveView = liveViewUrl
-              for (let attempt = 0; attempt < 10; attempt += 1) {
-                const live = await provider.getLiveView(providerRun.id)
-                if (live.liveViewUrl) {
-                  resumeLiveView = live.liveViewUrl
-                  break
-                }
-                await new Promise((r) => setTimeout(r, 800))
-              }
-              if (resumeLiveView) liveViewUrl = resumeLiveView
+              const resumeBrowserId =
+                asString(pending.provider_browser_id) ??
+                asString(metadata.connect_browser_id) ??
+                activeSessionId
               pending = await updateRun(service, pendingRunId, {
-                provider_run_id: providerRun.id,
-                provider_session_id: providerRun.sessionId || activeSessionId,
+                provider_run_id: null,
+                provider_session_id: resumeBrowserId,
+                provider_browser_id: resumeBrowserId,
                 status: "running",
                 live_view_url: liveViewUrl,
                 error_code: null,
@@ -2723,14 +2595,23 @@ Deno.serve(async (req) => {
                   "Finding content editor",
                 ),
               })
+              if (!asString(pendingMeta.ai_thread_id)) {
+                pending = await runArticulatePublishLoop(service, provider, pending, {
+                  task: resumeTask,
+                  entryUrl: destCtx.startUrl,
+                  allowFinalPublish: false,
+                })
+              }
               resumedRun = pending
               uiMessage = `Connected to ${destination.name}. Continuing publication…`
               logPub("publication_resumed_after_auth", {
                 publication_run_id: pendingRunId,
                 destination_id: destinationId,
-                provider_run_id: providerRun.id,
-                provider_session_id: providerRun.sessionId || activeSessionId,
-                same_session: (providerRun.sessionId || activeSessionId) === activeSessionId,
+                provider_run_id: null,
+                provider_session_id: resumeBrowserId,
+                provider_browser_id: resumeBrowserId,
+                same_session: true,
+                browser_control: "articulate_ai",
               })
               }
             }
@@ -2758,7 +2639,7 @@ Deno.serve(async (req) => {
           connect_browser_id: null,
           connect_run_id: asString(metadata.connect_run_id),
           connect_session_id: activeSessionId,
-          verify_run_id: settled ? null : verifyRunId,
+          verify_run_id: null,
           verify_session_id: activeSessionId,
           connect_live_view_url: liveViewUrl,
           connect_message: uiMessage,
@@ -2774,7 +2655,7 @@ Deno.serve(async (req) => {
         pending: !settled,
         user_confirmed: userConfirmed,
         status: nextStatus,
-        provider_run_id: verifyRunId,
+        provider_run_id: null,
         provider_session_id: activeSessionId,
         same_session: true,
         resumed_publication_run_id: resumedRun ? String(resumedRun.id) : null,
@@ -3377,168 +3258,6 @@ Deno.serve(async (req) => {
         })
       }
 
-      // Legacy Local Bridge path must never run for new publications.
-      if (false && isLocalBrowserProvider(resolved.provider)) {
-        const workspace = await provider!.createWorkspace(
-          `local-pub-${(artifactId ?? publishingArtifact.id).slice(0, 8)}`,
-        )
-        let files: Awaited<ReturnType<typeof uploadArtifactFiles>> = []
-        try {
-          files = await uploadArtifactFiles(provider, service, workspace.id, publishingArtifact)
-        } catch (error) {
-          const code = (error as { code?: string }).code ?? "upload_failed"
-          return json({ error: { code, message: userFacingErrorMessage(code, (error as Error).message) } }, 500)
-        }
-
-        const task =
-          publishMode === "scheduled" && scheduledAt
-            ? buildPrepareScheduledPublicationTask({
-                destination: destCtx,
-                artifact: publishingArtifact,
-                files,
-                scheduledAtIso: scheduledAt.toISOString(),
-                timezone: scheduleTimezone,
-              })
-            : buildPreparePublicationTask({
-                destination: destCtx,
-                artifact: publishingArtifact,
-                files,
-              })
-
-        const connectMessage =
-          `Sign in directly to ${destination.name} in the local Chrome window if needed. Articulate does not receive or store your login credentials.`
-
-        const { data: inserted, error: insertError } = await service
-          .from("publication_runs")
-          .insert({
-            project_id: runProjectId,
-            artifact_id: artifactId,
-            source_type: sourceType,
-            source_snapshot: sourceSnapshot,
-            destination_id: destinationId,
-            started_by: actorUserId,
-            provider: "browser_use_local",
-            status: needsAuthentication ? "needs_user" : "starting",
-            publish_mode: publishMode,
-            scheduled_at: scheduledAt ? scheduledAt.toISOString() : null,
-            schedule_timezone: publishMode === "scheduled" ? scheduleTimezone : null,
-            schedule_strategy: publishMode === "scheduled" ? (forcedStrategy ?? "external") : null,
-            started_at: new Date().toISOString(),
-            provider_workspace_id: workspace.id,
-            activity: appendActivity(
-              [],
-              needsAuthentication ? "Waiting for user" : "Opening local browser",
-            ),
-            metadata: {
-              destination_name: destination.name,
-              artifact_title: publishingArtifact.title ?? null,
-              content_type: publishingArtifact.type ?? null,
-              final_publish_attempted: false,
-              user_has_control: needsAuthentication,
-              awaiting_destination_auth: needsAuthentication,
-              files,
-              source_type: sourceType,
-              browser_viewport: screen,
-              preferred_start_url: destCtx.startUrl,
-              start_url_source: destCtx.startSource,
-              schedule_authorized: publishMode === "scheduled",
-              browser_provider_resolved: "browser_use_local",
-              browser_provider_reason: resolved.reason,
-              local_browser: true,
-              local_agent_task: task,
-              phase_message: needsAuthentication
-                ? connectMessage
-                : "Browser running locally",
-              ...(aiThreadId ? { ai_thread_id: aiThreadId } : {}),
-            },
-            result: { artifact: publishingArtifact },
-          })
-          .select("*")
-          .single()
-        if (insertError || !inserted) {
-          return json({ error: { code: "agent_failed", message: insertError?.message ?? "Could not create run" } }, 500)
-        }
-
-        let providerRun: Awaited<ReturnType<BrowserAgentProvider["startRun"]>>
-        try {
-          providerRun = await provider.startRun({
-            task: needsAuthentication
-              ? buildConnectNavigateTask({
-                  name: String(destination.name),
-                  startUrl: String(destination.start_url),
-                })
-              : task,
-            workspaceId: workspace.id,
-            profileId,
-            attachedFileIds: files.map((file) => file.id),
-            record: false,
-            screen,
-          })
-        } catch (startError) {
-          const message = sanitizeLogText((startError as Error).message)
-          await updateRun(service, String(inserted.id), {
-            status: "failed",
-            error_code: "agent_failed",
-            error_message: message || "Could not start local browser publication.",
-            completed_at: new Date().toISOString(),
-          })
-          throw startError
-        }
-
-        const run = await updateRun(service, String(inserted.id), {
-          provider_run_id: providerRun.id,
-          provider_session_id: providerRun.sessionId,
-          provider_workspace_id: workspace.id,
-          status: needsAuthentication ? "needs_user" : "running",
-          live_view_url: null,
-          error_code: needsAuthentication ? "authentication_required" : null,
-          error_message: needsAuthentication ? connectMessage : null,
-          metadata: {
-            ...(asRecord(inserted.metadata) ?? {}),
-            local_browser: true,
-            local_agent_task: needsAuthentication ? task : task,
-            phase_message: needsAuthentication ? connectMessage : "Browser running locally",
-            awaiting_destination_auth: needsAuthentication,
-            user_has_control: needsAuthentication,
-          },
-        })
-
-        logPub("publication_started_local", {
-          publication_run_id: run.id,
-          destination_id: destinationId,
-          provider_run_id: providerRun.id,
-          provider_session_id: providerRun.sessionId,
-          needs_authentication: needsAuthentication,
-          reason: resolved.reason,
-        })
-
-        return json({
-          ok: true,
-          needs_authentication: needsAuthentication,
-          provider: "browser_use_local",
-          browser_label: "Local",
-          local_browser: {
-            required: true,
-            start_url: destCtx.startUrl || String(destination.start_url),
-            task: needsAuthentication
-              ? buildConnectNavigateTask({
-                  name: String(destination.name),
-                  startUrl: String(destination.start_url),
-                })
-              : task,
-            prepare_task: task,
-            profile_id: profileId,
-            bridge_session_id: null,
-          },
-          run: publicRun(run),
-          artifact: publishingArtifact,
-          live_view_url: null,
-          message: needsAuthentication
-            ? connectMessage
-            : "Browser running locally. Open or focus the Chrome window on this machine.",
-        })
-      }
-
       // ── Cloud browser path ──
       if (!provider) {
         return json(
@@ -3626,25 +3345,19 @@ Deno.serve(async (req) => {
         const connectMessage =
           `Sign in directly to ${destination.name} in this browser. Articulate does not receive or store your login credentials.`
 
-        let connectRun: Awaited<ReturnType<BrowserAgentProvider["startRun"]>>
+        let connectOpened: Awaited<ReturnType<typeof openCloudBrowserForPublication>>
         try {
-          connectRun = await startRunWithCapacity(provider, {
-            task: buildConnectNavigateTask({
-              name: String(destination.name),
-              // Auth still starts at the destination default/login URL, not a CMS editor entry.
-              startUrl: String(destination.start_url),
-            }),
-            workspaceId: workspace.id,
+          connectOpened = await openCloudBrowserForPublication(provider, {
             profileId,
+            startUrl: String(destination.start_url),
             proxyCountryCode,
-            record: false,
             screen,
           })
         } catch (connectError) {
           const message = sanitizeLogText((connectError as Error).message)
           await updateRun(service, String(inserted.id), {
             status: "failed",
-            error_code: "agent_failed",
+            error_code: "browser_unavailable",
             error_message: message || "Could not start remote browser for sign-in.",
             completed_at: new Date().toISOString(),
             metadata: {
@@ -3655,28 +3368,13 @@ Deno.serve(async (req) => {
           throw connectError
         }
 
-        const connectRunId = connectRun.id
-        const connectSessionId = connectRun.sessionId
-        let liveViewUrl: string | null = null
-        let connectBrowserId: string | null = null
-        for (let attempt = 0; attempt < 20; attempt += 1) {
-          const live = await provider.getLiveView(connectRun.id)
-          if (live.liveViewUrl) {
-            const aligned = await alignLiveViewToPane(provider, {
-              liveViewUrl: live.liveViewUrl,
-              browserId: live.browserId,
-              agentSessionId: connectSessionId,
-              screen,
-            })
-            liveViewUrl = aligned.liveViewUrl
-            connectBrowserId = aligned.browserId
-            break
-          }
-          await new Promise((r) => setTimeout(r, 1000))
-        }
+        const connectRunId = null
+        const connectSessionId = connectOpened.browserId
+        const liveViewUrl = connectOpened.liveViewUrl
+        const connectBrowserId = connectOpened.browserId
         if (!liveViewUrl) {
           try {
-            await provider.cancelRun(connectRun.id)
+            await provider.stopBrowser(connectOpened.browserId)
           } catch {
             // ignore
           }
@@ -3785,21 +3483,16 @@ Deno.serve(async (req) => {
               files,
             })
       const tRunCreateStart = Date.now()
-      let providerRun: Awaited<ReturnType<BrowserAgentProvider["startRun"]>>
+      let opened: Awaited<ReturnType<typeof openCloudBrowserForPublication>>
       try {
-        providerRun = await startRunWithCapacity(provider, {
-          task,
-          workspaceId: workspace.id,
+        opened = await openCloudBrowserForPublication(provider, {
           profileId,
-          attachedFileIds: files.map((file) => file.id),
+          startUrl: destCtx.startUrl,
           proxyCountryCode,
-          record: false,
-          maxCostUsd: 8,
           screen,
         })
       } catch (startError) {
         if (isMissingProfileError(startError)) {
-          // Stale provider_profile_id after remote profile deletion — recreate and require sign-in.
           profileId = await recreateDestinationProfileId(
             service,
             provider,
@@ -3809,53 +3502,21 @@ Deno.serve(async (req) => {
           )
           const connectMessage =
             `Sign in directly to ${destination.name} in this browser. Articulate does not receive or store your login credentials.`
-          let connectRun: Awaited<ReturnType<BrowserAgentProvider["startRun"]>>
-          try {
-            connectRun = await startRunWithCapacity(provider, {
-              task: buildConnectNavigateTask({
-                name: String(destination.name),
-                startUrl: String(destination.start_url),
-              }),
-              workspaceId: workspace.id,
-              profileId,
-              proxyCountryCode,
-              record: false,
-              screen,
-            })
-          } catch (connectError) {
-            const message = sanitizeLogText((connectError as Error).message)
-            await updateRun(service, String(inserted.id), {
-              status: "failed",
-              error_code: "agent_failed",
-              error_message: message || "Could not start remote browser for sign-in.",
-              completed_at: new Date().toISOString(),
-            })
-            throw connectError
-          }
-          let liveViewUrl: string | null = null
-          let connectBrowserId: string | null = null
-          for (let attempt = 0; attempt < 20; attempt += 1) {
-            const live = await provider.getLiveView(connectRun.id)
-            if (live.liveViewUrl) {
-              const aligned = await alignLiveViewToPane(provider, {
-                liveViewUrl: live.liveViewUrl,
-                browserId: live.browserId,
-                agentSessionId: connectRun.sessionId,
-                screen,
-              })
-              liveViewUrl = aligned.liveViewUrl
-              connectBrowserId = aligned.browserId
-              break
-            }
-            await new Promise((r) => setTimeout(r, 1000))
-          }
+          const connectOpened = await openCloudBrowserForPublication(provider, {
+            profileId,
+            startUrl: String(destination.start_url),
+            proxyCountryCode,
+            screen,
+          })
+          const liveViewUrl = connectOpened.liveViewUrl
+          const connectBrowserId = connectOpened.browserId
           await updateDestination(service, destinationId, {
             provider_profile_id: profileId,
             status: "connecting",
             metadata: {
               ...destinationMeta,
-              connect_run_id: connectRun.id,
-              connect_session_id: connectRun.sessionId,
+              connect_run_id: null,
+              connect_session_id: connectBrowserId,
               connect_browser_id: connectBrowserId,
               connect_live_view_url: liveViewUrl,
               connect_message: connectMessage,
@@ -3865,8 +3526,8 @@ Deno.serve(async (req) => {
             },
           })
           const authRun = await updateRun(service, String(inserted.id), {
-            provider_run_id: connectRun.id,
-            provider_session_id: connectRun.sessionId,
+            provider_run_id: null,
+            provider_session_id: connectBrowserId,
             provider_browser_id: connectBrowserId,
             status: "needs_user",
             live_view_url: liveViewUrl,
@@ -3878,6 +3539,7 @@ Deno.serve(async (req) => {
               user_has_control: true,
               phase_message: connectMessage,
               profile_recreated: true,
+              browser_control: "articulate_ai",
             },
             activity: appendActivity([], "Waiting for user"),
           })
@@ -3886,13 +3548,15 @@ Deno.serve(async (req) => {
             needs_authentication: true,
             live_view_url: liveViewUrl,
             run: publicRun(authRun),
+            browser_id: connectBrowserId,
+            snapshot: connectOpened.snapshot,
             message: connectMessage,
           })
         }
         const message = sanitizeLogText((startError as Error).message)
         await updateRun(service, String(inserted.id), {
           status: "failed",
-          error_code: "agent_failed",
+          error_code: "browser_unavailable",
           error_message: message || "Could not start publication browser session.",
           completed_at: new Date().toISOString(),
           metadata: {
@@ -3905,30 +3569,13 @@ Deno.serve(async (req) => {
         throw startError
       }
       const tRunCreatedMs = Date.now() - tRunCreateStart
-
-      let liveViewUrl: string | null = null
-      let providerBrowserId: string | null = null
-      const tBrowserReadyStart = Date.now()
-      for (let attempt = 0; attempt < 15; attempt += 1) {
-        const live = await provider.getLiveView(providerRun.id)
-        if (live.liveViewUrl) {
-          const aligned = await alignLiveViewToPane(provider, {
-            liveViewUrl: live.liveViewUrl,
-            browserId: live.browserId,
-            agentSessionId: providerRun.sessionId,
-            screen,
-          })
-          liveViewUrl = aligned.liveViewUrl
-          providerBrowserId = aligned.browserId
-          break
-        }
-        await new Promise((r) => setTimeout(r, 1000))
-      }
-      const tBrowserReadyMs = liveViewUrl ? Date.now() - tBrowserReadyStart : null
+      const liveViewUrl = opened.liveViewUrl
+      const providerBrowserId = opened.browserId
+      const tBrowserReadyMs = Date.now() - tRunCreateStart
 
       const run = await updateRun(service, String(inserted.id), {
-        provider_run_id: providerRun.id,
-        provider_session_id: providerRun.sessionId,
+        provider_run_id: null,
+        provider_session_id: providerBrowserId,
         provider_workspace_id: workspace.id,
         provider_browser_id: providerBrowserId,
         status: "running",
@@ -3966,8 +3613,8 @@ Deno.serve(async (req) => {
         destination_id: destinationId,
         artifact_id: artifactId,
         source_type: sourceType,
-        provider_run_id: providerRun.id,
-        provider_session_id: providerRun.sessionId,
+        provider_run_id: null,
+        provider_session_id: providerBrowserId,
         provider_workspace_id: workspace.id,
         provider_browser_id: providerBrowserId,
         reused_connect_session: false,
@@ -3994,6 +3641,15 @@ Deno.serve(async (req) => {
         needs_authentication: false,
         run: publicRun(run),
         artifact: publishingArtifact,
+        browser_id: providerBrowserId,
+        snapshot: opened.snapshot,
+        publication_brief: {
+          title: publishingArtifact.title ?? null,
+          type: publishingArtifact.type ?? null,
+          start_url: destCtx.startUrl,
+          destination_name: destination.name,
+          task,
+        },
         diagnostics: {
           new_browser_session: true,
           reused_connect_session: false,
@@ -4020,9 +3676,9 @@ Deno.serve(async (req) => {
       let run = await loadRun(service, runId)
       await assertCanAccessRun(userClient, run, actorUserId)
       const metadata = { ...(asRecord(run.metadata) ?? {}), user_has_control: true }
-      if (!isLocalBrowserProvider(run.provider) && asString(run.provider_run_id)) {
+      if (!isLocalBrowserProvider(run.provider) && asString(run.provider_browser_id)) {
         const provider = getProviderForRun(run)
-        const live = await provider.getLiveView(String(run.provider_run_id), asString(run.provider_browser_id))
+        const live = await provider.getLiveView("", asString(run.provider_browser_id))
         if (live.liveViewUrl) run = await updateRun(service, runId, { live_view_url: live.liveViewUrl })
       }
       run = await updateRun(service, runId, {
@@ -4091,25 +3747,20 @@ Deno.serve(async (req) => {
         })
       }
 
-      const sessionId = asString(run.provider_session_id)
-      if (!sessionId) {
+      const browserId = asString(run.provider_browser_id)
+      if (!browserId) {
         return json({ error: { code: "session_expired", message: userFacingErrorMessage("session_expired") } }, 409)
       }
       const provider = getProviderForRun(run)
       const continueText = buildContinueAfterUserTask(asString(body.message))
-      let providerRun: Awaited<ReturnType<BrowserAgentProvider["continueRun"]>>
+      let snapshot
       try {
-        // Same publication handoff: same session; omit workspaceId (inherited by V4).
-        providerRun = await provider.continueRun({
-          sessionId,
-          text: continueText,
-        })
+        snapshot = await snapshotPublicationBrowser(provider, browserId)
       } catch (continueError) {
         const msg = (continueError as Error).message
         if (!isStaleSessionError(msg) || Boolean(asRecord(run.metadata)?.final_publish_attempted)) {
           throw continueError
         }
-        // Stale session before irreversible publish — new session via destination profile.
         const destination = await loadDestination(service, String(run.destination_id))
         const profileId = asString(destination.provider_profile_id)
         if (!profileId) throw continueError
@@ -4117,25 +3768,30 @@ Deno.serve(async (req) => {
           asRecord(run.metadata),
           asRecord(destination.metadata),
         )
+        const destCtx = destinationTaskContext(destination)
         logPub("continue_after_user_stale_session", {
           publication_run_id: runId,
-          previous_provider_session_id: sessionId,
+          previous_provider_browser_id: browserId,
           proxy_country_code: proxyCountryCode,
           error: sanitizeLogText(msg),
         })
-        providerRun = await startRunWithCapacity(provider, {
-          task: continueText,
-          workspaceId: asString(run.provider_workspace_id),
+        const opened = await openCloudBrowserForPublication(provider, {
           profileId,
+          startUrl: destCtx.startUrl,
           proxyCountryCode,
-          record: false,
-          maxCostUsd: 8,
+        })
+        snapshot = opened.snapshot
+        run = await updateRun(service, runId, {
+          provider_run_id: null,
+          provider_session_id: opened.browserId,
+          provider_browser_id: opened.browserId,
+          live_view_url: opened.liveViewUrl,
         })
       }
-      const live = await provider.getLiveView(providerRun.id)
+      const live = await provider.getLiveView("", asString(run.provider_browser_id))
       run = await updateRun(service, runId, {
-        provider_run_id: providerRun.id,
-        provider_session_id: providerRun.sessionId || sessionId,
+        provider_run_id: null,
+        provider_session_id: asString(run.provider_browser_id),
         status: "running",
         live_view_url: live.liveViewUrl ?? run.live_view_url,
         error_code: null,
@@ -4150,7 +3806,23 @@ Deno.serve(async (req) => {
           "Finding content editor",
         ),
       })
-      return json({ ok: true, run: publicRun(run) })
+      const nextMeta = asRecord(run.metadata) ?? {}
+      if (!asString(nextMeta.ai_thread_id)) {
+        const destination = await loadDestination(service, String(run.destination_id))
+        const destCtx = destinationTaskContext(destination)
+        run = await runArticulatePublishLoop(service, provider, run, {
+          task: continueText,
+          entryUrl: destCtx.startUrl,
+          allowFinalPublish: false,
+          maxSteps: 6,
+        })
+      }
+      return json({
+        ok: true,
+        run: publicRun(run),
+        browser_id: asString(run.provider_browser_id),
+        snapshot,
+      })
     }
 
     if (action === "confirm_publication") {
@@ -4192,14 +3864,6 @@ Deno.serve(async (req) => {
           })
         }
         const provider = getProviderForRun(run)
-        const providerRunId = asString(run.provider_run_id)
-        if (providerRunId) {
-          try {
-            await provider.cancelRun(providerRunId)
-          } catch {
-            // ignore
-          }
-        }
         const browserId = asString(run.provider_browser_id)
         if (browserId) {
           try {
@@ -4285,10 +3949,10 @@ Deno.serve(async (req) => {
         })
       }
 
-      // Scheduled + external: commit native schedule once.
+      // Scheduled + external: commit native schedule once via Articulate + BrowserController.
       if (publishMode === "scheduled" && pendingStrategy === "external") {
-        const sessionId = asString(run.provider_session_id)
-        if (!sessionId) {
+        const browserId = asString(run.provider_browser_id)
+        if (!browserId) {
           return json({ error: { code: "session_expired", message: userFacingErrorMessage("session_expired") } }, 409)
         }
         const scheduledAtIso = asString(run.scheduled_at)
@@ -4299,18 +3963,10 @@ Deno.serve(async (req) => {
           }, 409)
         }
         const provider = getProviderForRun(run)
-        const providerRun = await provider.continueRun({
-          sessionId,
-          text: buildConfirmScheduleTask({
-            scheduledAtIso,
-            timezone,
-            strategy: "external",
-          }),
-        })
-        const live = await provider.getLiveView(providerRun.id)
+        const live = await provider.getLiveView("", browserId)
         run = await updateRun(service, runId, {
-          provider_run_id: providerRun.id,
-          provider_session_id: providerRun.sessionId || sessionId,
+          provider_run_id: null,
+          provider_session_id: browserId,
           status: "publishing",
           schedule_strategy: "external",
           live_view_url: live.liveViewUrl ?? run.live_view_url,
@@ -4321,38 +3977,45 @@ Deno.serve(async (req) => {
             pending_schedule_strategy: "external",
             confirming_external_schedule: true,
             schedule_wording: "destination",
+            browser_control: "articulate_ai",
           },
           activity: appendActivity(
             Array.isArray(run.activity) ? (run.activity as PublicationActivityEvent[]) : [],
             "Confirming schedule",
           ),
         })
+        run = await runArticulatePublishLoop(service, provider, run, {
+          task: buildConfirmScheduleTask({
+            scheduledAtIso,
+            timezone,
+            strategy: "external",
+          }),
+          allowFinalPublish: true,
+        })
         logPub("publication_schedule_confirmed_external", {
           publication_run_id: runId,
-          provider_run_id: providerRun.id,
+          provider_browser_id: browserId,
+          browser_control: "articulate_ai",
         })
         return json({ ok: true, scheduled: true, schedule_strategy: "external", run: publicRun(run) })
       }
 
-      const sessionId = asString(run.provider_session_id)
-      if (!sessionId) {
+      const browserId = asString(run.provider_browser_id)
+      if (!browserId) {
         return json({ error: { code: "session_expired", message: userFacingErrorMessage("session_expired") } }, 409)
       }
       const provider = getProviderForRun(run)
-      const providerRun = await provider.continueRun({
-        sessionId,
-        text: buildConfirmPublicationTask(),
-      })
-      const live = await provider.getLiveView(providerRun.id)
+      const live = await provider.getLiveView("", browserId)
       run = await updateRun(service, runId, {
-        provider_run_id: providerRun.id,
-        provider_session_id: providerRun.sessionId || sessionId,
+        provider_run_id: null,
+        provider_session_id: browserId,
         status: "publishing",
         live_view_url: live.liveViewUrl ?? run.live_view_url,
         metadata: {
           ...metadata,
           final_publish_attempted: true,
           user_has_control: false,
+          browser_control: "articulate_ai",
         },
         activity: appendActivity(
           appendActivity(
@@ -4362,12 +4025,15 @@ Deno.serve(async (req) => {
           "Verifying publication",
         ),
       })
+      run = await runArticulatePublishLoop(service, provider, run, {
+        task: buildConfirmPublicationTask(),
+        allowFinalPublish: true,
+      })
       logPub("publication_confirmed", {
         publication_run_id: runId,
-        previous_provider_session_id: sessionId,
-        provider_run_id: providerRun.id,
-        provider_session_id: providerRun.sessionId || sessionId,
-        same_session: (providerRun.sessionId || sessionId) === sessionId,
+        provider_browser_id: browserId,
+        same_session: true,
+        browser_control: "articulate_ai",
       })
       return json({ ok: true, run: publicRun(run) })
     }
@@ -4524,7 +4190,32 @@ Deno.serve(async (req) => {
           asRecord(destination.metadata),
         )
         const workspace = await provider.createWorkspace(`cancel-${runId.slice(0, 8)}`)
-        const providerRun = await startRunWithCapacity(provider, {
+        const opened = await openCloudBrowserForPublication(provider, {
+          profileId,
+          startUrl: destCtx.startUrl,
+          proxyCountryCode,
+          screen,
+        })
+        run = await updateRun(service, runId, {
+          provider_run_id: null,
+          provider_session_id: opened.browserId,
+          provider_workspace_id: workspace.id,
+          provider_browser_id: opened.browserId,
+          status: "running",
+          live_view_url: opened.liveViewUrl,
+          metadata: {
+            ...metadata,
+            cancelling_external_schedule: true,
+            final_publish_attempted: true,
+            phase_message: "Cancelling external schedule…",
+            browser_control: "articulate_ai",
+          },
+          activity: appendActivity(
+            Array.isArray(run.activity) ? (run.activity as PublicationActivityEvent[]) : [],
+            "Cancelling external schedule",
+          ),
+        })
+        run = await runArticulatePublishLoop(service, provider, run, {
           task: `${buildCancelExternalScheduleTask()}
 
 Destination: ${destCtx.name}
@@ -4533,30 +4224,8 @@ External id: ${asString(run.external_id) ?? "unknown"}
 External url: ${asString(run.external_url) ?? "unknown"}
 Scheduled at: ${asString(run.scheduled_at) ?? "unknown"}
 `,
-          workspaceId: workspace.id,
-          profileId,
-          proxyCountryCode,
-          record: false,
-          maxCostUsd: 6,
-          screen,
-        })
-        const live = await provider.getLiveView(providerRun.id)
-        run = await updateRun(service, runId, {
-          provider_run_id: providerRun.id,
-          provider_session_id: providerRun.sessionId,
-          provider_workspace_id: workspace.id,
-          status: "running",
-          live_view_url: live.liveViewUrl,
-          metadata: {
-            ...metadata,
-            cancelling_external_schedule: true,
-            final_publish_attempted: true,
-            phase_message: "Cancelling external schedule…",
-          },
-          activity: appendActivity(
-            Array.isArray(run.activity) ? (run.activity as PublicationActivityEvent[]) : [],
-            "Cancelling external schedule",
-          ),
+          entryUrl: destCtx.startUrl,
+          allowFinalPublish: true,
         })
         return json({ ok: true, run: publicRun(run), external_cancel_started: true })
       }
@@ -4572,14 +4241,6 @@ Scheduled at: ${asString(run.scheduled_at) ?? "unknown"}
         return json({ ok: true, run: publicRun(run) })
       }
       const provider = getProviderForRun(run)
-      const providerRunId = asString(run.provider_run_id)
-      if (providerRunId && !["published", "failed", "cancelled", "uncertain"].includes(String(run.status))) {
-        try {
-          await provider.cancelRun(providerRunId)
-        } catch {
-          // ignore
-        }
-      }
       const browserId = asString(run.provider_browser_id)
       if (browserId) {
         try {
@@ -4623,10 +4284,10 @@ Scheduled at: ${asString(run.scheduled_at) ?? "unknown"}
         } catch {
           continue
         }
-        const providerRunId = asString(row.provider_run_id)
-        if (providerRunId) {
+        const rowBrowserId = asString(row.provider_browser_id)
+        if (rowBrowserId) {
           try {
-            await provider.cancelRun(providerRunId)
+            await provider.stopBrowser(rowBrowserId)
           } catch {
             // ignore
           }

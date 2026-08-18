@@ -16,23 +16,25 @@ import type {
   BrowserHistoryEntry,
   BrowserNavigationState,
   BrowserProfile,
-  BrowserRun,
-  BrowserRunEvent,
-  BrowserRunStatus,
   BrowserSession,
   BrowserUploadedFile,
   BrowserViewportSize,
   BrowserWorkspace,
-  ContinueRunInput,
   ControlBrowserInput,
   CreateBrowserInput,
   CreateProfileInput,
-  GetEventsInput,
   LiveViewInfo,
-  StartRunInput,
   UploadFileInput,
 } from "../types.ts"
 import { BrowserAgentError } from "../types.ts"
+import {
+  BROWSER_ERROR_CODES,
+  PAGE_CONTROL_SCRIPT,
+  emptyBrowserResult,
+  mapPageScriptResult,
+  type BrowserControllerInput,
+  type BrowserControllerResult,
+} from "../controller.ts"
 
 const DEFAULT_BASE_URL = "https://api.browser-use.com/api/v4"
 /** Free-plan default. Paid models (e.g. grok-4.5) return 403 without credits. */
@@ -369,6 +371,113 @@ export async function controlViaCdp(
   )
 }
 
+/**
+ * Playwright-shaped page control over Browser Use Cloud CDP.
+ * Disconnecting CDP does not stop the managed browser session.
+ */
+export async function actViaCdp(
+  cdpUrl: string,
+  input: BrowserControllerInput,
+  options?: { timeoutMs?: number; webSocketCtor?: typeof WebSocket },
+): Promise<BrowserControllerResult> {
+  const command = input.command
+  let result: BrowserControllerResult | null = null
+
+  try {
+    await withCdpPageSession(
+      cdpUrl,
+      { ...options, errorCode: "browser_action_failed", timeoutMs: options?.timeoutMs ?? 30_000 },
+      async (send, sessionId) => {
+        await send("Page.enable", undefined, sessionId)
+        await send("Runtime.enable", undefined, sessionId)
+
+        if (command === "navigate" || command === "verify_url") {
+          const targetUrl = normalizeNavigateUrl(asString(input.url) ?? "")
+          if (!targetUrl) {
+            throw new BrowserAgentError("navigate_failed", "URL is required", { provider: "browser_use" })
+          }
+          await send("Page.navigate", { url: targetUrl }, sessionId)
+          await send(
+            "Runtime.evaluate",
+            {
+              expression: "new Promise((resolve) => setTimeout(resolve, 800))",
+              awaitPromise: true,
+            },
+            sessionId,
+          )
+        } else if (command === "reload") {
+          await send("Page.reload", { ignoreCache: false }, sessionId)
+        } else if (command === "back" || command === "go_back" || command === "forward") {
+          const history = await send("Page.getNavigationHistory", undefined, sessionId)
+          const currentIndex = Number(history.result?.currentIndex)
+          const entries = Array.isArray(history.result?.entries) ? history.result!.entries : []
+          const nextIndex = command === "forward" ? currentIndex + 1 : currentIndex - 1
+          const entry = asRecord(entries[nextIndex])
+          const entryId = Number(entry?.id)
+          if (!Number.isFinite(entryId)) {
+            throw new BrowserAgentError(
+              BROWSER_ERROR_CODES.browser_action_failed,
+              `Cannot ${command} in browser history`,
+              { provider: "browser_use" },
+            )
+          }
+          await send("Page.navigateToHistoryEntry", { entryId }, sessionId)
+        }
+
+        const nav = await send("Page.getNavigationHistory", undefined, sessionId)
+        const navState = mapNavigationHistory(nav.result)
+        const evaluated = await send(
+          "Runtime.evaluate",
+          {
+            expression: `(${PAGE_CONTROL_SCRIPT})(${JSON.stringify({
+              command,
+              url: input.url ?? null,
+              selector: input.selector ?? null,
+              text: input.text ?? null,
+              index: input.index ?? null,
+              key: input.key ?? null,
+              clear: input.clear ?? null,
+              deltaX: input.deltaX ?? null,
+              deltaY: input.deltaY ?? null,
+              ms: input.ms ?? null,
+              limit: input.limit ?? null,
+            })})`,
+            awaitPromise: true,
+            returnByValue: true,
+          },
+          sessionId,
+        )
+        const evaluatedResult = asRecord(evaluated.result)
+        const remote = asRecord(evaluatedResult?.result) ?? evaluatedResult
+        const page = mapPageScriptResult(remote?.value ?? remote, {
+          url: navState.url,
+          title: navState.title,
+          can_go_back: navState.canGoBack,
+          can_go_forward: navState.canGoForward,
+          verified: command === "verify_url" ? true : null,
+        })
+        result = {
+          ...page,
+          url: page.url || navState.url,
+          title: page.title || navState.title,
+          can_go_back: navState.canGoBack,
+          can_go_forward: navState.canGoForward,
+          verified: command === "verify_url" ? Boolean(page.url) : page.verified,
+        }
+      },
+    )
+  } catch (error) {
+    const message = sanitizeProviderMessage(error instanceof Error ? error.message : String(error))
+    const code =
+      error instanceof BrowserAgentError && error.code === "navigate_failed"
+        ? BROWSER_ERROR_CODES.browser_navigation_timeout
+        : BROWSER_ERROR_CODES.browser_action_failed
+    return emptyBrowserResult(code, message)
+  }
+
+  return result ?? emptyBrowserResult(BROWSER_ERROR_CODES.browser_action_failed, "No page result")
+}
+
 export type BrowserUseProviderOptions = {
   apiKey: string
   baseUrl?: string
@@ -597,6 +706,33 @@ export class BrowserUseProvider implements BrowserAgentProvider {
     return { ...state, active: true }
   }
 
+  async actOnBrowser(browserId: string, input: BrowserControllerInput): Promise<BrowserControllerResult> {
+    const id = asString(browserId)
+    if (!id) {
+      return emptyBrowserResult(BROWSER_ERROR_CODES.browser_session_expired, "browser_id is required")
+    }
+    const browser = await this.getBrowser(id)
+    const cdpUrl = asString(browser?.cdpUrl)
+    if (!browser || browser.status === "stopped" || !cdpUrl) {
+      return emptyBrowserResult(
+        BROWSER_ERROR_CODES.browser_session_expired,
+        "Browser is not active or has no CDP endpoint",
+      )
+    }
+    if (input.command === "close") {
+      await this.stopBrowser(id)
+      return {
+        ...emptyBrowserResult("", ""),
+        ok: true,
+        error: null,
+        error_code: null,
+        url: "",
+        title: "",
+      }
+    }
+    return actViaCdp(cdpUrl, input)
+  }
+
   private async findBrowserIdForAgentSession(agentSessionId: string): Promise<string | null> {
     const sessionId = asString(agentSessionId)
     if (!sessionId) return null
@@ -747,231 +883,8 @@ export class BrowserUseProvider implements BrowserAgentProvider {
     }
   }
 
-  async startRun(input: StartRunInput): Promise<BrowserRun> {
-    const requestedModel = input.model ?? this.defaultModel
-    const body: Record<string, unknown> = {
-      task: input.task,
-      model: requestedModel,
-    }
-    if (input.sessionId) body.sessionId = input.sessionId
-    // Follow-ups: omit workspaceId so V4 inherits the session workspace.
-    // Never pair an old sessionId with an unrelated workspaceId.
-    if (input.workspaceId && !input.sessionId) body.workspaceId = input.workspaceId
-    if (input.attachedFileIds?.length) body.attachedFileIds = input.attachedFileIds
-    if (input.maxCostUsd != null) body.maxCostUsd = input.maxCostUsd
-    const screen = clampBrowserScreen(input.screen)
-    const isNewBrowser = !input.sessionId
-    // browserSettings only apply when a NEW browser is provisioned.
-    // Follow-ups reuse the live browser; sending settings risks profile/proxy mismatches.
-    if (isNewBrowser) {
-      const wantsSettings =
-        Boolean(input.profileId) ||
-        input.proxyCountryCode !== undefined ||
-        Boolean(screen) ||
-        input.record != null
-      if (wantsSettings) {
-        body.browserSettings = {
-          ...(input.profileId ? { profileId: input.profileId } : {}),
-          // V4 TS contract: when browserSettings is present, include proxyCountryCode.
-          // Default US residential; pass null to disable for QA/internal sites.
-          proxyCountryCode: input.proxyCountryCode === undefined ? "us" : input.proxyCountryCode,
-          // Performance baseline: recording off unless explicitly enabled.
-          record: input.record ?? false,
-          ...(screen
-            ? {
-                screenWidth: screen.width,
-                screenHeight: screen.height,
-              }
-            : {}),
-        }
-      }
-    }
-    const profileId = asString(input.profileId)
-    const settings = asRecord(body.browserSettings)
-    console.log(
-      JSON.stringify({
-        scope: "browser-use",
-        event: "start_run_request",
-        at: new Date().toISOString(),
-        new_browser: isNewBrowser,
-        sessionId: input.sessionId ?? null,
-        workspaceId: isNewBrowser ? (input.workspaceId ?? null) : null,
-        requested_model: requestedModel,
-        profile_loaded: Boolean(profileId),
-        profile_id_suffix: profileId ? profileId.slice(-8) : null,
-        requested_screen_width: isNewBrowser ? (screen?.width ?? null) : null,
-        requested_screen_height: isNewBrowser ? (screen?.height ?? null) : null,
-        browserSettings: settings
-          ? {
-              profileId: settings.profileId ? "[set]" : null,
-              proxyCountryCode: settings.proxyCountryCode === undefined
-                ? null
-                : settings.proxyCountryCode,
-              screenWidth: settings.screenWidth ?? null,
-              screenHeight: settings.screenHeight ?? null,
-              record: settings.record ?? null,
-            }
-          : null,
-      }),
-    )
-    const logCreated = (
-      run: BrowserRun,
-      data: Record<string, unknown>,
-      extras: { fallback_used: boolean; proxy_fallback_used: boolean },
-    ) => {
-      console.log(
-        JSON.stringify({
-          scope: "browser-use",
-          event: "start_run_created",
-          at: new Date().toISOString(),
-          run_id: run.id,
-          sessionId: run.sessionId,
-          workspaceId: run.workspaceId ?? null,
-          requested_model: requestedModel,
-          actual_model: asString(data.model) ?? String(body.model ?? requestedModel),
-          fallback_used: extras.fallback_used,
-          proxy_fallback_used: extras.proxy_fallback_used,
-          proxy_country_code: asRecord(body.browserSettings)?.proxyCountryCode ?? null,
-          profile_loaded: Boolean(profileId),
-          profile_id_suffix: profileId ? profileId.slice(-8) : null,
-        }),
-      )
-    }
-
-    try {
-      const data = await this.request<Record<string, unknown>>("POST", "/runs", body)
-      const run = this.mapRun(data)
-      logCreated(run, data, { fallback_used: false, proxy_fallback_used: false })
-      return run
-    } catch (error) {
-      const message = error instanceof Error ? error.message : String(error)
-      const settings = asRecord(body.browserSettings)
-      const requestedProxy = settings?.proxyCountryCode
-      // Free plan often only allows the US residential proxy. Prefer the destination
-      // region, but retry once with "us" when the provider rejects a specific country.
-      // Do not treat every HTTP 403 as a proxy restriction.
-      const isPlanBlockedProxy =
-        error instanceof BrowserAgentError &&
-        (error.status === 403 || error.status === 400) &&
-        /proxy country|not available on the free plan.*proxy|use the us proxy/i.test(message)
-      if (
-        isPlanBlockedProxy &&
-        settings &&
-        requestedProxy != null &&
-        String(requestedProxy).toLowerCase() !== "us"
-      ) {
-        body.browserSettings = { ...settings, proxyCountryCode: "us" }
-        console.log(
-          JSON.stringify({
-            scope: "browser-use",
-            event: "proxy_fallback",
-            at: new Date().toISOString(),
-            requested_proxy: requestedProxy,
-            fallback_proxy: "us",
-            message: sanitizeProviderMessage(message),
-          }),
-        )
-        try {
-          const data = await this.request<Record<string, unknown>>("POST", "/runs", body)
-          const run = this.mapRun(data)
-          logCreated(run, data, { fallback_used: false, proxy_fallback_used: true })
-          return run
-        } catch (proxyRetryError) {
-          error = proxyRetryError
-        }
-      }
-
-      // Free-plan accounts reject paid models (e.g. grok-4.5). Retry once with the free default.
-      // Do not treat every HTTP 403 as a model restriction.
-      const retryMessage = error instanceof Error ? error.message : String(error)
-      const isPlanBlockedModel =
-        error instanceof BrowserAgentError &&
-        error.status === 403 &&
-        /not available on the free plan|free-plan model|model .* not available/i.test(retryMessage)
-      if (
-        isPlanBlockedModel &&
-        String(body.model) !== FREE_PLAN_FALLBACK_MODEL
-      ) {
-        body.model = FREE_PLAN_FALLBACK_MODEL
-        const data = await this.request<Record<string, unknown>>("POST", "/runs", body)
-        const run = this.mapRun(data)
-        logCreated(run, data, {
-          fallback_used: true,
-          proxy_fallback_used: String(asRecord(body.browserSettings)?.proxyCountryCode ?? "") === "us" &&
-            requestedProxy != null &&
-            String(requestedProxy).toLowerCase() !== "us",
-        })
-        return run
-      }
-      throw error
-    }
-  }
-
-  async continueRun(input: ContinueRunInput): Promise<BrowserRun> {
-    // Prefer a new run on the same session (preserves browser + conversation + workspace).
-    // Do not pass workspaceId or browserSettings — inherit from the live session.
-    return this.startRun({
-      task: input.text,
-      sessionId: input.sessionId,
-      model: input.model,
-    })
-  }
-
-  async cancelRun(runId: string): Promise<void> {
-    await this.request("POST", `/runs/${runId}/cancel`, {})
-  }
-
-  async getRun(runId: string): Promise<BrowserRun> {
-    const data = await this.request<Record<string, unknown>>("GET", `/runs/${runId}`)
-    return this.mapRun(data)
-  }
-
-  async getRunStatus(runId: string): Promise<BrowserRunStatus> {
-    const data = await this.request<{ status?: string }>("GET", `/runs/${runId}/status`)
-    return (asString(data.status) ?? "queued") as BrowserRunStatus
-  }
-
-  async getEvents(input: GetEventsInput): Promise<{ events: BrowserRunEvent[]; nextAfter: number | null }> {
-    const params = new URLSearchParams()
-    if (input.after != null) params.set("after", String(input.after))
-    if (input.limit != null) params.set("limit", String(input.limit))
-    const qs = params.toString()
-    const data = await this.request<Record<string, unknown>>(
-      "GET",
-      `/runs/${input.runId}/events${qs ? `?${qs}` : ""}`,
-    )
-    const rawEvents = Array.isArray(data.events) ? data.events : []
-    const events: BrowserRunEvent[] = rawEvents
-      .map((item) => {
-        const record = asRecord(item)
-        if (!record) return null
-        const id = typeof record.id === "number" ? record.id : Number(record.id)
-        const runId = asString(record.runId) ?? input.runId
-        const ts = asString(record.ts) ?? new Date().toISOString()
-        const type = asString(record.type) ?? "unknown"
-        if (!Number.isFinite(id)) return null
-        return {
-          id,
-          runId,
-          ts,
-          type,
-          data: asRecord(record.data) ?? {},
-        }
-      })
-      .filter((item): item is BrowserRunEvent => item != null)
-
-    const nextAfter =
-      typeof data.nextAfter === "number"
-        ? data.nextAfter
-        : typeof data.next_after === "number"
-          ? data.next_after
-          : null
-
-    return { events, nextAfter }
-  }
-
-  async getLiveView(runId: string, browserId?: string | null): Promise<LiveViewInfo> {
-    const explicitBrowserId = asString(browserId)
+  async getLiveView(_runId?: string | null, browserId?: string | null): Promise<LiveViewInfo> {
+    const explicitBrowserId = asString(browserId) ?? asString(_runId)
     if (explicitBrowserId) {
       const browser = await this.getBrowser(explicitBrowserId)
       if (browser?.liveViewUrl) {
@@ -982,28 +895,6 @@ export class BrowserUseProvider implements BrowserAgentProvider {
         }
       }
     }
-
-    const { events } = await this.getEvents({ runId, limit: 100 })
-    for (let i = events.length - 1; i >= 0; i -= 1) {
-      const event = events[i]
-      if (event.type !== "browser.ready") continue
-      const url =
-        asString(event.data.live_view_url) ||
-        asString(event.data.liveViewUrl) ||
-        asString(event.data.liveUrl)
-      const eventBrowserId =
-        asString(event.data.browser_id) ||
-        asString(event.data.browserId) ||
-        asString(event.data.id)
-      if (url) {
-        return {
-          liveViewUrl: url,
-          source: "event",
-          browserId: eventBrowserId,
-        }
-      }
-    }
-
     return { liveViewUrl: null, source: "none", browserId: explicitBrowserId }
   }
 
@@ -1016,30 +907,6 @@ export class BrowserUseProvider implements BrowserAgentProvider {
       liveViewUrl: asString(data.liveUrl) ?? asString(data.live_url) ?? asString(data.liveViewUrl),
       cdpUrl: asString(data.cdpUrl) ?? asString(data.cdp_url),
       timeoutAt: asString(data.timeoutAt) ?? asString(data.timeout_at),
-    }
-  }
-
-  private mapRun(data: Record<string, unknown>): BrowserRun {
-    const id = asString(data.id)
-    const sessionId = asString(data.sessionId) ?? asString(data.session_id)
-    if (!id || !sessionId) {
-      throw new BrowserAgentError("run_create_failed", "Run response missing id or sessionId", {
-        provider: "browser_use",
-      })
-    }
-    return {
-      id,
-      sessionId,
-      workspaceId: asString(data.workspaceId) ?? asString(data.workspace_id),
-      status: (asString(data.status) ?? "queued") as BrowserRunStatus,
-      task: asString(data.task),
-      result: typeof data.result === "string" ? data.result : data.result == null ? null : String(data.result),
-      error: asString(data.error),
-      attachedFileIds: Array.isArray(data.attachedFileIds)
-        ? data.attachedFileIds.filter((id): id is string => typeof id === "string")
-        : Array.isArray(data.attached_file_ids)
-          ? data.attached_file_ids.filter((id): id is string => typeof id === "string")
-          : null,
     }
   }
 }

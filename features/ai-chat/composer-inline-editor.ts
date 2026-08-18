@@ -623,6 +623,28 @@ export function setComposerPlainText(root: HTMLElement, value: string) {
   root.appendChild(document.createTextNode(value))
 }
 
+/** Restore a queued / edited message, including @-mention chips. */
+export function setComposerFromSegments(
+  root: HTMLElement,
+  segments: AiMessageSegment[] | null | undefined,
+  fallbackText?: string,
+) {
+  clearComposerEditor(root)
+  const rows =
+    Array.isArray(segments) && segments.length > 0
+      ? segments
+      : fallbackText
+        ? ([{ type: "text", text: fallbackText }] satisfies AiMessageSegment[])
+        : []
+  for (const segment of rows) {
+    if (segment.type === "text") {
+      if (segment.text) appendPlainTextWithLineBreaks(root, segment.text.split(/\r?\n/))
+      continue
+    }
+    root.appendChild(createTagChip(segment.tag))
+  }
+}
+
 export function focusEnd(root: HTMLElement) {
   root.focus()
   const range = document.createRange()

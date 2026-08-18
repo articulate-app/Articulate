@@ -80,6 +80,7 @@ import { useArtifactsRealtime } from "../../app/hooks/use-artifacts-realtime"
 import { useCurrentUserStore } from "../../app/store/current-user"
 import { useAiBuildArtifactPreviewStore } from "../../app/store/ai-build-artifact-preview-store"
 import { useFollowGrowingContent } from "./use-follow-growing-content"
+import { useOverflowGutterWidth } from "../../app/hooks/use-overflow-gutter-width"
 import { useCenterPaneTabsStore } from "../../app/store/center-pane-tabs"
 import { buildCenterPaneTabKey } from "../../app/store/center-pane-tabs"
 import {
@@ -92,7 +93,6 @@ import { buildCenterPaneSelectionSearchParams } from "../../app/lib/center-pane-
 import { shallowReplaceSearchParams } from "../../app/lib/tasks-shallow-nav"
 import { SelectionAskAiMenu } from "../ai-chat/SelectionAskAiMenu"
 import { computeRangeTextParts } from "../ai-chat/ai-chat-text-selection"
-import { extractPrimaryArtifactHtml } from "../../app/lib/artifact-selection-patch"
 import { ArtifactDocumentEditor } from "./artifact-document-editor"
 import { ArtifactCommentsDock, type ArtifactCommentPendingSelection } from "./artifact-comments-dock"
 import { ArtifactFindReplacePopover } from "./artifact-find-replace-popover"
@@ -113,6 +113,7 @@ import {
 } from "./artifact-query-cache"
 import {
   isArtifactDraftStaleForServerVersion,
+  isOwnArtifactSaveEcho,
   resolveArtifactDraftExpectedVersion,
   resolveSavedLiveArtifactBase,
 } from "./artifact-live-save-base"
@@ -191,10 +192,17 @@ export function ArtifactPane({
   const userDirtyRef = useRef(false)
   /** Server version at the start of a manual edit; never advance it implicitly. */
   const draftBaseVersionRef = useRef<number | null>(null)
+  /** Last version this editor persisted — realtime echo must not look like a conflict. */
+  const lastOwnSavedVersionRef = useRef(0)
+  const saveInFlightRef = useRef(false)
   const [editorForceNonce, setEditorForceNonce] = useState(0)
   draftTitleRef.current = draftTitle
   draftContentJsonRef.current = draftContentJson
   draftContentTextRef.current = draftContentText
+
+  useEffect(() => {
+    lastOwnSavedVersionRef.current = 0
+  }, [artifactId])
 
   useEffect(() => {
     if (typeof window === "undefined") return
@@ -498,11 +506,25 @@ export function ArtifactPane({
     // the editor to the old version after AI builds saved a new one.
     const previousId = previousKey?.slice(0, previousKey.indexOf(":")) ?? null
     const isSameArtifact = previousId === displayArtifact.id
+    const ownSaveEcho = isOwnArtifactSaveEcho({
+      saveInFlight: saveInFlightRef.current,
+      lastOwnSavedVersion: lastOwnSavedVersionRef.current,
+      serverVersion,
+    })
+    // Our autosave's realtime/query echo is not an external revision. Rebase
+    // the draft onto the version we just wrote so the next save is not stale.
+    if (ownSaveEcho && isSameArtifact && serverVersion > 0) {
+      draftBaseVersionRef.current = Math.max(
+        draftBaseVersionRef.current ?? 0,
+        serverVersion,
+      )
+    }
     const staleUserDraft =
       isSameArtifact
       && userDirtyRef.current
       && !draftMatchesServer
       && !version
+      && !ownSaveEcho
       && isArtifactDraftStaleForServerVersion(
         draftBaseVersionRef.current,
         serverVersion,
@@ -552,14 +574,8 @@ export function ArtifactPane({
     version,
   ])
 
-  /** TipTap force key: content fingerprint only (version bumps must not reset the caret). */
-  const editorForceContentKey = useMemo(() => {
-    if (!displayArtifact) return `${artifactId}:0`
-    const html = extractPrimaryArtifactHtml(displayArtifact.content_json) ?? ""
-    const text = displayArtifact.content_text ?? ""
-    const fingerprint = computeArtifactContentHash(html || text)
-    return `${displayArtifact.id}:${fingerprint}:${editorForceNonce}`
-  }, [artifactId, displayArtifact, editorForceNonce])
+  /** TipTap force key: nonce only. Version/content fingerprints remount the caret on autosave. */
+  const editorForceContentKey = `${artifactId}:${editorForceNonce}`
 
   const assets = useMemo(
     () => (displayArtifact ? extractArtifactAssets(displayArtifact.asset_data) : []),
@@ -573,7 +589,6 @@ export function ArtifactPane({
     shallowReplaceSearchParams(pathname, next, "artifact-version")
   }
 
-  const saveInFlightRef = useRef(false)
   const pendingAutosaveRef = useRef(false)
   /** Newest server version observed (list/get/conflict). Never save below this. */
   const knownServerVersionRef = useRef(0)
@@ -677,6 +692,13 @@ export function ArtifactPane({
           knownServerVersionRef.current,
           result.version_number,
         )
+        lastOwnSavedVersionRef.current = Math.max(
+          lastOwnSavedVersionRef.current,
+          result.version_number,
+        )
+      }
+      if (userDirtyRef.current) {
+        draftBaseVersionRef.current = knownServerVersionRef.current
       }
       if ("snapshot" in result && result.snapshot) {
         applyArtifactCachePatch(queryClient, result.snapshot)
@@ -818,6 +840,9 @@ export function ArtifactPane({
 
   const isLivePreview = isLiveAi
   const bodyScrollRef = useRef<HTMLDivElement | null>(null)
+  const commentsDockRef = useRef<HTMLDivElement | null>(null)
+  const [commentsDockHeight, setCommentsDockHeight] = useState(0)
+  const commentsGutterWidth = useOverflowGutterWidth(bodyScrollRef)
   const liveContentKey = `${livePreview?.sequence ?? 0}:${(
     livePreview?.sectionHtml
     ?? livePreview?.streamSnippet
@@ -830,6 +855,21 @@ export function ArtifactPane({
     contentKey: liveContentKey,
     enabled: isLivePreview,
   })
+
+  useEffect(() => {
+    const node = commentsDockRef.current
+    if (!node) {
+      setCommentsDockHeight(0)
+      return
+    }
+    const update = () => {
+      setCommentsDockHeight(Math.ceil(node.getBoundingClientRect().height))
+    }
+    update()
+    const observer = new ResizeObserver(update)
+    observer.observe(node)
+    return () => observer.disconnect()
+  }, [artifactQuery.isLoading, displayArtifact?.id])
 
   const changeDiff = useMemo(() => {
     if (!displayArtifact) return null
@@ -1300,7 +1340,8 @@ export function ArtifactPane({
         <p className="mx-3 mt-2 text-xs text-red-600">{downloadError}</p>
       ) : null}
 
-      <div ref={bodyScrollRef} className="min-h-0 flex-1 overflow-auto">
+      <div className="relative min-h-0 flex-1 overflow-hidden">
+      <div ref={bodyScrollRef} className="absolute inset-0 overflow-auto [scrollbar-gutter:stable]">
         <div className="mx-auto flex max-w-3xl flex-col">
           {showChanges && hasChangeDiff && changeSides && !livePreview?.streaming ? (
             <ArtifactRichDiffBody
@@ -1445,14 +1486,29 @@ export function ArtifactPane({
               }}
             />
           ) : null}
+          <div
+            aria-hidden="true"
+            className="pointer-events-none shrink-0"
+            style={{ height: commentsDockHeight > 0 ? commentsDockHeight + 8 : 0 }}
+          />
         </div>
       </div>
-
-      <ArtifactCommentsDock
-        artifact={displayArtifact}
-        pendingSelection={pendingCommentSelection}
-        onClearPendingSelection={() => setPendingCommentSelection(null)}
-      />
+      <div
+        className="pointer-events-none absolute inset-0 z-10 flex flex-col justify-end"
+        style={{ paddingRight: commentsGutterWidth }}
+      >
+        <div
+          ref={commentsDockRef}
+          className="pointer-events-auto mx-auto w-full max-w-3xl bg-white"
+        >
+          <ArtifactCommentsDock
+            artifact={displayArtifact}
+            pendingSelection={pendingCommentSelection}
+            onClearPendingSelection={() => setPendingCommentSelection(null)}
+          />
+        </div>
+      </div>
+      </div>
 
       <SelectionAskAiMenu
         containerSelector='[data-ai-selectable="artifact"]'

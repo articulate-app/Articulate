@@ -34,6 +34,7 @@ import {
   AI_PANE_TAB_STRIP_CLASS,
 } from "./tab-strip-tokens"
 import { toPersistedAiThreadId, isPersistedAiThreadId } from "./thread-id"
+import { AI_THREAD_CHROME_SELECT } from "./hydrate-orphaned-ai-run"
 import { isPlaceholderAiThreadTitle } from "./ai-thread-title"
 import type { AiActiveFieldContext } from "./active-field-context"
 import { AiPaneThreadLibraryMenus } from "./AiPaneThreadLibraryMenus"
@@ -560,12 +561,21 @@ function AiPaneInner({ isOpen, onClose, onExpand, initialScope = 'global', proje
     setIsCreating(true)
     try {
       const supabase = getSupabaseBrowser()
-      const { data, error } = await supabase
-        .from('ai_threads')
-        .select('*')
-        .eq('id', persistedThreadId)
-        .single()
-      
+      const loadThreadChrome = () =>
+        supabase
+          .from('ai_threads')
+          .select(AI_THREAD_CHROME_SELECT)
+          .eq('id', persistedThreadId)
+          .single()
+
+      let { data, error } = await loadThreadChrome()
+      if (error) {
+        await new Promise((resolve) => window.setTimeout(resolve, 400))
+        const retry = await loadThreadChrome()
+        data = retry.data
+        error = retry.error
+      }
+
       if (error) throw error
       
       if (data) {

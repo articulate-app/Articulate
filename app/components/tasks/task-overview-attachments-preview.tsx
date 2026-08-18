@@ -4,7 +4,6 @@ import React, { useMemo, useRef } from "react"
 import { File, Loader2 } from "lucide-react"
 import { useTaskAttachmentsUpload } from "@/hooks/use-task-attachments-upload"
 import { TaskOverviewPreviewSection } from "./task-overview-preview-section"
-import { useInViewport } from "@/hooks/use-in-viewport"
 import { AddDashedButton } from "../ui/add-dashed-button"
 
 const PREVIEW_ATTACHMENT_LIMIT = 4
@@ -20,9 +19,8 @@ export function TaskOverviewAttachmentsPreview({
   bootstrapAttachments,
   active = true,
 }: TaskOverviewAttachmentsPreviewProps) {
-  const { ref, isInViewport } = useInViewport({ enabled: active })
-  const shouldLoad = active && isInViewport
   const fileInputRef = useRef<HTMLInputElement>(null)
+  const canLoad = active && Number(taskId) > 0
 
   const attachmentsUpload = useTaskAttachmentsUpload({
     tableName: "tasks",
@@ -30,7 +28,7 @@ export function TaskOverviewAttachmentsPreview({
     bucketName: "attachments",
     seedFromBootstrap: true,
     bootstrapAttachments,
-    enabled: shouldLoad,
+    enabled: canLoad,
   })
 
   const previewAttachments = useMemo(
@@ -39,7 +37,6 @@ export function TaskOverviewAttachmentsPreview({
   )
 
   const totalCount = attachmentsUpload.attachments.length
-  const isEmpty = shouldLoad && totalCount === 0 && !attachmentsUpload.isUploading
 
   const openFilePicker = () => {
     fileInputRef.current?.click()
@@ -53,7 +50,7 @@ export function TaskOverviewAttachmentsPreview({
   }
 
   return (
-    <div ref={ref}>
+    <div>
       <input
         ref={fileInputRef}
         type="file"
@@ -61,14 +58,7 @@ export function TaskOverviewAttachmentsPreview({
         className="hidden"
         onChange={handleFilesSelected}
       />
-      <TaskOverviewPreviewSection
-        title="Attachments"
-        active={shouldLoad}
-        isLoading={shouldLoad && attachmentsUpload.isUploading && totalCount === 0}
-        isEmpty={isEmpty}
-        emptyMessage="Add"
-        onEmptyClick={openFilePicker}
-      >
+      <TaskOverviewPreviewSection title="Attachments" active>
         <ul className="space-y-1">
           {previewAttachments.map((att) => (
             <li key={att.id} className="flex items-center gap-2 py-1">
@@ -91,7 +81,7 @@ export function TaskOverviewAttachmentsPreview({
             +{totalCount - PREVIEW_ATTACHMENT_LIMIT} more
           </p>
         ) : null}
-        {attachmentsUpload.isUploading && totalCount > 0 ? (
+        {attachmentsUpload.isUploading ? (
           <div className="mt-1 flex items-center gap-1 text-xs text-gray-500">
             <Loader2 className="h-3 w-3 animate-spin" />
             Uploading…
@@ -104,7 +94,7 @@ export function TaskOverviewAttachmentsPreview({
           label="Add"
           className="mt-2"
           onClick={openFilePicker}
-          disabled={attachmentsUpload.isUploading}
+          disabled={!canLoad || attachmentsUpload.isUploading}
         />
       </TaskOverviewPreviewSection>
     </div>

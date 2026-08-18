@@ -102,3 +102,18 @@ export function isArtifactDraftStaleForServerVersion(
 ): boolean {
   return draftBaseVersion != null && draftBaseVersion > 0 && serverVersion > draftBaseVersion
 }
+
+/**
+ * Realtime / query refresh of a version we just wrote must not look like an
+ * external conflict. The in-flight save is enough; after success, the version
+ * we persisted is also an echo until a later revision arrives.
+ */
+export function isOwnArtifactSaveEcho(args: {
+  saveInFlight: boolean
+  lastOwnSavedVersion: number | null | undefined
+  serverVersion: number
+}): boolean {
+  if (args.saveInFlight) return true
+  const lastOwnSavedVersion = args.lastOwnSavedVersion ?? 0
+  return lastOwnSavedVersion > 0 && args.serverVersion > 0 && args.serverVersion <= lastOwnSavedVersion
+}

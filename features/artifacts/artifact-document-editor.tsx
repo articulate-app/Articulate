@@ -328,7 +328,7 @@ export function ArtifactDocumentEditor({
   const resolvedForceKey =
     forceContentKey != null && forceContentKey !== ""
       ? String(forceContentKey)
-      : `${artifact.id}:${artifact.current_version ?? 0}`
+      : artifact.id
 
   const [blocks, setBlocks] = useState<ArtifactBlock[]>(initialBlocks)
   const [plainText, setPlainText] = useState(artifact.content_text ?? "")

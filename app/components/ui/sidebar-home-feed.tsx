@@ -97,7 +97,7 @@ type UnifiedRecentItem = {
   threadId?: string | null
 }
 
-type ExpandableSectionKey = "projects" | "users" | "mentions" | "ai_chats"
+type ExpandableSectionKey = "projects" | "users" | "mentions" | "ai_chats" | "artifacts"
 
 type SidebarNavRow =
   | {
@@ -150,6 +150,13 @@ const SIDEBAR_NAV_ROWS: SidebarNavRow[] = [
     icon: Bot,
     createType: "ai",
   },
+  {
+    kind: "expandable",
+    section: "artifacts",
+    object: "artifact",
+    name: "Outputs",
+    icon: FileText,
+  },
 ]
 
 const SIDEBAR_CREATE_OPTIONS: Array<{
@@ -179,7 +186,7 @@ const FEED_LABEL: Record<FeedSectionKey, string> = {
   mentions: "Mention",
   users: "User",
   ai_chats: "AI chat",
-  artifacts: "Artifact",
+  artifacts: "Output",
 }
 
 const PINNED_COLLAPSED_KEY = "sidebar-pinned-collapsed-v1"
@@ -195,6 +202,7 @@ const DEFAULT_SECTIONS_EXPANDED: SidebarSectionsExpanded = {
   users: false,
   mentions: false,
   ai_chats: false,
+  artifacts: false,
 }
 
 function recentAtMs(value: string | null | undefined): number {
@@ -213,6 +221,7 @@ function readSectionsExpanded(): SidebarSectionsExpanded {
       users: Boolean(parsed.users),
       mentions: Boolean(parsed.mentions),
       ai_chats: Boolean(parsed.ai_chats),
+      artifacts: Boolean(parsed.artifacts),
     }
   } catch {
     return { ...DEFAULT_SECTIONS_EXPANDED }
@@ -456,6 +465,7 @@ export function SidebarHomeFeed({
     users: SIDEBAR_SECTION_PAGE_SIZE,
     mentions: SIDEBAR_SECTION_PAGE_SIZE,
     ai_chats: SIDEBAR_SECTION_PAGE_SIZE,
+    artifacts: SIDEBAR_SECTION_PAGE_SIZE,
   })
   const [recentsVisibleCount, setRecentsVisibleCount] = useState(CHRONO_PAGE_SIZE)
 
@@ -535,6 +545,7 @@ export function SidebarHomeFeed({
   const usersExpanded = sectionsExpanded.users
   const mentionsExpanded = sectionsExpanded.mentions
   const aiChatsExpanded = sectionsExpanded.ai_chats
+  const artifactsExpanded = sectionsExpanded.artifacts
 
   const { data: projectsAlpha = [], isLoading: projectsLoading } = useQuery({
     queryKey: ["sidebar-nav-projects-alpha"],
@@ -584,6 +595,12 @@ export function SidebarHomeFeed({
     showExpandedChrome && aiChatsExpanded,
     CHRONO_PAGE_SIZE,
   )
+  const artifactsNavQuery = useRecentSectionQuery(
+    "artifacts",
+    fetchHomeRecentArtifacts,
+    showExpandedChrome && artifactsExpanded,
+    CHRONO_PAGE_SIZE,
+  )
 
   // Keep enough chrono pages loaded for the current visible count.
   useEffect(() => {
@@ -602,6 +619,18 @@ export function SidebarHomeFeed({
     }
   }, [aiChatsExpanded, aiQuery, visibleCount.ai_chats])
 
+  useEffect(() => {
+    if (!artifactsExpanded) return
+    const loaded = artifactsNavQuery.data?.pages.flat().length ?? 0
+    if (
+      loaded < visibleCount.artifacts &&
+      artifactsNavQuery.hasNextPage &&
+      !artifactsNavQuery.isFetchingNextPage
+    ) {
+      void artifactsNavQuery.fetchNextPage()
+    }
+  }, [artifactsExpanded, artifactsNavQuery, visibleCount.artifacts])
+
   const mentionsItems = useMemo(() => {
     return ((mentionsQuery.data?.pages.flat() ?? []) as MentionRecentItem[]).map((item) => ({
       id: item.id,
@@ -617,6 +646,13 @@ export function SidebarHomeFeed({
       title: item.title,
     })) as SidebarListItem[]
   }, [aiQuery.data])
+
+  const artifactItems = useMemo(() => {
+    return (artifactsNavQuery.data?.pages.flat() ?? []).map((item) => ({
+      id: item.id,
+      title: item.title,
+    })) as SidebarListItem[]
+  }, [artifactsNavQuery.data])
 
   const recentsEnabled = showExpandedChrome && !recentsCollapsed
 
@@ -989,6 +1025,13 @@ export function SidebarHomeFeed({
         onOpenAiChat(item.id)
         return
       }
+      if (section === "artifacts") {
+        openArtifactCenterTab({
+          artifactId: item.id,
+          title: item.title || null,
+        })
+        return
+      }
       onOpenMention({
         threadId: item.threadId ?? item.id,
         mentionId: item.mentionId ?? null,
@@ -1282,6 +1325,15 @@ export function SidebarHomeFeed({
                     createLabel,
                     leading: () => (
                       <Bot className="h-3.5 w-3.5 shrink-0 text-gray-400" aria-hidden />
+                    ),
+                  })
+                : null}
+              {expanded && item.section === "artifacts"
+                ? renderExpandableItems("artifacts", artifactItems, {
+                    loading: artifactsNavQuery.isLoading,
+                    hasMoreRemote: Boolean(artifactsNavQuery.hasNextPage),
+                    leading: () => (
+                      <FileText className="h-3.5 w-3.5 shrink-0 text-gray-400" aria-hidden />
                     ),
                   })
                 : null}

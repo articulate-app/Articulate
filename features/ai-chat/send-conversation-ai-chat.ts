@@ -317,10 +317,25 @@ export async function sendConversationAiChatStream(args: SendConversationAiChatS
     // from the user message. Keep them in the existing ambient context channel
     // so every normal AI chat entry point carries the same execution facts.
     const { getDesktopClientRuntimeContext } = await import("../../app/lib/articulate-desktop")
+    const { consumeAiBrowserObservations } = await import("./ai-browser-observation-store")
     const runtimeContext = await getDesktopClientRuntimeContext()
+    const browserObservations = consumeAiBrowserObservations()
     const resolvedAmbientContext = {
       ...(ambientContext ?? {}),
       ...runtimeContext,
+      ...(browserObservations.length > 0
+        ? {
+            browser_observations: browserObservations.map((item) => ({
+              browser_session_id: item.browserSessionId,
+              browser_id: item.browserId,
+              url: item.url,
+              title: item.title,
+              links: item.links.slice(0, 40),
+              text: item.text.slice(0, 4000),
+              verified: true,
+            })),
+          }
+        : {}),
     }
     const requestBody = JSON.stringify({
       thread_id: threadId,

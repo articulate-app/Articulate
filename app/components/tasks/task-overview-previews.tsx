@@ -6,6 +6,7 @@ import { TaskOverviewUpdatesComments } from "./task-overview-updates-comments"
 import { TaskOverviewPreviewSection } from "./task-overview-preview-section"
 import { TaskSeoAndAiSeoTab } from "../../../features/tasks/components/task-seo-and-ai-seo-tab"
 import { ArtifactWorkspace } from "../../../features/artifacts/ArtifactWorkspace"
+import { AddDashedButton } from "../ui/add-dashed-button"
 import type { ReviewData } from "@/lib/types/tasks"
 import type { TaskCommentsPanelProps } from "../comments-section/task-comments-panel"
 import type { AiActiveFieldContext } from "../../../features/ai-chat/active-field-context"
@@ -59,16 +60,23 @@ export function TaskOverviewPreviews({
         active
       >
         <div className="min-h-0">
-          <ArtifactWorkspace
-            taskId={taskId}
-            projectId={projectId ?? null}
-            defaultChannelId={preferredChannelId}
-            defaultLanguageId={languageId ?? null}
-            layout="stack"
-            hideHeading
-            contextProjectName={null}
-            onArtifactTextSelectForComment={onArtifactTextSelectForComment}
-          />
+          {taskId > 0 ? (
+            <ArtifactWorkspace
+              taskId={taskId}
+              projectId={projectId ?? null}
+              defaultChannelId={preferredChannelId}
+              defaultLanguageId={languageId ?? null}
+              layout="stack"
+              hideHeading
+              contextProjectName={null}
+              onArtifactTextSelectForComment={onArtifactTextSelectForComment}
+            />
+          ) : (
+            <>
+              <div className="h-16 animate-pulse rounded-lg bg-gray-100" />
+              <AddDashedButton label="Add" className="mt-2" disabled />
+            </>
+          )}
         </div>
       </TaskOverviewPreviewSection>
       <TaskOverviewPreviewSection
@@ -92,15 +100,11 @@ export function TaskOverviewPreviews({
         reviewData={reviewData}
         active
       />
-      {commentsPanelProps ? (
-        <TaskOverviewUpdatesComments
-          taskId={taskId}
-          commentsPanelProps={commentsPanelProps}
-          active
-        />
-      ) : (
-        <TaskOverviewPreviewSection title="Updates & comments" active isLoading />
-      )}
+      <TaskOverviewUpdatesComments
+        taskId={taskId}
+        commentsPanelProps={commentsPanelProps}
+        active
+      />
     </>
   )
 }

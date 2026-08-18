@@ -2,6 +2,7 @@
 
 import React, { useCallback, useEffect, useRef, useState } from "react"
 import { createPortal } from "react-dom"
+import { Clock3 } from "lucide-react"
 import { cn } from "@/lib/utils"
 import {
   TaskCommentsFooterPart,
@@ -19,7 +20,7 @@ type OverviewFeedFilter = "all" | "updates" | "comments"
 
 type TaskOverviewUpdatesCommentsProps = {
   taskId: number
-  commentsPanelProps: TaskCommentsPanelProps
+  commentsPanelProps?: TaskCommentsPanelProps | null
   active?: boolean
 }
 
@@ -34,8 +35,8 @@ export function TaskOverviewUpdatesComments({
   commentsPanelProps,
   active = true,
 }: TaskOverviewUpdatesCommentsProps) {
-  const taskIdNum = commentsPanelProps.taskIdNum
-  const loadThreadHistory = commentsPanelProps.handleViewThreadHistory
+  const taskIdNum = commentsPanelProps?.taskIdNum ?? taskId
+  const loadThreadHistory = commentsPanelProps?.handleViewThreadHistory
   const previewThreadFetchKeyRef = useRef<string | null>(null)
   const [feedFilter, setFeedFilter] = useState<OverviewFeedFilter>("all")
   const [filterThreadId, setFilterThreadId] = useState<number | null>(null)
@@ -44,7 +45,7 @@ export function TaskOverviewUpdatesComments({
   const [composerDock, setComposerDock] = useState<HTMLElement | null>(null)
 
   const handleVisible = useCallback(() => {
-    if (!taskIdNum) return
+    if (!taskIdNum || !loadThreadHistory) return
     const key = String(taskIdNum)
     if (previewThreadFetchKeyRef.current === key) return
     previewThreadFetchKeyRef.current = key
@@ -52,11 +53,11 @@ export function TaskOverviewUpdatesComments({
   }, [taskIdNum, loadThreadHistory])
 
   const handleCommentAdded = useCallback(() => {
-    void loadThreadHistory({ force: true })
+    void loadThreadHistory?.({ force: true })
   }, [loadThreadHistory])
 
-  const setSelectedThreadId = commentsPanelProps.setSelectedThreadId
-  const setIsAddingThread = commentsPanelProps.setIsAddingThread
+  const setSelectedThreadId = commentsPanelProps?.setSelectedThreadId
+  const setIsAddingThread = commentsPanelProps?.setIsAddingThread
 
   const handleSelectThreadFilter = useCallback(
     (threadId: number | null) => {
@@ -64,16 +65,16 @@ export function TaskOverviewUpdatesComments({
       if (threadId != null) {
         setFeedFilter("comments")
       }
-      setSelectedThreadId(threadId)
-      setIsAddingThread(false)
+      setSelectedThreadId?.(threadId)
+      setIsAddingThread?.(false)
     },
     [setSelectedThreadId, setIsAddingThread],
   )
 
   const handleSelectThread = useCallback(
     (threadId: number) => {
-      setSelectedThreadId(threadId)
-      setIsAddingThread(false)
+      setSelectedThreadId?.(threadId)
+      setIsAddingThread?.(false)
       setComposerExpanded(true)
     },
     [setSelectedThreadId, setIsAddingThread],
@@ -88,7 +89,7 @@ export function TaskOverviewUpdatesComments({
   }, [taskIdNum])
 
   useEffect(() => {
-    if (!active || !taskIdNum) return
+    if (!active || !taskIdNum || !loadThreadHistory) return
     previewThreadFetchKeyRef.current = String(taskIdNum)
     void loadThreadHistory()
   }, [active, taskIdNum, loadThreadHistory])
@@ -106,18 +107,20 @@ export function TaskOverviewUpdatesComments({
     return () => window.clearTimeout(timer)
   }, [active, taskIdNum])
 
-  const embedPanelProps: TaskCommentsPanelProps = {
-    ...commentsPanelProps,
-    hideStatusFilter: true,
-    hideThreadToolbar: true,
-    minimalComposer: true,
-    composerExpanded,
-    onComposerExpandedChange: setComposerExpanded,
-    filterThreadId,
-    onSelectThreadFilter: handleSelectThreadFilter,
-  }
+  const embedPanelProps: TaskCommentsPanelProps | null = commentsPanelProps
+    ? {
+        ...commentsPanelProps,
+        hideStatusFilter: true,
+        hideThreadToolbar: true,
+        minimalComposer: true,
+        composerExpanded,
+        onComposerExpandedChange: setComposerExpanded,
+        filterThreadId,
+        onSelectThreadFilter: handleSelectThreadFilter,
+      }
+    : null
 
-  const mentionCount = Array.isArray(commentsPanelProps.allMentions)
+  const mentionCount = Array.isArray(commentsPanelProps?.allMentions)
     ? filterThreadId != null
       ? commentsPanelProps.allMentions.filter(
           (m: any) => Number(m?.thread_id) === Number(filterThreadId),
@@ -163,7 +166,7 @@ export function TaskOverviewUpdatesComments({
     </div>
   )
 
-  const headerActions = (
+  const headerActions = commentsPanelProps ? (
     <TaskCommentsHeaderRow
       taskIdNum={commentsPanelProps.taskIdNum}
       threadsList={commentsPanelProps.threadsList}
@@ -178,27 +181,52 @@ export function TaskOverviewUpdatesComments({
       filterThreadId={filterThreadId}
       onSelectThreadFilter={handleSelectThreadFilter}
     />
+  ) : (
+    <button
+      type="button"
+      disabled
+      className="inline-flex h-7 w-7 items-center justify-center rounded-md text-gray-400"
+      title="Filter by thread"
+      aria-label="Filter by thread"
+    >
+      <Clock3 className="h-4 w-4" aria-hidden />
+    </button>
   )
 
-  const composer = (
+  const composerStub = (
+    <div className="flex h-9 items-center gap-1.5">
+      <button
+        type="button"
+        disabled
+        className="flex h-9 min-w-0 flex-1 cursor-text items-center rounded-md border border-gray-200 bg-white px-3 text-left text-sm text-muted-foreground"
+      >
+        Add a comment...
+      </button>
+    </div>
+  )
+
+  const composer = embedPanelProps ? (
     <>
       <TaskCommentsInputPart
         {...embedPanelProps}
         onCommentAdded={handleCommentAdded}
       />
-      {composerExpanded ? <TaskCommentsFooterPart {...commentsPanelProps} /> : null}
+      {composerExpanded ? <TaskCommentsFooterPart {...commentsPanelProps!} /> : null}
     </>
+  ) : (
+    composerStub
   )
 
   return (
     <>
       <TaskOverviewPreviewSection
-        title="Activity"
+        title="Updates & comments"
         active={active}
         onVisible={handleVisible}
         belowTitle={filterPills}
         headerActions={headerActions}
       >
+        {commentsPanelProps ? (
         <TaskOverviewMergedFeed
           taskId={taskId}
           allMentions={commentsPanelProps.allMentions}
@@ -209,7 +237,13 @@ export function TaskOverviewUpdatesComments({
           previewLimit={previewLimit}
           onSelectThread={handleSelectThread}
         />
-        {!isExpanded && (mentionCount > 8 || includeActivities) ? (
+        ) : (
+          <div className="space-y-2">
+            <div className="h-4 w-2/3 animate-pulse rounded bg-gray-100" />
+            <div className="h-4 w-1/2 animate-pulse rounded bg-gray-100" />
+          </div>
+        )}
+        {commentsPanelProps && !isExpanded && (mentionCount > 8 || includeActivities) ? (
           <button
             type="button"
             className="mt-1 text-xs text-gray-500 hover:text-gray-700"

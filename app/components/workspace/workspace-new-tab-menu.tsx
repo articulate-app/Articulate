@@ -35,6 +35,7 @@ export type WorkspaceNewTabMenuProps = {
   /** Destination pane for every option selected from this menu instance. */
   pane: WorkspacePaneId
   pathname?: string
+  /** Ignored — the menu owns a local query so it does not share task-list `?q=`. */
   searchValue?: string
   onSearchChange?: (value: string) => void
   onSearchCommit?: (value?: string) => void
@@ -68,18 +69,12 @@ function quickActionIcon(type: WorkspaceNewTabQuickActionType) {
 export function WorkspaceNewTabMenu({
   pane,
   pathname,
-  searchValue = "",
-  onSearchChange,
-  onSearchCommit,
-  onClearSearch,
-  selectedTypeFilters = [],
-  onToggleTypeFilter,
-  onShowAll: _onShowAll,
   onAfterResultOpen,
   triggerTitle = "Open tab",
   triggerAriaLabel = "Open tab",
 }: WorkspaceNewTabMenuProps) {
   const [isOpen, setIsOpen] = useState(false)
+  const [menuQuery, setMenuQuery] = useState("")
   const queryClient = useQueryClient()
 
   useEffect(() => {
@@ -199,7 +194,7 @@ export function WorkspaceNewTabMenu({
   }
 
   const handleShowAllResults = (value?: string) => {
-    const searchQuery = (value ?? searchValue).trim()
+    const searchQuery = (value ?? menuQuery).trim()
     if (!searchQuery) return
     openWorkspaceView(
       {
@@ -226,7 +221,7 @@ export function WorkspaceNewTabMenu({
       return
     }
     if (type === "research") {
-      handleOpenResearch(searchValue)
+      handleOpenResearch(menuQuery)
       return
     }
     if (type === "message") {
@@ -262,6 +257,7 @@ export function WorkspaceNewTabMenu({
       open={isOpen}
       onOpenChange={(next) => {
         setIsOpen(next)
+        if (next) setMenuQuery("")
       }}
     >
       <PopoverTrigger asChild>
@@ -291,12 +287,9 @@ export function WorkspaceNewTabMenu({
           hideTypeFilters
           recentsMode="opened"
           compact
-          searchValue={searchValue}
-          onSearchChange={onSearchChange}
-          onSearchCommit={onSearchCommit}
-          onClearSearch={onClearSearch}
-          selectedTypeFilters={selectedTypeFilters}
-          onToggleTypeFilter={onToggleTypeFilter}
+          searchValue={menuQuery}
+          onSearchChange={setMenuQuery}
+          onSearchCommit={handleShowAllResults}
           onPreviewResultSelect={handleSelectResult}
           onShowAll={handleShowAllResults}
           onOpenResearch={handleOpenResearch}

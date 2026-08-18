@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest"
 import {
   isArtifactDraftStaleForServerVersion,
   isArtifactDraftNoopAgainstBase,
+  isOwnArtifactSaveEcho,
   resolveArtifactDraftExpectedVersion,
   resolveSavedLiveArtifactBase,
 } from "../features/artifacts/artifact-live-save-base"
@@ -123,5 +124,23 @@ describe("artifact live save base", () => {
   it("keeps a manual draft on its original version when the server advances", () => {
     expect(resolveArtifactDraftExpectedVersion(4, 5)).toBe(4)
     expect(isArtifactDraftStaleForServerVersion(4, 5)).toBe(true)
+  })
+
+  it("treats the in-flight or just-saved version as our own echo", () => {
+    expect(isOwnArtifactSaveEcho({
+      saveInFlight: true,
+      lastOwnSavedVersion: 4,
+      serverVersion: 5,
+    })).toBe(true)
+    expect(isOwnArtifactSaveEcho({
+      saveInFlight: false,
+      lastOwnSavedVersion: 5,
+      serverVersion: 5,
+    })).toBe(true)
+    expect(isOwnArtifactSaveEcho({
+      saveInFlight: false,
+      lastOwnSavedVersion: 5,
+      serverVersion: 6,
+    })).toBe(false)
   })
 })

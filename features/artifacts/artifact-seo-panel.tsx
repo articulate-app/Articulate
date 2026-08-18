@@ -802,16 +802,14 @@ export function ArtifactSeoPanel({
 
       {seoQuery.isLoading ? (
         <p className="text-xs text-gray-500">Loading keywords…</p>
-      ) : allKeywords.length === 0 ? (
-        addKeywordComposer
-      ) : (
+      ) : allKeywords.length > 0 ? (
         <div className="space-y-1.5">
           <ul className="divide-y divide-gray-100">
             {allKeywords.map((row) => renderKeywordRow(row))}
           </ul>
-          {addKeywordComposer}
         </div>
-      )}
+      ) : null}
+      {addKeywordComposer}
     </div>
   )
 }

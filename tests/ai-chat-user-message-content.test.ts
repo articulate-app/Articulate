@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest"
 import {
+  buildSelectionPillsFromContexts,
   buildUserMessageContentJson,
   inferUserMessageSegments,
   parseUserMessageContentJson,
@@ -62,6 +63,42 @@ describe("inferUserMessageSegments", () => {
     expect(inferUserMessageSegments("Hello\n\nworld", null)).toEqual([
       { type: "text", text: "Hello\n\nworld" },
     ])
+  })
+})
+
+describe("buildSelectionPillsFromContexts", () => {
+  it("keeps a single artifact pill when the same passage is also in text context", () => {
+    const pills = buildSelectionPillsFromContexts({
+      artifactContext: {
+        artifact_id: "art-1",
+        title: "Brief",
+        selected_text: "gestão de ativos",
+      },
+      artifactTooltip: "Brief · selected text",
+      textContext: {
+        selected_text: "gestão de ativos",
+        source_type: "chat_message",
+      },
+      textTooltip: "Selected chat text",
+    })
+    expect(pills).toHaveLength(1)
+    expect(pills[0]?.entity_type).toBe("artifact")
+    expect(pills[0]?.selected_text).toBe("gestão de ativos")
+  })
+
+  it("keeps a separate text pill when the passage is different from the artifact selection", () => {
+    const pills = buildSelectionPillsFromContexts({
+      artifactContext: {
+        artifact_id: "art-1",
+        title: "Brief",
+      },
+      textContext: {
+        selected_text: "from a chat message",
+        source_type: "chat_message",
+      },
+    })
+    expect(pills).toHaveLength(2)
+    expect(pills.map((pill) => pill.entity_type)).toEqual(["artifact", "chat"])
   })
 })
 

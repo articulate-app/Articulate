@@ -100,7 +100,8 @@ export function buildSelectionPillsFromContexts(args: {
     })
   }
   const text = args.textContext
-  if (text?.selected_text?.trim()) {
+  const artifactSelectedText = String(artifact?.selected_text ?? "").trim()
+  if (text?.selected_text?.trim() && text.selected_text.trim() !== artifactSelectedText) {
     const selected = text.selected_text.trim()
     const isComponent = text.source_type === "component_output"
     pills.push({

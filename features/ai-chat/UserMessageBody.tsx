@@ -110,9 +110,6 @@ export function UserMentionChip({ tag }: { tag: AiContextTag }) {
 }
 
 function selectionPillClassName(pill: AiUserMessageSelectionPillPart): string {
-  if (pill.entity_type === "artifact") {
-    return getMentionChipClassName({ type: "artifact" })
-  }
   if (pill.entity_type === "component") {
     return getMentionChipClassName({ type: "task_component" })
   }
@@ -176,6 +173,38 @@ function UserSelectionPill({ pill }: { pill: AiUserMessageSelectionPillPart }) {
       }
       window.location.assign(nextUrl)
     }
+  }
+
+  if (pill.entity_type === "artifact") {
+    const title = (pill.title || pill.label || "Artifact").trim() || "Artifact"
+    const subtitle =
+      pill.tooltip?.trim()
+      || (pill.selected_text?.trim() ? `${title} · selected text` : "Artifact")
+    const displaySubtitle =
+      subtitle === title
+        ? "Artifact"
+        : subtitle.startsWith(`${title} · `)
+          ? subtitle.slice(title.length + 3)
+          : subtitle
+    return (
+      <TooltipProvider delayDuration={200}>
+        <Tooltip>
+          <TooltipTrigger asChild>
+            <span className="inline-flex align-middle" data-ai-history-selection-pill="1">
+              <ArtifactContextChip
+                title={title}
+                subtitle={displaySubtitle}
+                readOnly
+                onClick={canNavigate ? navigate : undefined}
+              />
+            </span>
+          </TooltipTrigger>
+          <TooltipContent side="top" className="max-w-xs whitespace-pre-line text-left">
+            {tooltip}
+          </TooltipContent>
+        </Tooltip>
+      </TooltipProvider>
+    )
   }
 
   const chip = (
@@ -266,6 +295,19 @@ export function UserMessageBody({
   const visibleContent = resolveUserMessageDisplayContent(content, contentJson)
   const segments = inferUserMessageSegments(visibleContent, parsed)
   const selectionPills = parsed.selection_pills ?? []
+  const artifactPillIds = new Set(
+    selectionPills
+      .map((pill) => (pill.entity_type === "artifact" ? pill.artifact_id?.trim() : null))
+      .filter((id): id is string => Boolean(id)),
+  )
+  const visibleSegments =
+    artifactPillIds.size === 0
+      ? segments
+      : segments.filter((segment) => {
+          if (segment.type !== "mention" || segment.tag.type !== "artifact") return true
+          const id = String(segment.tag.artifactId ?? segment.tag.id ?? "").trim()
+          return !id || !artifactPillIds.has(id)
+        })
   const collapseContent = parsed.display_parts?.length
     ? synthesizePlainTextFromDisplayParts(parsed.display_parts)
     : [
@@ -305,7 +347,7 @@ export function UserMessageBody({
         setIsSelected((prev) => !prev)
       }}
     >
-      {selectionPills.length > 0 || segments.length > 0 ? (
+      {selectionPills.length > 0 || visibleSegments.length > 0 ? (
         <div className={cn(bodyClassName, "w-fit max-w-full")}>
           {selectionPills.map((pill, index) => (
             <span
@@ -317,7 +359,7 @@ export function UserMessageBody({
               <UserSelectionPill pill={pill} />
             </span>
           ))}
-          {segments.map((segment, index) => renderSegment(segment, index))}
+          {visibleSegments.map((segment, index) => renderSegment(segment, index))}
         </div>
       ) : null}
     </div>

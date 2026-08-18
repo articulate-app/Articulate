@@ -9,6 +9,7 @@ import {
   TASK_DETAILS_SELECT_TRIGGER_CLASS,
 } from "../../lib/chat-content-column"
 import { useEffect, useState, useRef, useCallback, useMemo, Dispatch, SetStateAction } from "react"
+import { useOverflowGutterWidth } from "../../hooks/use-overflow-gutter-width"
 import { Thread } from '../../types/task'
 import { Button } from "../ui/button"
 import { Trash2, Copy, Upload, Image as ImageIcon, X, ChevronLeft, ChevronsLeft, ChevronRight, ChevronDown, PanelRight, ExternalLink, Bot, MoreHorizontal, Plus, Loader2, Check, Star, Share2 } from "lucide-react"
@@ -1153,6 +1154,10 @@ export function TaskDetails({
   const publicationDateInputRef = useRef<HTMLInputElement>(null)
   const commentInputRef = useRef<HTMLDivElement>(null)
   const overviewCommentDockRef = useRef<HTMLDivElement>(null)
+  const overviewScrollRef = useRef<HTMLDivElement>(null)
+  const commentsScrollRef = useRef<HTMLDivElement>(null)
+  const overviewGutterWidth = useOverflowGutterWidth(overviewScrollRef, activeTaskTab)
+  const commentsGutterWidth = useOverflowGutterWidth(commentsScrollRef, activeTaskTab)
   const [briefingEditorHeight, setBriefingEditorHeight] = useState(220)
   const [overviewCommentDockHeight, setOverviewCommentDockHeight] = useState(0)
   const [commentInputDockHeight, setCommentInputDockHeight] = useState(0)
@@ -3141,8 +3146,8 @@ export function TaskDetails({
           column and the comments column share the same parent height via the top-level flex split. */}
       <div className="relative flex min-h-0 flex-1 flex-col overflow-hidden">
         {activeTaskTab === "overview" ? (
-          <div className="flex min-h-0 flex-1 flex-col">
-            <div className="min-h-0 flex-1 overflow-auto overflow-x-hidden">
+          <div className="relative min-h-0 flex-1 overflow-hidden">
+            <div ref={overviewScrollRef} className="absolute inset-0 overflow-auto overflow-x-hidden [scrollbar-gutter:stable]">
           <section className={cn(CHAT_CONTENT_COLUMN_CLASS, "px-4 pb-0")}>
               {/* Banner is rendered in the header for suggestion mode */}
           <TaskOverviewPreviewSection
@@ -3905,9 +3910,9 @@ export function TaskDetails({
             </TaskOverviewPreviewSection>
             )}
 
-          {!isSuggestionMode && taskIdNum ? (
+          {!isSuggestionMode ? (
             <TaskOverviewPreviews
-              taskId={taskIdNum}
+              taskId={taskIdNum ?? 0}
               projectId={task?.project_id_int || undefined}
               languageId={task?.language_id ? Number(task.language_id) : undefined}
               canLoad={canLoadFollowups}
@@ -3926,7 +3931,7 @@ export function TaskDetails({
               }}
             />
           ) : null}
-          {!isSuggestionMode && commentsPanelProps ? (
+          {!isSuggestionMode ? (
             <div
               aria-hidden="true"
               className="pointer-events-none shrink-0"
@@ -3935,34 +3940,44 @@ export function TaskDetails({
           ) : null}
           </section>
             </div>
-            {!isSuggestionMode && commentsPanelProps ? (
+            {!isSuggestionMode ? (
               <div
-                id={TASK_OVERVIEW_COMMENT_DOCK_ID}
-                ref={overviewCommentDockRef}
-                className={cn(
-                  CHAT_CONTENT_COLUMN_CLASS,
-                  "absolute bottom-0 left-0 right-0 z-10 bg-white px-4 py-2",
-                )}
-              />
+                className="pointer-events-none absolute inset-0 z-10 flex flex-col justify-end"
+                style={{ paddingRight: overviewGutterWidth }}
+              >
+                <div
+                  id={TASK_OVERVIEW_COMMENT_DOCK_ID}
+                  ref={overviewCommentDockRef}
+                  className={cn(
+                    CHAT_CONTENT_COLUMN_CLASS,
+                    "pointer-events-auto bg-white px-4 py-2",
+                  )}
+                />
+              </div>
             ) : null}
           </div>
         ) : (
           <div className="flex min-h-0 flex-1 flex-col overflow-hidden">
             {activeTaskTab === "comments" && commentsPanelProps ? (
-              <section className={cn(CHAT_CONTENT_COLUMN_CLASS, "flex min-h-0 flex-1 flex-col p-4 pb-0")}>
-                <h3 className="mb-3 shrink-0 text-base font-medium text-gray-900">Comments</h3>
-                <div className="relative flex min-h-0 flex-1 flex-col gap-2">
-                  <div className="min-h-0 flex-1 overflow-y-auto">
+              <div className="relative min-h-0 flex-1 overflow-hidden">
+                <div ref={commentsScrollRef} className="absolute inset-0 overflow-y-auto [scrollbar-gutter:stable]">
+                  <section className={cn(CHAT_CONTENT_COLUMN_CLASS, "flex min-h-0 flex-col p-4 pb-0")}>
+                    <h3 className="mb-3 shrink-0 text-base font-medium text-gray-900">Comments</h3>
                     <TaskCommentsListPart {...commentsPanelProps} focusOnly />
                     <div
                       aria-hidden="true"
                       className="pointer-events-none shrink-0"
                       style={{ height: commentInputDockHeight > 0 ? commentInputDockHeight + 8 : 0 }}
                     />
-                  </div>
+                  </section>
+                </div>
+                <div
+                  className="pointer-events-none absolute inset-0 z-10 flex flex-col justify-end"
+                  style={{ paddingRight: commentsGutterWidth }}
+                >
                   <div
                     ref={commentInputRef}
-                    className="absolute bottom-0 left-0 right-0 z-10 bg-white pt-1"
+                    className={cn(CHAT_CONTENT_COLUMN_CLASS, "pointer-events-auto bg-white px-4 pt-1")}
                     data-ai-field-type="comment_input"
                     data-ai-field-label="Comment"
                     onFocusCapture={() =>
@@ -3988,7 +4003,7 @@ export function TaskDetails({
                     ) : null}
                   </div>
                 </div>
-              </section>
+              </div>
             ) : (
               <div className="min-h-0 flex-1 overflow-auto overflow-x-hidden">
                 <div className={CHAT_CONTENT_COLUMN_CLASS}>

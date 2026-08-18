@@ -1,6 +1,10 @@
 /**
- * Provider-agnostic browser agent contract.
- * Browser Use Cloud V4 is the MVP implementation; Browserbase + Stagehand / Computer Use can plug in later.
+ * Browser runtime/provider contract.
+ *
+ * Articulate AI owns reasoning.
+ * BrowserController (controller.ts) owns deterministic page control.
+ * This interface describes where the browser runs and how sessions/Live View
+ * are provisioned. Browser Use Agent /runs is not part of this contract.
  */
 
 export type BrowserAgentProviderName =
@@ -97,45 +101,12 @@ export type CreateBrowserInput = {
   screen?: BrowserViewportSize | null
 }
 
-export type StartRunInput = {
-  task: string
-  model?: string
-  sessionId?: string | null
-  workspaceId?: string | null
-  profileId?: string | null
-  attachedFileIds?: string[] | null
-  /**
-   * ISO country code for residential proxy, or `null` to disable proxy.
-   * Required by the V4 TS contract whenever browserSettings is sent for a NEW browser.
-   */
-  proxyCountryCode?: string | null
-  /** Record the browser session to mp4. Defaults to false for the performance baseline. */
-  record?: boolean | null
-  maxCostUsd?: number | null
-  /** Remote browser screen size when a new browser is provisioned (V4 screenWidth/Height). */
-  screen?: BrowserViewportSize | null
-}
-
-export type ContinueRunInput = {
-  sessionId: string
-  text: string
-  model?: string
-  /** When true, interrupt the current turn if supported. */
-  interrupt?: boolean
-}
-
 export type UploadFileInput = {
   workspaceId: string
   name: string
   contentType: string
   bytes: Uint8Array
   purpose?: string | null
-}
-
-export type GetEventsInput = {
-  runId: string
-  after?: number | null
-  limit?: number
 }
 
 export type LiveViewInfo = {
@@ -215,14 +186,16 @@ export interface BrowserAgentProvider {
   createWorkspace(name?: string | null): Promise<BrowserWorkspace>
   uploadFile(input: UploadFileInput): Promise<BrowserUploadedFile>
 
-  startRun(input: StartRunInput): Promise<BrowserRun>
-  continueRun(input: ContinueRunInput): Promise<BrowserRun>
-  cancelRun(runId: string): Promise<void>
-  getRun(runId: string): Promise<BrowserRun>
-  getRunStatus(runId: string): Promise<BrowserRunStatus>
-  getEvents(input: GetEventsInput): Promise<{ events: BrowserRunEvent[]; nextAfter: number | null }>
-  getLiveView(runId: string, browserId?: string | null): Promise<LiveViewInfo>
+  getLiveView(runId?: string | null, browserId?: string | null): Promise<LiveViewInfo>
+  /** Deterministic page control. Cloud implements via CDP; Desktop is client-driven. */
+  actOnBrowser?(
+    browserId: string,
+    input: import("./controller.ts").BrowserControllerInput,
+  ): Promise<import("./controller.ts").BrowserControllerResult>
 }
+
+/** Runtime provider alias — reasoning lives in Articulate AI, not this layer. */
+export type BrowserProvider = BrowserAgentProvider
 
 export class BrowserAgentError extends Error {
   readonly code: string

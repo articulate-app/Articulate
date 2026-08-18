@@ -5174,19 +5174,20 @@ export function TasksLayout({
     const aiItems = aiChromeTabs.map((tab) => ({
       key: buildAiRightTabKey(tab.id),
       label: tab.title?.trim() || "New chat",
+      kind: "ai",
     }))
-    const items: { key: string; label: string }[] = []
+    const items: { key: string; label: string; kind?: string }[] = []
     let injectedAiTabs = false
     for (const tab of centerPaneTabs) {
       if (tab.kind !== "ai") {
-        items.push({ key: tab.key, label: tab.title })
+        items.push({ key: tab.key, label: tab.title, kind: tab.kind })
         continue
       }
       if (injectedAiTabs) continue
       if (aiItems.length > 0) {
         items.push(...aiItems)
       } else {
-        items.push({ key: tab.key, label: tab.title })
+        items.push({ key: tab.key, label: tab.title, kind: tab.kind })
       }
       injectedAiTabs = true
     }

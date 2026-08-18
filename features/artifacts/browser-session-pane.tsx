@@ -270,6 +270,7 @@ export function BrowserSessionPane({
     if (browser.phase !== "provisioning") return
     if (destinationId || artifactId || publicationRunId || liveViewUrl) return
     if (browser.provider === "articulate_desktop" && browser.browserId) return
+    if (browser.provider === "browser_use" && browser.browserId) return
     if (browser.provider === "browser_use_local" && browser.bridgeSessionId) return
     const workspaceTabId = typeof tabId === "string" && tabId.trim() ? tabId.trim() : null
     const provisionKey = `standalone:${workspaceTabId || browserId || "new"}`
@@ -290,13 +291,18 @@ export function BrowserSessionPane({
       try {
         if (!isCurrent()) return
         let opened
+        const startUrl =
+          (typeof browser.currentUrl === "string" && browser.currentUrl.trim())
+          || "https://www.google.com/"
+        const source = browser.source === "ai" ? "ai" : "manual"
+        const profileKey = source === "ai" ? "ai-browser" : "manual-browser"
         try {
           const claimed = workspaceTabId ? claimManualBrowserOpen(workspaceTabId) : null
           opened = await (claimed ??
             openBrowserSession({
-              startUrl: "https://www.google.com/",
-              source: "manual",
-              profileKey: "manual-browser",
+              startUrl,
+              source,
+              profileKey,
               desktopBrowserId: workspaceTabId,
             }))
         } catch (openError) {
@@ -306,9 +312,9 @@ export function BrowserSessionPane({
           await cleanupBrowsers()
           if (!isCurrent()) return
           opened = await openBrowserSession({
-            startUrl: "https://www.google.com/",
-            source: "manual",
-            profileKey: "manual-browser",
+            startUrl,
+            source,
+            profileKey,
             desktopBrowserId: workspaceTabId,
           })
         }
@@ -321,7 +327,7 @@ export function BrowserSessionPane({
           sessionId: opened.bridgeSessionId ?? opened.browserId,
           liveViewUrl: opened.liveViewUrl,
           provider: opened.provider,
-          source: "manual",
+          source,
           currentUrl: opened.currentUrl,
           pageTitle: opened.title,
           faviconUrl: opened.faviconUrl ?? null,
@@ -358,8 +364,10 @@ export function BrowserSessionPane({
   }, [
     artifactId,
     browser.bridgeSessionId,
+    browser.currentUrl,
     browser.phase,
     browser.provider,
+    browser.source,
     browserId,
     destinationId,
     liveViewUrl,

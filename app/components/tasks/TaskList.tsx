@@ -73,12 +73,11 @@ import {
   AlertDialogTitle,
 } from "../ui/alert-dialog"
 import { UserAvatar } from "@/components/UserAvatar";
-import { ProjectBadge } from "@/components/ProjectBadge";
 import { getImageUrl } from "../../lib/public-media";
 import { formatCompactDateDisplay, toISODate } from "../../lib/utils";
 import { InlineDateEditor } from "./InlineDateEditor";
 import { InlineSelect } from "./InlineSelect";
-import { TaskStatusPill } from "./task-list-visuals";
+import { ProjectMarker, TaskStatusPill } from "./task-list-visuals";
 import { patchTaskInGroupTasksCaches } from '../../../src/hooks/use-task-group-tasks-query';
 import type { TaskCardColorMode } from '@/lib/task-card-colors';
 import {
@@ -2266,7 +2265,7 @@ export function TaskList({ onTaskSelect, expandMainTaskId, selectedTaskId, editF
                     }
                   }}
                   onClick={(e) => e.stopPropagation()}
-                  className="w-full min-w-0 border-0 bg-transparent px-0 py-0 text-sm leading-none shadow-none outline-none ring-0 focus:outline-none focus:ring-0 overflow-visible caret-gray-900"
+                  className="h-8 w-full min-w-0 rounded border border-gray-500 bg-white px-1.5 py-0.5 text-sm leading-none caret-gray-900 shadow-none outline-none ring-0 placeholder:text-gray-500 focus:outline-none focus:ring-1 focus:ring-gray-500"
                   style={{ textOverflow: 'clip' }}
                   autoFocus={editIntent !== 'hover' && !isScrolling}
                 />
@@ -2303,8 +2302,8 @@ export function TaskList({ onTaskSelect, expandMainTaskId, selectedTaskId, editF
                   // Compact: shrink-wrap the title (like expanded) so hover/edit chrome
                   // matches text width instead of stretching across the whole column.
                   isCompactTitle ? 'inline-block w-fit max-w-full' : 'min-w-0 flex-1',
-                  'cursor-text rounded-md border border-transparent px-1 py-0.5 transition-colors hover:bg-gray-50/80',
-                  isHoverActive(taskId, 'title') && 'bg-gray-50/80',
+                  'cursor-text rounded border border-transparent px-1 py-0.5 transition-colors hover:border-gray-300 hover:bg-white',
+                  isHoverActive(taskId, 'title') && 'border-gray-300 bg-white',
                   // Compact rows distinguish AI suggestions by subtly muting the title (no icon) instead.
                   isCompactTitle && isSuggestion && 'text-muted-foreground'
                 )}
@@ -2371,16 +2370,6 @@ export function TaskList({ onTaskSelect, expandMainTaskId, selectedTaskId, editF
           ""
 
         const photoUrl = task.assignedToPhotoUrl ?? getImageUrl(task.assigned_to_photo ?? task.assigned_user?.photo) ?? null
-        
-        const leadingSlot = (
-          <div className="leading-slot flex h-5 w-5 shrink-0 items-center justify-center">
-            {task.assigned_to_id ? (
-              <UserAvatar name={displayName} photoUrl={photoUrl} size="xs" className="!h-5 !w-5 !min-h-5 !min-w-5" />
-            ) : (
-              <span className="block h-5 w-5" aria-hidden />
-            )}
-          </div>
-        )
 
         if (isEditing && !isCompactAssignee) {
           const filteredWatchers = getFilteredWatchersForTask(task)
@@ -2393,12 +2382,11 @@ export function TaskList({ onTaskSelect, expandMainTaskId, selectedTaskId, editF
           }))
           return (
             <div
-              className="task-cell relative flex shrink-0 items-center gap-2 px-1"
+              className="task-cell relative flex min-w-0 shrink-0 items-center px-1"
               data-active-editor
               data-inline-editor
               style={measuredW ? { width: measuredW, maxWidth: measuredW } : undefined}
             >
-              {leadingSlot}
               <div className="min-w-0 flex-1">
                 <InlineSelect
                   options={assigneeOptions}
@@ -2407,6 +2395,7 @@ export function TaskList({ onTaskSelect, expandMainTaskId, selectedTaskId, editF
                   onBlur={() => handleCellCancel()}
                   placeholder="Select assignee"
                   emptyOption={{ value: '', label: 'Unassigned' }}
+                  showMedia="avatar"
                   autoFocus={editIntent !== 'hover' && !isScrolling}
                 />
               </div>
@@ -2452,12 +2441,11 @@ export function TaskList({ onTaskSelect, expandMainTaskId, selectedTaskId, editF
         }
 
         return (
-          <div className="task-cell flex min-w-0 items-center gap-2" ref={(el) => measureCellWidth(task.id, 'assigned_user', el)}>
-            {leadingSlot}
+          <div className="task-cell flex min-w-0 items-center" ref={(el) => measureCellWidth(task.id, 'assigned_user', el)}>
             <span
               data-editable-cell
               className={cn(
-                "flex min-w-0 flex-1 cursor-text items-center rounded border border-transparent px-1 py-0.5 text-sm transition-colors hover:border-gray-300 hover:bg-white",
+                "flex min-w-0 flex-1 cursor-text items-center gap-1.5 rounded border border-transparent px-1 py-0.5 text-sm transition-colors hover:border-gray-300 hover:bg-white",
                 isHoverActive(task.id, 'assigned_user') && 'bg-white border-gray-300'
               )}
               {...(isHoverActive(task.id, 'assigned_user') && {
@@ -2472,7 +2460,10 @@ export function TaskList({ onTaskSelect, expandMainTaskId, selectedTaskId, editF
               onPointerLeave={() => handleCellHoverLeave(task.id, 'assigned_user')}
             >
               {task.assigned_to_id ? (
-                <span className="truncate whitespace-nowrap overflow-hidden">{displayName}</span>
+                <>
+                  <UserAvatar name={displayName} photoUrl={photoUrl} size="xs" className="!h-5 !w-5 !min-h-5 !min-w-5" />
+                  <span className="truncate whitespace-nowrap overflow-hidden">{displayName}</span>
+                </>
               ) : (
                 <span className="block">&nbsp;</span>
               )}
@@ -2508,27 +2499,6 @@ export function TaskList({ onTaskSelect, expandMainTaskId, selectedTaskId, editF
 
         const projectLogoUrl = task.projectLogoUrl ?? getImageUrl(task.project_logo ?? task.projects?.logo) ?? null
 
-        const leadingSlot = (
-          <div className="leading-slot flex h-4 w-4 shrink-0 items-center justify-center">
-            {projectName ? (
-              projectLogoUrl ? (
-                <img
-                  src={projectLogoUrl}
-                  alt={projectName}
-                  className="h-4 w-4 rounded-sm object-cover"
-                />
-              ) : (
-                <span
-                  className="h-3 w-3 shrink-0 rounded-full"
-                  style={{ backgroundColor: projectColor || '#e5e7eb' }}
-                />
-              )
-            ) : (
-              <span className="block h-4 w-4" aria-hidden />
-            )}
-          </div>
-        )
-
         if (isEditing) {
           const projectOptions = (editFields?.projects || [])
             .filter((opt: any) => opt.active === undefined || opt.active === true)
@@ -2542,12 +2512,11 @@ export function TaskList({ onTaskSelect, expandMainTaskId, selectedTaskId, editF
           const measuredW = getMeasuredWidth(task.id, 'projects')
           return (
             <div
-              className="task-cell relative flex shrink-0 items-center gap-2 px-1"
+              className="task-cell relative flex min-w-0 shrink-0 items-center px-1"
               data-active-editor
               data-inline-editor
               style={measuredW ? { width: measuredW, maxWidth: measuredW } : undefined}
             >
-              {leadingSlot}
               <div className="min-w-0 flex-1">
                 <InlineSelect
                   options={projectOptions}
@@ -2556,8 +2525,8 @@ export function TaskList({ onTaskSelect, expandMainTaskId, selectedTaskId, editF
                   onBlur={() => handleCellCancel()}
                   placeholder="Select project"
                   emptyOption={{ value: '', label: 'No project' }}
+                  showMedia="logo"
                   autoFocus={editIntent !== 'hover' && !isScrolling}
-                  debugLabel="project"
                 />
               </div>
             </div>
@@ -2565,8 +2534,7 @@ export function TaskList({ onTaskSelect, expandMainTaskId, selectedTaskId, editF
         }
 
         return (
-          <div className="task-cell flex min-w-0 items-center gap-2" ref={(el) => measureCellWidth(task.id, 'projects', el)}>
-            {leadingSlot}
+          <div className="task-cell flex min-w-0 items-center" ref={(el) => measureCellWidth(task.id, 'projects', el)}>
             <span
               data-editable-cell
               className={cn(
@@ -2585,7 +2553,7 @@ export function TaskList({ onTaskSelect, expandMainTaskId, selectedTaskId, editF
               onPointerLeave={() => handleCellHoverLeave(task.id, 'projects')}
             >
               {projectName ? (
-                <span className="truncate whitespace-nowrap overflow-hidden">{projectName}</span>
+                <ProjectMarker name={projectName} logo={projectLogoUrl} color={projectColor} size="sm" />
               ) : (
                 <span className="block">&nbsp;</span>
               )}
@@ -2624,20 +2592,11 @@ export function TaskList({ onTaskSelect, expandMainTaskId, selectedTaskId, editF
           const measuredW = getMeasuredWidth(task.id, 'project_statuses')
           return (
             <div
-              className="task-cell relative flex shrink-0 items-center gap-1.5 px-1"
+              className="task-cell relative flex min-w-0 shrink-0 items-center px-1"
               data-active-editor
               data-inline-editor
               style={measuredW ? { width: measuredW, maxWidth: measuredW } : undefined}
             >
-              {color ? (
-                <span
-                  className="h-2 w-2 shrink-0 rounded-full"
-                  style={{ backgroundColor: color }}
-                  aria-hidden
-                />
-              ) : (
-                <span className="h-2 w-2 shrink-0" aria-hidden />
-              )}
               <div className="min-w-0 flex-1">
                 <InlineSelect
                   options={statusOptions}
@@ -2645,6 +2604,7 @@ export function TaskList({ onTaskSelect, expandMainTaskId, selectedTaskId, editF
                   onChange={(val) => handleCellSaveWithValue(task.id, 'project_statuses', String(val), task)}
                   onBlur={() => handleCellCancel()}
                   placeholder="Select status"
+                  showMedia="color"
                   autoFocus={editIntent !== 'hover' && !isScrolling}
                 />
               </div>

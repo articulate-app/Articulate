@@ -9,7 +9,7 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from "react"
 import { usePathname, useRouter, useSearchParams } from "next/navigation"
 import { createClientComponentClient } from "@supabase/auth-helpers-nextjs"
-import { ArrowUpDown, Calendar, CheckSquare, ChevronDown, LayoutGrid, List, Search } from "lucide-react"
+import { Calendar, CheckSquare, LayoutGrid, List } from "lucide-react"
 import { TaskList } from "../tasks/TaskList"
 import { KanbanView } from "../kanban-view/kanban-view"
 import { CalendarView } from "../calendar-view/calendar-view"
@@ -26,13 +26,10 @@ import {
 } from "../tasks/TasksLayout"
 import type { FilterOptions } from "../../lib/services/filters"
 import {
-  DropdownMenu,
-  DropdownMenuContent,
   DropdownMenuItem,
   DropdownMenuSub,
   DropdownMenuSubContent,
   DropdownMenuSubTrigger,
-  DropdownMenuTrigger,
 } from "../ui/dropdown-menu"
 import { cn } from "@/lib/utils"
 import { useTaskComposerStore } from "../../store/task-composer-store"
@@ -513,18 +510,6 @@ function WorkspaceTaskListViewInner({ paneId }: { paneId: WorkspacePaneId }) {
           </DropdownMenuSub>
         </>
       ) : null}
-      <DropdownMenuItem
-        className="justify-between gap-2"
-        onSelect={(e) => {
-          e.preventDefault()
-          setIsMultiselectMode((v) => !v)
-        }}
-      >
-        <span className="min-w-0 truncate">Multiselect</span>
-        <span className="shrink-0 pl-2 text-xs text-muted-foreground">
-          {isMultiselectMode ? "On" : "Off"}
-        </span>
-      </DropdownMenuItem>
       {typeof paneOverflowMenu === "function" ? paneOverflowMenu() : null}
     </>
   )
@@ -565,20 +550,6 @@ function WorkspaceTaskListViewInner({ paneId }: { paneId: WorkspacePaneId }) {
       >
       <div ref={toolbarRowRef} className="flex min-w-0 shrink-0 items-center gap-2.5">
         <div className="flex min-w-0 flex-1 items-center gap-2 overflow-x-auto overflow-y-hidden whitespace-nowrap pr-1">
-          <IconTooltip label={isMultiselectMode ? "Exit multiselect" : "Multiselect"}>
-            <button
-              type="button"
-              aria-label="Multiselect"
-              aria-pressed={isMultiselectMode}
-              onClick={() => setIsMultiselectMode((v) => !v)}
-              className={cn(
-                "inline-flex h-9 w-9 shrink-0 items-center justify-center rounded-md text-gray-500 transition-colors hover:bg-gray-100 hover:text-gray-800",
-                isMultiselectMode && "bg-gray-100 text-gray-900",
-              )}
-            >
-              <CheckSquare className="h-[18px] w-[18px]" strokeWidth={1.75} />
-            </button>
-          </IconTooltip>
           {scopePills.map((tab) => {
             const isActive = activeScope === tab.id
             return (
@@ -650,6 +621,20 @@ function WorkspaceTaskListViewInner({ paneId }: { paneId: WorkspacePaneId }) {
           >
             {listOverflowMenu}
           </TasksPaneMoreMenu>
+          <IconTooltip label={isMultiselectMode ? "Exit multiselect" : "Multiselect"}>
+            <button
+              type="button"
+              aria-label="Multiselect"
+              aria-pressed={isMultiselectMode}
+              onClick={() => setIsMultiselectMode((v) => !v)}
+              className={cn(
+                "inline-flex h-9 w-9 shrink-0 items-center justify-center rounded-md text-gray-500 transition-colors hover:bg-gray-100 hover:text-gray-800",
+                isMultiselectMode && "bg-gray-100 text-gray-900",
+              )}
+            >
+              <CheckSquare className="h-[18px] w-[18px]" strokeWidth={1.75} />
+            </button>
+          </IconTooltip>
         </div>
       </div>
 

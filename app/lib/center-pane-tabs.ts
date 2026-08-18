@@ -261,5 +261,5 @@ export function resolveActiveCenterPaneTab(args: {
 }
 
 export function toPaneTabStripItems(tabs: CenterPaneTab[]) {
-  return tabs.map((tab) => ({ key: tab.key, label: tab.title }))
+  return tabs.map((tab) => ({ key: tab.key, label: tab.title, kind: tab.kind }))
 }

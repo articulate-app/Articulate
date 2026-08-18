@@ -145,6 +145,7 @@ export function RightPaneTabBar({
       ? aiTabs.map((tab) => ({
           key: buildAiRightTabKey(tab.id),
           label: tab.title?.trim() || "New chat",
+          kind: "ai",
         }))
       : []),
     // `entityTabs` is the store-ordered non-AI list (may include browsers).
@@ -153,6 +154,7 @@ export function RightPaneTabBar({
       key: tab.key,
       label:
         tab.kind === "browser" ? browserTabLabel(tab) : tab.title?.trim() || tab.kind,
+      kind: tab.kind,
       icon:
         tab.kind === "browser" ? (
           <BrowserTabFavicon url={tab.browser?.faviconUrl} />
@@ -163,6 +165,7 @@ export function RightPaneTabBar({
       : browserTabs.map((tab) => ({
           key: tab.key,
           label: browserTabLabel(tab),
+          kind: "browser",
           icon: <BrowserTabFavicon url={tab.browser?.faviconUrl} />,
         }))),
   ]

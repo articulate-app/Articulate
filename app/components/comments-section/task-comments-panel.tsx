@@ -752,7 +752,7 @@ export function TaskCommentsInputPart(props: TaskCommentsPanelProps) {
           <div className="flex h-9 items-center gap-1.5">
             <button
               type="button"
-              className="flex h-9 min-w-0 flex-1 cursor-text items-center rounded-md border border-gray-200 bg-white px-3 text-left text-sm text-muted-foreground hover:border-gray-300 hover:bg-gray-50"
+              className="flex h-9 min-w-0 flex-1 cursor-text items-center rounded-md border border-gray-200 bg-white px-3 text-left text-sm text-muted-foreground hover:border-gray-300"
               onClick={() => {
                 if (pendingQuote) {
                   openSelectionComment()

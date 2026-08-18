@@ -30,6 +30,12 @@ type AiChatMessageQueueState = {
   move: (threadId: string, id: string, delta: -1 | 1) => void
   /** Move item to an absolute index (0-based). */
   moveToIndex: (threadId: string, id: string, toIndex: number) => void
+  /** Insert a message at a 0-based index (clamped). */
+  insertAt: (
+    threadId: string,
+    index: number,
+    item: Omit<QueuedAiChatMessage, "id" | "createdAt"> & { id?: string },
+  ) => string
 }
 
 const STORAGE_KEY = "ai-chat-message-queue-v1"
@@ -192,6 +198,29 @@ export const useAiChatMessageQueueStore = create<AiChatMessageQueueState>((set, 
       persist(byThread)
       return { byThread }
     })
+  },
+
+  insertAt: (threadId, index, item) => {
+    const id = item.id ?? `q-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`
+    const nextItem: QueuedAiChatMessage = {
+      id,
+      threadId,
+      messageText: item.messageText,
+      messageTags: item.messageTags ?? [],
+      messageSegments: item.messageSegments ?? [],
+      messageFiles: item.messageFiles?.length ? [...item.messageFiles] : undefined,
+      createdAt: Date.now(),
+    }
+    set((state) => {
+      const existing = state.byThread[threadId] ?? []
+      const clamped = Math.max(0, Math.min(existing.length, Math.floor(index)))
+      const nextItems = [...existing]
+      nextItems.splice(clamped, 0, nextItem)
+      const byThread = { ...state.byThread, [threadId]: nextItems }
+      persist(byThread)
+      return { byThread }
+    })
+    return id
   },
 }))
 

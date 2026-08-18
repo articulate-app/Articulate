@@ -47,15 +47,13 @@ export function scrollUserMessageIntoComfortView(
   })
 }
 
-/** Apply bottom scroll-room immediately (same frame as send) — class toggles lag one paint. */
+/** Kept for send-time scroll anchoring. Extra bottom room is no longer applied so the thread can scroll to its real end above the pinned composer. */
 export function ensureChatScrollRoom(
   container: HTMLElement | null,
-  enabled: boolean,
+  _enabled: boolean,
 ): void {
   if (!container) return
-  if (enabled) {
-    container.style.paddingBottom = CHAT_USER_MESSAGE_SCROLL_ROOM_CSS
-  } else if (container.style.paddingBottom === CHAT_USER_MESSAGE_SCROLL_ROOM_CSS) {
+  if (container.style.paddingBottom) {
     container.style.paddingBottom = ""
   }
 }

@@ -2,6 +2,7 @@
 
 import { ensureAiThread, ensureProjectThread } from "../ai-chat/ai-utils"
 import { isPersistedAiThreadId } from "../ai-chat/thread-id"
+import { useAiChatTextSelectionStore } from "../ai-chat/ai-chat-text-selection"
 import { openWorkspaceView } from "../../app/lib/open-workspace-view"
 import { isAiOpenSomewhere } from "../../app/lib/workspace-pane-url"
 import type { SelectedArtifactContext } from "../../app/lib/artifacts/artifact-types"
@@ -43,6 +44,9 @@ export async function openArtifactSelectionInAiPane(args: {
   channelId?: number | null
 }): Promise<void> {
   useArtifactSelectionStore.getState().setPendingSelection(args.context)
+  // The pinned ArtifactContextChip is the only composer affordance for this attach.
+  // Drop the older inline mention-style selection chip if one is still pending.
+  useAiChatTextSelectionStore.getState().clearPendingSelection()
 
   try {
     const params =

@@ -14,7 +14,7 @@ type TaskOverviewPreviewSectionProps = {
   headerActions?: React.ReactNode
   /** Optional row rendered directly below the title row (e.g. filter pills). */
   belowTitle?: React.ReactNode
-  /** When false, children are not rendered and lazy loading does not start. */
+  /** When false, children are not rendered. Viewport is only used for `onVisible`. */
   active?: boolean
   /** Start expanded (default true). */
   defaultCollapsed?: boolean
@@ -67,13 +67,13 @@ export function TaskOverviewPreviewSection({
   }
 
   const { ref, isInViewport } = useInViewport({ enabled: active && !isCollapsed })
-
-  const showContent = active && !isCollapsed && isInViewport
+  const showChrome = active && !isCollapsed
+  const hasChildren = children != null && children !== false
 
   useEffect(() => {
-    if (!showContent || !onVisible) return
+    if (!showChrome || !isInViewport || !onVisible) return
     onVisible()
-  }, [showContent, onVisible])
+  }, [showChrome, isInViewport, onVisible])
 
   const setSectionRef = (node: HTMLElement | null) => {
     ;(ref as React.MutableRefObject<HTMLElement | null>).current = node
@@ -129,11 +129,8 @@ export function TaskOverviewPreviewSection({
         <div id={contentId}>
           {belowTitle ? <div className="mb-3">{belowTitle}</div> : null}
 
-          {!showContent ? (
-            <div className="space-y-2">
-              <div className="h-4 w-2/3 animate-pulse rounded bg-gray-100" />
-              <div className="h-4 w-1/2 animate-pulse rounded bg-gray-100" />
-            </div>
+          {hasChildren ? (
+            children
           ) : isLoading ? (
             <div className="flex items-center gap-2 text-sm text-gray-500">
               <Loader2 className="h-4 w-4 animate-spin" />
@@ -163,9 +160,7 @@ export function TaskOverviewPreviewSection({
             ) : (
               <p className="text-sm text-gray-500">{emptyMessage}</p>
             )
-          ) : (
-            children
-          )}
+          ) : null}
         </div>
       ) : null}
     </section>

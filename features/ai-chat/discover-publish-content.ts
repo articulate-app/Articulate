@@ -158,6 +158,9 @@ export function mergeAssistantContentJsonPreservingMeta(
   const publishingPreview =
     asRecord(extrasRecord?.publishing_preview)
     ?? asRecord(existingRecord?.publishing_preview)
+  const browserPreview =
+    asRecord(extrasRecord?.browser_preview)
+    ?? asRecord(existingRecord?.browser_preview)
   const clarification =
     extrasRecord?.clarification_request
     ?? existingRecord?.clarification_request
@@ -175,6 +178,7 @@ export function mergeAssistantContentJsonPreservingMeta(
   const hasMeta =
     Boolean(toolResults?.length)
     || Boolean(publishingPreview)
+    || Boolean(browserPreview)
     || Boolean(clarification)
     || Boolean(outputKind)
     || Boolean(uiVisibility)
@@ -190,6 +194,7 @@ export function mergeAssistantContentJsonPreservingMeta(
     blocks: nextBlocks,
     ...(toolResults ? { tool_results: toolResults } : {}),
     ...(publishingPreview ? { publishing_preview: publishingPreview } : {}),
+    ...(browserPreview ? { browser_preview: browserPreview } : {}),
     ...(clarification ? { clarification_request: clarification } : {}),
     ...(outputKind ? { output_kind: outputKind } : {}),
     ...(uiVisibility ? { ui_visibility: uiVisibility } : {}),

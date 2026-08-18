@@ -15,8 +15,7 @@ import {
   isDesktopBrowserProviderAvailable,
 } from "./desktop-browser-provider"
 import { getArticulateDesktop } from "./articulate-desktop"
-import { requestLocalAgentStep } from "./local-browser-bridge"
-import { reportDesktopPublication } from "./services/agentic-publishing"
+import { requestPublicationReasonStep, reportDesktopPublication } from "./services/agentic-publishing"
 import type { PublicationRun, PublicationRunStatus } from "./publishing/types"
 
 type DesktopObservation = {
@@ -263,7 +262,7 @@ export async function runDesktopPublicationDriver(
       input.onStatus?.(`Preparing publication… (${step + 1})`)
       // The shared reasoning endpoint receives only the observed page surface
       // and frozen backend task; it has no direct browser/CDP access.
-      const agent = (await requestLocalAgentStep({
+      const agent = (await requestPublicationReasonStep({
         task: input.task,
         state: {
           url: observation.url,
@@ -277,14 +276,12 @@ export async function runDesktopPublicationDriver(
             text: element.text ?? "",
             name: element.name ?? "",
             href: element.href ?? "",
-            placeholder: "",
-            value: "",
-            isPassword: false,
           })),
         },
         history,
         step,
         entryUrl: input.operation === "prepare_publication" ? input.startUrl : null,
+        allowFinalPublish: input.operation === "confirm_publication",
       })) as AgentStep
 
       const afterReasoning = asObservation(await desktopObserve(input.browserId))

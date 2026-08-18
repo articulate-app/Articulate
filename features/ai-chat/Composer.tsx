@@ -4,12 +4,13 @@ import React, { useCallback, useMemo, useRef, useState, useEffect, useReducer, t
 import { createPortal } from "react-dom"
 import { getSupabaseBrowser } from "../../lib/supabase-browser"
 import type { AiAttachmentMeta } from "./types"
-import { ArrowUp, BookOpen, ChevronDown, ChevronUp, FileText, FolderKanban, LayoutTemplate, ListTodo, Paperclip, Plus, Square, User, X } from "lucide-react"
+import { ArrowUp, BookOpen, ChevronDown, ChevronUp, FileText, FolderKanban, LayoutTemplate, ListTodo, Paperclip, Pencil, Plus, Square, User, X } from "lucide-react"
 import { AttachmentFileChip } from "./AttachmentFileChip"
 import { ArtifactContextChip } from "./artifact-context-chip"
 import {
   selectQueuedMessagesForThread,
   useAiChatMessageQueueStore,
+  type QueuedAiChatMessage,
 } from "./ai-chat-message-queue-store"
 import { getImageUrl } from "../../app/lib/public-media"
 import { sendConversationAiChatStream } from "./send-conversation-ai-chat"
@@ -73,6 +74,7 @@ import {
   readTagFromChip,
   replacePlainTextRangeWithChip,
   serializeComposerEditor,
+  setComposerFromSegments,
   setComposerPlainText,
 } from "./composer-inline-editor"
 import {
@@ -559,6 +561,7 @@ export function Composer({
   const prependQueuedMessage = useAiChatMessageQueueStore((state) => state.prepend)
   const removeQueuedMessage = useAiChatMessageQueueStore((state) => state.remove)
   const moveQueuedMessage = useAiChatMessageQueueStore((state) => state.move)
+  const insertQueuedMessageAt = useAiChatMessageQueueStore((state) => state.insertAt)
   const peekNextQueuedMessage = useAiChatMessageQueueStore((state) => state.peekNext)
   const shiftNextQueuedMessage = useAiChatMessageQueueStore((state) => state.shiftNext)
   const drainingQueueRef = useRef(false)
@@ -687,14 +690,16 @@ export function Composer({
   }, [variant, preFillMessage, refreshEditorEmpty, resizeEditor, syncMentionFromEditor])
 
   const textSelectionChipData = useMemo(() => {
+    // Artifact attach uses the pinned card above the editor. Never also show the
+    // older inline mention-style chip for the same passage.
+    if (pendingArtifactSelection) return null
     if (pendingTextSelection) {
       const text = pendingTextSelection.context.selected_text.trim()
       if (!text) return null
       return { text, tooltip: chipLabelForSelection(pendingTextSelection.context) }
     }
-    // Artifact context uses AttachmentFileChip-style card above the editor (not an inline pill).
     return null
-  }, [pendingTextSelection])
+  }, [pendingArtifactSelection, pendingTextSelection])
 
   const pendingArtifactChip = useMemo(() => {
     if (!pendingArtifactSelection) return null
@@ -718,9 +723,21 @@ export function Composer({
     const el = editorRef.current
     if (!el) return
     ensureTextSelectionChip(el, textSelectionChipData)
+    const pendingArtifactId = pendingArtifactSelection?.context.artifact_id?.trim()
+    if (pendingArtifactId) {
+      for (const chip of Array.from(el.querySelectorAll<HTMLElement>('[data-ai-tag="1"][data-tag-type="artifact"]'))) {
+        const chipId = (chip.dataset.artifactId ?? chip.dataset.tagId ?? "").trim()
+        if (chipId !== pendingArtifactId) continue
+        const prev = chip.previousSibling
+        chip.remove()
+        if (prev && prev.nodeType === Node.TEXT_NODE && !(prev.textContent ?? "").trim()) {
+          prev.parentNode?.removeChild(prev)
+        }
+      }
+    }
     refreshEditorEmpty()
     resizeEditor()
-  }, [textSelectionChipData, variant, refreshEditorEmpty, resizeEditor, threadId])
+  }, [textSelectionChipData, pendingArtifactSelection, variant, refreshEditorEmpty, resizeEditor, threadId])
 
   // When a new passage is attached, focus the composer so the user can type a free-form
   // instruction. We never pre-fill the message text.
@@ -1336,6 +1353,50 @@ export function Composer({
       resizeEditor()
     }
   }, [refreshEditorEmpty, resizeEditor])
+
+  const beginEditQueuedMessage = useCallback((item: QueuedAiChatMessage) => {
+    const root = editorRef.current
+    if (!root) return
+    const queueIndex = queuedMessages.findIndex((row) => row.id === item.id)
+    const { messageText, tags, segments } = serializeComposerEditor(root)
+    const hasDraft = messageText.trim().length > 0 || files.length > 0
+    if (skipAutoDrainItemIdRef.current === item.id) {
+      skipAutoDrainItemIdRef.current = null
+    }
+    removeQueuedMessage(threadId, item.id)
+    if (hasDraft && queueIndex >= 0) {
+      insertQueuedMessageAt(threadId, queueIndex, {
+        threadId,
+        messageText,
+        messageTags: tags,
+        messageSegments: segments,
+        messageFiles: files.length > 0 ? [...files] : undefined,
+      })
+    }
+    setComposerFromSegments(root, item.messageSegments, item.messageText)
+    setFiles(item.messageFiles?.length ? [...item.messageFiles] : [])
+    mentionReplaceRangeRef.current = null
+    setMentionQuery(null)
+    setIsMentionPickerOpen(false)
+    setMentionAnchor(null)
+    setMentionFilter("all")
+    setMentionExpandedTask(null)
+    mentionUserDismissedRef.current = false
+    bumpEditor()
+    refreshEditorEmpty()
+    resizeEditor()
+    syncMentionFromEditor("programmatic")
+    focusEnd(root)
+  }, [
+    files,
+    insertQueuedMessageAt,
+    queuedMessages,
+    refreshEditorEmpty,
+    removeQueuedMessage,
+    resizeEditor,
+    syncMentionFromEditor,
+    threadId,
+  ])
 
   const send = useCallback(async () => {
     const root = editorRef.current
@@ -2670,6 +2731,15 @@ export function Composer({
                     title="Move down"
                   >
                     <ChevronDown className="h-3 w-3" />
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => beginEditQueuedMessage(item)}
+                    className="rounded p-0.5 text-gray-400 hover:bg-gray-200 hover:text-gray-700"
+                    aria-label="Edit queued message"
+                    title="Edit in input"
+                  >
+                    <Pencil className="h-3 w-3" />
                   </button>
                   <button
                     type="button"

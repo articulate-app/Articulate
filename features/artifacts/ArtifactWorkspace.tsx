@@ -602,9 +602,14 @@ export function ArtifactWorkspace({
 
         if (!isArtifactDraftStaleForServerVersion(draft.baseVersion, serverVersion)) continue
 
-        // The newest server snapshot wins; this draft can no longer be safely
-        // autosaved because it was authored against an older revision.
-        delete next[artifact.id]
+        // An AI live snapshot replaced the row we edited against — drop the draft.
+        // A version bump from our own autosave must keep in-progress keystrokes.
+        if (shouldUseSavedLiveArtifactBase(artifact, live)) {
+          delete next[artifact.id]
+          changed = true
+          continue
+        }
+        next[artifact.id] = { ...draft, baseVersion: serverVersion }
         changed = true
       }
       return changed ? next : prev
@@ -740,9 +745,13 @@ export function ArtifactWorkspace({
     const draft = draftByArtifactId[selectedArtifact.id]
     const draftIsStale =
       !!draft
+      && savedLiveShouldOverride
       && (
-        draft.baseVersion < (selectedArtifact.current_version ?? 0)
-        || (savedLiveShouldOverride && isArtifactDraftNoopAgainstBase(draft, selectedArtifact))
+        isArtifactDraftNoopAgainstBase(draft, selectedArtifact)
+        || isArtifactDraftStaleForServerVersion(
+          draft.baseVersion,
+          selectedLive?.currentVersion ?? selectedArtifact.current_version ?? 0,
+        )
       )
     // Only overlay saved live content when it is newer than the list row.
     const withLive =
@@ -1028,24 +1037,35 @@ export function ArtifactWorkspace({
         await queryClient.invalidateQueries({ queryKey: ["artifact", artifactId] })
         return
       }
-      if ("version_number" in result && typeof result.version_number === "number") {
+      const savedVersion =
+        "version_number" in result && typeof result.version_number === "number"
+          ? result.version_number
+          : null
+      if (savedVersion != null) {
         knownServerVersionByIdRef.current[artifactId] = Math.max(
           knownServerVersionByIdRef.current[artifactId] ?? 0,
-          result.version_number,
+          savedVersion,
         )
       }
       if ("snapshot" in result && result.snapshot) {
         applyArtifactCachePatch(queryClient, result.snapshot)
       }
       // Drop draft only if it still matches what we saved (no newer keystrokes).
+      // If the user kept typing, rebase onto the version we just wrote.
       setDraftByArtifactId((prev) => {
         const current = prev[artifactId]
+        if (!current) return prev
         if (
-          !current
-          || current.contentText !== draft.contentText
+          current.contentText !== draft.contentText
           || current.contentJson !== draft.contentJson
         ) {
-          return prev
+          return {
+            ...prev,
+            [artifactId]: {
+              ...current,
+              baseVersion: savedVersion ?? current.baseVersion,
+            },
+          }
         }
         const next = { ...prev }
         delete next[artifactId]
@@ -1557,8 +1577,12 @@ export function ArtifactWorkspace({
             {error instanceof Error ? error.message : "Failed to load artifacts"}
           </p>
         ) : null}
-        {allArtifacts.length === 0 && !isLoading ? (
-          addArtifactButton
+        {isLoading && allArtifacts.length === 0 ? (
+          <div className="space-y-2">
+            <div className="h-16 animate-pulse rounded-lg bg-gray-100" />
+          </div>
+        ) : allArtifacts.length === 0 ? (
+          null
         ) : (
           <DndContext sensors={sensors} collisionDetection={closestCenter} onDragEnd={onDragEnd}>
             <SortableContext
@@ -1583,11 +1607,12 @@ export function ArtifactWorkspace({
                   // Version lag after autosave must keep showing local edits (rebase handles save).
                   const draftIsStale =
                     !!draft
+                    && savedLiveShouldOverride
                     && (
-                      draft.baseVersion < (artifact.current_version ?? 0)
-                      || (
-                        savedLiveShouldOverride
-                        && isArtifactDraftNoopAgainstBase(draft, artifact)
+                      isArtifactDraftNoopAgainstBase(draft, artifact)
+                      || isArtifactDraftStaleForServerVersion(
+                        draft.baseVersion,
+                        live?.currentVersion ?? artifact.current_version ?? 0,
                       )
                     )
                   const display: TaskArtifact = {
@@ -1609,7 +1634,7 @@ export function ArtifactWorkspace({
                   // sequence+updatedAt remount TipTap on every preview upsert (cards flash).
                   const editorForceKey = isLiveBusy
                     ? `${artifact.id}:live:${live?.buildId ?? "building"}`
-                    : `${display.id}:v:${display.current_version ?? 0}`
+                    : `${artifact.id}`
                   const effectivelyExpanded = collapsedStackIds.has(artifact.id)
                     ? false
                     : expandedStackIds.has(artifact.id)
@@ -1815,7 +1840,7 @@ export function ArtifactWorkspace({
             </SortableContext>
           </DndContext>
         )}
-        {allArtifacts.length > 0 && !isLoading ? addArtifactButton : null}
+        {addArtifactButton}
         <SelectionAskAiMenu
           containerSelector='[data-ai-selectable="artifact"]'
           resolve={resolveArtifactTextSelection}
@@ -2013,13 +2038,8 @@ export function ArtifactWorkspace({
                     artifact={displaySelected}
                     forceContentKey={
                       selectedLive && isArtifactLiveEditLocked(selectedLive)
-                        ? `${displaySelected.id}:live:${selectedLive.sequence}:${selectedLive.updatedAt}`
-                        : `${displaySelected.id}:v:${
-                            allArtifacts.find((row) => row.id === displaySelected.id)
-                              ?.current_version
-                              ?? displaySelected.current_version
-                              ?? 0
-                          }`
+                        ? `${displaySelected.id}:live:${selectedLive.buildId ?? "building"}`
+                        : displaySelected.id
                     }
                     readOnly={!!selectedLive && isArtifactLiveEditLocked(selectedLive)}
                     onContentJsonChange={(contentJson) => {

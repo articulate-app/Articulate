@@ -4,6 +4,11 @@ import "jsr:@supabase/functions-js/edge-runtime.d.ts";
 
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
 import { brandKitForAiFromProject, collectBrandTemplateVisualRefs } from "../_shared/project-brand-kit.ts";
+import { isBrowserControllerCommand } from "../_shared/browser-agent/controller.ts";
+import {
+  looksLikeSpecificResourceUrl,
+  recommendBrowserFallback,
+} from "../_shared/browser-agent/url-verification.ts";
 
 
 
@@ -432,6 +437,27 @@ async function fetchPublicWebpage(url: string) {
   const titleMatch = /<title[^>]*>([\s\S]*?)<\/title>/i.exec(text);
   const title = titleMatch ? htmlToText(titleMatch[1]) : null;
   const normalizedText = /html|xml/i.test(contentType) ? htmlToText(text) : text.trim();
+  const links: string[] = [];
+  if (/html|xml/i.test(contentType)) {
+    const hrefRe = /href=["']([^"']+)["']/gi;
+    let match: RegExpExecArray | null;
+    const seen = new Set<string>();
+    while ((match = hrefRe.exec(text)) && links.length < 80) {
+      try {
+        const abs = new URL(match[1], finalUrl).href;
+        if (!/^https?:\/\//i.test(abs) || seen.has(abs)) continue;
+        seen.add(abs);
+        links.push(abs);
+      } catch {
+        // ignore malformed hrefs
+      }
+    }
+  }
+  const browserFallbackRecommended = recommendBrowserFallback({
+    url: finalUrl,
+    text: normalizedText,
+    links,
+  });
 
   return {
     ok: resp.ok,
@@ -442,6 +468,12 @@ async function fetchPublicWebpage(url: string) {
     title,
     text: normalizedText.slice(0, 20000),
     truncated: normalizedText.length > 20000,
+    links: links.slice(0, 40),
+    specific_resource_urls: links.filter((href) => looksLikeSpecificResourceUrl(href)).slice(0, 20),
+    browser_fallback_recommended: browserFallbackRecommended,
+    browser_fallback_reason: browserFallbackRecommended
+      ? "static_extraction_insufficient"
+      : null,
   };
 }
 
@@ -3873,6 +3905,248 @@ async function executeAgentTool(runtime: any) {
   return null;
 }
 
+function browserClientExecutionContext(ctx: any) {
+  const capabilities = ctx?.client_capabilities;
+  const desktop =
+    capabilities?.client_runtime === "desktop" &&
+    capabilities?.desktop_available === true &&
+    capabilities?.native_browser_available === true;
+  return {
+    client_runtime: desktop ? "desktop" : "web",
+    desktop_available: desktop,
+    native_browser_available: desktop,
+    desktop_browser_control: desktop && capabilities?.desktop_browser_control === true,
+    ...(desktop && typeof capabilities?.desktop_version === "string"
+      ? { desktop_version: capabilities.desktop_version }
+      : {}),
+    ...(desktop && typeof capabilities?.desktop_session_id === "string"
+      ? { desktop_session_id: capabilities.desktop_session_id }
+      : {}),
+  };
+}
+
+function normalizeBrowserUrl(value: unknown): string {
+  const raw = String(value ?? "").trim();
+  if (!raw) return "https://www.google.com/";
+  if (/^https?:\/\//i.test(raw)) return raw;
+  return `https://${raw}`;
+}
+
+async function executeBrowserTool(runtime: any) {
+  const { toolName, rawArgs, finalize, ctx } = runtime;
+  const auth = ctx?.request_auth_header ?? null;
+  const runId = ctx?.ai_run_id ?? null;
+  const clientExecutionContext = browserClientExecutionContext(ctx);
+  const desktopAvailable = clientExecutionContext.native_browser_available === true;
+
+  if (toolName === "open_browser") {
+    const startUrl = normalizeBrowserUrl(rawArgs.url ?? rawArgs.start_url);
+    const title =
+      typeof rawArgs.title === "string" && rawArgs.title.trim()
+        ? rawArgs.title.trim().slice(0, 80)
+        : null;
+    try {
+      const opened = await invokeJsonEdgeFunction(
+        "agentic-publishing",
+        {
+          action: "open_browser",
+          start_url: startUrl,
+          source: "ai",
+          ...clientExecutionContext,
+        },
+        120000,
+        auth,
+        runId,
+      );
+      const provider =
+        String(opened?.provider ?? "").trim() ||
+        (opened?.desktop_browser?.required ? "articulate_desktop" : "browser_use");
+      const browserSessionId =
+        cleanUuidOrNull(rawArgs.browser_session_id) ||
+        crypto.randomUUID();
+      return finalize({
+        name: toolName,
+        ok: true,
+        error: null,
+        data: {
+          browser_session_id: browserSessionId,
+          browser_id: opened?.browser_id ?? null,
+          session_id: opened?.session_id ?? null,
+          live_view_url: opened?.live_view_url ?? null,
+          start_url: opened?.start_url ?? startUrl,
+          current_url: opened?.start_url ?? startUrl,
+          title,
+          provider,
+          browser_label: opened?.browser_label ?? (provider === "articulate_desktop" ? "Desktop" : "Cloud"),
+          status: opened?.status ?? "active",
+          desktop_browser: opened?.desktop_browser ?? (desktopAvailable
+            ? { required: true, start_url: startUrl }
+            : null),
+          show_browser_preview: true,
+          open_browser_tab: true,
+        },
+      });
+    } catch (error: any) {
+      return finalize({
+        name: toolName,
+        ok: false,
+        error: error?.message ?? String(error),
+        data: null,
+      });
+    }
+  }
+
+  if (toolName === "use_browser") {
+    const browserId = String(rawArgs.browser_id ?? "").trim() || null;
+    const sessionId = String(rawArgs.session_id ?? "").trim() || null;
+    const browserSessionId = String(rawArgs.browser_session_id ?? "").trim() || null;
+    const url = typeof rawArgs.url === "string" ? normalizeBrowserUrl(rawArgs.url) : null;
+    let command = String(rawArgs.command ?? "").trim().toLowerCase();
+    if (command === "instruct") {
+      return finalize({
+        name: toolName,
+        ok: false,
+        error: "instruct_removed",
+        data: {
+          browser_session_id: browserSessionId,
+          browser_id: browserId,
+          message: "Do not delegate browser reasoning. Use navigate/click/type/snapshot/get_links/extract/verify_url on this same session.",
+        },
+      });
+    }
+    if (!command) {
+      command = url ? "navigate" : "snapshot";
+    }
+    if (command === "go_back") command = "back";
+    if (command === "current_url") command = "status";
+    if (!isBrowserControllerCommand(command)) {
+      return finalize({
+        name: toolName,
+        ok: false,
+        error: "unsupported_browser_command",
+        data: { command, browser_session_id: browserSessionId, browser_id: browserId },
+      });
+    }
+    if ((command === "navigate" || command === "verify_url") && !url) {
+      return finalize({
+        name: toolName,
+        ok: false,
+        error: "url_required",
+        data: { browser_session_id: browserSessionId, browser_id: browserId },
+      });
+    }
+
+    const desktopCommand = {
+      required: true,
+      command,
+      url,
+      selector: typeof rawArgs.selector === "string" ? rawArgs.selector : null,
+      text: typeof rawArgs.text === "string" ? rawArgs.text : null,
+      index: Number.isFinite(Number(rawArgs.index)) ? Number(rawArgs.index) : null,
+      key: typeof rawArgs.key === "string" ? rawArgs.key : null,
+      clear: rawArgs.clear === true,
+      delta_x: Number.isFinite(Number(rawArgs.delta_x ?? rawArgs.deltaX)) ? Number(rawArgs.delta_x ?? rawArgs.deltaX) : null,
+      delta_y: Number.isFinite(Number(rawArgs.delta_y ?? rawArgs.deltaY)) ? Number(rawArgs.delta_y ?? rawArgs.deltaY) : 600,
+      ms: Number.isFinite(Number(rawArgs.ms)) ? Number(rawArgs.ms) : null,
+      limit: Number.isFinite(Number(rawArgs.limit)) ? Number(rawArgs.limit) : null,
+      browser_id: browserId,
+      browser_session_id: browserSessionId,
+    };
+
+    if (desktopAvailable) {
+      return finalize({
+        name: toolName,
+        ok: true,
+        error: null,
+        data: {
+          browser_session_id: browserSessionId,
+          browser_id: browserId,
+          provider: "articulate_desktop",
+          browser_label: "Desktop",
+          command,
+          url,
+          current_url: url,
+          show_browser_preview: true,
+          open_browser_tab: false,
+          desktop_command: desktopCommand,
+          status: "desktop_ready",
+          expect_observation: true,
+        },
+      });
+    }
+
+    if (!browserId) {
+      return finalize({
+        name: toolName,
+        ok: false,
+        error: "browser_id_required",
+        data: { browser_session_id: browserSessionId },
+      });
+    }
+
+    try {
+      const acted = await invokeJsonEdgeFunction(
+        "agentic-publishing",
+        {
+          action: "act_browser",
+          browser_id: browserId,
+          command,
+          url,
+          selector: desktopCommand.selector,
+          text: desktopCommand.text,
+          index: desktopCommand.index,
+          key: desktopCommand.key,
+          clear: desktopCommand.clear,
+          delta_x: desktopCommand.delta_x,
+          delta_y: desktopCommand.delta_y,
+          ms: desktopCommand.ms,
+          limit: desktopCommand.limit,
+          ...clientExecutionContext,
+        },
+        60000,
+        auth,
+        runId,
+      );
+      return finalize({
+        name: toolName,
+        ok: acted?.ok !== false,
+        error: acted?.error ?? acted?.error_code ?? null,
+        data: {
+          browser_session_id: browserSessionId,
+          browser_id: acted?.browser_id ?? browserId,
+          session_id: sessionId,
+          live_view_url: acted?.live_view_url ?? null,
+          current_url: acted?.url ?? url,
+          title: acted?.title ?? null,
+          provider: "browser_use",
+          browser_label: "Cloud",
+          command,
+          links: Array.isArray(acted?.links) ? acted.links : [],
+          elements: Array.isArray(acted?.elements) ? acted.elements : [],
+          text: typeof acted?.text === "string" ? acted.text : null,
+          auth_required: acted?.auth_required === true,
+          verified: acted?.verified ?? null,
+          can_go_back: acted?.can_go_back ?? null,
+          can_go_forward: acted?.can_go_forward ?? null,
+          status: acted?.ok === false ? "failed" : "active",
+          show_browser_preview: true,
+          open_browser_tab: false,
+          error_code: acted?.error_code ?? null,
+        },
+      });
+    } catch (error: any) {
+      return finalize({
+        name: toolName,
+        ok: false,
+        error: error?.message ?? String(error),
+        data: { browser_session_id: browserSessionId, browser_id: browserId },
+      });
+    }
+  }
+
+  return null;
+}
+
 async function executePublishingTool(runtime: any) {
   const { toolName, rawArgs, finalize, ctx, thread } = runtime;
   const auth = ctx?.request_auth_header ?? null;
@@ -3882,23 +4156,14 @@ async function executePublishingTool(runtime: any) {
   // ai-chat. It is intentionally separate from tool arguments so the model
   // cannot manufacture a Desktop execution environment.
   const clientExecutionContext = (() => {
-    const capabilities = ctx?.client_capabilities;
-    const desktop =
-      capabilities?.client_runtime === "desktop" &&
-      capabilities?.desktop_available === true &&
-      capabilities?.native_browser_available === true &&
-      capabilities?.desktop_browser_control === true;
+    const base = browserClientExecutionContext(ctx);
+    const desktop = base.desktop_browser_control === true;
     return {
+      ...base,
       client_runtime: desktop ? "desktop" : "web",
       desktop_available: desktop,
       native_browser_available: desktop,
       desktop_browser_control: desktop,
-      ...(desktop && typeof capabilities?.desktop_version === "string"
-        ? { desktop_version: capabilities.desktop_version }
-        : {}),
-      ...(desktop && typeof capabilities?.desktop_session_id === "string"
-        ? { desktop_session_id: capabilities.desktop_session_id }
-        : {}),
     };
   })();
 
@@ -4196,6 +4461,7 @@ async function executePublishingTool(runtime: any) {
       const needsAuth = Boolean(data?.needs_authentication);
       const userQuestion = run?.metadata?.user_question ?? null;
       const isScheduledPark = run?.status === "scheduled";
+      const browserId = data?.browser_id ?? run?.provider_browser_id ?? null;
       return finalize({
         name: toolName,
         ok: Boolean(run?.id),
@@ -4218,13 +4484,15 @@ async function executePublishingTool(runtime: any) {
           open_browser_tab: false,
           show_browser_preview: !isScheduledPark,
           preferred_start_url: run?.metadata?.preferred_start_url ?? null,
+          browser_id: browserId,
+          snapshot: data?.snapshot ?? null,
+          publication_brief: data?.publication_brief ?? null,
+          next_browser_tool: browserId ? "use_browser" : null,
           message: isScheduledPark
             ? (data?.message ?? "Publication scheduled.")
             : needsAuth
-              ? "Publication created and waiting for destination sign-in. A browser preview appears in chat — after login, verification resumes the publication automatically."
-              : publishMode === "scheduled"
-                ? "Scheduling started. A browser preview appears in chat while the agent prepares native scheduling when available."
-                : "Publication started. A compact browser preview appears in chat. The publishing agent will stop before the final irreversible publish action.",
+              ? "Publication created and waiting for destination sign-in. A browser preview appears in chat. After the user signs in, continue the SAME browser_id with use_browser. Never send credentials through chat."
+              : "Publication browser session is open. You are the only reasoning agent — continue with use_browser on the returned browser_id (navigate/click/type/snapshot). Stop before the final irreversible Publish/Send unless the user confirmed. Call update_publication_progress when the draft is ready, login is needed, or the result is verified.",
         },
       });
     } catch (error: any) {
@@ -4647,6 +4915,58 @@ async function executePublishingTool(runtime: any) {
     }
   }
 
+  if (toolName === "update_publication_progress") {
+    const publicationRunId = cleanUuidOrNull(rawArgs.publication_run_id ?? rawArgs.run_id);
+    const phase = String(rawArgs.phase ?? rawArgs.publication_phase ?? "").trim();
+    if (!publicationRunId || !phase) {
+      return finalize({
+        name: toolName,
+        ok: false,
+        error: "publication_run_id_and_phase_required",
+        data: null,
+      });
+    }
+    try {
+      const data = await invokeJsonEdgeFunction(
+        "agentic-publishing",
+        {
+          action: "update_publication_progress",
+          run_id: publicationRunId,
+          phase,
+          ...(typeof rawArgs.message === "string" ? { message: rawArgs.message } : {}),
+          ...(typeof rawArgs.external_url === "string" ? { external_url: rawArgs.external_url } : {}),
+          ...(typeof rawArgs.external_id === "string" ? { external_id: rawArgs.external_id } : {}),
+          ...(typeof rawArgs.current_url === "string" ? { current_url: rawArgs.current_url } : {}),
+          ...(rawArgs.schedule_strategy === "external" || rawArgs.schedule_strategy === "internal"
+            ? { schedule_strategy: rawArgs.schedule_strategy }
+            : {}),
+        },
+        30000,
+        auth,
+        runId,
+      );
+      const run = data?.run ?? null;
+      return finalize({
+        name: toolName,
+        ok: Boolean(run?.id),
+        error: run?.id ? null : (data?.error?.message ?? "publication_progress_failed"),
+        data: {
+          publication_run_id: run?.id ?? publicationRunId,
+          status: run?.status ?? null,
+          browser_id: data?.browser_id ?? run?.provider_browser_id ?? null,
+          message: run?.metadata?.phase_message ?? rawArgs.message ?? null,
+        },
+      });
+    } catch (error: any) {
+      return finalize({
+        name: toolName,
+        ok: false,
+        error: error?.message ?? String(error),
+        data: null,
+      });
+    }
+  }
+
   return null;
 }
 
@@ -4718,9 +5038,13 @@ const TOOL_HANDLER_BY_NAME = new Map<string, (runtime: any) => Promise<any>>([
   ["list_project_social_profiles", executeResearchTool],
   ["read_project_social_stats", executeResearchTool],
 
+  ["open_browser", executeBrowserTool],
+  ["use_browser", executeBrowserTool],
+
   ["list_publishing_destinations", executePublishingTool],
   ["configure_publishing_destination", executePublishingTool],
   ["publish_content", executePublishingTool],
+  ["update_publication_progress", executePublishingTool],
   ["get_publication_state", executePublishingTool],
   ["continue_publication", executePublishingTool],
   ["confirm_publication", executePublishingTool],
@@ -4792,6 +5116,10 @@ async function handleAiToolsRequest(req: Request) {
     project_id: positiveInt(context.project_id),
     task_id: positiveInt(context.task_id),
     channel_id: positiveInt(context.channel_id),
+    client_capabilities:
+      context.client_capabilities && typeof context.client_capabilities === "object"
+        ? context.client_capabilities
+        : null,
   };
   const toolCall = { function: { name: toolName, arguments: JSON.stringify(rawArgs) } };
   try {

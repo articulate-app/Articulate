@@ -5,7 +5,6 @@ import { useQueryClient } from "@tanstack/react-query"
 import type { ReviewData } from "@/lib/types/tasks"
 import { TaskOverviewPreviewSection } from "./task-overview-preview-section"
 import { AddReviewInlineCard } from "./AddReviewInlineCard"
-import { useInViewport } from "@/hooks/use-in-viewport"
 import { taskReviewsQueryKey, useTaskReviewsQuery } from "@/hooks/use-task-reviews-query"
 import { AddDashedButton } from "../ui/add-dashed-button"
 
@@ -48,19 +47,12 @@ export function TaskOverviewReviewsPreview({
   active = true,
 }: TaskOverviewReviewsPreviewProps) {
   const queryClient = useQueryClient()
-  const { ref, isInViewport } = useInViewport({ enabled: active })
-  const shouldLoad = active && isInViewport
+  const canLoad = active && Number(taskId) > 0
   const [isAddingReview, setIsAddingReview] = useState(false)
 
-  const reviewsQuery = useTaskReviewsQuery(taskId, shouldLoad)
+  const reviewsQuery = useTaskReviewsQuery(taskId, canLoad)
   const recentReviews = (reviewsQuery.data ?? []).slice(0, PREVIEW_REVIEW_LIMIT)
   const summaryVisible = hasReviewSummary(reviewData)
-  const hasPreviewContent = summaryVisible || recentReviews.length > 0
-  const isEmpty =
-    shouldLoad &&
-    !reviewsQuery.isLoading &&
-    !hasPreviewContent &&
-    !isAddingReview
 
   const handleReviewAdded = () => {
     setIsAddingReview(false)
@@ -70,70 +62,77 @@ export function TaskOverviewReviewsPreview({
   }
 
   return (
-    <div ref={ref}>
-      <TaskOverviewPreviewSection
-        title="Reviews"
-        active={shouldLoad}
-        isLoading={shouldLoad && reviewsQuery.isLoading && !summaryVisible && !isAddingReview}
-        isError={reviewsQuery.isError && !isAddingReview}
-        onRetry={() => void reviewsQuery.refetch()}
-        isEmpty={isEmpty}
-        emptyMessage="Add"
-        onEmptyClick={() => setIsAddingReview(true)}
-      >
-        <div className="space-y-3">
-          {isAddingReview ? (
-            <AddReviewInlineCard
-              taskId={taskId}
-              onSuccess={handleReviewAdded}
-              onCancel={() => setIsAddingReview(false)}
-            />
-          ) : null}
-          {summaryVisible && reviewData ? (
-            <div className="rounded-lg border border-gray-200 bg-white p-3">
-              {reviewData.global_score !== null ? (
-                <div className="mb-2 text-center text-sm font-semibold text-gray-900">
-                  {reviewData.global_score.toFixed(1)} / 5
-                </div>
-              ) : null}
-              <div className="grid grid-cols-2 gap-x-4 gap-y-1 text-xs">
-                <div className="flex items-center gap-1.5">
-                  <span className="w-14 text-gray-500">SEO</span>
-                  <StarRating score={reviewData.avg_seo_score} />
-                </div>
-                <div className="flex items-center gap-1.5">
-                  <span className="w-14 text-gray-500">Relevance</span>
-                  <StarRating score={reviewData.avg_relevance_score} />
-                </div>
+    <TaskOverviewPreviewSection title="Reviews" active>
+      <div className="space-y-3">
+        {isAddingReview ? (
+          <AddReviewInlineCard
+            taskId={taskId}
+            onSuccess={handleReviewAdded}
+            onCancel={() => setIsAddingReview(false)}
+          />
+        ) : null}
+        {reviewsQuery.isLoading && !summaryVisible && !isAddingReview ? (
+          <div className="space-y-2">
+            <div className="h-16 animate-pulse rounded-lg bg-gray-100" />
+          </div>
+        ) : null}
+        {reviewsQuery.isError && !isAddingReview ? (
+          <div className="flex items-center gap-2 text-sm text-red-600">
+            <span>Could not load preview.</span>
+            <button
+              type="button"
+              onClick={() => void reviewsQuery.refetch()}
+              className="text-xs text-red-700 hover:underline"
+            >
+              Retry
+            </button>
+          </div>
+        ) : null}
+        {summaryVisible && reviewData ? (
+          <div className="rounded-lg border border-gray-200 bg-white p-3">
+            {reviewData.global_score !== null ? (
+              <div className="mb-2 text-center text-sm font-semibold text-gray-900">
+                {reviewData.global_score.toFixed(1)} / 5
+              </div>
+            ) : null}
+            <div className="grid grid-cols-2 gap-x-4 gap-y-1 text-xs">
+              <div className="flex items-center gap-1.5">
+                <span className="w-14 text-gray-500">SEO</span>
+                <StarRating score={reviewData.avg_seo_score} />
+              </div>
+              <div className="flex items-center gap-1.5">
+                <span className="w-14 text-gray-500">Relevance</span>
+                <StarRating score={reviewData.avg_relevance_score} />
               </div>
             </div>
-          ) : null}
-          {recentReviews.map((review) => (
-            <div key={review.id} className="rounded-md border border-gray-100 px-3 py-2 text-sm">
-              <div className="flex items-center justify-between gap-2">
-                <span className="truncate font-medium text-gray-900">
-                  {review.review_title || "Review"}
+          </div>
+        ) : null}
+        {recentReviews.map((review) => (
+          <div key={review.id} className="rounded-md border border-gray-100 px-3 py-2 text-sm">
+            <div className="flex items-center justify-between gap-2">
+              <span className="truncate font-medium text-gray-900">
+                {review.review_title || "Review"}
+              </span>
+              {review.review_score != null ? (
+                <span className="shrink-0 text-xs text-gray-600">
+                  {review.review_score.toFixed(1)} ★
                 </span>
-                {review.review_score != null ? (
-                  <span className="shrink-0 text-xs text-gray-600">
-                    {review.review_score.toFixed(1)} ★
-                  </span>
-                ) : null}
-              </div>
-              {review.positive_feedback ? (
-                <p className="mt-1 line-clamp-2 text-xs text-gray-600">{review.positive_feedback}</p>
               ) : null}
             </div>
-          ))}
-          {!isAddingReview ? (
-            <AddDashedButton
-              label="Add"
-              className="mt-0"
-              onClick={() => setIsAddingReview(true)}
-            />
-          ) : null}
-        </div>
-      </TaskOverviewPreviewSection>
-    </div>
+            {review.positive_feedback ? (
+              <p className="mt-1 line-clamp-2 text-xs text-gray-600">{review.positive_feedback}</p>
+            ) : null}
+          </div>
+        ))}
+        {!isAddingReview ? (
+          <AddDashedButton
+            label="Add"
+            className="mt-0"
+            onClick={() => setIsAddingReview(true)}
+            disabled={!canLoad}
+          />
+        ) : null}
+      </div>
+    </TaskOverviewPreviewSection>
   )
 }

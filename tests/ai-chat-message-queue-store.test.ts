@@ -42,6 +42,31 @@ describe("ai-chat-message-queue-store", () => {
     ])
   })
 
+  it("inserts at a clamped index", () => {
+    const threadId = "thread-insert"
+    useAiChatMessageQueueStore.getState().enqueue({
+      threadId,
+      messageText: "first",
+      messageTags: [],
+      messageSegments: [],
+    })
+    useAiChatMessageQueueStore.getState().enqueue({
+      threadId,
+      messageText: "third",
+      messageTags: [],
+      messageSegments: [],
+    })
+    useAiChatMessageQueueStore.getState().insertAt(threadId, 1, {
+      threadId,
+      messageText: "second",
+      messageTags: [],
+      messageSegments: [],
+    })
+    expect(
+      useAiChatMessageQueueStore.getState().byThread[threadId]?.map((m) => m.messageText),
+    ).toEqual(["first", "second", "third"])
+  })
+
   it("prepends a failed drain without duplicating", () => {
     const threadId = "thread-b"
     const id = useAiChatMessageQueueStore.getState().enqueue({
