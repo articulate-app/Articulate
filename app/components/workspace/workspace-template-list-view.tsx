@@ -273,7 +273,14 @@ export function WorkspaceTemplateListView({ paneId }: WorkspaceTemplateListViewP
         title="Templates"
         subtitle="Search and open a brand template."
         actions={
-          <Popover
+          <>
+            <WorkspacePageSearchInput
+              value={searchValue}
+              onChange={setSearchValue}
+              placeholder="Search templates…"
+              variant="header"
+            />
+            <Popover
             open={isAddOpen}
             onOpenChange={(open) => {
               setIsAddOpen(open)
@@ -349,14 +356,9 @@ export function WorkspaceTemplateListView({ paneId }: WorkspaceTemplateListViewP
               </div>
             </PopoverContent>
           </Popover>
+          </>
         }
       >
-        <WorkspacePageSearchInput
-          value={searchValue}
-          onChange={setSearchValue}
-          placeholder="Search templates…"
-        />
-
         {templatesQuery.isError ? (
           <div className={objectPaneCenteredStateClass("h-auto py-10")}>
             Unable to load templates.

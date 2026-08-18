@@ -4,6 +4,7 @@ import * as React from "react"
 import type { ReactNode, Ref } from "react"
 import { CHAT_CONTENT_COLUMN_CLASS } from "../../lib/chat-content-column"
 import { cn } from "@/lib/utils"
+import { Search } from "lucide-react"
 
 export type WorkspacePageShellProps = {
   title: string
@@ -53,7 +54,7 @@ export function WorkspacePageShell({
         className={cn("flex h-full min-h-0 flex-col overflow-hidden bg-white", className)}
       >
         <div className={column}>
-          <div className="flex shrink-0 items-start justify-between gap-3">
+          <div className="flex shrink-0 items-center justify-between gap-3">
             <h2 className="text-lg font-medium tracking-tight text-gray-900">{title}</h2>
             {actions ? <div className="flex shrink-0 items-center gap-1">{actions}</div> : null}
           </div>
@@ -70,7 +71,7 @@ export function WorkspacePageShell({
       className={cn("h-full min-h-0 overflow-auto bg-white [scrollbar-gutter:stable]", className)}
     >
       <div className={column}>
-        <div className="flex items-start justify-between gap-3">
+        <div className="flex items-center justify-between gap-3">
           <h2 className="text-lg font-medium tracking-tight text-gray-900">{title}</h2>
           {actions ? <div className="flex shrink-0 items-center gap-1">{actions}</div> : null}
         </div>
@@ -91,7 +92,7 @@ export function WorkspacePageHeader({
   actions?: ReactNode
 }) {
   return (
-    <div className="flex shrink-0 items-start justify-between gap-3">
+    <div className="flex shrink-0 items-center justify-between gap-3">
       <div className={subtitle ? "space-y-1" : undefined}>
         <h2 className="text-lg font-medium tracking-tight text-gray-900">{title}</h2>
         {subtitle ? <p className="text-sm text-gray-500">{subtitle}</p> : null}
@@ -108,6 +109,7 @@ export function WorkspacePageSearchInput({
   placeholder,
   autoFocus = false,
   onCommit,
+  variant = "body",
 }: {
   value: string
   onChange: (value: string) => void
@@ -115,7 +117,32 @@ export function WorkspacePageSearchInput({
   autoFocus?: boolean
   /** Called on Enter (e.g. open full search results). */
   onCommit?: (value: string) => void
+  variant?: "body" | "header"
 }) {
+  if (variant === "header") {
+    return (
+      <label className="relative flex h-9 min-w-[12rem] shrink-0 items-center overflow-hidden rounded-full border border-gray-200 bg-white text-gray-500 transition-colors focus-within:border-gray-300 focus-within:text-gray-900 hover:border-gray-300 hover:text-gray-700">
+        <Search className="pointer-events-none ml-3 h-3.5 w-3.5 shrink-0" />
+        <input
+          type="text"
+          value={value}
+          onChange={(event) => onChange(event.target.value)}
+          onKeyDown={(event) => {
+            if (event.key !== "Enter") return
+            event.preventDefault()
+            onCommit?.(event.currentTarget.value)
+          }}
+          placeholder={placeholder}
+          autoFocus={autoFocus}
+          autoComplete="off"
+          inputMode="search"
+          spellCheck={false}
+          className="h-full w-full min-w-0 bg-transparent px-2.5 pr-3 text-sm font-medium text-gray-900 outline-none placeholder:text-gray-400"
+        />
+      </label>
+    )
+  }
+
   return (
     <div className="relative shrink-0">
       <input

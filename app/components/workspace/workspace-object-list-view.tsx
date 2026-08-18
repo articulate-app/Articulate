@@ -191,41 +191,44 @@ export function WorkspaceObjectListView({
           title={title}
           subtitle={pageSubtitleForList(listType)}
           actions={
-            listType === "mention-list" ? (
-              <WorkspacePageAddButton
-                label="New message"
-                onClick={() =>
-                  openWorkspaceNewTabMessage({
-                    pane: paneId,
-                    pathname: pathname || undefined,
-                    sourcePrefix: "workspace-inbox",
-                  })
-                }
+            <>
+              <WorkspacePageSearchInput
+                value={inlineSearchValue}
+                onChange={setInlineSearchValue}
+                placeholder={searchPlaceholder}
+                variant="header"
               />
-            ) : listType === "ai-thread-list" ? (
-              <WorkspacePageAddButton
-                label="New chat"
-                onClick={() =>
-                  openWorkspaceNewTabAi({
-                    pane: paneId,
-                    pathname: pathname || undefined,
-                    sourcePrefix: "workspace-ai-list",
-                  })
-                }
-              />
-            ) : addLabel && addType ? (
-              <WorkspacePageAddButton
-                label={addLabel}
-                onClick={() => dispatchOpenHeaderCreate(addType)}
-              />
-            ) : null
+              {listType === "mention-list" ? (
+                <WorkspacePageAddButton
+                  label="New message"
+                  onClick={() =>
+                    openWorkspaceNewTabMessage({
+                      pane: paneId,
+                      pathname: pathname || undefined,
+                      sourcePrefix: "workspace-inbox",
+                    })
+                  }
+                />
+              ) : listType === "ai-thread-list" ? (
+                <WorkspacePageAddButton
+                  label="New chat"
+                  onClick={() =>
+                    openWorkspaceNewTabAi({
+                      pane: paneId,
+                      pathname: pathname || undefined,
+                      sourcePrefix: "workspace-ai-list",
+                    })
+                  }
+                />
+              ) : addLabel && addType ? (
+                <WorkspacePageAddButton
+                  label={addLabel}
+                  onClick={() => dispatchOpenHeaderCreate(addType)}
+                />
+              ) : null}
+            </>
           }
         >
-          <WorkspacePageSearchInput
-            value={inlineSearchValue}
-            onChange={setInlineSearchValue}
-            placeholder={searchPlaceholder}
-          />
           {listType === "mention-list" ? (
             <div className="flex flex-wrap items-center gap-2">
               {(

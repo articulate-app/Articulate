@@ -49,6 +49,7 @@ import {
 } from "../../lib/tasks-shallow-nav"
 import {
   WorkspacePageAddButton,
+  WorkspacePageSearchInput,
   WorkspacePageShell,
 } from "./workspace-page-shell"
 import { useCurrentUserStore } from "../../store/current-user"
@@ -421,6 +422,27 @@ function WorkspaceTaskListViewInner({ paneId }: { paneId: WorkspacePaneId }) {
   }, [])
 
   const listGroupBySummary = getListGroupByLabelFromParams(params.get("groupBy"))
+  const listSortBy = params.get("rowSortBy") || params.get("sortBy") || "updated_at"
+  const listSortOrder = params.get("rowSortOrder") === "asc" || params.get("sortOrder") === "asc" ? "asc" : "desc"
+  const listSortOptions = [
+    { value: "updated_at", label: "Updated" },
+    { value: "title", label: "Title" },
+    { value: "delivery_date", label: "Delivery date" },
+    { value: "publication_date", label: "Publication date" },
+    { value: "projects", label: "Project" },
+    { value: "project_statuses", label: "Status" },
+    { value: "users", label: "Assignee" },
+  ] as const
+  const activeListSortLabel = listSortOptions.find((option) => option.value === listSortBy)?.label ?? listSortBy
+  const setListSort = (sortBy: string, order: "asc" | "desc") => {
+    const next = new URLSearchParams(typeof window !== "undefined" ? window.location.search : params.toString())
+    next.set("rowSortBy", sortBy)
+    next.set("rowSortOrder", order)
+    next.set("sortBy", sortBy)
+    next.set("sortOrder", order)
+    next.delete("page")
+    shallowReplaceSearchParams(pathname || "/tasks", next, "workspace-task-list-sort")
+  }
   const isListLayout = viewMode === "list"
 
   useLayoutEffect(() => {
@@ -452,23 +474,44 @@ function WorkspaceTaskListViewInner({ paneId }: { paneId: WorkspacePaneId }) {
     { id: "calendar", label: "Calendar", icon: Calendar },
   ]
 
-  const groupByPlacement =
-    viewMode !== "list" ? "none" : toolbarWidth < 620 ? "overflow" : toolbarWidth < 760 ? "icon" : "full"
-
   const listOverflowMenu = (
     <>
-      {viewMode === "list" && groupByPlacement === "overflow" ? (
-        <DropdownMenuSub>
-          <DropdownMenuSubTrigger className="gap-2">
-            <span className="min-w-0 truncate">Group by</span>
-            <span className="ml-auto max-w-[7rem] truncate text-xs text-muted-foreground">
-              {listGroupBySummary}
-            </span>
-          </DropdownMenuSubTrigger>
-          <DropdownMenuSubContent className="min-w-[220px]">
-            <GroupingMenuItems />
-          </DropdownMenuSubContent>
-        </DropdownMenuSub>
+      {viewMode === "list" ? (
+        <>
+          <DropdownMenuSub>
+            <DropdownMenuSubTrigger className="gap-2">
+              <span className="min-w-0 truncate">Sort by</span>
+              <span className="ml-auto max-w-[9rem] truncate text-xs text-muted-foreground">
+                {activeListSortLabel} · {listSortOrder === "asc" ? "Asc" : "Desc"}
+              </span>
+            </DropdownMenuSubTrigger>
+            <DropdownMenuSubContent className="min-w-[220px]">
+              {listSortOptions.map((option) => (
+                <DropdownMenuSub key={option.value}>
+                  <DropdownMenuSubTrigger className={cn(listSortBy === option.value && "bg-muted font-semibold")}>
+                    <span>{option.label}</span>
+                    {listSortBy === option.value ? (
+                      <span className="ml-auto text-xs text-muted-foreground">{listSortOrder === "asc" ? "Asc" : "Desc"}</span>
+                    ) : null}
+                  </DropdownMenuSubTrigger>
+                  <DropdownMenuSubContent className="min-w-[160px]">
+                    <DropdownMenuItem onSelect={() => setListSort(option.value, "asc")} className={listSortBy === option.value && listSortOrder === "asc" ? "bg-muted font-semibold" : ""}>Ascending</DropdownMenuItem>
+                    <DropdownMenuItem onSelect={() => setListSort(option.value, "desc")} className={listSortBy === option.value && listSortOrder === "desc" ? "bg-muted font-semibold" : ""}>Descending</DropdownMenuItem>
+                  </DropdownMenuSubContent>
+                </DropdownMenuSub>
+              ))}
+            </DropdownMenuSubContent>
+          </DropdownMenuSub>
+          <DropdownMenuSub>
+            <DropdownMenuSubTrigger className="gap-2">
+              <span className="min-w-0 truncate">Group by</span>
+              <span className="ml-auto max-w-[7rem] truncate text-xs text-muted-foreground">{listGroupBySummary}</span>
+            </DropdownMenuSubTrigger>
+            <DropdownMenuSubContent className="min-w-[220px]">
+              <GroupingMenuItems />
+            </DropdownMenuSubContent>
+          </DropdownMenuSub>
+        </>
       ) : null}
       <DropdownMenuItem
         className="justify-between gap-2"
@@ -499,25 +542,13 @@ function WorkspaceTaskListViewInner({ paneId }: { paneId: WorkspacePaneId }) {
       }
       actions={
         <>
-          <label className="relative flex h-9 min-w-[12rem] shrink-0 items-center overflow-hidden rounded-full border border-gray-200 bg-white text-gray-500 transition-colors focus-within:border-gray-300 focus-within:text-gray-900 hover:border-gray-300 hover:text-gray-700">
-            <Search className="pointer-events-none ml-3 h-3.5 w-3.5 shrink-0" />
-            <input
-              type="text"
-              aria-label="Search tasks"
-              value={pageSearchValue}
-              onChange={(event) => handleSearchChange(event.target.value)}
-              onKeyDown={(event) => {
-                if (event.key !== "Enter") return
-                event.preventDefault()
-                commitSearch(event.currentTarget.value)
-              }}
-              placeholder="Search tasks..."
-              autoComplete="off"
-              inputMode="search"
-              spellCheck={false}
-              className="h-full w-full min-w-0 bg-transparent px-2.5 pr-3 text-sm font-medium text-gray-900 outline-none placeholder:text-gray-400"
-            />
-          </label>
+          <WorkspacePageSearchInput
+            value={pageSearchValue}
+            onChange={handleSearchChange}
+            onCommit={commitSearch}
+            placeholder="Search tasks..."
+            variant="header"
+          />
           <WorkspacePageAddButton
             label="New task"
             onClick={() => openComposer({})}
@@ -570,44 +601,6 @@ function WorkspaceTaskListViewInner({ paneId }: { paneId: WorkspacePaneId }) {
         <div className="flex min-w-0 shrink-0 items-center gap-1.5">
           <div ref={setBulkActionsHost} className="flex flex-nowrap items-center gap-1.5" />
           <div className="flex min-w-0 flex-nowrap items-center gap-1.5">
-            {viewMode === "list" && groupByPlacement === "full" ? (
-              <DropdownMenu>
-                <DropdownMenuTrigger asChild>
-                  <button
-                    type="button"
-                    className="inline-flex h-9 shrink-0 items-center gap-1 rounded-md px-2.5 text-[15px] font-medium text-gray-600 hover:bg-gray-100 hover:text-gray-900"
-                    aria-label="Group by"
-                  >
-                    <span className="max-w-[12rem] truncate">
-                      {listGroupBySummary === "No group"
-                        ? "Group by"
-                        : `Group by: ${listGroupBySummary}`}
-                    </span>
-                    <ChevronDown className="h-4 w-4 opacity-70" />
-                  </button>
-                </DropdownMenuTrigger>
-                <DropdownMenuContent align="end" className="min-w-[220px]">
-                  <GroupingMenuItems />
-                </DropdownMenuContent>
-              </DropdownMenu>
-            ) : null}
-            {viewMode === "list" && groupByPlacement === "icon" ? (
-              <DropdownMenu>
-                <DropdownMenuTrigger asChild>
-                  <button
-                    type="button"
-                    className="inline-flex h-9 w-9 shrink-0 items-center justify-center rounded-md text-gray-600 transition-colors hover:bg-gray-100 hover:text-gray-900"
-                    aria-label={`Group by: ${listGroupBySummary}`}
-                    title={`Group by: ${listGroupBySummary}`}
-                  >
-                    <ArrowUpDown className="h-[18px] w-[18px]" strokeWidth={1.75} />
-                  </button>
-                </DropdownMenuTrigger>
-                <DropdownMenuContent align="end" className="min-w-[220px]">
-                  <GroupingMenuItems />
-                </DropdownMenuContent>
-              </DropdownMenu>
-            ) : null}
             {viewMode === "kanban" ? (
               <div ref={setKanbanToolbarEl} className="flex flex-nowrap items-center gap-2" />
             ) : null}
@@ -651,7 +644,8 @@ function WorkspaceTaskListViewInner({ paneId }: { paneId: WorkspacePaneId }) {
           />
           <TasksPaneMoreMenu
             align="end"
-            ariaLabel="More list actions"
+            ariaLabel={viewMode === "list" ? "Sort and group" : "More list actions"}
+            triggerIcon={viewMode === "list" ? "sort" : "more"}
             triggerClassName="h-9 w-9 [&_svg]:h-[18px] [&_svg]:w-[18px]"
           >
             {listOverflowMenu}
