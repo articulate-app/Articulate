@@ -20,7 +20,7 @@ jobs:
       - name: Apply patch
         run: |
           set +e
-          node scripts/patch-task-artifact-ui-parity.mjs > ui-parity-run.log 2>&1
+          node scripts/patch-task-artifact-ui-parity-v2.mjs > ui-parity-run.log 2>&1
           code=$?
           cat ui-parity-run.log
           echo "patch_exit=$code" >> "$GITHUB_ENV"
