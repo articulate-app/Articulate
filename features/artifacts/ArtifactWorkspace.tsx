@@ -22,6 +22,7 @@ import {
 import { CSS } from "@dnd-kit/utilities"
 import {
   ChevronDown,
+  Download,
   GripVertical,
   Loader2,
   Maximize2,
@@ -91,6 +92,7 @@ import {
   readArtifactAttachDragData,
 } from "./artifact-attach-dnd"
 import { ArtifactVersionHistoryPopover } from "./artifact-version-history-popover"
+import { exportArtifactAsDocx } from "./artifact-docx-export"
 import {
   isArtifactDraftStaleForServerVersion,
   isArtifactDraftNoopAgainstBase,
@@ -1744,6 +1746,25 @@ export function ArtifactWorkspace({
                                 }))
                               }}
                             />
+                            <button
+                              type="button"
+                              className="inline-flex h-7 w-7 items-center justify-center rounded-md text-gray-500 hover:bg-gray-100 hover:text-gray-800 disabled:opacity-50"
+                              aria-label="Download Word"
+                              title="Download Word"
+                              disabled={isLiveBusy}
+                              onClick={() => {
+                                void exportArtifactAsDocx({
+                                  artifact: {
+                                    id: display.id,
+                                    title: titleValueFor(display) || display.title,
+                                    content_json: display.content_json,
+                                    content_text: display.content_text,
+                                  },
+                                })
+                              }}
+                            >
+                              <Download className="h-3.5 w-3.5" />
+                            </button>
                             <button
                               type="button"
                               className="inline-flex h-7 w-7 items-center justify-center rounded-md text-gray-500 hover:bg-gray-100 hover:text-gray-800"

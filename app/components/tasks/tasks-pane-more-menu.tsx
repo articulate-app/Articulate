@@ -1,6 +1,6 @@
 "use client"
 
-import { MoreHorizontal } from "lucide-react"
+import { ArrowUpDown, MoreHorizontal } from "lucide-react"
 import { cn } from "@/lib/utils"
 import {
   DropdownMenu,
@@ -16,12 +16,14 @@ export function TasksPaneMoreMenu({
   align = "end",
   triggerClassName,
   ariaLabel = "More actions",
+  triggerIcon = "more",
 }: {
   children: React.ReactNode
   visible?: boolean
   align?: "start" | "end"
   triggerClassName?: string
   ariaLabel?: string
+  triggerIcon?: "more" | "sort"
 }) {
   if (!visible) return null
 
@@ -37,7 +39,11 @@ export function TasksPaneMoreMenu({
             )}
             aria-label={ariaLabel}
           >
-            <MoreHorizontal className="h-3.5 w-3.5" />
+            {triggerIcon === "sort" ? (
+              <ArrowUpDown className="h-3.5 w-3.5" />
+            ) : (
+              <MoreHorizontal className="h-3.5 w-3.5" />
+            )}
           </button>
         </DropdownMenuTrigger>
       </IconTooltip>

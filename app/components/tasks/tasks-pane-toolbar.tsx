@@ -414,10 +414,58 @@ export function TasksPaneToolbar(props: TasksPaneToolbarProps) {
   const showCalendarMore = view === "calendar" && Boolean(calendarOverflowMenu) && calV < 5
 
   const listGroupBySummary = getListGroupByLabelFromParams(params.get("groupBy"))
+  const listSortBy = params.get("rowSortBy") || params.get("sortBy") || "updated_at"
+  const listSortOrder = params.get("rowSortOrder") === "asc" || params.get("sortOrder") === "asc"
+    ? "asc"
+    : "desc"
+  const listSortOptions = [
+    { value: "updated_at", label: "Updated" },
+    { value: "title", label: "Title" },
+    { value: "delivery_date", label: "Delivery date" },
+    { value: "publication_date", label: "Publication date" },
+    { value: "projects", label: "Project" },
+    { value: "project_statuses", label: "Status" },
+    { value: "users", label: "Assignee" },
+  ] as const
+  const activeListSortLabel = listSortOptions.find((option) => option.value === listSortBy)?.label ?? listSortBy
+  const setListSort = (sortBy: string, order: "asc" | "desc" = listSortOrder) => {
+    const next = new URLSearchParams(params.toString())
+    next.set("rowSortBy", sortBy)
+    next.set("rowSortOrder", order)
+    next.set("sortBy", sortBy)
+    next.set("sortOrder", order)
+    next.delete("page")
+    shallowReplaceUrl(pathname + "?" + next.toString())
+    dispatchTasksShallowNavigation()
+  }
 
-  /** Task list always shows overflow (“…”) with full actions (duplicating pills is OK). */
+  /** Task list always shows overflow with full actions. */
   const listOverflowNodes = useMemo(() => {
     return [
+      <DropdownMenuSub key="sort">
+        <DropdownMenuSubTrigger className="gap-2">
+          <span className="min-w-0 truncate">Sort by</span>
+          <OverflowMenuValueChevron value={activeListSortLabel + " · " + (listSortOrder === "asc" ? "Asc" : "Desc")} />
+        </DropdownMenuSubTrigger>
+        <DropdownMenuSubContent className="min-w-[220px]">
+          {listSortOptions.map((option) => (
+            <DropdownMenuSub key={option.value}>
+              <DropdownMenuSubTrigger className={cn("gap-2", listSortBy === option.value ? "font-semibold bg-muted" : "")}>
+                {option.label}
+                <OverflowMenuValueChevron value={listSortBy === option.value ? (listSortOrder === "asc" ? "Asc" : "Desc") : ""} />
+              </DropdownMenuSubTrigger>
+              <DropdownMenuSubContent className="min-w-[160px]">
+                <DropdownMenuItem onSelect={() => setListSort(option.value, "asc")} className={listSortBy === option.value && listSortOrder === "asc" ? "font-semibold bg-muted" : ""}>
+                  Ascending
+                </DropdownMenuItem>
+                <DropdownMenuItem onSelect={() => setListSort(option.value, "desc")} className={listSortBy === option.value && listSortOrder === "desc" ? "font-semibold bg-muted" : ""}>
+                  Descending
+                </DropdownMenuItem>
+              </DropdownMenuSubContent>
+            </DropdownMenuSub>
+          ))}
+        </DropdownMenuSubContent>
+      </DropdownMenuSub>,
       <DropdownMenuSub key="gb">
         <DropdownMenuSubTrigger className="gap-2">
           <span className="min-w-0 truncate">Group by</span>
@@ -520,6 +568,9 @@ export function TasksPaneToolbar(props: TasksPaneToolbarProps) {
     ]
   }, [
     listGroupBySummary,
+    activeListSortLabel,
+    listSortBy,
+    listSortOrder,
     isMultiselectMode,
     setIsMultiselectMode,
     listColorPillMode,
@@ -827,7 +878,8 @@ export function TasksPaneToolbar(props: TasksPaneToolbarProps) {
       {canShowTaskControls ? (
         <TasksPaneMoreMenu
           visible={showMoreMenu || Boolean(canShowTaskControls && view === "list")}
-          ariaLabel={isMobileSplitCompact ? "More split options" : "More actions"}
+          ariaLabel={isMobileSplitCompact ? "More split options" : view === "list" ? "Sort and group" : "More actions"}
+          triggerIcon={view === "list" ? "sort" : "more"}
         >
           {overflowMenuBody}
         </TasksPaneMoreMenu>
@@ -916,7 +968,7 @@ export function TasksPaneToolbar(props: TasksPaneToolbarProps) {
             "w-full min-w-0 gap-2 border-b border-gray-200/80 pl-4 pr-1.5",
           )}
         >
-          <span className="shrink-0 text-sm font-medium text-gray-900">
+          <span className="flex h-7 shrink-0 items-center text-sm font-medium leading-none text-gray-900">
             {leftPaneObjectLabel(leftObject)}
           </span>
           {optionalControls}

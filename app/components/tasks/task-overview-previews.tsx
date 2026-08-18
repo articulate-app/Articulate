@@ -23,7 +23,7 @@ type TaskOverviewPreviewsProps = {
   onNavigateTab?: (
     tab: "attachments" | "reviews" | "activity" | "comments" | "artifacts" | "seo",
   ) => void
-  commentsPanelProps: TaskCommentsPanelProps
+  commentsPanelProps?: TaskCommentsPanelProps
   /** Kept optional for call-site compatibility; unused after overview artifact cards. */
   onActiveFieldChange?: (context: AiActiveFieldContext) => void
   onArtifactTextSelectForComment?: (selection: {
@@ -74,16 +74,13 @@ export function TaskOverviewPreviews({
       <TaskOverviewPreviewSection
         title="SEO and AI SEO"
         active
-        isLoading={!canLoad}
       >
-        {canLoad ? (
-          <TaskSeoAndAiSeoTab
-            taskId={taskId}
-            embedded
-            readOnly={readOnly}
-            seedSeo={seedSeo}
-          />
-        ) : null}
+        <TaskSeoAndAiSeoTab
+          taskId={taskId}
+          embedded
+          readOnly={readOnly || !canLoad}
+          seedSeo={seedSeo}
+        />
       </TaskOverviewPreviewSection>
       <TaskOverviewAttachmentsPreview
         taskId={taskId}
@@ -95,11 +92,15 @@ export function TaskOverviewPreviews({
         reviewData={reviewData}
         active
       />
-      <TaskOverviewUpdatesComments
-        taskId={taskId}
-        commentsPanelProps={commentsPanelProps}
-        active
-      />
+      {commentsPanelProps ? (
+        <TaskOverviewUpdatesComments
+          taskId={taskId}
+          commentsPanelProps={commentsPanelProps}
+          active
+        />
+      ) : (
+        <TaskOverviewPreviewSection title="Updates & comments" active isLoading />
+      )}
     </>
   )
 }

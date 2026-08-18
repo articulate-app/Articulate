@@ -346,14 +346,8 @@ export function ArtifactDocumentEditor({
   }
   const htmlForEditor = forceKeyChanged ? derivedRichHtml : richHtml
 
-  useEffect(() => {
-    setBlocks(initialBlocks)
-  }, [initialBlocks])
-
-  useEffect(() => {
-    setPlainText(artifact.content_text ?? "")
-    setRichHtml(derivedRichHtml)
-  }, [artifact.content_text, artifact.id, artifact.current_version, artifact.title, derivedRichHtml])
+  // Do not mirror parent draft props back into local editor state on every keystroke.
+  // Authoritative server/AI/version changes are applied through forceContentKey above.
 
   const selectableProps = {
     "data-ai-selectable": "artifact",

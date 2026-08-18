@@ -3905,7 +3905,7 @@ export function TaskDetails({
             </TaskOverviewPreviewSection>
             )}
 
-          {!isSuggestionMode && taskIdNum && commentsPanelProps ? (
+          {!isSuggestionMode && taskIdNum ? (
             <TaskOverviewPreviews
               taskId={taskIdNum}
               projectId={task?.project_id_int || undefined}
