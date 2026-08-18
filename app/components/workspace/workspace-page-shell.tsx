@@ -7,7 +7,7 @@ import { cn } from "@/lib/utils"
 
 export type WorkspacePageShellProps = {
   title: string
-  subtitle: string
+  subtitle?: string | null
   /** Optional trailing control (e.g. Add project) — no close “x”. */
   actions?: ReactNode
   children: ReactNode
@@ -26,12 +26,12 @@ export type WorkspacePageShellProps = {
 }
 
 /**
- * Shared page chrome for Open something / New message / Projects / Templates / Tasks:
- * large headline + subtitle; either one outer scroll or a fill-height body.
+ * Shared page chrome for workspace list pages: headline + actions; either one
+ * outer scrollbar or a fill-height body. Redundant descriptive subtitles are
+ * intentionally omitted to keep list chrome compact.
  */
 export function WorkspacePageShell({
   title,
-  subtitle,
   actions,
   children,
   scrollRef,
@@ -54,10 +54,7 @@ export function WorkspacePageShell({
       >
         <div className={column}>
           <div className="flex shrink-0 items-start justify-between gap-3">
-            <div className="space-y-1">
-              <h2 className="text-lg font-medium tracking-tight text-gray-900">{title}</h2>
-              <p className="text-sm text-gray-500">{subtitle}</p>
-            </div>
+            <h2 className="text-lg font-medium tracking-tight text-gray-900">{title}</h2>
             {actions ? <div className="flex shrink-0 items-center gap-1">{actions}</div> : null}
           </div>
           {children}
@@ -74,10 +71,7 @@ export function WorkspacePageShell({
     >
       <div className={column}>
         <div className="flex items-start justify-between gap-3">
-          <div className="space-y-1">
-            <h2 className="text-lg font-medium tracking-tight text-gray-900">{title}</h2>
-            <p className="text-sm text-gray-500">{subtitle}</p>
-          </div>
+          <h2 className="text-lg font-medium tracking-tight text-gray-900">{title}</h2>
           {actions ? <div className="flex shrink-0 items-center gap-1">{actions}</div> : null}
         </div>
         {children}
@@ -93,14 +87,14 @@ export function WorkspacePageHeader({
   actions,
 }: {
   title: string
-  subtitle: string
+  subtitle?: string | null
   actions?: ReactNode
 }) {
   return (
     <div className="flex shrink-0 items-start justify-between gap-3">
-      <div className="space-y-1">
+      <div className={subtitle ? "space-y-1" : undefined}>
         <h2 className="text-lg font-medium tracking-tight text-gray-900">{title}</h2>
-        <p className="text-sm text-gray-500">{subtitle}</p>
+        {subtitle ? <p className="text-sm text-gray-500">{subtitle}</p> : null}
       </div>
       {actions ? <div className="flex shrink-0 items-center gap-1">{actions}</div> : null}
     </div>
