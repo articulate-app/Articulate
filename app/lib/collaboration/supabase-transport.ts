@@ -101,14 +101,19 @@ export function createSupabaseCollabTransport(args: {
       channel.on("presence", { event: "sync" }, syncPresence)
       channel.on("presence", { event: "join" }, syncPresence)
       channel.on("presence", { event: "leave" }, syncPresence)
-      await new Promise<void>((resolve, reject) => {
-        channel?.subscribe((status, err) => {
-          if (status === "SUBSCRIBED") resolve()
-          if (status === "CHANNEL_ERROR" || status === "TIMED_OUT") {
-            reject(err ?? new Error(String(status)))
-          }
-        })
-      })
+      await Promise.race([
+        new Promise<void>((resolve, reject) => {
+          channel?.subscribe((status, err) => {
+            if (status === "SUBSCRIBED") resolve()
+            if (status === "CHANNEL_ERROR" || status === "TIMED_OUT") {
+              reject(err ?? new Error(String(status)))
+            }
+          })
+        }),
+        new Promise<void>((_, reject) => {
+          setTimeout(() => reject(new Error("collab_subscribe_timeout")), 8000)
+        }),
+      ])
       if (args.presence) {
         await channel.track(args.presence)
       }

@@ -227,6 +227,33 @@ describe("artifact collaboration protocol", () => {
     expect(bytesEqual(decodeBroadcastPayload(encoded.buffer)!, bytes)).toBe(true)
   })
 
+  it("11. persist still reaches synced if Broadcast subscribe fails", async () => {
+    const store = createMemoryCollabStore()
+    const document = new Y.Doc()
+    let status = "connecting"
+    const provider = createArtifactCollabProvider({
+      document,
+      clientId: "client-offline-broadcast",
+      debounceMs: 0,
+      onStatus: (next) => {
+        status = next
+      },
+      transport: {
+        persistUpdate: async (update, idempotencyKey) => store.persist(update, idempotencyKey),
+        loadDocument: async (afterSeq) => store.load(afterSeq),
+        subscribe: async () => {
+          throw new Error("channel_error")
+        },
+      },
+    })
+    await provider.connect()
+    expect(status).toBe("synced")
+    document.getText("body").insert(0, "durable-without-broadcast")
+    await provider.flush()
+    expect(store.updates).toHaveLength(1)
+    provider.destroy()
+  })
+
   it("12. a read-only client cannot persist or broadcast edits", async () => {
     const { store, docB, a, b } = linkedPair({ readOnlyB: true })
     await a.connect()

@@ -138,11 +138,15 @@ export function createArtifactCollabProvider(args: {
       if (destroyed) return
       try {
         setStatus("connecting")
-        unsubscribe = await args.transport.subscribe(handleIncoming)
         setStatus("syncing")
         const loadedDoc = await args.transport.loadDocument(lastSeq)
         lastSeq = applyLoadedDocument(args.document, loadedDoc, appliedKeys)
         loaded = true
+        try {
+          unsubscribe = await args.transport.subscribe(handleIncoming)
+        } catch {
+          unsubscribe = null
+        }
         lastSeq = applyBufferedBroadcasts(args.document, buffer.splice(0), appliedKeys, lastSeq)
         await flush()
         if (!destroyed && outbox.length === 0) setStatus("synced")
