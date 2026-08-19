@@ -278,6 +278,13 @@ describe("artifact collaboration protocol", () => {
     )
     expect(editorSource).toMatch(/canReplaceCollaborativeEditorContent/)
     expect(editorSource).toMatch(/editor\.commands\.setContent/)
+    expect(editorSource).toMatch(/if \(collaborationDocument\) return/)
+    expect(editorSource).toMatch(/\}, \[collaborationDocument\]\)/)
+    const wrapperSource = readFileSync(
+      resolve("app/components/ui/rich-text-editor.tsx"),
+      "utf8",
+    )
+    expect(wrapperSource).toMatch(/key=\{collaborationDocument \? `collab:\$\{collaborationDocument\.clientID\}` : "snapshot"\}/)
     const hookSource = readFileSync(
       resolve("app/hooks/use-artifact-collaboration.ts"),
       "utf8",

@@ -750,7 +750,10 @@ export const RichTextEditor: React.FC<RichTextEditorProps> = ({
         : []),
     ],
     content: collaborationDocument ? undefined : value ?? "",
-    onUpdate: ({ editor: localEditor }) => onChange?.(localEditor.getHTML()),
+    onUpdate: ({ editor: localEditor }) => {
+      if (collaborationDocument) return
+      onChange?.(localEditor.getHTML())
+    },
     onFocus: ({ editor: localEditor }) => {
       onEditorFocus?.(localEditor);
     },
@@ -1016,7 +1019,7 @@ export const RichTextEditor: React.FC<RichTextEditorProps> = ({
         },
       },
     },
-  });
+  }, [collaborationDocument]);
 
   const { openLinkDialog, handleLinkShortcut, linkDialogNode } = useEditorLinkDialog(editor);
   editorRef.current = editor;

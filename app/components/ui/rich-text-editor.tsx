@@ -194,6 +194,7 @@ export function RichTextEditor({
       style={containerStyles}
     >
       <TiptapRichTextEditor
+        key={collaborationDocument ? `collab:${collaborationDocument.clientID}` : "snapshot"}
         value={value}
         onChange={handleChange}
         placeholder={placeholder}
