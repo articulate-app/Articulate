@@ -48,6 +48,11 @@ import {
 } from "./artifact-html-document"
 import { isArtifactLiveEditLocked } from "./artifact-live-edit-lock"
 import {
+  canAutosaveArtifactSnapshot,
+  isCollaborativeArtifactSurface,
+  shouldLockArtifactDuringAiGeneration,
+} from "../../app/lib/collaboration/editor-sync"
+import {
   deleteArtifact,
   getArtifact,
   listAiThreadArtifacts,
@@ -963,6 +968,17 @@ export function ArtifactWorkspace({
     const base =
       allArtifactsRef.current.find((row) => row.id === artifactId) ?? null
     if (!base) return
+    if (
+      !canAutosaveArtifactSnapshot(
+        isCollaborativeArtifactSurface({
+          artifactId: base.id,
+          contentJson: base.content_json,
+          metadata: base.metadata,
+        }),
+      )
+    ) {
+      return
+    }
     const live = liveByArtifactIdRef.current.get(artifactId)
     if (live && live.phase !== "saved" && live.phase !== "failed") return
     const effectiveBase = resolveSavedLiveArtifactBase(base, live)
@@ -2037,11 +2053,27 @@ export function ArtifactWorkspace({
                   <ArtifactDocumentEditor
                     artifact={displaySelected}
                     forceContentKey={
-                      selectedLive && isArtifactLiveEditLocked(selectedLive)
-                        ? `${displaySelected.id}:live:${selectedLive.buildId ?? "building"}`
-                        : displaySelected.id
+                      isCollaborativeArtifactSurface({
+                        artifactId: displaySelected.id,
+                        contentJson: displaySelected.content_json,
+                        metadata: displaySelected.metadata,
+                      })
+                        ? null
+                        : selectedLive && isArtifactLiveEditLocked(selectedLive)
+                          ? `${displaySelected.id}:live:${selectedLive.buildId ?? "building"}`
+                          : displaySelected.id
                     }
-                    readOnly={!!selectedLive && isArtifactLiveEditLocked(selectedLive)}
+                    readOnly={
+                      shouldLockArtifactDuringAiGeneration(
+                        isCollaborativeArtifactSurface({
+                          artifactId: displaySelected.id,
+                          contentJson: displaySelected.content_json,
+                          metadata: displaySelected.metadata,
+                        }),
+                      )
+                      && !!selectedLive
+                      && isArtifactLiveEditLocked(selectedLive)
+                    }
                     onContentJsonChange={(contentJson) => {
                       updateDraft(displaySelected.id, { contentJson }, displaySelected)
                     }}

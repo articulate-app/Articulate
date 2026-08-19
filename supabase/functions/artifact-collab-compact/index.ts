@@ -63,6 +63,24 @@ Deno.serve(async (req) => {
   const artifactId = uuidOrNull(body.artifact_id)
   if (!artifactId) return json({ error: "artifact_id_required" }, 400)
 
+  const authorization = req.headers.get("Authorization") ?? ""
+  const bearer = authorization.replace(/^Bearer\s+/i, "").trim()
+  const isServiceRole = Boolean(bearer) && bearer === SUPABASE_SERVICE_ROLE_KEY
+  if (!isServiceRole) {
+    if (!bearer) return json({ error: "authentication_required" }, 401)
+    const userClient = createClient(SUPABASE_URL, Deno.env.get("SUPABASE_ANON_KEY") ?? "", {
+      auth: { persistSession: false, autoRefreshToken: false },
+      global: { headers: { Authorization: authorization } },
+    })
+    const { data: authz, error: authzError } = await userClient.rpc("artifact_collab_authorize_v1", {
+      p_artifact_id: artifactId,
+    })
+    const row = asRecord(authz)
+    if (authzError || row?.ok !== true || row.can_write !== true) {
+      return json({ error: "forbidden" }, 403)
+    }
+  }
+
   const { data, error } = await admin.rpc("artifact_collab_load_document_v1", {
     p_artifact_id: artifactId,
     p_after_seq: 0,

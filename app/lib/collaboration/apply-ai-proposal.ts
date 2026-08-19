@@ -95,7 +95,12 @@ export function loadYdocFromPersisted(args: {
   applyLoadedDocument(document, {
     snapshot: args.snapshot,
     lastIncludedSeq: 0,
-    updates: args.updates,
+    updates: args.updates.map((update, index) => ({
+      id: `${update.idempotencyKey || "update"}:${update.seq}:${index}`,
+      seq: update.seq,
+      update: update.update,
+      idempotencyKey: update.idempotencyKey,
+    })),
   }, new Set())
   return document
 }

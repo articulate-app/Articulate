@@ -28,6 +28,10 @@ SQL for each file is the exact `statements` recorded remotely. Local copies star
    - `20260819090222_artifact_collaboration_runtime_schema`
    - `20260819090312_artifact_collaboration_runtime_rpcs`
    - `20260819090346_artifact_collaboration_runtime_ops`
-8. `artifact_collab_project_v1` and `artifact_collab_checkpoint_v1` still need a recorded follow-up before a pilot project is enabled. The global flag remains `enabled=false`.
+8. Follow-up RPCs were generated with `supabase migration new`, applied remotely, then copied to the recorded versions:
+   - `20260819093943` artifact_collaboration_project_checkpoint
+   - `20260819094040` artifact_collaboration_flush_rpcs
+   - `20260819094101` artifact_collaboration_proposal_rpcs
+9. The global flag remains `enabled=false` because project `hlszgarnpleikfkwujph` has production users.
 
 A new clone applying all repo migrations recreates the same schema. `db push` will apply only versions missing on the target, so the six remote versions are not replayed there.

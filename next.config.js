@@ -14,7 +14,15 @@ const nextConfig = {
   },
   output: 'standalone',
   // Disable static generation to avoid SSR issues with client-side code
-  trailingSlash: false
+  trailingSlash: false,
+  transpilePackages: [
+    '@tiptap/extension-collaboration',
+    '@tiptap/extension-collaboration-cursor',
+    '@tiptap/html',
+    'y-prosemirror',
+    'y-protocols',
+    'yjs',
+  ],
 }
 
 module.exports = nextConfig 

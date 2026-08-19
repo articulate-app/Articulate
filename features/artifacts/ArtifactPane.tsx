@@ -118,6 +118,11 @@ import {
   resolveSavedLiveArtifactBase,
 } from "./artifact-live-save-base"
 import { isArtifactLiveEditLocked } from "./artifact-live-edit-lock"
+import {
+  canAutosaveArtifactSnapshot,
+  isCollaborativeArtifactSurface,
+  shouldLockArtifactDuringAiGeneration,
+} from "../../app/lib/collaboration/editor-sync"
 import { exportArtifactAsDocx } from "./artifact-docx-export"
 import {
   openArtifactSelectionInAiPane,
@@ -266,7 +271,14 @@ export function ArtifactPane({
 
   const snapshot = artifactQuery.data?.snapshot ?? null
 
-  const isLiveAi = isArtifactLiveEditLocked(livePreview)
+  const isCollaborativeEditor = isCollaborativeArtifactSurface({
+    artifactId,
+    contentJson: snapshot?.content_json,
+    metadata: snapshot?.metadata,
+  })
+  const isLiveAi =
+    shouldLockArtifactDuringAiGeneration(isCollaborativeEditor)
+    && isArtifactLiveEditLocked(livePreview)
 
   useEffect(() => {
     const version = snapshot?.current_version
@@ -617,6 +629,17 @@ export function ArtifactPane({
 
   const handleSave = async () => {
     if (!displayArtifact) return
+    if (
+      !canAutosaveArtifactSnapshot(
+        isCollaborativeArtifactSurface({
+          artifactId: displayArtifact.id,
+          contentJson: displayArtifact.content_json,
+          metadata: displayArtifact.metadata,
+        }),
+      )
+    ) {
+      return
+    }
     if (Date.now() < conflictCooldownUntilRef.current) return
     if (saveInFlightRef.current) {
       pendingAutosaveRef.current = true
@@ -736,6 +759,26 @@ export function ArtifactPane({
   const handleDownload = async (format: ArtifactExportFormat, attachmentId?: string | null) => {
     setDownloadError(null)
     try {
+      if (isCollaborativeArtifactSurface({ artifactId, contentJson: displayArtifact?.content_json, metadata: displayArtifact?.metadata })) {
+        const { flushAndProjectArtifact } = await import("../../app/lib/collaboration/flush")
+        const { projectYDocToArtifact } = await import("../../app/lib/collaboration/projection")
+        const { peekArtifactCollabSession } = await import("../../app/lib/collaboration/provider-registry")
+        const { getSupabaseBrowser } = await import("../../lib/supabase-browser")
+        await flushAndProjectArtifact({
+          artifactId,
+          project: async (seq) => {
+            const session = peekArtifactCollabSession(artifactId)
+            if (!session) return
+            await projectYDocToArtifact({
+              supabase: getSupabaseBrowser(),
+              artifactId,
+              document: session.document,
+              seq,
+              previousContentJson: displayArtifact?.content_json ?? null,
+            })
+          },
+        })
+      }
       if (format === "docx") {
         if (!displayArtifact) throw new Error("Artifact not loaded")
         await exportArtifactAsDocx({

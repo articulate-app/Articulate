@@ -19,6 +19,7 @@ import {
   acquireArtifactCollabSession,
   releaseArtifactCollabSession,
 } from "../lib/collaboration/provider-registry"
+import { rememberArtifactCollabEnabled } from "../lib/collaboration/editor-sync"
 import { seedExistingArtifact } from "../lib/collaboration/seed-existing-artifact"
 import { createArtifactCollabProvider } from "../lib/collaboration/supabase-provider"
 import { createSupabaseCollabTransport } from "../lib/collaboration/supabase-transport"
@@ -71,6 +72,7 @@ export function useArtifactCollaboration(artifact: TaskArtifact | null | undefin
       if (cancelled) return
       const authorize = asAuthorize(data)
       const serverEnabled = authorize.ok === true && authorize.collab_enabled === true
+      rememberArtifactCollabEnabled(artifactId, serverEnabled)
       if (error || !authorize.ok || (!serverEnabled && !envEnabled)) {
         setEnabled(false)
         setDocument(null)

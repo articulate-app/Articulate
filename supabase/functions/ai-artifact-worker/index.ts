@@ -11,6 +11,7 @@ import {
   type ArtifactSelectionLike,
 } from "./artifact-selection-patch.ts";
 import { brandKitForAiFromProject } from "../_shared/project-brand-kit.ts";
+import { applyReadyAiProposalOnWorker } from "../_shared/artifact-collab-apply-proposal.ts";
 import {
   decideArtifactRevisionConflictRetry,
   isArtifactRevisionConflictValue,
@@ -1316,31 +1317,91 @@ Deno.serve(async (request) => {
                 });
                 collabEnabled = collabOn === true
                 if (collabEnabled) {
-                  await admin.rpc("artifact_collab_upsert_proposal_v1", {
+                  const idempotencyKey = `${buildId}:${unitId}:patches`
+                  const expectedText = Array.isArray(toolArgs.patches)
+                    ? toolArgs.patches.map((row: { expected_text?: string }) => row?.expected_text).filter(Boolean).join("\n")
+                    : null
+                  const upserted = await admin.rpc("artifact_collab_upsert_proposal_v1", {
                     p_artifact_id: artifactId,
-                    p_idempotency_key: `${buildId}:${unitId}:patches`,
+                    p_idempotency_key: idempotencyKey,
                     p_status: "ready",
                     p_payload: {
                       actor_type: "agent",
                       ai_run_id: context?.build?.ai_run_id ?? null,
                       ai_thread_id: context?.build?.thread_id ?? null,
-                      expected_text: Array.isArray(toolArgs.patches)
-                        ? toolArgs.patches.map((row: { expected_text?: string }) => row?.expected_text).filter(Boolean).join("\n")
-                        : null,
+                      expected_text: expectedText,
                       proposed_content: snapshot,
                     },
                   });
-                }
-              }
-              savedResult = collabEnabled
-                ? {
-                    result: { ok: true, data: { collab_proposal: "ready", applied: patched.applied } },
+                  const proposalId = upserted.data && typeof upserted.data === "object"
+                    ? String((upserted.data as { id?: string }).id ?? "")
+                    : ""
+                  const patchedHtml = String(
+                    extractPrimaryArtifactHtml(snapshot.content_json)
+                    || snapshot.content_text
+                    || "",
+                  )
+                  const applied = await applyReadyAiProposalOnWorker({
+                    supabase: admin,
+                    artifactId,
+                    idempotencyKey,
+                    expectedText,
+                    patchedHtml,
+                    origin: {
+                      proposalId,
+                      agentId: "ai-artifact-worker",
+                      runId: context?.build?.ai_run_id ?? null,
+                      messageId: context?.unit?.id ?? null,
+                      threadId: context?.build?.thread_id ?? null,
+                      idempotencyKey,
+                    },
+                    broadcast: async ({ update, seq, key }) => {
+                      const channel = admin.channel(`artifact:${artifactId}`, {
+                        config: { private: true, broadcast: { self: false } },
+                      })
+                      await new Promise<void>((resolve, reject) => {
+                        const timer = setTimeout(() => resolve(), 1500)
+                        channel.subscribe((status) => {
+                          if (status === "SUBSCRIBED") {
+                            clearTimeout(timer)
+                            resolve()
+                          }
+                          if (status === "CHANNEL_ERROR") {
+                            clearTimeout(timer)
+                            reject(new Error("broadcast_subscribe_failed"))
+                          }
+                        })
+                      })
+                      let binary = ""
+                      update.forEach((value) => {
+                        binary += String.fromCharCode(value)
+                      })
+                      await channel.send({
+                        type: "broadcast",
+                        event: "ydoc-update",
+                        payload: { key, seq, update_base64: btoa(binary) },
+                      })
+                      await admin.removeChannel(channel)
+                    },
+                  })
+                  if (!applied.ok) {
+                    savedResult = null
+                    result = { ok: false, error: applied.reason, data: { collab_proposal: applied.status } }
+                    messages.push({ role: "tool", tool_call_id: toolCall.id, content: JSON.stringify(result).slice(0, 40000) })
+                    continue
+                  }
+                  savedResult = {
+                    result: { ok: true, data: { collab_proposal: "applied", applied: patched.applied, seq: applied.seq } },
                     snapshot,
                     summary: String(toolArgs.summary ?? ""),
                     noop: false,
                     sectionHtml: patched.previewAfterHtml,
                     sectionBeforeHtml: patched.previewBeforeHtml,
                   }
+                }
+              }
+              if (!savedResult) savedResult = collabEnabled
+                ? savedResult
                 : await persistSnapshot({
                 snapshot,
                 summary: String(toolArgs.summary ?? ""),
