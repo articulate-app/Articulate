@@ -23,9 +23,11 @@ SQL for each file is the exact `statements` recorded remotely. Local copies star
 4. Added the six recorded files using the remote SQL, unchanged.
 5. Did **not** run `supabase migration repair --status applied` for the deleted version.
 6. CLI `migration list --linked` could not authenticate with the database password in this environment; remote history was confirmed via MCP instead.
-7. Additive runtime work was applied as two new remote migrations and copied locally:
+7. Additive runtime work was applied as recorded remote migrations and copied locally:
    - `20260819090151_artifact_collaboration_runtime`
    - `20260819090222_artifact_collaboration_runtime_schema`
-8. Remaining projection/checkpoint/proposal RPCs still need a follow-up recorded migration if they are not present yet. The global flag remains `enabled=false`.
+   - `20260819090312_artifact_collaboration_runtime_rpcs`
+   - `20260819090346_artifact_collaboration_runtime_ops`
+8. `artifact_collab_project_v1` and `artifact_collab_checkpoint_v1` still need a recorded follow-up before a pilot project is enabled. The global flag remains `enabled=false`.
 
 A new clone applying all repo migrations recreates the same schema. `db push` will apply only versions missing on the target, so the six remote versions are not replayed there.
