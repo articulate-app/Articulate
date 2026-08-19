@@ -125,16 +125,25 @@ export function textToOutputBlocks(text: string): TextOutputBlock[] {
 
 export function htmlToPlainTextForReparse(html: string): string {
   return String(html ?? "")
+    .replace(/\r\n/g, "\n")
     .replace(/<br\s*\/?>/gi, "\n")
     .replace(/<\/p>\s*<p[^>]*>/gi, "\n\n")
-    .replace(/^<p[^>]*>/i, "")
-    .replace(/<\/p>$/i, "")
+    .replace(/<li[^>]*>/gi, "\n- ")
+    .replace(/<\/li>/gi, "")
+    .replace(/<\/(h[1-6]|div|blockquote|tr|p)>/gi, "\n\n")
+    .replace(/<\/(ul|ol|table|section|article)>/gi, "\n\n")
+    .replace(/<(?:p|h[1-6]|div|ul|ol|blockquote|tr|table|thead|tbody|tfoot)[^>]*>/gi, "")
     .replace(/<[^>]+>/g, "")
+    .replace(/&nbsp;/gi, " ")
     .replace(/&amp;/g, "&")
     .replace(/&lt;/g, "<")
     .replace(/&gt;/g, ">")
     .replace(/&quot;/g, '"')
     .replace(/&#39;/g, "'")
+    .replace(/[ \t]+\n/g, "\n")
+    .replace(/\n[ \t]+/g, "\n")
+    .replace(/\n{3,}/g, "\n\n")
+    .trim()
 }
 
 type BlockWithAttachment = { type: string }

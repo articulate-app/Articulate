@@ -89,6 +89,23 @@ describe("discoverAiBrowserFromMessageContentJson", () => {
     expect(found[0]?.browserSessionId).toBe("sess-live")
     expect(found[0]?.openBrowserTab).toBe(true)
   })
+
+  it("does not treat open_browser as an instruction to activate the pane", () => {
+    const found = discoverAiBrowserFromMessageContentJson({
+      tool_results: [
+        {
+          ok: true,
+          name: "open_browser",
+          data_summary: {
+            browser_session_id: "sess-keep",
+            provider: "browser_use",
+            show_browser_preview: true,
+          },
+        },
+      ],
+    })
+    expect(found[0]?.openBrowserTab).toBe(false)
+  })
 })
 
 describe("browserPreviewToToolResult", () => {

@@ -1,7 +1,7 @@
 import type { AiContextTag, AiTagType } from "./composer-inline-editor"
 
 const MENTION_CHIP_BASE =
-  "ai-composer-tag inline-flex max-w-[14rem] cursor-default select-none items-center gap-0.5 rounded py-px align-baseline text-xs font-medium leading-none whitespace-nowrap"
+  "ai-composer-tag relative z-0 inline-flex max-w-[14rem] shrink-0 cursor-default select-none items-center gap-0.5 rounded py-px align-middle text-xs font-medium leading-none whitespace-nowrap"
 
 function resolveMentionChipKind(
   type: AiTagType,

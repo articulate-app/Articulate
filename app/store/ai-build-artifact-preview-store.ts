@@ -71,6 +71,8 @@ export type AiBuildArtifactPreviewEntry = {
 
 type AiBuildArtifactPreviewState = {
   previews: Record<string, AiBuildArtifactPreviewEntry>
+  /** Soft-deleted artifacts must not be resurrected by chat/build hydrate. */
+  suppressedArtifactIds: Record<string, true>
   upsertFromEvent: (args: {
     buildId: string
     unitId: string
@@ -131,6 +133,14 @@ type AiBuildArtifactPreviewState = {
   listForThread: (threadId: string) => AiBuildArtifactPreviewEntry[]
   listForTask: (taskId: number) => AiBuildArtifactPreviewEntry[]
   listLiveByArtifactId: (artifactId: string) => AiBuildArtifactPreviewEntry | null
+  suppressArtifact: (artifactId: string) => void
+  isArtifactSuppressed: (artifactId: string) => boolean
+}
+
+export function isInProgressArtifactPreviewPhase(
+  phase: AiBuildArtifactPreviewPhase | null | undefined,
+): boolean {
+  return phase === "plan_ready" || phase === "started" || phase === "media" || phase === "preview"
 }
 
 export function buildArtifactPreviewKey(
@@ -392,8 +402,15 @@ function mergeMedia(
   return copy
 }
 
+function suppressedIdMap(
+  state: Pick<AiBuildArtifactPreviewState, "suppressedArtifactIds">,
+): Record<string, true> {
+  return state.suppressedArtifactIds ?? {}
+}
+
 export const useAiBuildArtifactPreviewStore = create<AiBuildArtifactPreviewState>((set, get) => ({
   previews: {},
+  suppressedArtifactIds: {},
 
   upsertFromEvent: ({
     buildId,
@@ -431,7 +448,9 @@ export const useAiBuildArtifactPreviewStore = create<AiBuildArtifactPreviewState
     assistantMessageId,
   }) => {
     const key = buildArtifactPreviewKey(buildId, unitId, artifactId)
-    if (!artifactId.trim()) return key
+    const id = artifactId.trim()
+    if (!id) return key
+    if (suppressedIdMap(get())[id]) return key
     const phase = phaseForArtifactEventType(eventType) ?? "preview"
     set((state) => {
       const prev = state.previews[key] ?? null
@@ -636,9 +655,30 @@ export const useAiBuildArtifactPreviewStore = create<AiBuildArtifactPreviewState
       .filter((row) => row.taskId === taskId)
       .sort((a, b) => b.sequence - a.sequence),
 
+  suppressArtifact: (artifactId) => {
+    const id = artifactId.trim()
+    if (!id) return
+    set((state) => {
+      const nextPreviews: Record<string, AiBuildArtifactPreviewEntry> = {}
+      for (const [key, entry] of Object.entries(state.previews)) {
+        if (entry.artifactId !== id) nextPreviews[key] = entry
+      }
+      return {
+        previews: nextPreviews,
+        suppressedArtifactIds: { ...suppressedIdMap(state), [id]: true },
+      }
+    })
+  },
+
+  isArtifactSuppressed: (artifactId) => {
+    const id = artifactId.trim()
+    return Boolean(id && suppressedIdMap(get())[id])
+  },
+
   listLiveByArtifactId: (artifactId) => {
     const id = artifactId.trim()
     if (!id) return null
+    if (suppressedIdMap(get())[id]) return null
     const matches = Object.values(get().previews).filter((row) => row.artifactId === id)
     if (matches.length === 0) return null
     return matches.reduce((best, row) => {
@@ -652,3 +692,7 @@ export const useAiBuildArtifactPreviewStore = create<AiBuildArtifactPreviewState
     })
   },
 }))
+
+if (useAiBuildArtifactPreviewStore.getState().suppressedArtifactIds == null) {
+  useAiBuildArtifactPreviewStore.setState({ suppressedArtifactIds: {} })
+}

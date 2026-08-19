@@ -9,6 +9,10 @@ export type QueuedAiChatMessage = {
   messageText: string
   messageTags: AiContextTag[]
   messageSegments: AiMessageSegment[]
+  /** Sanitized rich HTML for the sent bubble (mention chips as data-ai-mention). */
+  messageHtml?: string | null
+  /** Composer innerHTML so queued edits restore chips + formatting. */
+  editorHtml?: string | null
   /** In-memory only — File cannot be persisted to localStorage. */
   messageFiles?: File[]
   createdAt: number
@@ -62,6 +66,8 @@ function loadPersisted(): Record<string, QueuedAiChatMessage[]> {
           messageText: String(item.messageText ?? ""),
           messageTags: Array.isArray(item.messageTags) ? item.messageTags : [],
           messageSegments: Array.isArray(item.messageSegments) ? item.messageSegments : [],
+          messageHtml: typeof item.messageHtml === "string" ? item.messageHtml : null,
+          editorHtml: typeof item.editorHtml === "string" ? item.editorHtml : null,
           createdAt: Number(item.createdAt) || Date.now(),
         }))
         .filter((item) => item.messageText.trim().length > 0)
@@ -97,6 +103,8 @@ export const useAiChatMessageQueueStore = create<AiChatMessageQueueState>((set, 
       messageText: item.messageText,
       messageTags: item.messageTags ?? [],
       messageSegments: item.messageSegments ?? [],
+      messageHtml: item.messageHtml ?? null,
+      editorHtml: item.editorHtml ?? null,
       messageFiles: item.messageFiles?.length ? [...item.messageFiles] : undefined,
       createdAt: Date.now(),
     }
@@ -208,6 +216,8 @@ export const useAiChatMessageQueueStore = create<AiChatMessageQueueState>((set, 
       messageText: item.messageText,
       messageTags: item.messageTags ?? [],
       messageSegments: item.messageSegments ?? [],
+      messageHtml: item.messageHtml ?? null,
+      editorHtml: item.editorHtml ?? null,
       messageFiles: item.messageFiles?.length ? [...item.messageFiles] : undefined,
       createdAt: Date.now(),
     }

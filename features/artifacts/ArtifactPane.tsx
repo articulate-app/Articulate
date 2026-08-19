@@ -110,6 +110,7 @@ import {
 import {
   applyArtifactCachePatch,
   artifactCachePatchFromSavedLivePreview,
+  forgetDeletedArtifact,
 } from "./artifact-query-cache"
 import {
   isArtifactDraftStaleForServerVersion,
@@ -120,9 +121,12 @@ import {
 import { isArtifactLiveEditLocked } from "./artifact-live-edit-lock"
 import {
   canAutosaveArtifactSnapshot,
-  isCollaborativeArtifactSurface,
   shouldLockArtifactDuringAiGeneration,
 } from "../../app/lib/collaboration/editor-sync"
+import {
+  isArtifactCollabEnvEnabled,
+  shouldUseArtifactCollaboration,
+} from "../../app/lib/collaboration/feature-flag"
 import { exportArtifactAsDocx } from "./artifact-docx-export"
 import {
   openArtifactSelectionInAiPane,
@@ -240,6 +244,7 @@ export function ArtifactPane({
   })
 
   const livePreviews = useAiBuildArtifactPreviewStore((s) => s.previews)
+  const isArtifactSuppressed = useAiBuildArtifactPreviewStore((s) => s.isArtifactSuppressed)
   const pruneConsumedSavedPreviews = useAiBuildArtifactPreviewStore(
     (s) => s.pruneConsumedSavedPreviews,
   )
@@ -247,6 +252,7 @@ export function ArtifactPane({
     (s) => s.ensureBeforeBaseline,
   )
   const livePreview = useMemo(() => {
+    if (isArtifactSuppressed(artifactId)) return null
     let best: (typeof livePreviews)[string] | null = null
     for (const entry of Object.values(livePreviews)) {
       if (entry.artifactId !== artifactId) continue
@@ -267,14 +273,14 @@ export function ArtifactPane({
       if (entry.sequence > best.sequence) best = entry
     }
     return best
-  }, [artifactId, livePreviews])
+  }, [artifactId, isArtifactSuppressed, livePreviews])
 
   const snapshot = artifactQuery.data?.snapshot ?? null
 
-  const isCollaborativeEditor = isCollaborativeArtifactSurface({
-    artifactId,
+  const isCollaborativeEditor = shouldUseArtifactCollaboration({
     contentJson: snapshot?.content_json,
     metadata: snapshot?.metadata,
+    envEnabled: isArtifactCollabEnvEnabled(),
   })
   const isLiveAi =
     shouldLockArtifactDuringAiGeneration(isCollaborativeEditor)
@@ -298,10 +304,11 @@ export function ArtifactPane({
   }, [artifactId, ensureBeforeBaseline, livePreview, snapshot])
 
   useEffect(() => {
+    if (isArtifactSuppressed(artifactId)) return
     const patch = artifactCachePatchFromSavedLivePreview(livePreview, snapshot)
     if (!patch) return
     applyArtifactCachePatch(queryClient, patch)
-  }, [livePreview, queryClient, snapshot])
+  }, [artifactId, isArtifactSuppressed, livePreview, queryClient, snapshot])
   const viewedVersionNumber =
     version
     ?? snapshot?.current_version
@@ -631,10 +638,10 @@ export function ArtifactPane({
     if (!displayArtifact) return
     if (
       !canAutosaveArtifactSnapshot(
-        isCollaborativeArtifactSurface({
-          artifactId: displayArtifact.id,
+        shouldUseArtifactCollaboration({
           contentJson: displayArtifact.content_json,
           metadata: displayArtifact.metadata,
+          envEnabled: isArtifactCollabEnvEnabled(),
         }),
       )
     ) {
@@ -759,26 +766,6 @@ export function ArtifactPane({
   const handleDownload = async (format: ArtifactExportFormat, attachmentId?: string | null) => {
     setDownloadError(null)
     try {
-      if (isCollaborativeArtifactSurface({ artifactId, contentJson: displayArtifact?.content_json, metadata: displayArtifact?.metadata })) {
-        const { flushAndProjectArtifact } = await import("../../app/lib/collaboration/flush")
-        const { projectYDocToArtifact } = await import("../../app/lib/collaboration/projection")
-        const { peekArtifactCollabSession } = await import("../../app/lib/collaboration/provider-registry")
-        const { getSupabaseBrowser } = await import("../../lib/supabase-browser")
-        await flushAndProjectArtifact({
-          artifactId,
-          project: async (seq) => {
-            const session = peekArtifactCollabSession(artifactId)
-            if (!session) return
-            await projectYDocToArtifact({
-              supabase: getSupabaseBrowser(),
-              artifactId,
-              document: session.document,
-              seq,
-              previousContentJson: displayArtifact?.content_json ?? null,
-            })
-          },
-        })
-      }
       if (format === "docx") {
         if (!displayArtifact) throw new Error("Artifact not loaded")
         await exportArtifactAsDocx({
@@ -830,6 +817,7 @@ export function ArtifactPane({
     setConflictMessage(null)
     try {
       await deleteArtifact({ artifactId })
+      forgetDeletedArtifact(queryClient, artifactId)
       setShowDeleteConfirm(false)
       await queryClient.invalidateQueries({ queryKey: ["artifact", artifactId] })
       await queryClient.invalidateQueries({ queryKey: ["task-artifacts"] })
@@ -883,9 +871,24 @@ export function ArtifactPane({
 
   const isLivePreview = isLiveAi
   const bodyScrollRef = useRef<HTMLDivElement | null>(null)
-  const commentsDockRef = useRef<HTMLDivElement | null>(null)
+  const commentsDockObserverRef = useRef<ResizeObserver | null>(null)
   const [commentsDockHeight, setCommentsDockHeight] = useState(0)
-  const commentsGutterWidth = useOverflowGutterWidth(bodyScrollRef)
+  const commentsGutterWidth = useOverflowGutterWidth(bodyScrollRef, displayArtifact?.id)
+  const setCommentsDockNode = useCallback((node: HTMLDivElement | null) => {
+    commentsDockObserverRef.current?.disconnect()
+    commentsDockObserverRef.current = null
+    if (!node) {
+      setCommentsDockHeight(0)
+      return
+    }
+    const update = () => {
+      setCommentsDockHeight(Math.ceil(node.getBoundingClientRect().height))
+    }
+    update()
+    const observer = new ResizeObserver(update)
+    observer.observe(node)
+    commentsDockObserverRef.current = observer
+  }, [])
   const liveContentKey = `${livePreview?.sequence ?? 0}:${(
     livePreview?.sectionHtml
     ?? livePreview?.streamSnippet
@@ -900,19 +903,11 @@ export function ArtifactPane({
   })
 
   useEffect(() => {
-    const node = commentsDockRef.current
-    if (!node) {
-      setCommentsDockHeight(0)
-      return
+    return () => {
+      commentsDockObserverRef.current?.disconnect()
+      commentsDockObserverRef.current = null
     }
-    const update = () => {
-      setCommentsDockHeight(Math.ceil(node.getBoundingClientRect().height))
-    }
-    update()
-    const observer = new ResizeObserver(update)
-    observer.observe(node)
-    return () => observer.disconnect()
-  }, [artifactQuery.isLoading, displayArtifact?.id])
+  }, [])
 
   const changeDiff = useMemo(() => {
     if (!displayArtifact) return null
@@ -1384,7 +1379,7 @@ export function ArtifactPane({
       ) : null}
 
       <div className="relative min-h-0 flex-1 overflow-hidden">
-      <div ref={bodyScrollRef} className="absolute inset-0 overflow-auto [scrollbar-gutter:stable]">
+      <div ref={bodyScrollRef} className="absolute inset-0 overflow-x-hidden overflow-y-auto [scrollbar-gutter:stable]">
         <div className="mx-auto flex max-w-3xl flex-col">
           {showChanges && hasChangeDiff && changeSides && !livePreview?.streaming ? (
             <ArtifactRichDiffBody
@@ -1541,14 +1536,16 @@ export function ArtifactPane({
         style={{ paddingRight: commentsGutterWidth }}
       >
         <div
-          ref={commentsDockRef}
-          className="pointer-events-auto mx-auto w-full max-w-3xl bg-white"
+          ref={setCommentsDockNode}
+          className="pointer-events-auto bg-white"
         >
-          <ArtifactCommentsDock
-            artifact={displayArtifact}
-            pendingSelection={pendingCommentSelection}
-            onClearPendingSelection={() => setPendingCommentSelection(null)}
-          />
+          <div className="mx-auto w-full max-w-3xl">
+            <ArtifactCommentsDock
+              artifact={displayArtifact}
+              pendingSelection={pendingCommentSelection}
+              onClearPendingSelection={() => setPendingCommentSelection(null)}
+            />
+          </div>
         </div>
       </div>
       </div>

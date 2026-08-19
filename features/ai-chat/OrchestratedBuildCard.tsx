@@ -770,6 +770,23 @@ export function OrchestratedBuildCard({
     )
   }, [artifactPreviews.length, entry])
 
+  const fallbackArtifactRefs = useMemo(() => {
+    if (!entry) return []
+    const seen = new Set<string>()
+    const refs: Array<{ artifactId: string; title: string | null }> = []
+    for (const unit of units) {
+      const match = String(unit.unit_key ?? "").match(/^artifact:([0-9a-f-]{36})$/i)
+      const artifactId = match?.[1]
+      if (!artifactId || seen.has(artifactId)) continue
+      seen.add(artifactId)
+      refs.push({
+        artifactId,
+        title: unit.result.saved?.[0]?.title?.trim() || entry.title?.trim() || null,
+      })
+    }
+    return refs
+  }, [entry, units])
+
   const rehydrateAttemptsRef = useRef(0)
   const [isRehydratingPreviews, setIsRehydratingPreviews] = useState(false)
   useEffect(() => {
@@ -870,16 +887,28 @@ export function OrchestratedBuildCard({
             <span className="truncate">{entry.title?.trim() || "Artifact update"}</span>
             <p className="mt-0.5 text-xs">Build failed.</p>
           </div>
-        ) : (
-          <div className="rounded-xl border border-border bg-card px-3 py-2.5 text-sm text-muted-foreground shadow-sm">
-            <span className="truncate font-medium text-foreground">
-              {entry.title?.trim() || "Artifact update"}
-            </span>
-            <p className="mt-0.5 text-xs">
-              {isTerminal ? "Saved — open the artifact to review." : "Waiting for preview…"}
-            </p>
-          </div>
-        )}
+        ) : fallbackArtifactRefs.length > 0 ? (
+          <ul className="space-y-2 w-full min-w-0 max-w-full">
+            {fallbackArtifactRefs.map((ref) => (
+              <li key={ref.artifactId}>
+                <button
+                  type="button"
+                  className="w-full rounded-xl border border-border bg-card px-3 py-2.5 text-left text-sm shadow-sm hover:bg-muted/40"
+                  onClick={() =>
+                    openArtifactCenterTab({
+                      artifactId: ref.artifactId,
+                      title: ref.title,
+                    })
+                  }
+                >
+                  <span className="truncate font-medium text-foreground">
+                    {ref.title || "Artifact"}
+                  </span>
+                </button>
+              </li>
+            ))}
+          </ul>
+        ) : null}
         {artifactChromeFooter}
       </div>
     )

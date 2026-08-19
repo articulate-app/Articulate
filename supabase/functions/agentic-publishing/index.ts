@@ -2112,13 +2112,20 @@ Deno.serve(async (req) => {
         return json({ error: { code: "invalid_request", message: "Unsupported browser command" } }, 400)
       }
       let browserId = asString(body.browser_id)
-      const runId = uuidOrNull(body.run_id)
-      if (runId) {
-        const runRow = await loadRun(service, runId)
+      // Only an explicit publication_run_id may bind this action to publishing.
+      // Generic AI Chat run_id must never be treated as a publication run.
+      const publicationRunId = uuidOrNull(body.publication_run_id)
+      if (publicationRunId) {
+        const runRow = await loadRun(service, publicationRunId)
         await assertCanAccessRun(userClient, runRow, actorUserId)
         browserId = browserId ?? asString(runRow.provider_browser_id)
       } else if (!browserId) {
-        return json({ error: { code: "invalid_request", message: "browser_id or run_id is required" } }, 400)
+        return json({
+          error: {
+            code: "browser_session_not_found",
+            message: "browser_id is required for generic browser actions",
+          },
+        }, 400)
       }
       const provider = getProvider("browser_use")
       if (typeof provider.actOnBrowser !== "function") {

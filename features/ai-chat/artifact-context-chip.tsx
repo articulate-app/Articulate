@@ -74,7 +74,7 @@ export function ArtifactContextChip({
   )
 
   const chipClassName = cn(
-    "group relative inline-flex max-w-[260px] items-center gap-2.5 rounded-2xl border border-gray-200 bg-white px-2.5 py-2 text-left shadow-[0_1px_2px_rgba(0,0,0,0.04)]",
+    "group relative inline-flex min-w-0 max-w-full items-center gap-2.5 rounded-2xl border border-gray-200 bg-white px-2.5 py-2 text-left shadow-[0_1px_2px_rgba(0,0,0,0.04)] sm:max-w-[260px]",
     (href || onClick) && "cursor-pointer transition-colors hover:border-gray-300 hover:bg-gray-50",
     !readOnly && onRemove && "pr-2",
     className,

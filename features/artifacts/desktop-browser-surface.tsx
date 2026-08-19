@@ -25,12 +25,21 @@ import {
   isBrowserSurfaceOverlayActive,
   subscribeBrowserSurfaceOverlay,
 } from "../../app/lib/browser-surface-overlay"
+import {
+  claimDesktopBrowserSurface,
+  isDesktopBrowserSurfaceOwner,
+  subscribeDesktopBrowserSurfaceOwner,
+} from "../../app/lib/desktop-browser-surface-owner"
 
 export type DesktopBrowserSurfaceProps = {
   browserId: string
   className?: string
   active?: boolean
+  variant?: "full" | "preview"
+  ownerId?: string | null
+  priority?: number
   initialUrl?: string | null
+  onReady?: () => void
   onNavigation?: (info: {
     url: string
     title?: string
@@ -48,7 +57,11 @@ export function DesktopBrowserSurface({
   browserId,
   className,
   active = true,
+  variant = "full",
+  ownerId = null,
+  priority = 1,
   initialUrl,
+  onReady,
   onNavigation,
   onDownload,
   onPopup,
@@ -75,10 +88,25 @@ export function DesktopBrowserSurface({
   onPopupRef.current = onPopup
   const onControlChangeRef = useRef(onControlChange)
   onControlChangeRef.current = onControlChange
+  const onReadyRef = useRef(onReady)
+  onReadyRef.current = onReady
+  const resolvedOwnerId = ownerId || `surface:${browserId}`
+  const [isOwner, setIsOwner] = useState(true)
 
   useEffect(() => subscribeBrowserSurfaceOverlay(() => {
     setOverlayActive(isBrowserSurfaceOverlayActive())
   }), [])
+
+  useEffect(() => {
+    const release = claimDesktopBrowserSurface(browserId, resolvedOwnerId, priority)
+    const sync = () => setIsOwner(isDesktopBrowserSurfaceOwner(browserId, resolvedOwnerId))
+    sync()
+    const unsub = subscribeDesktopBrowserSurfaceOwner(browserId, sync)
+    return () => {
+      unsub()
+      release()
+    }
+  }, [browserId, resolvedOwnerId, priority])
 
   useEffect(() => {
     const desktop = getArticulateDesktop()
@@ -115,6 +143,7 @@ export function DesktopBrowserSurface({
         if (!cancelled) {
           setReady(true)
           setError(null)
+          onReadyRef.current?.()
         }
       } catch (err) {
         if (!cancelled) {
@@ -178,16 +207,18 @@ export function DesktopBrowserSurface({
     return () => {
       cancelled = true
       for (const off of unsubs) off()
-      void desktop.browser.hide(browserId)
+      if (isDesktopBrowserSurfaceOwner(browserId, resolvedOwnerId)) {
+        void desktop.browser.hide(browserId)
+      }
     }
-  }, [browserId])
+  }, [browserId, resolvedOwnerId])
 
   useEffect(() => {
     const desktop = getArticulateDesktop()
-    if (!desktop || !ready) return
+    if (!desktop || !ready || !isOwner) return
     if (active && !overlayActive) void desktop.browser.show(browserId)
     else void desktop.browser.hide(browserId)
-  }, [active, browserId, ready, overlayActive])
+  }, [active, browserId, ready, overlayActive, isOwner])
 
   if (!isArticulateDesktopAvailable()) {
     return (
@@ -218,6 +249,23 @@ export function DesktopBrowserSurface({
   const canGoForward = state?.canGoForward ?? false
   const isLoading = state?.isLoading ?? false
   const showHumanBanner = control.controlOwner === "human" && Boolean(onContinueWithAgent)
+  const host = (
+    <DesktopBrowserHost
+      browserId={browserId}
+      ownerId={resolvedOwnerId}
+      ownsSurface={isOwner}
+      active={active && ready}
+      className="relative min-h-0 w-full flex-1"
+    />
+  )
+
+  if (variant === "preview") {
+    return (
+      <div className={cn("flex h-full min-h-0 w-full flex-col bg-transparent", className)}>
+        {host}
+      </div>
+    )
+  }
 
   return (
     <div className={cn("flex h-full min-h-0 w-full flex-col bg-white", className)}>
@@ -268,11 +316,7 @@ export function DesktopBrowserSurface({
         </div>
       ) : null}
 
-      <DesktopBrowserHost
-        browserId={browserId}
-        active={active && ready}
-        className="relative min-h-0 w-full flex-1"
-      />
+      {host}
     </div>
   )
 }

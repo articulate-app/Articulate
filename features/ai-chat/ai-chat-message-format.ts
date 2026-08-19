@@ -1,4 +1,3 @@
-import { normalizeMixedRichText } from "../../app/lib/rich-text-normalization"
 import { getAssistantContentBlocks } from "./assistant-content-blocks"
 import {
   collapseRedundantAppEntityLinkLines,
@@ -86,13 +85,9 @@ export function formatAssistantContentForDisplay(
 
   if (hasHtmlMarkup(raw)) {
     const plain = htmlToPlainTextForReparse(raw)
-    if (plain.trim()) {
-      const linked = prepareAssistantMarkdownForDisplay(plain, labels)
-      return decorateAppEntityAnchorsAsChips(normalizeMixedRichText(linked))
-    }
-    return decorateAppEntityAnchorsAsChips(
-      normalizeMixedRichText(prepareAssistantMarkdownForDisplay(raw, labels)),
-    )
+    const source = plain.trim() ? plain : raw
+    const prepared = prepareAssistantMarkdownForDisplay(source, labels)
+    return decorateAppEntityAnchorsAsChips(String(assistantMarked.parse(prepared)))
   }
 
   // Plain assistant output is Markdown. Render it with the chat-specific marked

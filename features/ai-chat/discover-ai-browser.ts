@@ -88,7 +88,7 @@ function fromToolResult(row: unknown): AiBrowserDiscovery | null {
     browserLabel: asString(data.browser_label) ?? asString(data.browserLabel),
     status: asString(data.status),
     showBrowserPreview: data.show_browser_preview !== false,
-    openBrowserTab: data.open_browser_tab === true || name === "open_browser",
+    openBrowserTab: data.open_browser_tab === true,
     desktopRequired:
       desktopBrowser?.required === true || desktopCommand?.required === true,
     desktopCommand: desktopCommand
@@ -174,8 +174,7 @@ export function browserPreviewToToolResult(preview: Record<string, unknown>): Re
       show_browser_preview: preview.show_browser_preview !== false,
       open_browser_tab:
         preview.open_browser_tab === true
-        || preview.openBrowserTab === true
-        || (asString(preview.tool_name) ?? asString(preview.name)) === "open_browser",
+        || preview.openBrowserTab === true,
       desktop_browser: asRecord(preview.desktop_browser),
       desktop_command: asRecord(preview.desktop_command),
     },

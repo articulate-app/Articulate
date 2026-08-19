@@ -2991,7 +2991,6 @@ export function ChatWindow({
   const browserTabs = useRightPaneTabsStore((s) => s.tabs)
   const openedAiBrowserFingerprintsRef = useRef<Map<string, string>>(new Map())
   const appliedDesktopCommandsRef = useRef<Set<string>>(new Set())
-  const activatedAiBrowserSessionsRef = useRef<Set<string>>(new Set())
 
   useEffect(() => {
     for (const message of allMessages) {
@@ -3007,14 +3006,15 @@ export function ChatWindow({
           item.desktopCommand?.url ?? "",
         ].join("|")
         const previous = openedAiBrowserFingerprintsRef.current.get(item.browserSessionId)
-        const shouldActivate =
-          item.openBrowserTab === true
-          && !activatedAiBrowserSessionsRef.current.has(item.browserSessionId)
-        if (shouldActivate) {
-          activatedAiBrowserSessionsRef.current.add(item.browserSessionId)
-        }
         if (previous !== fingerprint) {
           openedAiBrowserFingerprintsRef.current.set(item.browserSessionId, fingerprint)
+          if (process.env.NODE_ENV === "development") {
+            console.info("[ai-browser] session", {
+              browser_session_id: item.browserSessionId,
+              browser_id: item.browserId,
+              url: item.currentUrl ?? item.startUrl,
+            })
+          }
           openBrowserTabForAiSession({
             browserSessionId: item.browserSessionId,
             browserId: item.browserId,
@@ -3024,19 +3024,7 @@ export function ChatWindow({
             currentUrl: item.currentUrl,
             title: item.title,
             provider: item.provider,
-            activate: shouldActivate,
-          })
-        } else if (shouldActivate) {
-          openBrowserTabForAiSession({
-            browserSessionId: item.browserSessionId,
-            browserId: item.browserId,
-            sessionId: item.sessionId,
-            liveViewUrl: item.liveViewUrl,
-            startUrl: item.startUrl,
-            currentUrl: item.currentUrl,
-            title: item.title,
-            provider: item.provider,
-            activate: true,
+            activate: false,
           })
         }
 
@@ -3044,12 +3032,13 @@ export function ChatWindow({
         if (!cmd) continue
         const commandKey = `${item.browserSessionId}:${cmd.command}:${cmd.url ?? ""}:${cmd.selector ?? ""}:${cmd.text ?? ""}:${cmd.index ?? ""}`
         if (appliedDesktopCommandsRef.current.has(commandKey)) continue
+        appliedDesktopCommandsRef.current.add(commandKey)
         void applyAiDesktopBrowserCommand(item).then((applied) => {
-          if (applied) appliedDesktopCommandsRef.current.add(commandKey)
+          if (!applied) appliedDesktopCommandsRef.current.delete(commandKey)
         })
       }
     }
-  }, [allMessages, browserTabs])
+  }, [allMessages])
 
   const aiBrowserPreviewsByAssistantId = useMemo(() => {
     const map = new Map<string, ReturnType<typeof discoverAiBrowserFromMessageContentJson>>()

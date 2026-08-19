@@ -25,7 +25,7 @@ export function openBrowserTabForAiSession(args: {
   activate?: boolean
   pane?: WorkspacePaneId
 }): string {
-  const activate = args.activate !== false
+  const activate = args.activate === true
   const pane = args.pane ?? "right"
   const store = useRightPaneTabsStore.getState()
   const existing = findBrowserTabForAiSession(store.tabs, {

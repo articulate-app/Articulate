@@ -4,7 +4,11 @@ import "jsr:@supabase/functions-js/edge-runtime.d.ts";
 
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
 import { brandKitForAiFromProject, collectBrandTemplateVisualRefs } from "../_shared/project-brand-kit.ts";
-import { isBrowserControllerCommand } from "../_shared/browser-agent/controller.ts";
+import { BROWSER_ERROR_CODES, isBrowserControllerCommand } from "../_shared/browser-agent/controller.ts";
+import {
+  actOnCloudInteractiveBrowser,
+  openCloudInteractiveBrowser,
+} from "../_shared/browser-agent/interactive-session.ts";
 import {
   looksLikeSpecificResourceUrl,
   recommendBrowserFallback,
@@ -3922,7 +3926,37 @@ function browserClientExecutionContext(ctx: any) {
     ...(desktop && typeof capabilities?.desktop_session_id === "string"
       ? { desktop_session_id: capabilities.desktop_session_id }
       : {}),
+    ...(typeof capabilities?.active_browser_session_id === "string" &&
+      capabilities.active_browser_session_id.trim()
+      ? { active_browser_session_id: capabilities.active_browser_session_id.trim() }
+      : {}),
+    ...(typeof capabilities?.active_browser_id === "string" &&
+      capabilities.active_browser_id.trim()
+      ? { active_browser_id: capabilities.active_browser_id.trim() }
+      : {}),
   };
+}
+
+function asTrimmedId(value: unknown): string | null {
+  return typeof value === "string" && value.trim() ? value.trim() : null;
+}
+
+function browserToolError(
+  finalize: (row: Record<string, unknown>) => unknown,
+  toolName: string,
+  code: string,
+  message: string,
+  data: Record<string, unknown> = {},
+) {
+  return finalize({
+    name: toolName,
+    ok: false,
+    error: code,
+    data: {
+      ...data,
+      error: { code, message, recoverable: true },
+    },
+  });
 }
 
 function normalizeBrowserUrl(value: unknown): string {
@@ -3934,10 +3968,15 @@ function normalizeBrowserUrl(value: unknown): string {
 
 async function executeBrowserTool(runtime: any) {
   const { toolName, rawArgs, finalize, ctx } = runtime;
-  const auth = ctx?.request_auth_header ?? null;
-  const runId = ctx?.ai_run_id ?? null;
   const clientExecutionContext = browserClientExecutionContext(ctx);
   const desktopAvailable = clientExecutionContext.native_browser_available === true;
+
+  const activeSessionId =
+    cleanUuidOrNull(rawArgs.browser_session_id) ||
+    asTrimmedId(clientExecutionContext.active_browser_session_id);
+  const activeBrowserId =
+    asTrimmedId(rawArgs.browser_id) ||
+    asTrimmedId(clientExecutionContext.active_browser_id);
 
   if (toolName === "open_browser") {
     const startUrl = normalizeBrowserUrl(rawArgs.url ?? rawArgs.start_url);
@@ -3945,74 +3984,128 @@ async function executeBrowserTool(runtime: any) {
       typeof rawArgs.title === "string" && rawArgs.title.trim()
         ? rawArgs.title.trim().slice(0, 80)
         : null;
-    try {
-      const opened = await invokeJsonEdgeFunction(
-        "agentic-publishing",
-        {
-          action: "open_browser",
-          start_url: startUrl,
-          source: "ai",
-          ...clientExecutionContext,
-        },
-        120000,
-        auth,
-        runId,
-      );
-      const provider =
-        String(opened?.provider ?? "").trim() ||
-        (opened?.desktop_browser?.required ? "articulate_desktop" : "browser_use");
-      const browserSessionId =
-        cleanUuidOrNull(rawArgs.browser_session_id) ||
-        crypto.randomUUID();
+    const reuseSession = Boolean(activeSessionId);
+    const browserSessionId = activeSessionId || crypto.randomUUID();
+    if (desktopAvailable) {
       return finalize({
         name: toolName,
         ok: true,
         error: null,
         data: {
           browser_session_id: browserSessionId,
-          browser_id: opened?.browser_id ?? null,
-          session_id: opened?.session_id ?? null,
-          live_view_url: opened?.live_view_url ?? null,
-          start_url: opened?.start_url ?? startUrl,
-          current_url: opened?.start_url ?? startUrl,
+          browser_id: activeBrowserId,
+          start_url: startUrl,
+          current_url: startUrl,
           title,
-          provider,
-          browser_label: opened?.browser_label ?? (provider === "articulate_desktop" ? "Desktop" : "Cloud"),
-          status: opened?.status ?? "active",
-          desktop_browser: opened?.desktop_browser ?? (desktopAvailable
-            ? { required: true, start_url: startUrl }
-            : null),
+          provider: "articulate_desktop",
+          browser_label: "Desktop",
+          status: "desktop_ready",
+          reused_session: reuseSession,
+          desktop_browser: { required: true, start_url: startUrl },
+          desktop_command: {
+            required: true,
+            command: "navigate",
+            url: startUrl,
+            browser_id: activeBrowserId,
+            browser_session_id: browserSessionId,
+          },
           show_browser_preview: true,
-          open_browser_tab: true,
+          open_browser_tab: false,
+        },
+      });
+    }
+    if (reuseSession && activeBrowserId) {
+      try {
+        const acted = await actOnCloudInteractiveBrowser(activeBrowserId, {
+          command: "navigate",
+          url: startUrl,
+        });
+        return finalize({
+          name: toolName,
+          ok: acted.ok,
+          error: acted.ok ? null : acted.error_code ?? BROWSER_ERROR_CODES.browser_navigation_failed,
+          data: {
+            browser_session_id: browserSessionId,
+            browser_id: activeBrowserId,
+            start_url: startUrl,
+            current_url: acted.url || startUrl,
+            title: acted.title || title,
+            provider: "browser_use",
+            browser_label: "Cloud",
+            status: acted.ok ? "active" : "failed",
+            reused_session: true,
+            live_view_url: null,
+            show_browser_preview: true,
+            open_browser_tab: false,
+            error_code: acted.error_code,
+            links: acted.links,
+            text: acted.text,
+          },
+        });
+      } catch (error: any) {
+        return browserToolError(
+          finalize,
+          toolName,
+          BROWSER_ERROR_CODES.browser_action_failed,
+          error?.message ?? String(error),
+          { browser_session_id: browserSessionId, browser_id: activeBrowserId },
+        );
+      }
+    }
+    try {
+      const opened = await openCloudInteractiveBrowser({ startUrl });
+      if (!opened.ok) {
+        return browserToolError(
+          finalize,
+          toolName,
+          opened.error_code ?? BROWSER_ERROR_CODES.browser_unavailable,
+          opened.error ?? "Could not open a browser session",
+          { browser_session_id: browserSessionId },
+        );
+      }
+      return finalize({
+        name: toolName,
+        ok: true,
+        error: null,
+        data: {
+          browser_session_id: browserSessionId,
+          browser_id: opened.browser_id,
+          live_view_url: opened.live_view_url,
+          start_url: opened.start_url,
+          current_url: opened.current_url,
+          title,
+          provider: "browser_use",
+          browser_label: "Cloud",
+          status: opened.status,
+          reused_session: false,
+          show_browser_preview: true,
+          open_browser_tab: false,
         },
       });
     } catch (error: any) {
-      return finalize({
-        name: toolName,
-        ok: false,
-        error: error?.message ?? String(error),
-        data: null,
-      });
+      return browserToolError(
+        finalize,
+        toolName,
+        BROWSER_ERROR_CODES.browser_unavailable,
+        error?.message ?? String(error),
+        { browser_session_id: browserSessionId },
+      );
     }
   }
 
   if (toolName === "use_browser") {
-    const browserId = String(rawArgs.browser_id ?? "").trim() || null;
-    const sessionId = String(rawArgs.session_id ?? "").trim() || null;
-    const browserSessionId = String(rawArgs.browser_session_id ?? "").trim() || null;
+    const browserId = activeBrowserId;
+    const browserSessionId = activeSessionId;
     const url = typeof rawArgs.url === "string" ? normalizeBrowserUrl(rawArgs.url) : null;
     let command = String(rawArgs.command ?? "").trim().toLowerCase();
     if (command === "instruct") {
-      return finalize({
-        name: toolName,
-        ok: false,
-        error: "instruct_removed",
-        data: {
-          browser_session_id: browserSessionId,
-          browser_id: browserId,
-          message: "Do not delegate browser reasoning. Use navigate/click/type/snapshot/get_links/extract/verify_url on this same session.",
-        },
-      });
+      return browserToolError(
+        finalize,
+        toolName,
+        "instruct_removed",
+        "Do not delegate browser reasoning. Use navigate/click/type/snapshot/get_links/extract/verify_url on this same session.",
+        { browser_session_id: browserSessionId, browser_id: browserId },
+      );
     }
     if (!command) {
       command = url ? "navigate" : "snapshot";
@@ -4020,20 +4113,22 @@ async function executeBrowserTool(runtime: any) {
     if (command === "go_back") command = "back";
     if (command === "current_url") command = "status";
     if (!isBrowserControllerCommand(command)) {
-      return finalize({
-        name: toolName,
-        ok: false,
-        error: "unsupported_browser_command",
-        data: { command, browser_session_id: browserSessionId, browser_id: browserId },
-      });
+      return browserToolError(
+        finalize,
+        toolName,
+        "unsupported_browser_command",
+        `Unsupported browser command: ${command}`,
+        { command, browser_session_id: browserSessionId, browser_id: browserId },
+      );
     }
     if ((command === "navigate" || command === "verify_url") && !url) {
-      return finalize({
-        name: toolName,
-        ok: false,
-        error: "url_required",
-        data: { browser_session_id: browserSessionId, browser_id: browserId },
-      });
+      return browserToolError(
+        finalize,
+        toolName,
+        "url_required",
+        "url is required for navigate",
+        { browser_session_id: browserSessionId, browser_id: browserId },
+      );
     }
 
     const desktopCommand = {
@@ -4054,6 +4149,14 @@ async function executeBrowserTool(runtime: any) {
     };
 
     if (desktopAvailable) {
+      if (!browserSessionId && !browserId) {
+        return browserToolError(
+          finalize,
+          toolName,
+          BROWSER_ERROR_CODES.browser_session_not_found,
+          "No active browser session. Call open_browser first.",
+        );
+      }
       return finalize({
         name: toolName,
         ok: true,
@@ -4076,71 +4179,65 @@ async function executeBrowserTool(runtime: any) {
     }
 
     if (!browserId) {
-      return finalize({
-        name: toolName,
-        ok: false,
-        error: "browser_id_required",
-        data: { browser_session_id: browserSessionId },
-      });
+      return browserToolError(
+        finalize,
+        toolName,
+        BROWSER_ERROR_CODES.browser_session_not_found,
+        "No active cloud browser session. Call open_browser first.",
+        { browser_session_id: browserSessionId },
+      );
     }
 
     try {
-      const acted = await invokeJsonEdgeFunction(
-        "agentic-publishing",
-        {
-          action: "act_browser",
-          browser_id: browserId,
-          command,
-          url,
-          selector: desktopCommand.selector,
-          text: desktopCommand.text,
-          index: desktopCommand.index,
-          key: desktopCommand.key,
-          clear: desktopCommand.clear,
-          delta_x: desktopCommand.delta_x,
-          delta_y: desktopCommand.delta_y,
-          ms: desktopCommand.ms,
-          limit: desktopCommand.limit,
-          ...clientExecutionContext,
-        },
-        60000,
-        auth,
-        runId,
-      );
+      const acted = await actOnCloudInteractiveBrowser(browserId, {
+        command,
+        url,
+        selector: desktopCommand.selector,
+        text: desktopCommand.text,
+        index: desktopCommand.index,
+        key: desktopCommand.key,
+        clear: desktopCommand.clear,
+        deltaX: desktopCommand.delta_x,
+        deltaY: desktopCommand.delta_y,
+        ms: desktopCommand.ms,
+        limit: desktopCommand.limit,
+      });
       return finalize({
         name: toolName,
-        ok: acted?.ok !== false,
-        error: acted?.error ?? acted?.error_code ?? null,
+        ok: acted.ok,
+        error: acted.ok ? null : acted.error_code ?? BROWSER_ERROR_CODES.browser_action_failed,
         data: {
           browser_session_id: browserSessionId,
-          browser_id: acted?.browser_id ?? browserId,
-          session_id: sessionId,
-          live_view_url: acted?.live_view_url ?? null,
-          current_url: acted?.url ?? url,
-          title: acted?.title ?? null,
+          browser_id: browserId,
+          current_url: acted.url || url,
+          title: acted.title ?? null,
           provider: "browser_use",
           browser_label: "Cloud",
           command,
-          links: Array.isArray(acted?.links) ? acted.links : [],
-          elements: Array.isArray(acted?.elements) ? acted.elements : [],
-          text: typeof acted?.text === "string" ? acted.text : null,
-          auth_required: acted?.auth_required === true,
-          verified: acted?.verified ?? null,
-          can_go_back: acted?.can_go_back ?? null,
-          can_go_forward: acted?.can_go_forward ?? null,
-          status: acted?.ok === false ? "failed" : "active",
+          links: acted.links,
+          elements: acted.elements,
+          text: acted.text,
+          auth_required: acted.auth_required,
+          verified: acted.verified,
+          can_go_back: acted.can_go_back,
+          can_go_forward: acted.can_go_forward,
+          status: acted.ok ? "active" : "failed",
           show_browser_preview: true,
           open_browser_tab: false,
-          error_code: acted?.error_code ?? null,
+          error_code: acted.error_code,
+          error: acted.ok
+            ? null
+            : { code: acted.error_code, message: acted.error, recoverable: true },
         },
       });
     } catch (error: any) {
-      return finalize({
-        name: toolName,
-        ok: false,
-        error: error?.message ?? String(error),
-        data: { browser_session_id: browserSessionId, browser_id: browserId },
-      });
+      return browserToolError(
+        finalize,
+        toolName,
+        BROWSER_ERROR_CODES.browser_action_failed,
+        error?.message ?? String(error),
+        { browser_session_id: browserSessionId, browser_id: browserId },
+      );
     }
   }
 

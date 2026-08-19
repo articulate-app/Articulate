@@ -43,7 +43,7 @@ export function WorkspacePageShell({
 }: WorkspacePageShellProps) {
   // `columnClassName` last so callers can override default width/padding (e.g. Tasks `px-6`).
   const column = cn(
-    "flex flex-col gap-4 px-4",
+    "flex min-w-0 flex-col gap-4 px-4",
     layout === "fill" ? "min-h-0 flex-1 py-6" : "py-6",
     columnClassName ?? CHAT_CONTENT_COLUMN_CLASS,
   )

@@ -13,6 +13,10 @@ export type AiBrowserObservation = {
     text: string | null
     href: string | null
   }>
+  visual_assets?: Array<Record<string, unknown>>
+  visual_follow_candidates?: Array<{ text: string; href: string; verified: true }>
+  page_kind?: string
+  visual_unresolved_reason?: string | null
   can_go_back: boolean
   can_go_forward: boolean
   at: number

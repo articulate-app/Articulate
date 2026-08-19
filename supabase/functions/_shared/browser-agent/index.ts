@@ -20,9 +20,22 @@ export {
   filterVerifiedResourceUrls,
   isVerifiedPageHref,
   looksLikeCollectionOrSearchUrl,
+  looksLikeDirectMediaFileUrl,
   looksLikeSpecificResourceUrl,
   recommendBrowserFallback,
 } from "./url-verification.ts"
+export {
+  annotateSearchResultsForVisualDiscovery,
+  classifyVisualPageKind,
+  extractVisualSignalsFromHtml,
+  looksLikeSpecificVisualUrl,
+  mergeVisualIdentityIntoAsset,
+  normalizeArtifactAssetsWithVisualIdentity,
+  resolveVisualSearchPage,
+  visualIdentityFields,
+  type VerifiedVisualAsset,
+  type VisualSearchResolution,
+} from "./visual-assets.ts"
 /**
  * @deprecated LocalBridgeProvider is disconnected from runtime resolution.
  * The module remains for historical reference only — do not instantiate for new work.

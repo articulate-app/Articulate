@@ -22,6 +22,7 @@ import { shallowPushSearchParams } from "../../app/lib/tasks-shallow-nav"
 import { useCenterPaneTabsStore } from "../../app/store/center-pane-tabs"
 import { cn } from "../../app/lib/utils"
 import { splitTextWithUrls } from "./split-text-with-urls"
+import { htmlLooksRich, sanitizeChatComposerHtml, splitRichHtmlByMentionMarkers } from "./composer-paste"
 
 export function UserMentionChip({ tag }: { tag: AiContextTag }) {
   const pathname = usePathname()
@@ -71,7 +72,7 @@ export function UserMentionChip({ tag }: { tag: AiContextTag }) {
       <TooltipProvider delayDuration={200}>
         <Tooltip>
           <TooltipTrigger asChild>
-            <span className="inline-flex align-middle" data-ai-history-tag="1">
+            <span className="inline-flex min-w-0 max-w-full align-middle" data-ai-history-tag="1">
               <ArtifactContextChip
                 title={title}
                 subtitle={subtitle}
@@ -190,7 +191,7 @@ function UserSelectionPill({ pill }: { pill: AiUserMessageSelectionPillPart }) {
       <TooltipProvider delayDuration={200}>
         <Tooltip>
           <TooltipTrigger asChild>
-            <span className="inline-flex align-middle" data-ai-history-selection-pill="1">
+            <span className="inline-flex min-w-0 max-w-full align-middle" data-ai-history-selection-pill="1">
               <ArtifactContextChip
                 title={title}
                 subtitle={displaySubtitle}
@@ -280,6 +281,34 @@ function renderSegment(segment: AiMessageSegment, index: number) {
   return <LinkifiedPlainText key={`text-${index}`} text={segment.text} segmentKey={`text-${index}`} />
 }
 
+function RichUserMessageHtml({
+  html,
+  mentionTags,
+}: {
+  html: string
+  mentionTags: AiContextTag[]
+}) {
+  const sanitized = sanitizeChatComposerHtml(html)
+  const parts = splitRichHtmlByMentionMarkers(sanitized)
+  return (
+    <>
+      {parts.map((part, index) => {
+        if (part.type === "mention") {
+          const tag = mentionTags[part.index]
+          return tag ? <UserMentionChip key={`rich-mention-${index}`} tag={tag} /> : null
+        }
+        return (
+          <span
+            key={`rich-html-${index}`}
+            className="ai-chat-user-message-rich-chunk"
+            dangerouslySetInnerHTML={{ __html: part.html }}
+          />
+        )
+      })}
+    </>
+  )
+}
+
 export function UserMessageBody({
   content,
   contentJson,
@@ -300,6 +329,13 @@ export function UserMessageBody({
       .map((pill) => (pill.entity_type === "artifact" ? pill.artifact_id?.trim() : null))
       .filter((id): id is string => Boolean(id)),
   )
+  const mentionTagsForRichHtml = segments
+    .filter((segment): segment is Extract<AiMessageSegment, { type: "mention" }> => segment.type === "mention")
+    .map((segment) => segment.tag)
+  const richHtml =
+    parsed.html && htmlLooksRich(parsed.html)
+      ? sanitizeChatComposerHtml(parsed.html)
+      : null
   const visibleSegments =
     artifactPillIds.size === 0
       ? segments
@@ -347,19 +383,31 @@ export function UserMessageBody({
         setIsSelected((prev) => !prev)
       }}
     >
-      {selectionPills.length > 0 || visibleSegments.length > 0 ? (
-        <div className={cn(bodyClassName, "w-fit max-w-full")}>
-          {selectionPills.map((pill, index) => (
-            <span
-              key={`selection-${pill.entity_type}-${pill.artifact_id ?? pill.component_id ?? index}`}
-              className="mr-1.5 inline-block max-w-[14rem] align-baseline"
-              onClick={(event) => event.stopPropagation()}
-              onKeyDown={(event) => event.stopPropagation()}
-            >
-              <UserSelectionPill pill={pill} />
-            </span>
-          ))}
-          {visibleSegments.map((segment, index) => renderSegment(segment, index))}
+      {selectionPills.length > 0 || visibleSegments.length > 0 || richHtml ? (
+        <div className="flex w-fit max-w-full min-w-0 flex-col gap-1.5">
+          {selectionPills.length > 0 ? (
+            <div className="flex max-w-full flex-wrap items-start gap-1.5">
+              {selectionPills.map((pill, index) => (
+                <span
+                  key={`selection-${pill.entity_type}-${pill.artifact_id ?? pill.component_id ?? index}`}
+                  className="min-w-0 max-w-full"
+                  onClick={(event) => event.stopPropagation()}
+                  onKeyDown={(event) => event.stopPropagation()}
+                >
+                  <UserSelectionPill pill={pill} />
+                </span>
+              ))}
+            </div>
+          ) : null}
+          {richHtml ? (
+            <div className={cn(bodyClassName, "ai-chat-user-message--rich w-fit max-w-full")}>
+              <RichUserMessageHtml html={richHtml} mentionTags={mentionTagsForRichHtml} />
+            </div>
+          ) : visibleSegments.length > 0 ? (
+            <div className={cn(bodyClassName, "w-fit max-w-full")}>
+              {visibleSegments.map((segment, index) => renderSegment(segment, index))}
+            </div>
+          ) : null}
         </div>
       ) : null}
     </div>

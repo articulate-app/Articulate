@@ -11,6 +11,7 @@ import {
   type ArtifactSelectionLike,
 } from "./artifact-selection-patch.ts";
 import { brandKitForAiFromProject } from "../_shared/project-brand-kit.ts";
+import { normalizeArtifactAssetsWithVisualIdentity } from "../_shared/browser-agent/visual-assets.ts";
 import { applyReadyAiProposalOnWorker } from "../_shared/artifact-collab-apply-proposal.ts";
 import {
   decideArtifactRevisionConflictRetry,
@@ -146,8 +147,14 @@ function compactArtifactForModel(artifact: any, max = 80000): any {
       ? { assets: Array.isArray((assetData as any).assets) ? (assetData as any).assets.slice(0, 40).map((asset: any) => ({
           id: asset?.id ?? asset?.attachment_id ?? null,
           attachment_id: asset?.attachment_id ?? null,
-          type: asset?.type ?? null,
+          type: asset?.type ?? asset?.media_type ?? null,
           file_name: asset?.file_name ?? asset?.fileName ?? null,
+          provider: asset?.provider ?? asset?.provenance?.visual?.provider ?? null,
+          asset_url: asset?.asset_url ?? asset?.provenance?.visual?.asset_url ?? null,
+          preview_url: asset?.preview_url ?? asset?.provenance?.visual?.preview_url ?? null,
+          source_url: asset?.source_url ?? asset?.provenance?.visual?.source_url ?? null,
+          asset_id: asset?.asset_id ?? asset?.provenance?.visual?.asset_id ?? null,
+          title: asset?.title ?? asset?.provenance?.visual?.title ?? null,
         })) : [] }
       : null,
   };
@@ -715,6 +722,7 @@ function buildInitialMessages(
     "Put authoritative HTML in content_json.blocks[].html when using save_artifact_version. Preserve <figure data-attachment-id> media you are not changing.",
     "HTML EMAIL / NEWSLETTER CODE: when the user asks for HTML newsletter/email (or artifact_role is newsletter_html / content_format html_email), return ONE complete email-ready HTML document in content_json.blocks[0].html (doctype/html/head/style + nested role=presentation tables + inline styles as needed). Also set content_json.content_format to \"html_email\". Do NOT convert email layout tables into TipTap semantic tables, markdown, or plain copy blocks. Do NOT strip <style>, wrappers, or nested tables. Copy-only deliverables are allowed only when the user explicitly asks for copy without HTML.",
     "SOURCE IMAGES: When source_summaries (or ai_read_source) include extracted_images with url fields, you MUST embed those exact https URLs in <img src=\"...\"> for HTML email. Prefer the extracted PDF/page images over inventing placeholders or empty gray boxes. Do not use TipTap <figure data-attachment-id> for html_email — use real <img src> URLs.",
+    "VISUAL IDENTITY: When attaching a previously found image or video, copy its exact tool-verified identity onto asset_data.assets[] (asset_url, provider, asset_id, preview_url, title, source_url). Never invent or modify those URLs or IDs. Search/result pages are not assets.",
     "CRITICAL — LISTS: For prose documents use real HTML lists only: <ul><li>…</li></ul> or <ol><li>…</li></ol>. Never leave markdown bullets (- item) or bare numbered lines as plain text. This list rule does not apply inside email HTML layout tables.",
     "Call exactly one of apply_artifact_patches or save_artifact_version to finish.",
     "Do not return placeholders or hidden reasoning.",
@@ -1442,7 +1450,7 @@ Deno.serve(async (request) => {
             });
             const modelAssets =
               toolArgs.asset_data && typeof toolArgs.asset_data === "object"
-                ? toolArgs.asset_data
+                ? normalizeArtifactAssetsWithVisualIdentity(toolArgs.asset_data) ?? toolArgs.asset_data
                 : null;
             const modelAssetCount = Array.isArray((modelAssets as any)?.assets)
               ? (modelAssets as any).assets.length

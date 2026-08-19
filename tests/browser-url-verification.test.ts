@@ -12,12 +12,16 @@ describe("url verification", () => {
     expect(looksLikeCollectionOrSearchUrl("https://example.com/search?q=healthy+food")).toBe(true)
     expect(looksLikeCollectionOrSearchUrl("https://shop.example.com/browse/chairs")).toBe(true)
     expect(looksLikeCollectionOrSearchUrl("https://news.example.com/category/science")).toBe(true)
+    expect(looksLikeCollectionOrSearchUrl("https://media.example.com/photos/healthy-food")).toBe(true)
+    expect(looksLikeCollectionOrSearchUrl("https://media.example.com/videos/marketing")).toBe(true)
+    expect(looksLikeCollectionOrSearchUrl("https://media.example.com/collections/summer")).toBe(true)
     expect(looksLikeSpecificResourceUrl("https://example.com/search?q=healthy+food")).toBe(false)
   })
 
   it("classifies specific resource URLs from path shape, not host", () => {
     expect(looksLikeSpecificResourceUrl("https://shop.example.com/products/oak-chair-10482")).toBe(true)
     expect(looksLikeSpecificResourceUrl("https://news.example.com/2026/08/18/why-cork")).toBe(true)
+    expect(looksLikeSpecificResourceUrl("https://cdn.example.com/images/hero-10482.jpg")).toBe(true)
     expect(looksLikeSpecificResourceUrl("https://example.com/")).toBe(false)
   })
 

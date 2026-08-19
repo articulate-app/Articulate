@@ -10,6 +10,13 @@
  * Raw Playwright APIs are never exposed to the model.
  */
 
+import {
+  resolveVisualSearchPage,
+  type VerifiedVisualAsset,
+  type VisualFollowCandidate,
+  type VisualPageKind,
+} from "./visual-assets.ts"
+
 export type BrowserControllerCommand =
   | "navigate"
   | "back"
@@ -118,13 +125,19 @@ export type BrowserControllerResult = {
   can_go_forward: boolean
   verified: boolean | null
   screenshot_included: boolean
+  page_kind?: VisualPageKind | null
+  visual_assets?: VerifiedVisualAsset[]
+  visual_follow_candidates?: VisualFollowCandidate[]
+  unresolved_reason?: string | null
 }
 
 export const BROWSER_ERROR_CODES = {
   browser_unavailable: "browser_unavailable",
   local_bridge_unavailable: "local_bridge_unavailable",
   cloud_browser_unavailable: "cloud_browser_unavailable",
+  browser_session_not_found: "browser_session_not_found",
   browser_session_expired: "browser_session_expired",
+  browser_navigation_failed: "browser_navigation_failed",
   browser_navigation_timeout: "browser_navigation_timeout",
   browser_element_not_found: "browser_element_not_found",
   browser_auth_required: "browser_auth_required",
@@ -143,7 +156,29 @@ export function compactBrowserResult(result: BrowserControllerResult): BrowserCo
     text: result.text.slice(0, 4000),
     links: result.links.slice(0, 40),
     elements: result.elements.slice(0, 40),
+    visual_assets: result.visual_assets?.slice(0, 8),
+    visual_follow_candidates: result.visual_follow_candidates?.slice(0, 12),
   }
+}
+
+function attachVisualSearch(
+  result: BrowserControllerResult,
+  html?: string | null,
+): BrowserControllerResult {
+  const resolved = resolveVisualSearchPage({
+    url: result.url,
+    title: result.title,
+    html,
+    text: result.text,
+    links: result.links,
+  })
+  return compactBrowserResult({
+    ...result,
+    page_kind: resolved.page_kind,
+    visual_assets: resolved.visual_assets,
+    visual_follow_candidates: resolved.follow_candidates,
+    unresolved_reason: resolved.unresolved_reason,
+  })
 }
 
 export function emptyBrowserResult(
@@ -365,7 +400,8 @@ export function mapPageScriptResult(raw: unknown, extras?: Partial<BrowserContro
   }
   const errorCode = typeof record.errorCode === "string" ? record.errorCode : extras?.error_code ?? null
   const error = typeof record.error === "string" ? record.error : extras?.error ?? null
-  return compactBrowserResult({
+  const html = typeof record.html === "string" ? record.html : null
+  return attachVisualSearch({
     ok: record.ok !== false && !error,
     error,
     error_code: errorCode,
@@ -379,7 +415,7 @@ export function mapPageScriptResult(raw: unknown, extras?: Partial<BrowserContro
     can_go_forward: extras?.can_go_forward ?? false,
     verified: extras?.verified ?? null,
     screenshot_included: extras?.screenshot_included ?? false,
-  })
+  }, html)
 }
 
 export function desktopObservationToResult(observation: {
@@ -405,7 +441,7 @@ export function desktopObservationToResult(observation: {
     seen.add(href)
     links.push({ text: el.text ?? "", href, verified: true })
   }
-  return compactBrowserResult({
+  return attachVisualSearch({
     ok: true,
     error: null,
     error_code: null,

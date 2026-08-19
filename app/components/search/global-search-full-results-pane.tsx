@@ -20,7 +20,9 @@ import { MentionsFullResultsPane } from "./mentions-full-results-pane"
 import { AiThreadsFullResultsPane } from "./ai-threads-full-results-pane"
 import { ObjectPaneScrollShell, objectPaneCenteredStateClass } from "./object-pane-content"
 import { ObjectDirectoryResultRow } from "../workspace/object-directory-result-row"
+import { ArtifactDirectoryResultRow } from "../workspace/artifact-directory-result-row"
 import { fetchUserProjectLabelsByUserIds } from "../../lib/services/users"
+import { fetchArtifactDirectoryMeta } from "../../lib/services/artifacts"
 
 const PAGE_SIZE = 25
 const DIRECTORY_RECENCY_LIMIT = 500
@@ -261,6 +263,24 @@ export function GlobalSearchFullResultsPane({
     queryFn: () => fetchUserProjectLabelsByUserIds(directoryUserIds),
   })
 
+  const artifactIds = useMemo(() => {
+    if (activeTab !== "artifact") return [] as string[]
+    return Array.from(
+      new Set(
+        items
+          .map((item) => String(item.entity_id ?? "").trim())
+          .filter(Boolean),
+      ),
+    )
+  }, [activeTab, items])
+
+  const artifactMetaQuery = useQuery({
+    queryKey: ["artifact-directory-meta", artifactIds],
+    enabled: artifactIds.length > 0,
+    staleTime: 60_000,
+    queryFn: () => fetchArtifactDirectoryMeta(artifactIds),
+  })
+
   const aiGroupedItems = useMemo(
     () =>
       activeTab === "ai_thread"
@@ -331,6 +351,7 @@ export function GlobalSearchFullResultsPane({
         <div
           className={cn(
             "flex min-h-full flex-col py-1",
+            activeTab === "artifact" ? "artifact-directory-list min-w-0 w-full overflow-x-hidden" : null,
             directoryMode && !embedInParentScroll ? DIRECTORY_CONTENT_CLASS : null,
             directoryMode && embedInParentScroll ? "w-full" : null,
           )}
@@ -348,6 +369,19 @@ export function GlobalSearchFullResultsPane({
               <span className="w-36 shrink-0 text-right text-sm font-medium text-gray-500">
                 {activeTab === "user" ? "Projects" : "Last update"}
               </span>
+              <span className="w-7 shrink-0" aria-hidden />
+            </div>
+          ) : null}
+          {activeTab === "artifact" ? (
+            <div
+              className={cn(
+                "sticky top-0 z-10 flex min-w-0 items-center gap-2 bg-white py-1.5 text-sm font-medium text-gray-500",
+                embedInParentScroll ? "px-1" : "border-b border-gray-100 px-3",
+              )}
+            >
+              <span className="min-w-0 flex-1 truncate">Title</span>
+              <span className="artifact-directory-col-project">Project</span>
+              <span className="artifact-directory-col-created">Created</span>
               <span className="w-7 shrink-0" aria-hidden />
             </div>
           ) : null}
@@ -400,6 +434,29 @@ export function GlobalSearchFullResultsPane({
                   />
                 ))}
               </div>
+            ) : activeTab === "artifact" ? (
+              <div className={cn(embedInParentScroll && "divide-y divide-gray-100")}>
+                {items.map((item, index) => {
+                  const artifactId = String(item.entity_id ?? "").trim()
+                  const artifactMeta = artifactId
+                    ? artifactMetaQuery.data?.[artifactId]
+                    : null
+                  return (
+                    <ArtifactDirectoryResultRow
+                      key={buildScopedResultKey(viewScope, "list", item, index)}
+                      item={item}
+                      denseInset={embedInParentScroll}
+                      projectLabelOverride={artifactMeta?.projectName ?? null}
+                      createdAtOverride={artifactMeta?.createdAt ?? null}
+                      isSelected={
+                        !!selectedEntityId &&
+                        artifactId === String(selectedEntityId).trim()
+                      }
+                      onSelect={onResultSelect}
+                    />
+                  )
+                })}
+              </div>
             ) : (
               items.map((item, index) => (
                 <SearchResultRow
@@ -432,7 +489,7 @@ function ResultsShell({
   children: ReactNode
 }) {
   if (embedInParentScroll) {
-    return <div className="min-w-0">{children}</div>
+    return <div className="min-w-0 w-full overflow-x-hidden">{children}</div>
   }
   return <ObjectPaneScrollShell scrollRef={scrollRef}>{children}</ObjectPaneScrollShell>
 }

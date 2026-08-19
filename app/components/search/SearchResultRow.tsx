@@ -429,18 +429,53 @@ function PreviewLeftSlot({ children }: { children: ReactNode }) {
   return <div className="flex h-8 w-8 shrink-0 items-center justify-center">{children}</div>
 }
 
+function resolveArtifactCreatedAt(
+  item: GlobalSearchDocument,
+  override?: string | null,
+): string | null {
+  if (typeof override === "string" && override.trim()) return override.trim()
+  const payload = getPayload(item)
+  const raw = item.raw ?? {}
+  return (
+    item.created_at
+    ?? getMetaValueByLabel(payload, "created_at")
+    ?? getMetaValueByLabel(payload, "Created")
+    ?? (typeof raw.created_at === "string" ? raw.created_at : null)
+  )
+}
+
+function resolveArtifactProjectName(
+  item: GlobalSearchDocument,
+  override?: string | null,
+): string | null {
+  if (typeof override === "string" && override.trim()) return override.trim()
+  const payload = getPayload(item)
+  const raw = item.raw ?? {}
+  return (
+    payload.left?.label?.trim()
+    || getMetaValueByLabel(payload, "project")
+    || getMetaValueByLabel(payload, "project_name")
+    || (typeof raw.project_name === "string" ? raw.project_name.trim() : null)
+    || null
+  )
+}
+
 export function SearchResultRow({
   item,
   onSelect,
   className,
   variant = "default",
   sectionType,
+  projectLabelOverride = null,
+  createdAtOverride = null,
 }: {
   item: GlobalSearchDocument
   onSelect: (item: GlobalSearchDocument) => void
   className?: string
   variant?: "default" | "preview"
   sectionType?: string
+  projectLabelOverride?: string | null
+  createdAtOverride?: string | null
 }) {
   const payload = getPayload(item)
   const isMention = item.entity_type === "mention"
@@ -448,6 +483,13 @@ export function SearchResultRow({
   const isProject = item.entity_type === "project"
   const isUser = item.entity_type === "user"
   const isAiThread = item.entity_type === "ai_thread"
+  const isArtifact = item.entity_type === "artifact"
+  const artifactProjectLabel = isArtifact
+    ? resolveArtifactProjectName(item, projectLabelOverride)
+    : null
+  const artifactCreatedLabel = isArtifact
+    ? formatCompactDateDisplay(resolveArtifactCreatedAt(item, createdAtOverride)) || null
+    : null
   const isPreview = variant === "preview"
   const isUnread = isMention && getMetaBooleanByLabel(payload, "is_unread")
   const mentionDateLabel = isMention ? formatCompactDateForMention(getMentionDisplayDate(payload)) : null
@@ -653,6 +695,16 @@ export function SearchResultRow({
       <div className="flex shrink-0 items-center gap-2">
         {showRightAvatarStack ? (
           <AvatarStack payload={payload} raw={item.raw} max={isProject || isAiThread ? 5 : 3} />
+        ) : null}
+        {isArtifact ? (
+          <>
+            <span className="w-40 shrink-0 truncate text-sm font-normal text-gray-500">
+              {artifactProjectLabel || "—"}
+            </span>
+            <span className="w-28 shrink-0 truncate text-right text-sm font-normal text-gray-500">
+              {artifactCreatedLabel || "—"}
+            </span>
+          </>
         ) : null}
         {isAiThread && aiDateLabel ? (
           <span className="w-14 shrink-0 truncate text-right text-sm font-normal text-gray-500">

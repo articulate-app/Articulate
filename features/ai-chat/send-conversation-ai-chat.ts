@@ -319,10 +319,20 @@ export async function sendConversationAiChatStream(args: SendConversationAiChatS
     const { getDesktopClientRuntimeContext } = await import("../../app/lib/articulate-desktop")
     const { consumeAiBrowserObservations } = await import("./ai-browser-observation-store")
     const runtimeContext = await getDesktopClientRuntimeContext()
+    const { findReusableAiBrowserTab, useRightPaneTabsStore } = await import("../../app/store/right-pane-tabs")
+    const activeBrowserTab = findReusableAiBrowserTab(useRightPaneTabsStore.getState().tabs)
     const browserObservations = consumeAiBrowserObservations()
     const resolvedAmbientContext = {
       ...(ambientContext ?? {}),
       ...runtimeContext,
+      ...(activeBrowserTab
+        ? {
+            active_browser_session_id:
+              activeBrowserTab.browser?.aiOperationId || activeBrowserTab.id || null,
+            active_browser_id:
+              activeBrowserTab.browser?.browserId || activeBrowserTab.id || null,
+          }
+        : {}),
       ...(browserObservations.length > 0
         ? {
             browser_observations: browserObservations.map((item) => ({

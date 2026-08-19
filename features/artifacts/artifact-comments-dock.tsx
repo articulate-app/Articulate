@@ -496,7 +496,7 @@ export function ArtifactCommentsDock({
             name={currentUserName || "You"}
             photoUrl={photoUrl}
             size="sm"
-            className={showComposer ? "mt-2" : "mt-0.5"}
+            className="mt-0.5"
           />
           <div className="min-w-0 flex-1">
             {showComposer ? (
@@ -548,92 +548,98 @@ export function ArtifactCommentsDock({
                 </div>
               </div>
             ) : (
-              <button
-                type="button"
-                className="flex h-9 w-full items-center rounded-md border border-gray-200 bg-white px-3 text-left text-sm text-muted-foreground hover:border-gray-300 hover:bg-gray-50"
-                onClick={() => {
-                  setComposerExpanded(true)
-                  if (threads.length === 0) handleAddThread()
-                }}
-              >
-                Add a comment...
-              </button>
+              <div className="flex h-9 items-center gap-1.5">
+                <button
+                  type="button"
+                  className="flex h-9 min-w-0 flex-1 cursor-text items-center rounded-md border border-gray-200 bg-white px-3 text-left text-sm text-muted-foreground hover:border-gray-300"
+                  onClick={() => {
+                    if (pendingParticipants.length === 0 && allNotifyUsers.length > 0) {
+                      setPendingParticipants(allNotifyUsers)
+                    }
+                    setComposerExpanded(true)
+                  }}
+                >
+                  Add a comment...
+                </button>
+              </div>
             )}
           </div>
         </div>
       </div>
 
-      <div className="flex shrink-0 items-center gap-2 px-4 py-1.5">
-        <span className="shrink-0 text-xs text-gray-500">We'll notify</span>
-        <div className="min-w-0 flex-1 overflow-hidden">
-          {selectedThread && !isAddingThread ? (
-            <ThreadParticipantsInline
-              threadId={selectedThread.threadId}
-              projectId={projectIdForParticipants}
-              allowRemove
-              participants={selectedThread.watchers}
-              allProjectUsers={allNotifyUsers}
-              currentUserId={currentUserId}
-              onParticipantsChanged={() => {
-                void commentsQuery.refetch()
-              }}
-            />
-          ) : (
-            <ThreadParticipantsInline
-              pendingMode
-              pendingParticipants={pendingParticipants}
-              setPendingParticipants={setPendingParticipants}
-              removedParticipants={removedParticipants}
-              setRemovedParticipants={setRemovedParticipants}
-              participants={allNotifyUsers}
-              allProjectUsers={allNotifyUsers}
-              currentUserId={currentUserId}
-              projectId={projectIdForParticipants}
-            />
-          )}
+      {showComposer ? (
+        <div className="flex shrink-0 items-center gap-2 px-4 py-1.5">
+          <span className="shrink-0 text-xs text-gray-500">We'll notify</span>
+          <div className="min-w-0 flex-1 overflow-hidden">
+            {selectedThread && !isAddingThread ? (
+              <ThreadParticipantsInline
+                threadId={selectedThread.threadId}
+                projectId={projectIdForParticipants}
+                allowRemove
+                participants={selectedThread.watchers}
+                allProjectUsers={allNotifyUsers}
+                currentUserId={currentUserId}
+                onParticipantsChanged={() => {
+                  void commentsQuery.refetch()
+                }}
+              />
+            ) : (
+              <ThreadParticipantsInline
+                pendingMode
+                pendingParticipants={pendingParticipants}
+                setPendingParticipants={setPendingParticipants}
+                removedParticipants={removedParticipants}
+                setRemovedParticipants={setRemovedParticipants}
+                participants={allNotifyUsers}
+                allProjectUsers={allNotifyUsers}
+                currentUserId={currentUserId}
+                projectId={projectIdForParticipants}
+              />
+            )}
+          </div>
+          {selectedThreadId != null && !isAddingThread ? (
+            <>
+              <Button
+                type="button"
+                variant="ghost"
+                size="sm"
+                className="ml-1 h-7 w-7 shrink-0 p-0 text-muted-foreground hover:text-destructive"
+                aria-label="Delete thread"
+                title="Delete thread"
+                onClick={() => setShowDeleteDialog(true)}
+              >
+                <Trash2 className="h-3.5 w-3.5" />
+              </Button>
+              <Dialog open={showDeleteDialog} onOpenChange={setShowDeleteDialog}>
+                <DialogContent>
+                  <DialogTitle>Delete Thread</DialogTitle>
+                  <div className="py-2">
+                    Are you sure you want to delete{" "}
+                    <span className="font-medium text-gray-900">“{selectedPreview}”</span>? This cannot
+                    be undone.
+                  </div>
+                  <DialogFooter>
+                    <Button
+                      variant="outline"
+                      onClick={() => setShowDeleteDialog(false)}
+                      disabled={deleteThread.isPending}
+                    >
+                      Cancel
+                    </Button>
+                    <Button
+                      variant="destructive"
+                      onClick={() => void handleDelete()}
+                      disabled={deleteThread.isPending}
+                    >
+                      {deleteThread.isPending ? "Deleting..." : "Delete"}
+                    </Button>
+                  </DialogFooter>
+                </DialogContent>
+              </Dialog>
+            </>
+          ) : null}
         </div>
-        {selectedThreadId != null && !isAddingThread ? (
-          <>
-            <Button
-              type="button"
-              variant="ghost"
-              size="sm"
-              className="ml-1 h-7 w-7 shrink-0 p-0 text-muted-foreground hover:text-destructive"
-              aria-label="Delete thread"
-              title="Delete thread"
-              onClick={() => setShowDeleteDialog(true)}
-            >
-              <Trash2 className="h-3.5 w-3.5" />
-            </Button>
-            <Dialog open={showDeleteDialog} onOpenChange={setShowDeleteDialog}>
-              <DialogContent>
-                <DialogTitle>Delete Thread</DialogTitle>
-                <div className="py-2">
-                  Are you sure you want to delete{" "}
-                  <span className="font-medium text-gray-900">“{selectedPreview}”</span>? This cannot
-                  be undone.
-                </div>
-                <DialogFooter>
-                  <Button
-                    variant="outline"
-                    onClick={() => setShowDeleteDialog(false)}
-                    disabled={deleteThread.isPending}
-                  >
-                    Cancel
-                  </Button>
-                  <Button
-                    variant="destructive"
-                    onClick={() => void handleDelete()}
-                    disabled={deleteThread.isPending}
-                  >
-                    {deleteThread.isPending ? "Deleting..." : "Delete"}
-                  </Button>
-                </DialogFooter>
-              </DialogContent>
-            </Dialog>
-          </>
-        ) : null}
-      </div>
+      ) : null}
     </div>
   )
 }

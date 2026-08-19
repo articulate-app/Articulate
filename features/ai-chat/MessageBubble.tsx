@@ -379,11 +379,13 @@ export function MessageBubble({
       messageText,
       messageTags,
       messageSegments,
+      messageHtml,
     }: {
       messageText: string
       messageTags: AiContextTag[]
       messageFiles: File[]
       messageSegments?: AiMessageSegment[]
+      messageHtml?: string | null
     }) => {
       const trimmed = messageText.replace(/\u200b/g, "").trim()
       if (!trimmed || !msg.thread_id) return
@@ -400,6 +402,7 @@ export function MessageBubble({
       const userContentJson = buildUserMessageContentJson({
         tags: messageTags,
         segments: messageSegments,
+        html: messageHtml,
       })
 
       try {

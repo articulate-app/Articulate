@@ -55,6 +55,8 @@ export type AiAmbientContext = {
   desktop_browser_control?: boolean
   desktop_version?: string | null
   desktop_session_id?: string | null
+  active_browser_session_id?: string | null
+  active_browser_id?: string | null
 }
 
 export type ResolvedAiChatOutboundContext = {

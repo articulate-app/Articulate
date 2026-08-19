@@ -305,3 +305,27 @@ export function findBrowserTabForAiSession(
   }
   return null
 }
+
+/** Latest live AI-sourced browser tab, preferring an exact session match. */
+export function findReusableAiBrowserTab(
+  tabs: RightPaneTab[],
+  args: {
+    browserSessionId?: string | null
+    browserId?: string | null
+    threadId?: string | null
+  } = {},
+): RightPaneTab | null {
+  const exact = findBrowserTabForAiSession(tabs, args)
+  if (exact && !exact.browser?.intentionallyStopped) return exact
+  for (let index = tabs.length - 1; index >= 0; index -= 1) {
+    const tab = tabs[index]
+    if (
+      tab?.kind === "browser"
+      && tab.browser?.source === "ai"
+      && !tab.browser.intentionallyStopped
+    ) {
+      return tab
+    }
+  }
+  return null
+}

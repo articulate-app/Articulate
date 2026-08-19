@@ -49,9 +49,12 @@ import {
 import { isArtifactLiveEditLocked } from "./artifact-live-edit-lock"
 import {
   canAutosaveArtifactSnapshot,
-  isCollaborativeArtifactSurface,
   shouldLockArtifactDuringAiGeneration,
 } from "../../app/lib/collaboration/editor-sync"
+import {
+  isArtifactCollabEnvEnabled,
+  shouldUseArtifactCollaboration,
+} from "../../app/lib/collaboration/feature-flag"
 import {
   deleteArtifact,
   getArtifact,
@@ -69,8 +72,10 @@ import type {
   SelectedArtifactContext,
   TaskArtifact,
 } from "../../app/lib/artifacts/artifact-types"
+import { isVisibleWorkspaceArtifact } from "../../app/lib/artifacts/artifact-types"
 import { isArtifactRevisionConflictError } from "../../app/lib/artifacts/artifact-types"
 import {
+  isInProgressArtifactPreviewPhase,
   useAiBuildArtifactPreviewStore,
   type AiBuildArtifactPreviewEntry,
 } from "../../app/store/ai-build-artifact-preview-store"
@@ -108,6 +113,7 @@ import {
 import {
   applyArtifactCachePatch,
   artifactCachePatchFromSavedLivePreview,
+  forgetDeletedArtifact,
 } from "./artifact-query-cache"
 
 export type ArtifactWorkspaceProps = {
@@ -506,13 +512,13 @@ export function ArtifactWorkspace({
   })
 
   const artifacts = useMemo(() => {
-    if (taskId != null && taskId > 0) {
-      return taskQuery.data?.artifacts ?? taskMetaQuery.data?.artifacts ?? []
-    }
-    if (projectId != null && projectId > 0) {
-      return projectQuery.data?.artifacts ?? projectMetaQuery.data?.artifacts ?? []
-    }
-    return threadQuery.data?.artifacts ?? []
+    const rows =
+      taskId != null && taskId > 0
+        ? (taskQuery.data?.artifacts ?? taskMetaQuery.data?.artifacts ?? [])
+        : projectId != null && projectId > 0
+          ? (projectQuery.data?.artifacts ?? projectMetaQuery.data?.artifacts ?? [])
+          : (threadQuery.data?.artifacts ?? [])
+    return rows.filter(isVisibleWorkspaceArtifact)
   }, [
     projectId,
     projectMetaQuery.data?.artifacts,
@@ -524,6 +530,9 @@ export function ArtifactWorkspace({
   ])
 
   const livePreviews = useAiBuildArtifactPreviewStore((s) => s.previews)
+  const suppressedArtifactIds = useAiBuildArtifactPreviewStore(
+    (s) => s.suppressedArtifactIds ?? {},
+  )
   const pruneConsumedSavedPreviews = useAiBuildArtifactPreviewStore(
     (s) => s.pruneConsumedSavedPreviews,
   )
@@ -533,11 +542,13 @@ export function ArtifactWorkspace({
   const liveByArtifactId = useMemo(() => {
     const map = new Map<string, LivePreviewEntry>()
     for (const entry of Object.values(livePreviews)) {
+      if (!entry?.artifactId) continue
+      if (suppressedArtifactIds[entry.artifactId]) continue
       const prev = map.get(entry.artifactId)
       if (!prev || isFresherLivePreview(entry, prev)) map.set(entry.artifactId, entry)
     }
     return map
-  }, [livePreviews])
+  }, [livePreviews, suppressedArtifactIds])
 
   // Freeze rich before JSON from the on-screen artifact so diffs stay HTML↔HTML.
   useEffect(() => {
@@ -563,16 +574,9 @@ export function ArtifactWorkspace({
   }, [artifacts, pruneConsumedSavedPreviews])
 
   useEffect(() => {
-    const knownIds = new Set(artifacts.map((artifact) => artifact.id))
     for (const artifact of artifacts) {
       const live = liveByArtifactId.get(artifact.id) ?? null
       const patch = artifactCachePatchFromSavedLivePreview(live, artifact)
-      if (!patch) continue
-      applyArtifactCachePatch(queryClient, patch)
-    }
-    for (const live of liveByArtifactId.values()) {
-      if (knownIds.has(live.artifactId)) continue
-      const patch = artifactCachePatchFromSavedLivePreview(live, null)
       if (!patch) continue
       applyArtifactCachePatch(queryClient, patch)
     }
@@ -626,6 +630,10 @@ export function ArtifactWorkspace({
     const extras: TaskArtifact[] = []
     for (const entry of liveByArtifactId.values()) {
       if (known.has(entry.artifactId)) continue
+      if (suppressedArtifactIds[entry.artifactId]) continue
+      // Saved/failed overlays belong on the server list. Re-adding them here
+      // resurrects soft-deleted outputs after chat hydrate.
+      if (!isInProgressArtifactPreviewPhase(entry.phase)) continue
       // Task overview must only render live previews explicitly owned by this
       // task. Project/thread previews without a taskId must not leak into every task.
       if (
@@ -676,7 +684,7 @@ export function ArtifactWorkspace({
       })
     }
     return extras
-  }, [aiThreadId, artifacts, liveByArtifactId, projectId, taskId])
+  }, [aiThreadId, artifacts, liveByArtifactId, projectId, suppressedArtifactIds, taskId])
 
   const allArtifacts = useMemo(() => {
     const base = [...liveOnlyArtifacts, ...artifacts]
@@ -970,10 +978,10 @@ export function ArtifactWorkspace({
     if (!base) return
     if (
       !canAutosaveArtifactSnapshot(
-        isCollaborativeArtifactSurface({
-          artifactId: base.id,
+        shouldUseArtifactCollaboration({
           contentJson: base.content_json,
           metadata: base.metadata,
+          envEnabled: isArtifactCollabEnvEnabled(),
         }),
       )
     ) {
@@ -1237,6 +1245,7 @@ export function ArtifactWorkspace({
     setConflictMessage(null)
     try {
       await deleteArtifact({ artifactId: pendingDeleteId })
+      forgetDeletedArtifact(queryClient, pendingDeleteId)
       closeCenterTab(buildCenterPaneTabKey("artifact", pendingDeleteId))
       setPendingDeleteId(null)
       if (selectedArtifactId === pendingDeleteId) setSelectedArtifactId(null)
@@ -1256,7 +1265,7 @@ export function ArtifactWorkspace({
     } finally {
       setIsDeleting(false)
     }
-  }, [closeCenterTab, invalidateArtifactLists, pendingDeleteId, selectedArtifactId])
+  }, [closeCenterTab, invalidateArtifactLists, pendingDeleteId, queryClient, selectedArtifactId])
 
   const handleReorder = useCallback(
     async (activeId: string, overId: string) => {
@@ -2049,26 +2058,20 @@ export function ArtifactWorkspace({
                   </div>
                 </div>
 
-                <div className="min-h-0 flex-1 overflow-auto">
+                <div className="min-h-0 flex-1 overflow-x-hidden overflow-y-auto [scrollbar-gutter:stable]">
                   <ArtifactDocumentEditor
                     artifact={displaySelected}
                     forceContentKey={
-                      isCollaborativeArtifactSurface({
-                        artifactId: displaySelected.id,
-                        contentJson: displaySelected.content_json,
-                        metadata: displaySelected.metadata,
-                      })
-                        ? null
-                        : selectedLive && isArtifactLiveEditLocked(selectedLive)
-                          ? `${displaySelected.id}:live:${selectedLive.buildId ?? "building"}`
-                          : displaySelected.id
+                      selectedLive && isArtifactLiveEditLocked(selectedLive)
+                        ? `${displaySelected.id}:live:${selectedLive.buildId ?? "building"}`
+                        : displaySelected.id
                     }
                     readOnly={
                       shouldLockArtifactDuringAiGeneration(
-                        isCollaborativeArtifactSurface({
-                          artifactId: displaySelected.id,
+                        shouldUseArtifactCollaboration({
                           contentJson: displaySelected.content_json,
                           metadata: displaySelected.metadata,
+                          envEnabled: isArtifactCollabEnvEnabled(),
                         }),
                       )
                       && !!selectedLive

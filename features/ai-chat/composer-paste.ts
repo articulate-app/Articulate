@@ -57,3 +57,134 @@ export function resolveNormalizedPastedTextForChatInput(data: DataTransfer): str
   const normalized = normalizePastedTextForChatInput(rawText)
   return normalized.length > 0 ? normalized : null
 }
+
+const CHAT_RICH_TAG_RE =
+  /<\s*(strong|b|em|i|u|s|strike|del|h[1-6]|ul|ol|li|a|blockquote|code|pre|table|thead|tbody|tr|th|td|sub|sup)\b/i
+
+export function extractClipboardHtmlFragment(html: string): string {
+  const raw = String(html ?? "")
+  const start = raw.indexOf("<!--StartFragment-->")
+  const end = raw.indexOf("<!--EndFragment-->")
+  if (start >= 0 && end > start) {
+    return raw.slice(start + "<!--StartFragment-->".length, end)
+  }
+  const body = raw.match(/<body[^>]*>([\s\S]*)<\/body>/i)
+  if (body?.[1]) return body[1]
+  return raw
+}
+
+export function htmlLooksRich(html: string): boolean {
+  const value = String(html ?? "")
+  if (!value.trim()) return false
+  if (CHAT_RICH_TAG_RE.test(value)) return true
+  const paragraphCount = (value.match(/<p\b/gi) ?? []).length
+  return paragraphCount >= 2
+}
+
+const CHAT_ALLOWED_TAGS = new Set([
+  "H1", "H2", "H3", "H4", "H5", "H6",
+  "P", "UL", "OL", "LI",
+  "STRONG", "B", "EM", "I", "U", "S", "STRIKE", "DEL",
+  "BR", "A", "BLOCKQUOTE", "CODE", "PRE", "SUB", "SUP",
+  "SPAN", "TABLE", "THEAD", "TBODY", "TFOOT", "TR", "TH", "TD", "HR",
+])
+
+const CHAT_DROP_TAGS = new Set([
+  "SCRIPT", "STYLE", "IFRAME", "OBJECT", "EMBED", "LINK", "META", "NOSCRIPT",
+  "IMG", "VIDEO", "SOURCE", "FIGURE", "SVG",
+])
+
+function isSafeHref(value: string): boolean {
+  const trimmed = value.trim()
+  if (!trimmed) return false
+  if (/^\s*(javascript|data|vbscript):/i.test(trimmed)) return false
+  return /^(https?:|mailto:|tel:|\/|#)/i.test(trimmed)
+}
+
+export function sanitizeChatComposerHtml(html: string): string {
+  if (typeof DOMParser === "undefined") return ""
+  const fragment = extractClipboardHtmlFragment(html)
+  const doc = new DOMParser().parseFromString(fragment, "text/html")
+
+  const sanitizeElement = (element: Element) => {
+    Array.from(element.children).forEach(sanitizeElement)
+    const tag = element.tagName.toUpperCase()
+    if (CHAT_DROP_TAGS.has(tag)) {
+      element.remove()
+      return
+    }
+    if (!CHAT_ALLOWED_TAGS.has(tag)) {
+      const parent = element.parentNode
+      if (parent) {
+        while (element.firstChild) parent.insertBefore(element.firstChild, element)
+        parent.removeChild(element)
+      }
+      return
+    }
+
+    Array.from(element.attributes).forEach((attr) => {
+      const name = attr.name.toLowerCase()
+      if (tag === "A" && (name === "href" || name === "target" || name === "rel")) {
+        if (name === "href" && !isSafeHref(attr.value)) {
+          element.removeAttribute(attr.name)
+        }
+        if (name === "target") element.setAttribute("rel", "noopener noreferrer")
+        return
+      }
+      if (tag === "SPAN" && name === "data-ai-mention") return
+      if ((tag === "TD" || tag === "TH") && (name === "colspan" || name === "rowspan")) return
+      element.removeAttribute(attr.name)
+    })
+
+    if (tag === "SPAN" && !element.getAttribute("data-ai-mention")) {
+      const parent = element.parentNode
+      if (parent) {
+        while (element.firstChild) parent.insertBefore(element.firstChild, element)
+        parent.removeChild(element)
+      }
+    }
+  }
+
+  Array.from(doc.body.children).forEach(sanitizeElement)
+  return doc.body.innerHTML.trim()
+}
+
+export type PastedChatContent =
+  | { kind: "html"; html: string }
+  | { kind: "text"; text: string }
+
+export type RichHtmlPart =
+  | { type: "html"; html: string }
+  | { type: "mention"; index: number }
+
+const MENTION_MARKER_RE = /<span\b[^>]*\bdata-ai-mention="(\d+)"[^>]*>\s*<\/span>/gi
+
+export function splitRichHtmlByMentionMarkers(html: string): RichHtmlPart[] {
+  const parts: RichHtmlPart[] = []
+  const value = String(html ?? "")
+  let cursor = 0
+  for (const match of value.matchAll(MENTION_MARKER_RE)) {
+    const index = match.index ?? 0
+    if (index > cursor) {
+      parts.push({ type: "html", html: value.slice(cursor, index) })
+    }
+    parts.push({ type: "mention", index: Number(match[1]) })
+    cursor = index + match[0].length
+  }
+  if (cursor < value.length) {
+    parts.push({ type: "html", html: value.slice(cursor) })
+  }
+  return parts.filter((part) => part.type === "mention" || part.html.trim().length > 0)
+}
+
+export function resolvePastedContentForChatInput(data: DataTransfer): PastedChatContent | null {
+  const html = data.getData("text/html")
+  if (html && htmlLooksRich(html)) {
+    const sanitized = sanitizeChatComposerHtml(html)
+    if (sanitized && htmlLooksRich(sanitized)) {
+      return { kind: "html", html: sanitized }
+    }
+  }
+  const text = resolveNormalizedPastedTextForChatInput(data)
+  return text ? { kind: "text", text } : null
+}

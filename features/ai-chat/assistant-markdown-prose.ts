@@ -64,9 +64,69 @@ export function flattenInlineStructureListsAfterBold(markdown: string): string {
       const earlyItems = items.slice(0, -1)
       if (earlyItems.some((item) => item.length > 90)) return match
 
+      // Keyword / topic lists are real lists. Only flatten when the last item
+      // continues the surrounding sentence (em dash, "mas", "and", …).
+      const last = items[items.length - 1] ?? ""
+      const continuesProse = /[—–]|,\s+(?:mas|and|but|e)\b/i.test(last)
+      if (!continuesProse && items.length >= 3) return match
+
       return `${bold}: ${items.join(", ")}`
     },
   )
+}
+
+function isLetterChar(value: string): boolean {
+  if (!value) return false
+  const code = value.charCodeAt(0)
+  return (
+    (code >= 65 && code <= 90)
+    || (code >= 97 && code <= 122)
+    || (code >= 192 && code <= 687)
+  )
+}
+
+function isQuoteOpenerPrev(value: string): boolean {
+  return isLetterChar(value) || value === "," || value === "." || value === ";" || value === ":"
+}
+
+/** Insert missing spaces around quotes glued to letters or punctuation. */
+export function repairGluedQuoteSpacing(markdown: string): string {
+  const source = String(markdown ?? "")
+    .replace(/(\S)(“)/g, (match, prev: string) => (
+      isLetterChar(prev) || /[,.;:]/.test(prev) ? `${prev} “` : match
+    ))
+    .replace(/(”)(\S)/g, (match, _quote: string, next: string) => (
+      isLetterChar(next) ? `” ${next}` : match
+    ))
+
+  let out = ""
+  let isOpen = false
+  for (let index = 0; index < source.length; index += 1) {
+    const ch = source[index]
+    if (ch !== '"') {
+      out += ch
+      continue
+    }
+    const prev = out[out.length - 1] ?? ""
+    const next = source[index + 1] ?? ""
+    if (!isOpen) {
+      if (prev && isQuoteOpenerPrev(prev)) out += " "
+      out += '"'
+      isOpen = true
+      continue
+    }
+    out += '"'
+    if (isLetterChar(next)) out += " "
+    isOpen = false
+  }
+  return out
+}
+
+/** Split packed list markers that the model (or HTML reparse) left on one line. */
+export function splitPackedMarkdownLists(markdown: string): string {
+  return String(markdown ?? "")
+    .replace(/([^\n])[ \t]+([*+-][ \t]+\S+)/g, "$1\n$2")
+    .replace(/([^\n])[ \t]+(\d+\.[ \t]+\S+)/g, "$1\n$2")
 }
 
 /** Apply all chat-prose markdown softeners before marked/HTML render. */
@@ -75,5 +135,7 @@ export function softenAssistantMarkdownProse(markdown: string): string {
   out = collapseNewlinesInsideQuotes(out)
   out = flattenMultilineBoldSpans(out)
   out = flattenInlineStructureListsAfterBold(out)
+  out = splitPackedMarkdownLists(out)
+  out = repairGluedQuoteSpacing(out)
   return out
 }

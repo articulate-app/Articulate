@@ -12,6 +12,16 @@ describe("buildUserMessageContentJson", () => {
     expect(buildUserMessageContentJson({ tags: [] })).toBeNull()
   })
 
+  it("stores sanitized rich html", () => {
+    const contentJson = buildUserMessageContentJson({
+      tags: [],
+      segments: [{ type: "text", text: "Hello world" }],
+      html: "<p>Hello <b>world</b></p>",
+    })
+    expect(contentJson?.html).toBe("<p>Hello <b>world</b></p>")
+    expect(parseUserMessageContentJson(contentJson).html).toBe("<p>Hello <b>world</b></p>")
+  })
+
   it("stores mention tags and segments", () => {
     const tag = {
       type: "task" as const,

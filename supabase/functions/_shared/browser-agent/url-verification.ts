@@ -6,11 +6,21 @@
  * All heuristics here are domain-agnostic. Do not add hostname allowlists.
  */
 
-const LISTING_PATH = /\/(search|photos|images|vectors|footage|collections|category|categories|galleries|results|browse|explore)\b/i
-const SEARCH_PARAM_KEYS = new Set(["q", "k", "query", "phrase", "search", "s", "keyword", "keywords"])
+const LISTING_PATH = /\/(search|photos|images|videos|vectors|footage|collections|category|categories|galleries|results|browse|explore)\b/i
+const SEARCH_PARAM_KEYS = new Set(["q", "k", "query", "phrase", "search", "s", "keyword", "keywords", "search_query"])
 const ID_LIKE_SEGMENT = /(?:^|[-_~])(?:gm)?(?:\d{5,}|[a-f0-9]{8,})(?:[-_/]|$)/i
+const DIRECT_MEDIA_FILE = /\.(?:avif|bmp|gif|jpe?g|png|svg|webp|m4v|mov|mp4|webm)(?:$|\?)/i
+
+export function looksLikeDirectMediaFileUrl(url: string): boolean {
+  try {
+    return DIRECT_MEDIA_FILE.test(new URL(url).pathname)
+  } catch {
+    return DIRECT_MEDIA_FILE.test(url)
+  }
+}
 
 export function looksLikeCollectionOrSearchUrl(url: string): boolean {
+  if (looksLikeDirectMediaFileUrl(url)) return false
   try {
     const parsed = new URL(url)
     for (const key of parsed.searchParams.keys()) {
@@ -25,6 +35,7 @@ export function looksLikeCollectionOrSearchUrl(url: string): boolean {
 }
 
 export function looksLikeSpecificResourceUrl(url: string): boolean {
+  if (looksLikeDirectMediaFileUrl(url)) return true
   if (looksLikeCollectionOrSearchUrl(url)) return false
   try {
     const path = new URL(url).pathname.replace(/\/+$/, "")

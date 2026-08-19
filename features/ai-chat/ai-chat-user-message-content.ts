@@ -48,6 +48,8 @@ export type AiUserMessageContentJson = {
   display_parts?: AiUserMessageDisplayPart[]
   /** "Add to chat" selection chips persisted on the sent user message. */
   selection_pills?: AiUserMessageSelectionPillPart[]
+  /** Sanitized rich HTML from the composer. Mention chips are `<span data-ai-mention="n">`. */
+  html?: string
   internal_message?: string
 }
 
@@ -246,12 +248,15 @@ export function buildUserMessageContentJson(args: {
   tags: AiContextTag[]
   segments?: AiMessageSegment[]
   selectionPills?: AiUserMessageSelectionPillPart[]
+  html?: string | null
 }): AiUserMessageContentJson | null {
   const selectionPills = args.selectionPills ?? []
+  const html = typeof args.html === "string" && args.html.trim() ? args.html.trim() : null
   if (
     args.tags.length === 0
     && (args.segments?.length ?? 0) === 0
     && selectionPills.length === 0
+    && !html
   ) {
     return null
   }
@@ -259,6 +264,7 @@ export function buildUserMessageContentJson(args: {
     mention_tags: args.tags,
     ...(args.segments && args.segments.length > 0 ? { segments: args.segments } : {}),
     ...(selectionPills.length > 0 ? { selection_pills: selectionPills } : {}),
+    ...(html ? { html } : {}),
   }
 }
 
@@ -285,6 +291,7 @@ export function parseUserMessageContentJson(value: unknown): AiUserMessageConten
   const display_message = typeof row.display_message === "string" ? row.display_message.trim() : undefined
   const display_parts = parseDisplayParts(row.display_parts)
   const selection_pills = parseSelectionPills(row.selection_pills)
+  const html = typeof row.html === "string" && row.html.trim() ? row.html.trim() : undefined
   const internal_message = typeof row.internal_message === "string" ? row.internal_message.trim() : undefined
   return {
     ...(mention_tags && mention_tags.length > 0 ? { mention_tags } : {}),
@@ -292,6 +299,7 @@ export function parseUserMessageContentJson(value: unknown): AiUserMessageConten
     ...(display_message ? { display_message } : {}),
     ...(display_parts && display_parts.length > 0 ? { display_parts } : {}),
     ...(selection_pills && selection_pills.length > 0 ? { selection_pills } : {}),
+    ...(html ? { html } : {}),
     ...(internal_message ? { internal_message } : {}),
   }
 }

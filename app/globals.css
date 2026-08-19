@@ -154,6 +154,106 @@
     line-height: 1.5;
   }
 
+  .ai-chat-composer-input {
+    white-space: pre-wrap;
+  }
+
+  .ai-chat-composer-input:has(p, ul, ol, li, h1, h2, h3, h4, h5, h6, blockquote, table, pre) {
+    white-space: normal;
+  }
+
+  .ai-chat-composer-input b,
+  .ai-chat-composer-input strong,
+  .ai-chat-user-message--rich b,
+  .ai-chat-user-message--rich strong {
+    font-weight: 600;
+  }
+
+  .ai-chat-composer-input i,
+  .ai-chat-composer-input em,
+  .ai-chat-user-message--rich i,
+  .ai-chat-user-message--rich em {
+    font-style: italic;
+  }
+
+  .ai-chat-composer-input u,
+  .ai-chat-user-message--rich u {
+    text-decoration: underline;
+  }
+
+  .ai-chat-composer-input a,
+  .ai-chat-user-message--rich a {
+    color: #2563eb;
+    text-decoration: underline;
+    text-underline-offset: 2px;
+  }
+
+  .ai-chat-composer-input ul,
+  .ai-chat-user-message--rich ul {
+    list-style-type: disc;
+    margin: 0.25rem 0;
+    padding-left: 1.25rem;
+  }
+
+  .ai-chat-composer-input ol,
+  .ai-chat-user-message--rich ol {
+    list-style-type: decimal;
+    margin: 0.25rem 0;
+    padding-left: 1.25rem;
+  }
+
+  .ai-chat-composer-input li,
+  .ai-chat-user-message--rich li {
+    margin: 0.1rem 0;
+  }
+
+  .ai-chat-composer-input p,
+  .ai-chat-user-message--rich p {
+    margin: 0 0 0.5rem;
+  }
+
+  .ai-chat-composer-input p:last-child,
+  .ai-chat-user-message--rich p:last-child {
+    margin-bottom: 0;
+  }
+
+  .ai-chat-composer-input h1,
+  .ai-chat-composer-input h2,
+  .ai-chat-composer-input h3,
+  .ai-chat-composer-input h4,
+  .ai-chat-composer-input h5,
+  .ai-chat-composer-input h6,
+  .ai-chat-user-message--rich h1,
+  .ai-chat-user-message--rich h2,
+  .ai-chat-user-message--rich h3,
+  .ai-chat-user-message--rich h4,
+  .ai-chat-user-message--rich h5,
+  .ai-chat-user-message--rich h6 {
+    margin: 0.45rem 0 0.25rem;
+    font-weight: 600;
+    line-height: 1.3;
+  }
+
+  .ai-chat-composer-input blockquote,
+  .ai-chat-user-message--rich blockquote {
+    margin: 0.35rem 0;
+    padding-left: 0.75rem;
+    border-left: 2px solid #e5e7eb;
+    color: #4b5563;
+  }
+
+  .ai-chat-composer-input code,
+  .ai-chat-user-message--rich code {
+    font-size: 0.85em;
+    background: #f3f4f6;
+    border-radius: 0.25rem;
+    padding: 0.05rem 0.3rem;
+  }
+
+  .ai-chat-user-message--rich {
+    white-space: normal;
+  }
+
   .ai-chat-assistant-message {
     overflow-wrap: anywhere;
     word-break: break-word;
@@ -1124,4 +1224,44 @@ html, body {
   background: #3b82f6;
   pointer-events: none;
   z-index: 40;
+}
+
+/* Outputs list: hide/shrink secondary columns from the pane width, not the viewport. */
+.artifact-directory-list {
+  container-type: inline-size;
+  container-name: artifact-directory;
+}
+
+.artifact-directory-col-project {
+  display: none;
+}
+
+.artifact-directory-col-created {
+  width: 4rem;
+  flex-shrink: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  text-align: right;
+}
+
+@container artifact-directory (min-width: 28rem) {
+  .artifact-directory-col-project {
+    display: block;
+    width: 7rem;
+    flex-shrink: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+}
+
+@container artifact-directory (min-width: 36rem) {
+  .artifact-directory-col-project {
+    width: 10rem;
+  }
+
+  .artifact-directory-col-created {
+    width: 4.5rem;
+  }
 }

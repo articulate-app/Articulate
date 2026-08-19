@@ -4,6 +4,7 @@ import type { TaskArtifact } from "../app/lib/artifacts/artifact-types"
 import {
   applyArtifactCachePatch,
   artifactCachePatchFromSavedLivePreview,
+  removeArtifactFromCache,
 } from "../features/artifacts/artifact-query-cache"
 import type { AiBuildArtifactPreviewEntry } from "../app/store/ai-build-artifact-preview-store"
 
@@ -164,5 +165,51 @@ describe("artifact query cache", () => {
     expect(threadList?.artifacts[0]?.content_text).toBe("new body")
     expect(currentArtifact?.version_number).toBe(5)
     expect(currentArtifact?.snapshot.content_text).toBe("new body")
+  })
+
+  it("removes archived and forgotten artifacts from scoped caches", () => {
+    const queryClient = new QueryClient()
+    const kept = makeArtifact({ id: "artifact-kept" })
+    const gone = makeArtifact({ id: "artifact-gone" })
+
+    queryClient.setQueryData(["task-artifacts", 13622], {
+      ok: true,
+      task_id: 13622,
+      artifacts: [kept, gone],
+    })
+    queryClient.setQueryData(["task-artifacts", 13622, "overview-preview"], [kept, gone])
+    queryClient.setQueryData(["artifact", "artifact-gone", "current"], {
+      ok: true,
+      artifact_id: "artifact-gone",
+      version_number: 4,
+      snapshot: gone,
+    })
+
+    applyArtifactCachePatch(queryClient, {
+      id: "artifact-gone",
+      task_id: 13622,
+      status: "archived",
+    })
+
+    expect(
+      queryClient.getQueryData<{ artifacts: TaskArtifact[] }>(["task-artifacts", 13622])
+        ?.artifacts.map((row) => row.id),
+    ).toEqual(["artifact-kept"])
+    expect(
+      queryClient.getQueryData<TaskArtifact[]>(["task-artifacts", 13622, "overview-preview"])
+        ?.map((row) => row.id),
+    ).toEqual(["artifact-kept"])
+    expect(queryClient.getQueryData(["artifact", "artifact-gone", "current"])).toBeUndefined()
+
+    queryClient.setQueryData(["task-artifacts", 13622], {
+      ok: true,
+      task_id: 13622,
+      artifacts: [kept, gone],
+    })
+    removeArtifactFromCache(queryClient, "artifact-gone")
+    expect(
+      queryClient.getQueryData<{ artifacts: TaskArtifact[] }>(["task-artifacts", 13622])
+        ?.artifacts.map((row) => row.id),
+    ).toEqual(["artifact-kept"])
   })
 })

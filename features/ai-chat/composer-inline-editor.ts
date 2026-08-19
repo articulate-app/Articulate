@@ -1,5 +1,6 @@
 import { getMentionChipClassName } from "./mention-chip-styles"
 import { ARTIFACT_FILE_CHIP_CLASS, artifactDocumentGlyphHtml } from "./artifact-context-chip-html"
+import { htmlLooksRich, sanitizeChatComposerHtml } from "./composer-paste"
 
 export type AiTagType =
   | "project"
@@ -235,6 +236,38 @@ export function insertNodeAtCaret(root: HTMLElement, node: Node) {
   after.collapse(true)
   sel.removeAllRanges()
   sel.addRange(after)
+}
+
+export function insertHtmlAtCaret(root: HTMLElement, html: string) {
+  const sanitized = sanitizeChatComposerHtml(html)
+  if (!sanitized) return
+  const template = document.createElement("template")
+  template.innerHTML = sanitized
+  const fragment = template.content
+  if (!fragment.firstChild) return
+
+  const sel = window.getSelection()
+  if (!sel?.rangeCount) {
+    root.appendChild(fragment)
+    focusEnd(root)
+    return
+  }
+  const range = sel.getRangeAt(0)
+  if (!root.contains(range.commonAncestorContainer)) {
+    root.appendChild(fragment)
+    focusEnd(root)
+    return
+  }
+  range.deleteContents()
+  const last = fragment.lastChild
+  range.insertNode(fragment)
+  if (last) {
+    const after = document.createRange()
+    after.setStartAfter(last)
+    after.collapse(true)
+    sel.removeAllRanges()
+    sel.addRange(after)
+  }
 }
 
 export function insertPlainTextWithLineBreaksAtCaret(root: HTMLElement, text: string) {
@@ -524,10 +557,39 @@ export function readTagFromChip(el: HTMLElement): AiContextTag | null {
   return base
 }
 
+export function serializeComposerEditorHtml(root: HTMLElement): string {
+  const clone = root.cloneNode(true) as HTMLElement
+  clone.querySelectorAll('[data-ai-selection-chip="1"]').forEach((node) => node.remove())
+  return clone.innerHTML.replace(/\u200b/g, "")
+}
+
+export function serializeComposerRichHtml(root: HTMLElement): string | null {
+  const clone = root.cloneNode(true) as HTMLElement
+  clone.querySelectorAll('[data-ai-selection-chip="1"]').forEach((node) => node.remove())
+  const chips = Array.from(clone.querySelectorAll<HTMLElement>('[data-ai-tag="1"]'))
+  chips.forEach((chip, index) => {
+    const marker = clone.ownerDocument.createElement("span")
+    marker.setAttribute("data-ai-mention", String(index))
+    chip.replaceWith(marker)
+  })
+  const sanitized = sanitizeChatComposerHtml(clone.innerHTML)
+  if (!sanitized || !htmlLooksRich(sanitized)) return null
+  return sanitized
+}
+
+export function setComposerHtml(root: HTMLElement, html: string) {
+  clearComposerEditor(root)
+  const sanitized = html.trim()
+  if (!sanitized) return
+  root.innerHTML = sanitized
+}
+
 export function serializeComposerEditor(root: HTMLElement): {
   messageText: string
   tags: AiContextTag[]
   segments: AiMessageSegment[]
+  messageHtml: string | null
+  editorHtml: string
 } {
   const tags: AiContextTag[] = []
   const segments: AiMessageSegment[] = []
@@ -582,6 +644,8 @@ export function serializeComposerEditor(root: HTMLElement): {
     messageText: trimmedMessage,
     tags,
     segments: trimmedSegments,
+    messageHtml: serializeComposerRichHtml(root),
+    editorHtml: serializeComposerEditorHtml(root),
   }
 }
 

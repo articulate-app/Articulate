@@ -1,10 +1,8 @@
 "use client"
 
 import { getArticulateDesktop } from "../../app/lib/articulate-desktop"
-import {
-  findBrowserTabForAiSession,
-  useRightPaneTabsStore,
-} from "../../app/store/right-pane-tabs"
+import { useRightPaneTabsStore } from "../../app/store/right-pane-tabs"
+import { findReusableAiBrowserTab } from "../ai-chat/resolve-ai-browser-session"
 import type { AiBrowserDiscovery } from "../ai-chat/discover-ai-browser"
 import { rememberAiBrowserObservation } from "../ai-chat/ai-browser-observation-store"
 
@@ -61,13 +59,16 @@ export async function applyAiDesktopBrowserCommand(
   const desktop = getArticulateDesktop()
   if (!desktop) return true
 
-  const tab = findBrowserTabForAiSession(useRightPaneTabsStore.getState().tabs, {
+  const tab = findReusableAiBrowserTab(useRightPaneTabsStore.getState().tabs, {
     browserSessionId: item.browserSessionId,
     browserId: item.browserId ?? cmd.browserId,
   })
-  const id = tab?.browser?.browserId || tab?.id || cmd.browserId
+  const id = tab?.browser?.browserId || tab?.id || cmd.browserId || item.browserId
   if (!id) return false
-  if (tab?.browser?.phase === "provisioning") return false
+  if (tab?.browser?.phase === "provisioning") {
+    const existing = desktop.browser.getState ? await desktop.browser.getState(id) : null
+    if (!existing) return false
+  }
 
   try {
     if (cmd.command === "navigate") {

@@ -29,6 +29,7 @@ import {
   parseBuildArtifactPreviewPayload,
   useAiBuildArtifactPreviewStore,
 } from "../../app/store/ai-build-artifact-preview-store"
+import { isArchivedArtifactStatus } from "../../app/lib/artifacts/artifact-types"
 import { getArtifact } from "../../app/lib/services/artifacts"
 import { loadPersistedBuildAfterSequence } from "./orchestrated-build-sequence-persist"
 import { logArtifactBuildLegacyComponentRegression } from "./artifact-build-legacy-guard"
@@ -424,7 +425,15 @@ function invalidateContentFromBuildSnapshot(
       if (artifactId) {
         void getArtifact({ artifactId })
           .then((result) => {
-            if (result?.snapshot) applyArtifactCachePatch(queryClient, result.snapshot)
+            if (!result?.snapshot) return
+            if (isArchivedArtifactStatus(result.snapshot.status)) {
+              applyArtifactCachePatch(queryClient, result.snapshot)
+              return
+            }
+            if (useAiBuildArtifactPreviewStore.getState().isArtifactSuppressed(artifactId)) {
+              return
+            }
+            applyArtifactCachePatch(queryClient, result.snapshot)
           })
           .catch(() => undefined)
         void queryClient.invalidateQueries({ queryKey: ["artifact", artifactId] })
@@ -987,7 +996,52 @@ export async function rehydrateArtifactPreviewCards(buildId: string): Promise<bo
   if (ok) {
     store.registerBuild({ buildId: id, isArtifactBuild: true, monitor: entry.monitor })
   }
-  return ok
+  if (buildHasRenderableArtifactCard(id)) return true
+  return seedArtifactPreviewCardsFromUnits(id)
+}
+
+function artifactIdFromUnitKey(unitKey: string | null | undefined): string | null {
+  const match = String(unitKey ?? "").match(/^artifact:([0-9a-f-]{36})$/i)
+  return match?.[1] ?? null
+}
+
+/** Last-resort card restore when history events did not replay a preview payload. */
+async function seedArtifactPreviewCardsFromUnits(buildId: string): Promise<boolean> {
+  const entry = useAiOrchestratedBuildStore.getState().getBuild(buildId)
+  if (!entry) return false
+  const previewStore = useAiBuildArtifactPreviewStore.getState()
+  let seeded = false
+  for (const unit of Object.values(entry.unitsById)) {
+    const artifactId = artifactIdFromUnitKey(unit.unit_key)
+    if (!artifactId) continue
+    if (previewStore.isArtifactSuppressed(artifactId)) continue
+    try {
+      const result = await getArtifact({ artifactId })
+      const snapshot = result.snapshot
+      if (!snapshot || isArchivedArtifactStatus(snapshot.status)) continue
+      previewStore.upsertFromEvent({
+        buildId,
+        unitId: unit.id,
+        artifactId,
+        sequence: Math.max(entry.afterSequence, 1),
+        eventType: "artifact.version_saved",
+        taskId: snapshot.task_id,
+        projectId: snapshot.project_id,
+        aiThreadId: snapshot.ai_thread_id,
+        channelId: snapshot.channel_id,
+        languageId: snapshot.language_id,
+        title: snapshot.title,
+        contentText: snapshot.content_text,
+        contentJson: snapshot.content_json,
+        assetData: snapshot.asset_data,
+        currentVersion: snapshot.current_version,
+      })
+      seeded = true
+    } catch {
+      // Keep going — other units may still restore.
+    }
+  }
+  return seeded || buildHasRenderableArtifactCard(buildId)
 }
 
 export async function cancelOrchestratedBuild(buildId: string): Promise<void> {

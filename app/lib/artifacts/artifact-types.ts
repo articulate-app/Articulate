@@ -4,6 +4,10 @@
 
 export type ArtifactStatus = "draft" | "ready" | "archived" | string
 
+export function isArchivedArtifactStatus(status: string | null | undefined): boolean {
+  return (status ?? "").trim().toLowerCase() === "archived"
+}
+
 export type ArtifactBlockType =
   | "heading"
   | "paragraph"
@@ -43,6 +47,17 @@ export type ArtifactContentJson = {
   [key: string]: unknown
 }
 
+export type ArtifactVisualIdentity = {
+  type?: "image" | "video" | string | null
+  provider?: string | null
+  title?: string | null
+  asset_url?: string | null
+  preview_url?: string | null
+  source_url?: string | null
+  asset_id?: string | null
+  verified?: true
+}
+
 export type ArtifactAsset = {
   attachment_id: string
   media_type?: "image" | "video" | "file" | string | null
@@ -54,7 +69,12 @@ export type ArtifactAsset = {
   width?: number | null
   height?: number | null
   duration_seconds?: number | null
-  provenance?: Record<string, unknown> | null
+  provider?: string | null
+  asset_url?: string | null
+  preview_url?: string | null
+  source_url?: string | null
+  asset_id?: string | null
+  provenance?: (Record<string, unknown> & { visual?: ArtifactVisualIdentity }) | null
   [key: string]: unknown
 }
 
@@ -88,6 +108,12 @@ export type TaskArtifact = {
   created_by?: number | null
   created_at?: string | null
   updated_at?: string | null
+}
+
+export function isVisibleWorkspaceArtifact(
+  artifact: Pick<TaskArtifact, "status"> | null | undefined,
+): boolean {
+  return Boolean(artifact) && !isArchivedArtifactStatus(artifact?.status)
 }
 
 export type ArtifactVersionSummary = {

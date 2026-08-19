@@ -14,11 +14,14 @@ import {
   isBrowserSurfaceOverlayActive,
   subscribeBrowserSurfaceOverlay,
 } from "../../app/lib/browser-surface-overlay"
+import { isDesktopBrowserSurfaceOwner } from "../../app/lib/desktop-browser-surface-owner"
 
 type DesktopBrowserHostProps = {
   browserId: string
   /** When false, Electron hides the native view (tab inactive / unmounted). */
   active?: boolean
+  ownerId?: string | null
+  ownsSurface?: boolean
   className?: string
   onBoundsChange?: (bounds: DesktopBrowserBounds) => void
 }
@@ -40,6 +43,8 @@ function readBounds(el: HTMLElement, visible: boolean): DesktopBrowserBounds {
 export function DesktopBrowserHost({
   browserId,
   active = true,
+  ownerId = null,
+  ownsSurface = true,
   className,
   onBoundsChange,
 }: DesktopBrowserHostProps) {
@@ -52,7 +57,7 @@ export function DesktopBrowserHost({
     setOverlayActive(isBrowserSurfaceOverlayActive())
   }), [])
 
-  const surfaceVisible = active && !overlayActive
+  const surfaceVisible = active && !overlayActive && ownsSurface
 
   useEffect(() => {
     const desktop = getArticulateDesktop()
@@ -95,7 +100,8 @@ export function DesktopBrowserHost({
         rafRef.current = null
       }
       lastSentRef.current = ""
-      // Hide on unmount so the native view does not float over other UI.
+      if (ownerId && !isDesktopBrowserSurfaceOwner(browserId, ownerId)) return
+      if (!ownsSurface) return
       void desktop.browser.setBounds(browserId, {
         x: 0,
         y: 0,
@@ -104,22 +110,23 @@ export function DesktopBrowserHost({
         visible: false,
       })
     }
-  }, [surfaceVisible, browserId, onBoundsChange])
+  }, [surfaceVisible, browserId, ownerId, ownsSurface, onBoundsChange])
 
   useEffect(() => {
-    if (!surfaceVisible) {
-      const desktop = getArticulateDesktop()
-      if (!desktop || !browserId) return
-      void desktop.browser.setBounds(browserId, {
-        x: 0,
-        y: 0,
-        width: 0,
-        height: 0,
-        visible: false,
-      })
-      lastSentRef.current = ""
-    }
-  }, [surfaceVisible, browserId])
+    if (surfaceVisible) return
+    if (ownerId && !isDesktopBrowserSurfaceOwner(browserId, ownerId)) return
+    if (!ownsSurface) return
+    const desktop = getArticulateDesktop()
+    if (!desktop || !browserId) return
+    void desktop.browser.setBounds(browserId, {
+      x: 0,
+      y: 0,
+      width: 0,
+      height: 0,
+      visible: false,
+    })
+    lastSentRef.current = ""
+  }, [surfaceVisible, browserId, ownerId, ownsSurface])
 
   return (
     <div

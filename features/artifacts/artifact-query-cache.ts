@@ -1,12 +1,16 @@
 import type { QueryClient } from "@tanstack/react-query"
-import type {
-  ArtifactGetResult,
-  ProjectArtifactsListResult,
-  TaskArtifact,
-  TaskArtifactsListResult,
-  ThreadArtifactsListResult,
+import {
+  isArchivedArtifactStatus,
+  type ArtifactGetResult,
+  type ProjectArtifactsListResult,
+  type TaskArtifact,
+  type TaskArtifactsListResult,
+  type ThreadArtifactsListResult,
 } from "../../app/lib/artifacts/artifact-types"
-import type { AiBuildArtifactPreviewEntry } from "../../app/store/ai-build-artifact-preview-store"
+import {
+  useAiBuildArtifactPreviewStore,
+  type AiBuildArtifactPreviewEntry,
+} from "../../app/store/ai-build-artifact-preview-store"
 import { shouldUseSavedLiveArtifactBase } from "./artifact-live-save-base"
 
 export type ArtifactCachePatch = Partial<TaskArtifact> & Pick<TaskArtifact, "id">
@@ -71,30 +75,96 @@ function compareArtifactsForListOrder(left: TaskArtifact, right: TaskArtifact): 
   return rightUpdated - leftUpdated
 }
 
+function dropArtifactFromList<T extends { artifacts: TaskArtifact[] }>(
+  data: T | undefined,
+  artifactId: string,
+): T | undefined {
+  if (!data) return data
+  const nextArtifacts = data.artifacts.filter((row) => row.id !== artifactId)
+  if (nextArtifacts.length === data.artifacts.length) return data
+  return { ...data, artifacts: nextArtifacts }
+}
+
+function dropArtifactFromQueryData(data: unknown, artifactId: string): unknown {
+  if (!data) return data
+  if (Array.isArray(data)) {
+    const next = data.filter((row) => {
+      if (!row || typeof row !== "object") return true
+      return (row as { id?: unknown }).id !== artifactId
+    })
+    return next.length === data.length ? data : next
+  }
+  if (typeof data === "object" && Array.isArray((data as { artifacts?: unknown }).artifacts)) {
+    return dropArtifactFromList(data as { artifacts: TaskArtifact[] }, artifactId)
+  }
+  return data
+}
+
 function upsertArtifactList<T extends { artifacts: TaskArtifact[] }>(
   data: T | undefined,
   patch: ArtifactCachePatch,
   scopeMatches: (artifact: TaskArtifact) => boolean,
 ): T | undefined {
   if (!data) return data
+  if (isArchivedArtifactStatus(patch.status)) {
+    return dropArtifactFromList(data, patch.id)
+  }
   const index = data.artifacts.findIndex((row) => row.id === patch.id)
   if (index >= 0) {
     const current = data.artifacts[index]
     const merged = mergeArtifactCachePatch(current, patch)
+    if (isArchivedArtifactStatus(merged.status)) {
+      return dropArtifactFromList(data, patch.id)
+    }
     const nextArtifacts = [...data.artifacts]
     nextArtifacts[index] = merged
     return { ...data, artifacts: nextArtifacts }
   }
   const inserted = mergeArtifactCachePatch(null, patch)
+  if (isArchivedArtifactStatus(inserted.status)) return data
   if (!scopeMatches(inserted)) return data
   const nextArtifacts = [...data.artifacts, inserted].sort(compareArtifactsForListOrder)
   return { ...data, artifacts: nextArtifacts }
+}
+
+export function removeArtifactFromCache(
+  queryClient: QueryClient,
+  artifactId: string,
+): void {
+  const id = artifactId.trim()
+  if (!id) return
+  const drop = (current: unknown) => dropArtifactFromQueryData(current, id)
+  queryClient.setQueriesData({ queryKey: ["task-artifacts"] }, drop)
+  queryClient.setQueriesData({ queryKey: ["task-artifacts-meta"] }, drop)
+  queryClient.setQueriesData({ queryKey: ["project-artifacts"] }, drop)
+  queryClient.setQueriesData({ queryKey: ["project-artifacts-meta"] }, drop)
+  queryClient.setQueriesData({ queryKey: ["ai-thread-artifacts"] }, drop)
+  queryClient.removeQueries({ queryKey: ["artifact", id] })
+  queryClient.removeQueries({ queryKey: ["artifact-versions", id] })
+}
+
+/**
+ * Drop a soft-deleted artifact from list caches and live AI overlays so
+ * chat/build hydrate cannot put it back on the task.
+ */
+export function forgetDeletedArtifact(
+  queryClient: QueryClient,
+  artifactId: string,
+): void {
+  const id = artifactId.trim()
+  if (!id) return
+  useAiBuildArtifactPreviewStore.getState().suppressArtifact(id)
+  removeArtifactFromCache(queryClient, id)
 }
 
 export function applyArtifactCachePatch(
   queryClient: QueryClient,
   patch: ArtifactCachePatch,
 ): void {
+  if (isArchivedArtifactStatus(patch.status)) {
+    removeArtifactFromCache(queryClient, patch.id)
+    return
+  }
   const taskId = patch.task_id ?? null
   const projectId = patch.project_id ?? null
   const threadId = patch.ai_thread_id ?? null

@@ -1,18 +1,19 @@
 "use client"
 
 import { getSupabaseBrowser } from "../../../lib/supabase-browser"
-import type {
-  ArtifactAttachResult,
-  ArtifactExportFormat,
-  ArtifactGetResult,
-  ArtifactRevisionConflict,
-  ArtifactSaveResult,
-  ArtifactVersionSummary,
-  ArtifactVersionsListResult,
-  ProjectArtifactsListResult,
-  TaskArtifact,
-  TaskArtifactsListResult,
-  ThreadArtifactsListResult,
+import {
+  isVisibleWorkspaceArtifact,
+  type ArtifactAttachResult,
+  type ArtifactExportFormat,
+  type ArtifactGetResult,
+  type ArtifactRevisionConflict,
+  type ArtifactSaveResult,
+  type ArtifactVersionSummary,
+  type ArtifactVersionsListResult,
+  type ProjectArtifactsListResult,
+  type TaskArtifact,
+  type TaskArtifactsListResult,
+  type ThreadArtifactsListResult,
 } from "../artifacts/artifact-types"
 import { invokeEdgeFunctionFetch } from "../edge-functions"
 
@@ -148,7 +149,9 @@ export async function listTaskArtifacts(args: {
   if (error) throw error
   const root = asRecord(data) ?? {}
   const artifacts = Array.isArray(root.artifacts)
-    ? root.artifacts.map(normalizeTaskArtifact).filter(Boolean) as TaskArtifact[]
+    ? root.artifacts
+        .map(normalizeTaskArtifact)
+        .filter((row): row is TaskArtifact => Boolean(row) && isVisibleWorkspaceArtifact(row))
     : []
   return {
     ok: true,
@@ -179,7 +182,9 @@ export async function listProjectArtifacts(args: {
   if (error) throw error
   const root = asRecord(data) ?? {}
   const artifacts = Array.isArray(root.artifacts)
-    ? (root.artifacts.map(normalizeTaskArtifact).filter(Boolean) as TaskArtifact[])
+    ? root.artifacts
+        .map(normalizeTaskArtifact)
+        .filter((row): row is TaskArtifact => Boolean(row) && isVisibleWorkspaceArtifact(row))
     : []
   return {
     ok: true,
@@ -312,7 +317,9 @@ export async function listAiThreadArtifacts(args: {
   if (error) throw error
   const root = asRecord(data) ?? {}
   const artifacts = Array.isArray(root.artifacts)
-    ? root.artifacts.map(normalizeTaskArtifact).filter(Boolean) as TaskArtifact[]
+    ? root.artifacts
+        .map(normalizeTaskArtifact)
+        .filter((row): row is TaskArtifact => Boolean(row) && isVisibleWorkspaceArtifact(row))
     : []
   return {
     ok: true,
@@ -471,6 +478,64 @@ export async function saveWorkspaceArtifact(args: {
     version_number: toFiniteNumber(root.version_number) ?? snapshot.current_version,
     snapshot,
   }
+}
+
+export type ArtifactDirectoryMeta = {
+  createdAt: string | null
+  projectId: number | null
+  projectName: string | null
+}
+
+/** Batch created-at + project name for the Outputs directory table. */
+export async function fetchArtifactDirectoryMeta(
+  artifactIds: string[],
+): Promise<Record<string, ArtifactDirectoryMeta>> {
+  const unique = Array.from(
+    new Set(artifactIds.map((id) => id.trim()).filter(Boolean)),
+  )
+  if (unique.length === 0) return {}
+
+  const supabase = getSupabaseBrowser()
+  const { data, error } = await supabase
+    .from("artifacts")
+    .select("id, created_at, project_id")
+    .in("id", unique)
+  if (error) throw error
+
+  const projectIds = Array.from(
+    new Set(
+      (data ?? [])
+        .map((row) => toFiniteNumber((row as { project_id?: unknown }).project_id))
+        .filter((id): id is number => id != null && id > 0),
+    ),
+  )
+
+  const projectNames = new Map<number, string>()
+  if (projectIds.length > 0) {
+    const { data: projects, error: projectError } = await supabase
+      .from("projects")
+      .select("id, name")
+      .in("id", projectIds)
+    if (projectError) throw projectError
+    for (const project of projects ?? []) {
+      const id = toFiniteNumber((project as { id?: unknown }).id)
+      const name = toTrimmedString((project as { name?: unknown }).name)
+      if (id != null && name) projectNames.set(id, name)
+    }
+  }
+
+  const out: Record<string, ArtifactDirectoryMeta> = {}
+  for (const row of data ?? []) {
+    const id = toTrimmedString((row as { id?: unknown }).id)
+    if (!id) continue
+    const projectId = toFiniteNumber((row as { project_id?: unknown }).project_id)
+    out[id] = {
+      createdAt: toTrimmedString((row as { created_at?: unknown }).created_at),
+      projectId,
+      projectName: projectId != null ? projectNames.get(projectId) ?? null : null,
+    }
+  }
+  return out
 }
 
 /** Create an empty document artifact on a task (`ai_create_task_artifact_v1`). */

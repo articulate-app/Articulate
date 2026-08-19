@@ -36,6 +36,7 @@ import {
 import { BrowserChromeBar } from "./browser-chrome-bar"
 import { LocalBrowserSurface } from "./local-browser-surface"
 import { DesktopBrowserSurface } from "./desktop-browser-surface"
+import { DESKTOP_BROWSER_SURFACE_PRIORITY } from "../../app/lib/desktop-browser-surface-owner"
 import { isArticulateDesktopAvailable } from "../../app/lib/articulate-desktop"
 import type { PublicationRun } from "../../app/lib/publishing/types"
 import {
@@ -1035,6 +1036,8 @@ export function BrowserSessionPane({
         ) : showDesktopBrowserPanel && desktopBrowserId ? (
           <DesktopBrowserSurface
             browserId={desktopBrowserId}
+            ownerId={`pane:${desktopBrowserId}`}
+            priority={DESKTOP_BROWSER_SURFACE_PRIORITY.pane}
             active
             initialUrl={browser.currentUrl || "https://www.google.com/"}
             onNavigation={(info) => {

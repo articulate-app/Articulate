@@ -68,8 +68,10 @@ import {
   getCaretClientRect,
   getTextBeforeSelection,
   insertNodeAtCaret,
+  insertHtmlAtCaret,
   insertPlainTextAtCaret,
   insertPlainTextWithLineBreaksAtCaret,
+  setComposerHtml,
   parseActiveMentionAtCaret,
   readTagFromChip,
   replacePlainTextRangeWithChip,
@@ -83,7 +85,7 @@ import {
   type AiUserMessageContentJson,
 } from "./ai-chat-user-message-content"
 import { persistUserMessageMentionMetadata } from "./persist-user-message-mention-metadata"
-import { resolveNormalizedPastedTextForChatInput } from "./composer-paste"
+import { resolvePastedContentForChatInput } from "./composer-paste"
 import { logAiChatDebug } from "./debug"
 import { shouldSyncMentionOnComposerClick } from "./composer-mention-guards"
 import { buildComposerSelectionTags } from "./composer-selection-tag"
@@ -459,6 +461,7 @@ interface ComposerProps {
     messageTags: AiContextTag[]
     messageFiles: File[]
     messageSegments?: AiMessageSegment[]
+    messageHtml?: string | null
   }) => Promise<void>
   /** When set, follow-up sends target the clarified component output context. */
   clarificationFollowUpRef?: MutableRefObject<null>
@@ -958,9 +961,10 @@ export function Composer({
       messageFiles: File[]
       messageTags: AiContextTag[]
       messageSegments: AiMessageSegment[]
+      messageHtml?: string | null
       clearComposerInput: boolean
     }): Promise<boolean> => {
-      const { messageText, messageFiles, messageTags, messageSegments, clearComposerInput } = args
+      const { messageText, messageFiles, messageTags, messageSegments, messageHtml, clearComposerInput } = args
       const trimmed = messageText.trim()
       if (!trimmed && messageFiles.length === 0) return false
       if (isSending) return false
@@ -1001,6 +1005,7 @@ export function Composer({
         tags: messageTags,
         segments: messageSegments,
         selectionPills,
+        html: messageHtml,
       })
       // Show the user bubble immediately — before upload / network — so clearing the
       // composer never leaves a visible gap in the chat history.
@@ -1111,6 +1116,7 @@ export function Composer({
           tags: messageTagsWithUploads,
           segments: messageSegments,
           selectionPills,
+          html: messageHtml,
         })
         // Refresh the same optimistic row with uploaded attachment metadata.
         onOptimistic?.({
@@ -1358,7 +1364,7 @@ export function Composer({
     const root = editorRef.current
     if (!root) return
     const queueIndex = queuedMessages.findIndex((row) => row.id === item.id)
-    const { messageText, tags, segments } = serializeComposerEditor(root)
+    const { messageText, tags, segments, messageHtml, editorHtml } = serializeComposerEditor(root)
     const hasDraft = messageText.trim().length > 0 || files.length > 0
     if (skipAutoDrainItemIdRef.current === item.id) {
       skipAutoDrainItemIdRef.current = null
@@ -1370,10 +1376,16 @@ export function Composer({
         messageText,
         messageTags: tags,
         messageSegments: segments,
+        messageHtml,
+        editorHtml,
         messageFiles: files.length > 0 ? [...files] : undefined,
       })
     }
-    setComposerFromSegments(root, item.messageSegments, item.messageText)
+    if (item.editorHtml) {
+      setComposerHtml(root, item.editorHtml)
+    } else {
+      setComposerFromSegments(root, item.messageSegments, item.messageText)
+    }
     setFiles(item.messageFiles?.length ? [...item.messageFiles] : [])
     mentionReplaceRangeRef.current = null
     setMentionQuery(null)
@@ -1401,7 +1413,7 @@ export function Composer({
   const send = useCallback(async () => {
     const root = editorRef.current
     if (!root) return
-    const { messageText, tags, segments } = serializeComposerEditor(root)
+    const { messageText, tags, segments, messageHtml, editorHtml } = serializeComposerEditor(root)
     const trimmed = messageText.trim()
     if (!trimmed && files.length === 0) return
 
@@ -1414,6 +1426,7 @@ export function Composer({
           messageTags: tags,
           messageFiles: [...files],
           messageSegments: segments,
+          messageHtml,
         })
       } finally {
         setIsSending(false)
@@ -1430,6 +1443,8 @@ export function Composer({
         messageText,
         messageTags: tags,
         messageSegments: segments,
+        messageHtml,
+        editorHtml,
         messageFiles: files.length > 0 ? [...files] : undefined,
       })
       clearComposerAfterQueue()
@@ -1441,6 +1456,7 @@ export function Composer({
       messageFiles: [...files],
       messageTags: tags,
       messageSegments: segments,
+      messageHtml,
       clearComposerInput: true,
     })
   }, [
@@ -1476,6 +1492,7 @@ export function Composer({
       messageFiles: next.messageFiles ?? [],
       messageTags: next.messageTags,
       messageSegments: next.messageSegments,
+      messageHtml: next.messageHtml,
       clearComposerInput: false,
     })
       .then((ok) => {
@@ -2657,13 +2674,17 @@ export function Composer({
   }
 
   const onEditorPaste = (e: React.ClipboardEvent<HTMLDivElement>) => {
-    const normalized = resolveNormalizedPastedTextForChatInput(e.clipboardData)
-    if (!normalized) return
+    const pasted = resolvePastedContentForChatInput(e.clipboardData)
+    if (!pasted) return
 
     e.preventDefault()
     const root = editorRef.current
     if (!root) return
-    insertPlainTextWithLineBreaksAtCaret(root, normalized)
+    if (pasted.kind === "html") {
+      insertHtmlAtCaret(root, pasted.html)
+    } else {
+      insertPlainTextWithLineBreaksAtCaret(root, pasted.text)
+    }
     onEditorInput()
   }
 
@@ -2764,12 +2785,12 @@ export function Composer({
       <div
         className={
           variant === "inlineEdit"
-            ? "relative bg-transparent px-0 pb-0 pt-0"
-            : "relative rounded-2xl border border-gray-200 bg-white px-2.5 pb-1.5 pt-2 shadow-[0_1px_2px_rgba(0,0,0,0.03)]"
+            ? "relative flex flex-col bg-transparent px-0 pb-0 pt-0"
+            : "relative flex flex-col rounded-2xl border border-gray-200 bg-white px-2.5 pb-1.5 pt-2 shadow-[0_1px_2px_rgba(0,0,0,0.03)]"
         }
       >
         {files.length > 0 || pendingArtifactChip ? (
-          <div className="mb-2 flex flex-wrap gap-2 px-0.5">
+          <div className="mb-2 flex w-full min-w-0 flex-wrap items-start gap-2 px-0.5">
             {pendingArtifactChip ? (
               <ArtifactContextChip
                 title={pendingArtifactChip.title}
@@ -2796,7 +2817,7 @@ export function Composer({
             contentEditable
             suppressContentEditableWarning
             data-placeholder="Ask anything, or use @…"
-            className="ai-chat-composer-input relative z-10 min-h-[80px] max-h-[400px] w-full overflow-y-auto whitespace-pre-wrap break-words border-0 p-1 text-sm outline-none empty:before:pointer-events-none empty:before:text-gray-400 empty:before:content-[attr(data-placeholder)]"
+            className="ai-chat-composer-input relative min-h-[80px] max-h-[400px] w-full min-w-0 overflow-y-auto break-words border-0 p-1 text-sm outline-none empty:before:pointer-events-none empty:before:text-gray-400 empty:before:content-[attr(data-placeholder)]"
             onInput={onEditorInput}
             onPaste={onEditorPaste}
             onKeyDown={onEditorKeyDown}

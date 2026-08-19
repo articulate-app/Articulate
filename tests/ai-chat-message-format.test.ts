@@ -163,6 +163,39 @@ describe("formatAssistantContentForDisplay", () => {
     expect(html).toContain("<ul>")
     expect(html).toContain("<strong>Snippet</strong>")
   })
+
+  it("keeps packed keyword bullets as a real list", () => {
+    const html = formatAssistantContentForDisplay(
+      'Palavras-chave: - cetose - cetose e diabetes - cetoacidose diabética - corpos cetónicos - dieta cetogénica e diabetes',
+    )
+    expect(html).toContain("<ul>")
+    expect(html).toContain("<li>")
+    expect(html).toContain("cetose e diabetes")
+    expect(html).not.toMatch(/- cetose - cetose e diabetes/)
+  })
+
+  it("restores block breaks when assistant content is stored as HTML", () => {
+    const html = formatAssistantContentForDisplay(
+      '<p>O artigo deve seguir as guidelines.</p><ul><li>cetose</li><li>cetose e diabetes</li></ul><p>O artigo está a ser gerado</p>',
+    )
+    expect(html).toContain("<ul>")
+    expect(html).toContain("<li>")
+    expect(html.match(/<p>/g)?.length ?? 0).toBeGreaterThanOrEqual(2)
+    expect(html).toContain("O artigo está a ser gerado")
+    expect(html).not.toMatch(/diabetesO artigo/)
+    expect(html).not.toMatch(/diabetes O artigo está a ser gerado<\/p>/)
+  })
+
+  it("repairs spaces around glued quotes", () => {
+    const html = formatAssistantContentForDisplay(
+      'Vou criar a task no projeto"quilaban diabetes"para o Planner (PT),"cetose" tem também"cetose"como keyword.',
+    )
+    expect(html).toContain("projeto &quot;quilaban diabetes&quot; para")
+    expect(html).toContain("(PT), &quot;cetose&quot;")
+    expect(html).toContain("também &quot;cetose&quot; como")
+    expect(html).not.toContain("&quot; quilaban")
+    expect(html).not.toContain("&quot; cetose")
+  })
 })
 
 describe("formatAssistantBlocksForDisplay", () => {

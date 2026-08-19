@@ -2763,6 +2763,8 @@ function normalizeAmbientContext(raw: unknown): {
   desktop_browser_control: boolean;
   desktop_version: string | null;
   desktop_session_id: string | null;
+  active_browser_session_id: string | null;
+  active_browser_id: string | null;
 } | null {
   if (!raw || typeof raw !== "object" || Array.isArray(raw)) return null;
   const row = raw as Record<string, unknown>;
@@ -2801,6 +2803,14 @@ function normalizeAmbientContext(raw: unknown): {
     desktop_session_id:
       desktopBrowserControl && typeof row.desktop_session_id === "string" && row.desktop_session_id.trim()
         ? row.desktop_session_id.trim().slice(0, 160)
+        : null,
+    active_browser_session_id:
+      typeof row.active_browser_session_id === "string" && row.active_browser_session_id.trim()
+        ? row.active_browser_session_id.trim().slice(0, 160)
+        : null,
+    active_browser_id:
+      typeof row.active_browser_id === "string" && row.active_browser_id.trim()
+        ? row.active_browser_id.trim().slice(0, 160)
         : null,
   };
 }
@@ -4555,6 +4565,8 @@ async function handleAiChatRequest(req: Request) {
             desktop_browser_control: ambientContext.desktop_browser_control,
             desktop_version: ambientContext.desktop_version,
             desktop_session_id: ambientContext.desktop_session_id,
+            active_browser_session_id: ambientContext.active_browser_session_id,
+            active_browser_id: ambientContext.active_browser_id,
           }
         : {
             client_runtime: "web",
@@ -4563,6 +4575,8 @@ async function handleAiChatRequest(req: Request) {
             desktop_browser_control: false,
             desktop_version: null,
             desktop_session_id: null,
+            active_browser_session_id: null,
+            active_browser_id: null,
           },
     };
 

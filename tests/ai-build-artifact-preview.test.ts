@@ -14,7 +14,7 @@ import { selectedContextTypeForArtifactAnchor } from "../features/artifacts/arti
 
 describe("artifact preview store", () => {
   beforeEach(() => {
-    useAiBuildArtifactPreviewStore.setState({ previews: {} })
+    useAiBuildArtifactPreviewStore.setState({ previews: {}, suppressedArtifactIds: {} })
   })
 
   it("keys previews by build_id + unit_id + artifact_id", () => {
@@ -164,6 +164,36 @@ describe("artifact preview store", () => {
     expect(entry?.phase).toBe("saved")
     expect(entry?.currentVersion).toBe(4)
     expect(phaseForArtifactEventType("artifact.media_progress")).toBe("media")
+  })
+
+  it("does not resurrect a suppressed artifact from later build events", () => {
+    const store = useAiBuildArtifactPreviewStore.getState()
+    store.upsertFromEvent({
+      buildId: "b1",
+      unitId: "u1",
+      artifactId: "deleted-1",
+      sequence: 1,
+      eventType: "artifact.version_saved",
+      taskId: 13627,
+      title: "Gone",
+    })
+    expect(store.listLiveByArtifactId("deleted-1")?.title).toBe("Gone")
+
+    store.suppressArtifact("deleted-1")
+    expect(store.listLiveByArtifactId("deleted-1")).toBeNull()
+    expect(store.isArtifactSuppressed("deleted-1")).toBe(true)
+
+    store.upsertFromEvent({
+      buildId: "b1",
+      unitId: "u1",
+      artifactId: "deleted-1",
+      sequence: 2,
+      eventType: "artifact.version_saved",
+      taskId: 13627,
+      title: "Resurrected",
+    })
+    expect(store.listLiveByArtifactId("deleted-1")).toBeNull()
+    expect(Object.values(useAiBuildArtifactPreviewStore.getState().previews)).toHaveLength(0)
   })
 })
 
