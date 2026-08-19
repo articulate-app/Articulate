@@ -19,6 +19,8 @@ type ComponentOutputEditableBodyProps = {
   /** Force TipTap sync when AI/version content changes. */
   forceContentKey?: string | number | null
   collaborationDocument?: import("yjs").Doc | null
+  collaborationAwareness?: import("y-protocols/awareness").Awareness | null
+  collaborationUser?: { name: string; color: string } | null
   /** When set, enables image/video toolbar + drag/drop/paste into TipTap. */
   onInsertAttachment?: (
     file: File,
@@ -44,6 +46,8 @@ export function ComponentOutputEditableBody({
   readOnly = false,
   forceContentKey = null,
   collaborationDocument = null,
+  collaborationAwareness = null,
+  collaborationUser = null,
   onInsertAttachment,
   disableInlineMediaControls = true,
 }: ComponentOutputEditableBodyProps) {
@@ -76,6 +80,8 @@ export function ComponentOutputEditableBody({
         fromAiChat={fromAiChat}
         forceContentKey={collaborationDocument ? null : forceContentKey}
         collaborationDocument={collaborationDocument}
+        collaborationAwareness={collaborationAwareness}
+        collaborationUser={collaborationUser}
         onInsertAttachment={readOnly ? undefined : onInsertAttachment}
       />
     </div>

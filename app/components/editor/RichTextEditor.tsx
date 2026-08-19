@@ -14,6 +14,8 @@ import TableRow from "@tiptap/extension-table-row";
 import TableCell from "@tiptap/extension-table-cell";
 import TableHeader from "@tiptap/extension-table-header";
 import Collaboration from "@tiptap/extension-collaboration";
+import CollaborationCursor from "@tiptap/extension-collaboration-cursor";
+import type { Awareness } from "y-protocols/awareness";
 import type { Doc as YDoc } from "yjs";
 import { canReplaceCollaborativeEditorContent } from "../../lib/collaboration/editor-sync";
 import { CommentMark } from "./CommentMark";
@@ -485,6 +487,8 @@ export interface RichTextEditorProps {
   forceContentKey?: string | number | null;
   /** When set, TipTap binds to this Y.Doc and never calls setContent. */
   collaborationDocument?: YDoc | null;
+  collaborationAwareness?: Awareness | null;
+  collaborationUser?: { name: string; color: string } | null;
 }
 
 export const RichTextEditor: React.FC<RichTextEditorProps> = ({
@@ -514,6 +518,8 @@ export const RichTextEditor: React.FC<RichTextEditorProps> = ({
   fromAiChat = false,
   forceContentKey = null,
   collaborationDocument = null,
+  collaborationAwareness = null,
+  collaborationUser = null,
 }) => {
   const pathname = usePathname();
   const resolveElementTarget = React.useCallback((rawTarget: EventTarget | null): Element | null => {
@@ -735,6 +741,12 @@ export const RichTextEditor: React.FC<RichTextEditorProps> = ({
       CommentMark,
       ...(collaborationDocument
         ? [Collaboration.configure({ document: collaborationDocument })]
+        : []),
+      ...(collaborationDocument && collaborationAwareness
+        ? [CollaborationCursor.configure({
+            provider: { awareness: collaborationAwareness },
+            user: collaborationUser ?? { name: "User", color: "#2563eb" },
+          })]
         : []),
     ],
     content: collaborationDocument ? undefined : value ?? "",

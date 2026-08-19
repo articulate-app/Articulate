@@ -1,17 +1,25 @@
 "use client"
 
 import { useEffect, useMemo, useRef, useState } from "react"
+import type { Awareness } from "y-protocols/awareness"
 import type { TaskArtifact } from "../lib/artifacts/artifact-types"
 import { presenceColor, type ArtifactCollabAuthorizeResult } from "../lib/collaboration/auth"
+import {
+  applyRemotePresenceToAwareness,
+  getOrCreateArtifactAwareness,
+  setLocalAwarenessUser,
+} from "../lib/collaboration/awareness-bridge"
+import { createIdleCheckpointScheduler } from "../lib/collaboration/checkpoints"
 import { isCollaborativeRichTextEditorKind, resolveArtifactEditorKind } from "../lib/collaboration/editor-kind"
 import { isArtifactCollabEnvEnabled } from "../lib/collaboration/feature-flag"
 import { bindArtifactYdocLocalCache } from "../lib/collaboration/local-cache"
 import type { ArtifactCollabPresence } from "../lib/collaboration/presence"
+import { createDebouncedProjection, projectYDocToArtifact } from "../lib/collaboration/projection"
 import {
   acquireArtifactCollabSession,
   releaseArtifactCollabSession,
 } from "../lib/collaboration/provider-registry"
-import { artifactHasExistingEditorContent } from "../lib/collaboration/seed-from-html"
+import { seedExistingArtifact } from "../lib/collaboration/seed-existing-artifact"
 import { createArtifactCollabProvider } from "../lib/collaboration/supabase-provider"
 import { createSupabaseCollabTransport } from "../lib/collaboration/supabase-transport"
 import type { SyncStatus } from "../lib/collaboration/sync-protocol"
@@ -22,6 +30,8 @@ function asAuthorize(value: unknown): ArtifactCollabAuthorizeResult {
   return value as ArtifactCollabAuthorizeResult
 }
 
+export type CollabDisplayStatus = SyncStatus | "local"
+
 export function useArtifactCollaboration(artifact: TaskArtifact | null | undefined) {
   const locallyEligible = isCollaborativeRichTextEditorKind(
     resolveArtifactEditorKind(artifact),
@@ -30,14 +40,23 @@ export function useArtifactCollaboration(artifact: TaskArtifact | null | undefin
   const artifactId = artifact?.id ?? null
   const [enabled, setEnabled] = useState(false)
   const [status, setStatus] = useState<SyncStatus>("connecting")
+  const [projectionStatus, setProjectionStatus] = useState<"idle" | "pending" | "projected" | "error">("idle")
   const [document, setDocument] = useState<import("yjs").Doc | null>(null)
+  const [awareness, setAwareness] = useState<Awareness | null>(null)
   const [peers, setPeers] = useState<ArtifactCollabPresence[]>([])
+  const [conflicts, setConflicts] = useState<Array<Record<string, unknown>>>([])
+  const [seedError, setSeedError] = useState<string | null>(null)
   const sessionKeyRef = useRef<string | null>(null)
+  const localUser = useMemo(() => ({
+    name: "You",
+    color: "#2563eb",
+  }), [])
 
   useEffect(() => {
     if (!locallyEligible || !artifactId) {
       setEnabled(false)
       setDocument(null)
+      setAwareness(null)
       setPeers([])
       return
     }
@@ -68,12 +87,27 @@ export function useArtifactCollaboration(artifact: TaskArtifact | null | undefin
         typeof loadedRow?.snapshot_base64 === "string"
         && loadedRow.snapshot_base64.length > 0
         || (Array.isArray(loadedRow?.updates) && loadedRow.updates.length > 0)
-      const hasExistingContent = artifactHasExistingEditorContent({
-        contentJson: artifact?.content_json,
-        contentText: artifact?.content_text,
-      })
-      if ((loadError || !hasYdoc) && hasExistingContent) {
-        // Fail closed: never replace existing HTML with an empty Y.Doc.
+
+      if (!hasYdoc) {
+        const seeded = await seedExistingArtifact({
+          supabase,
+          artifactId,
+          contentJson: artifact?.content_json,
+          contentText: artifact?.content_text,
+        })
+        if (cancelled) return
+        if (seeded.status === "failed") {
+          setSeedError(seeded.error)
+          setEnabled(false)
+          setDocument(null)
+          return
+        }
+        if (seeded.status !== "ready") {
+          setEnabled(false)
+          setDocument(null)
+          return
+        }
+      } else if (loadError) {
         setEnabled(false)
         setDocument(null)
         return
@@ -93,6 +127,8 @@ export function useArtifactCollaboration(artifact: TaskArtifact | null | undefin
         selection: null,
         editing: true,
       }
+      localUser.name = presence.name
+      localUser.color = presence.color
 
       if (cancelled) return
 
@@ -108,14 +144,68 @@ export function useArtifactCollaboration(artifact: TaskArtifact | null | undefin
               artifactId,
               clientId,
               presence,
-              onPresence: setPeers,
+              onPresence: (nextPeers) => {
+                setPeers(nextPeers)
+                const nextAwareness = getOrCreateArtifactAwareness(ydoc)
+                applyRemotePresenceToAwareness(nextAwareness, nextPeers)
+              },
             }),
             onStatus: setStatus,
           }),
       })
+      const nextAwareness = getOrCreateArtifactAwareness(session.document)
+      setLocalAwarenessUser(nextAwareness, {
+        name: presence.name,
+        color: presence.color,
+      })
       sessionKeyRef.current = artifactId
       setDocument(session.document)
+      setAwareness(nextAwareness)
       setEnabled(true)
+      setSeedError(null)
+
+      const projector = createDebouncedProjection({
+        project: async () => {
+          const provider = session.provider as { lastSeq?: number } | null
+          setProjectionStatus("pending")
+          const result = await projectYDocToArtifact({
+            supabase,
+            artifactId,
+            document: session.document,
+            seq: Number(provider?.lastSeq ?? 0),
+            previousContentJson: artifact?.content_json ?? null,
+          })
+          setProjectionStatus(result.ok ? "projected" : "error")
+        },
+      })
+      const checkpoints = createIdleCheckpointScheduler({
+        onIdle: () => {
+          void import("../lib/collaboration/checkpoints").then(({ createArtifactCheckpoint }) => {
+            const provider = session.provider as { lastSeq?: number } | null
+            void createArtifactCheckpoint({
+              supabase,
+              artifactId,
+              document: session.document,
+              seq: Number(provider?.lastSeq ?? 0),
+              changeSource: "manual",
+              summary: "Idle editorial checkpoint",
+            })
+          })
+        },
+      })
+      const onUpdate = (_update: Uint8Array, origin: unknown) => {
+        if (origin === "remote" || origin === "load") return
+        setStatus("syncing")
+        projector.schedule()
+        checkpoints.touch()
+      }
+      session.document.on("update", onUpdate)
+
+      const { data: conflictRows } = await supabase.rpc("artifact_collab_list_conflicts_v1", {
+        p_artifact_id: artifactId,
+      })
+      if (!cancelled && Array.isArray(conflictRows)) setConflicts(conflictRows)
+
       const cache = await bindArtifactYdocLocalCache(session.document, artifactId)
       if (cancelled) {
         cache?.destroy()
@@ -123,6 +213,9 @@ export function useArtifactCollaboration(artifact: TaskArtifact | null | undefin
       }
       void session.provider?.connect?.()
       return () => {
+        session.document.off("update", onUpdate)
+        projector.cancel()
+        checkpoints.cancel()
         cache?.destroy()
       }
     }
@@ -139,19 +232,65 @@ export function useArtifactCollaboration(artifact: TaskArtifact | null | undefin
       if (sessionKeyRef.current === artifactId) {
         sessionKeyRef.current = null
         setDocument(null)
+        setAwareness(null)
         setEnabled(false)
         setPeers([])
+        setConflicts([])
       }
     }
-  }, [artifact?.content_json, artifact?.content_text, artifactId, envEnabled, locallyEligible])
+  }, [artifact?.content_json, artifact?.content_text, artifactId, envEnabled, localUser, locallyEligible])
+
+  const displayStatus: CollabDisplayStatus =
+    status === "synced" && projectionStatus === "pending"
+      ? "syncing"
+      : status
 
   return useMemo(
     () => ({
       enabled,
       document,
-      status,
+      awareness,
+      status: displayStatus,
+      persistStatus: status,
+      projectionStatus,
       peers,
+      conflicts,
+      seedError,
+      user: localUser,
+      flush: async () => {
+        if (!artifactId) return
+        const { flushAndProjectArtifact } = await import("../lib/collaboration/flush")
+        await flushAndProjectArtifact({
+          artifactId,
+          project: async (seq) => {
+            if (!document) return
+            const supabase = getSupabaseBrowser()
+            setProjectionStatus("pending")
+            const result = await projectYDocToArtifact({
+              supabase,
+              artifactId,
+              document,
+              seq,
+              previousContentJson: artifact?.content_json ?? null,
+            })
+            setProjectionStatus(result.ok ? "projected" : "error")
+          },
+        })
+      },
     }),
-    [document, enabled, peers, status],
+    [
+      artifact?.content_json,
+      artifactId,
+      awareness,
+      conflicts,
+      displayStatus,
+      document,
+      enabled,
+      localUser,
+      peers,
+      projectionStatus,
+      seedError,
+      status,
+    ],
   )
 }

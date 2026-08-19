@@ -13,6 +13,7 @@ const corsHeaders = {
 
 const UPDATE_COUNT_LIMIT = 200
 const UPDATE_BYTES_LIMIT = 512 * 1024
+const CHECKPOINT_FORCE = true
 
 function json(body: unknown, status = 200) {
   return new Response(JSON.stringify(body), {
@@ -75,7 +76,7 @@ Deno.serve(async (req) => {
     const encoded = String(rec?.update_base64 ?? "")
     return sum + Math.floor((encoded.length * 3) / 4)
   }, 0)
-  const force = body.force === true
+  const force = body.force === true || (body.checkpoint === true && CHECKPOINT_FORCE)
   if (
     !force
     && updates.length < UPDATE_COUNT_LIMIT

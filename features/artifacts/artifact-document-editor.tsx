@@ -20,6 +20,7 @@ import {
 import { ArtifactHtmlDocumentFromArtifact } from "./artifact-html-document-view"
 import { useArtifactCollaboration } from "../../app/hooks/use-artifact-collaboration"
 import { shouldLockArtifactDuringAiGeneration } from "../../app/lib/collaboration/editor-sync"
+import { ArtifactCollabConflictBanner } from "./artifact-collab-conflict-banner"
 
 function htmlToPlainText(html: string): string {
   if (typeof document === "undefined") {
@@ -481,22 +482,35 @@ export function ArtifactDocumentEditor({
           readOnly={effectiveReadOnly}
           forceContentKey={collaborative ? null : resolvedForceKey}
           collaborationDocument={collaboration.document}
+          collaborationAwareness={collaboration.awareness}
+          collaborationUser={collaboration.user}
           onInsertAttachment={async (file) =>
             uploadArtifactInlineAttachment(artifact.id, file)
           }
         />
         {collaborative ? (
-          <p className="px-1 pt-1 text-[11px] text-muted-foreground" data-collab-status={collaboration.status}>
-            {collaboration.status === "synced"
-              ? "Synced"
-              : collaboration.status === "syncing"
-                ? "Syncing…"
-                : collaboration.status === "offline"
-                  ? "Offline"
-                  : collaboration.status === "error"
-                    ? "Sync error"
-                    : "Connecting…"}
-          </p>
+          <>
+            <ArtifactCollabConflictBanner
+              conflicts={collaboration.conflicts as Array<{
+                id?: string
+                expected_text?: string | null
+                conflict?: { expected_text?: string | null; current_text?: string | null }
+              }>}
+            />
+            <p className="px-1 pt-1 text-[11px] text-muted-foreground" data-collab-status={collaboration.status}>
+              {collaboration.status === "synced"
+                ? collaboration.projectionStatus === "projected" || collaboration.projectionStatus === "idle"
+                  ? "Synced"
+                  : "Syncing…"
+                : collaboration.status === "syncing"
+                  ? "Syncing…"
+                  : collaboration.status === "offline"
+                    ? "Offline"
+                    : collaboration.status === "error"
+                      ? "Sync error"
+                      : "Connecting…"}
+            </p>
+          </>
         ) : null}
       </div>
     )

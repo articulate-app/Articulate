@@ -1251,6 +1251,34 @@ Deno.serve(async (request) => {
             });
             if (!patched.ok) {
               result = { ok: false, error: patched.error, data: patched.data ?? null };
+              if (patched.error === "expected_text_mismatch" && SUPABASE_SERVICE_ROLE_KEY) {
+                const admin = createClient(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY, {
+                  auth: { persistSession: false, autoRefreshToken: false },
+                });
+                const { data: collabOn } = await admin.rpc("artifact_collab_is_enabled_v1", {
+                  p_artifact_id: artifactId,
+                });
+                if (collabOn === true) {
+                  await admin.rpc("artifact_collab_upsert_proposal_v1", {
+                    p_artifact_id: artifactId,
+                    p_idempotency_key: `${buildId}:${unitId}:patches`,
+                    p_status: "conflict",
+                    p_payload: {
+                      actor_type: "agent",
+                      ai_run_id: context?.build?.ai_run_id ?? null,
+                      ai_thread_id: context?.build?.thread_id ?? null,
+                      expected_text: Array.isArray(toolArgs.patches)
+                        ? toolArgs.patches.map((row: { expected_text?: string }) => row?.expected_text).filter(Boolean).join("\n")
+                        : null,
+                      conflict: {
+                        kind: "expected_text_mismatch",
+                        resolvable: true,
+                        data: patched.data ?? null,
+                      },
+                    },
+                  });
+                }
+              }
             } else {
               const snapshot = {
                 title: String(toolArgs.title ?? context?.artifact?.title ?? "Artifact").slice(0, 240),
@@ -1278,7 +1306,42 @@ Deno.serve(async (request) => {
                     : {}),
                 },
               };
-              savedResult = await persistSnapshot({
+              let collabEnabled = false
+              if (SUPABASE_SERVICE_ROLE_KEY) {
+                const admin = createClient(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY, {
+                  auth: { persistSession: false, autoRefreshToken: false },
+                });
+                const { data: collabOn } = await admin.rpc("artifact_collab_is_enabled_v1", {
+                  p_artifact_id: artifactId,
+                });
+                collabEnabled = collabOn === true
+                if (collabEnabled) {
+                  await admin.rpc("artifact_collab_upsert_proposal_v1", {
+                    p_artifact_id: artifactId,
+                    p_idempotency_key: `${buildId}:${unitId}:patches`,
+                    p_status: "ready",
+                    p_payload: {
+                      actor_type: "agent",
+                      ai_run_id: context?.build?.ai_run_id ?? null,
+                      ai_thread_id: context?.build?.thread_id ?? null,
+                      expected_text: Array.isArray(toolArgs.patches)
+                        ? toolArgs.patches.map((row: { expected_text?: string }) => row?.expected_text).filter(Boolean).join("\n")
+                        : null,
+                      proposed_content: snapshot,
+                    },
+                  });
+                }
+              }
+              savedResult = collabEnabled
+                ? {
+                    result: { ok: true, data: { collab_proposal: "ready", applied: patched.applied } },
+                    snapshot,
+                    summary: String(toolArgs.summary ?? ""),
+                    noop: false,
+                    sectionHtml: patched.previewAfterHtml,
+                    sectionBeforeHtml: patched.previewBeforeHtml,
+                  }
+                : await persistSnapshot({
                 snapshot,
                 summary: String(toolArgs.summary ?? ""),
                 changeSummary: String(
