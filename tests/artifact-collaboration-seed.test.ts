@@ -1,4 +1,11 @@
 import { describe, expect, it } from "vitest"
+import * as Y from "yjs"
+import {
+  isYDocEditoriallyEmpty,
+  shouldDeferEmptyYdocSeed,
+  shouldHydrateEmptyYdocFromArtifact,
+  shouldProjectCollaborativeYDoc,
+} from "../app/lib/collaboration/empty-ydoc"
 import { compareSeedDocuments } from "../app/lib/collaboration/seed-compare"
 import { convertExistingArtifactToYDoc } from "../app/lib/collaboration/seed-existing-artifact"
 import { yDocToPlainText } from "../app/lib/collaboration/ydoc-content"
@@ -122,5 +129,29 @@ describe("artifact collaboration seed (unit)", () => {
     })
     expect(compared.ok).toBe(false)
     if (!compared.ok) expect(compared.reason).toBe("empty_overwrite")
+  })
+
+  it("defers empty seeds and blocks empty projections over existing content", () => {
+    expect(shouldDeferEmptyYdocSeed(false)).toBe(true)
+    expect(shouldDeferEmptyYdocSeed(true)).toBe(false)
+    expect(shouldHydrateEmptyYdocFromArtifact({
+      ydocEmpty: true,
+      hasExistingContent: true,
+      lastSeq: 0,
+    })).toBe(true)
+    expect(shouldHydrateEmptyYdocFromArtifact({
+      ydocEmpty: true,
+      hasExistingContent: true,
+      lastSeq: 4,
+    })).toBe(false)
+    expect(shouldProjectCollaborativeYDoc({
+      ydocEmpty: true,
+      hasExistingProjectedContent: true,
+    })).toBe(false)
+    expect(shouldProjectCollaborativeYDoc({
+      ydocEmpty: false,
+      hasExistingProjectedContent: true,
+    })).toBe(true)
+    expect(isYDocEditoriallyEmpty(new Y.Doc())).toBe(true)
   })
 })

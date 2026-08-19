@@ -251,6 +251,13 @@ describe("artifact collaboration protocol", () => {
     )
     expect(editorSource).toMatch(/canReplaceCollaborativeEditorContent/)
     expect(editorSource).toMatch(/editor\.commands\.setContent/)
+    const hookSource = readFileSync(
+      resolve("app/hooks/use-artifact-collaboration.ts"),
+      "utf8",
+    )
+    expect(hookSource).toMatch(/hasEditorContent/)
+    expect(hookSource).toMatch(/shouldHydrateEmptyYdocFromArtifact/)
+    expect(hookSource).not.toMatch(/\[artifact\?\.content_json, artifact\?\.content_text, artifactId/)
   })
 
   it("15. Yjs converges after updates arrive in different orders", () => {

@@ -20,6 +20,10 @@ import {
   tipTapJsonToYDoc,
   yDocToTipTapJson,
 } from "./ydoc-content"
+import {
+  isYDocSnapshotEditoriallyEmpty,
+  shouldDeferEmptyYdocSeed,
+} from "./empty-ydoc"
 import { artifactHasExistingEditorContent, seedEmptyRichTextYdoc } from "./seed-from-html"
 
 function asRecord(value: unknown): Record<string, unknown> | null {
@@ -48,8 +52,24 @@ export async function seedExistingArtifact(args: {
     return { status: "failed", error: loaded.error.message, nodes: [] }
   }
   const loadedRow = asRecord(loaded.data)
-  if (typeof loadedRow?.snapshot_base64 === "string" && loadedRow.snapshot_base64.length > 0) {
-    return { status: "ready" }
+  const hasExisting = artifactHasExistingEditorContent({
+    contentJson: args.contentJson,
+    contentText: args.contentText,
+  })
+  const loadedSnapshot = typeof loadedRow?.snapshot_base64 === "string" ? loadedRow.snapshot_base64 : ""
+  const loadedSeq = Number(loadedRow?.last_included_seq ?? 0)
+  const loadedHasUpdates = Array.isArray(loadedRow?.updates) && loadedRow.updates.length > 0
+  if (loadedSnapshot.length > 0) {
+    const emptyOverContent =
+      hasExisting
+      && loadedSeq <= 0
+      && !loadedHasUpdates
+      && isYDocSnapshotEditoriallyEmpty(loadedSnapshot)
+    if (!emptyOverContent) return { status: "ready" }
+  }
+
+  if (shouldDeferEmptyYdocSeed(hasExisting)) {
+    return { status: "skipped", reason: "empty_content_deferred" }
   }
 
   const claimed = await args.supabase.rpc("artifact_collab_claim_seed_v1", {
@@ -59,7 +79,7 @@ export async function seedExistingArtifact(args: {
     return { status: "failed", error: claimed.error.message, nodes: [] }
   }
   const claim = asRecord(claimed.data) as FetchOrClaimYdocResult | null
-  if (isYdocSeedReady(claim)) return { status: "ready" }
+  if (claim?.status === "ready" || isYdocSeedReady(claim)) return { status: "ready" }
   if (isYdocSeedFailed(claim)) {
     return { status: "failed", error: String(claim?.seed_error ?? "seed_failed"), nodes: [] }
   }
@@ -73,17 +93,17 @@ export async function seedExistingArtifact(args: {
     p_after_seq: 0,
   })
   const reloadedRow = asRecord(reloaded.data)
-  if (typeof reloadedRow?.snapshot_base64 === "string" && reloadedRow.snapshot_base64.length > 0) {
+  const reloadedSnapshot = typeof reloadedRow?.snapshot_base64 === "string" ? reloadedRow.snapshot_base64 : ""
+  if (
+    reloadedSnapshot.length > 0
+    && !(hasExisting && isYDocSnapshotEditoriallyEmpty(reloadedSnapshot))
+  ) {
     return { status: "ready" }
   }
 
   const jsonDoc = extractArtifactSeedJson(args.contentJson)
   const source = resolveYdocSeedSource({
     contentJsonHtml: jsonDoc ? null : extractArtifactSeedHtml(args.contentJson),
-    contentText: args.contentText,
-  })
-  const hasExisting = artifactHasExistingEditorContent({
-    contentJson: args.contentJson,
     contentText: args.contentText,
   })
 

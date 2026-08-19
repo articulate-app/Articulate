@@ -1,6 +1,8 @@
 import type { SupabaseClient } from "@supabase/supabase-js"
 import type * as Y from "yjs"
 import { bytesToBase64 } from "./binary"
+import { isYDocEditoriallyEmpty, shouldProjectCollaborativeYDoc } from "./empty-ydoc"
+import { artifactHasExistingEditorContent } from "./seed-from-html"
 import {
   buildProjectedContentJson,
   encodeYDocSnapshot,
@@ -18,8 +20,19 @@ export async function projectYDocToArtifact(args: {
   artifactId: string
   document: Y.Doc
   seq: number
-  previousContentJson?: Record<string, unknown> | null
+  previousContentJson?: unknown
+  previousContentText?: string | null
 }): Promise<{ ok: boolean; projectedSeq: number; error?: string }> {
+  if (!shouldProjectCollaborativeYDoc({
+    ydocEmpty: isYDocEditoriallyEmpty(args.document),
+    hasExistingProjectedContent: artifactHasExistingEditorContent({
+      contentJson: args.previousContentJson,
+      contentText: args.previousContentText,
+    }),
+  })) {
+    return { ok: false, projectedSeq: args.seq, error: "empty_ydoc_overwrite_blocked" }
+  }
+
   const html = yDocToHtml(args.document)
   const text = yDocToPlainText(args.document).trim()
   const tiptap = yDocToTipTapJson(args.document)
@@ -28,7 +41,10 @@ export async function projectYDocToArtifact(args: {
     p_artifact_id: args.artifactId,
     p_seq: args.seq,
     p_content_json: buildProjectedContentJson({
-      previous: args.previousContentJson,
+      previous:
+        args.previousContentJson && typeof args.previousContentJson === "object" && !Array.isArray(args.previousContentJson)
+          ? args.previousContentJson as Record<string, unknown>
+          : null,
       html,
       text,
       tiptap,

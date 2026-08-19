@@ -20,11 +20,21 @@ import {
   releaseArtifactCollabSession,
 } from "../lib/collaboration/provider-registry"
 import { rememberArtifactCollabEnabled } from "../lib/collaboration/editor-sync"
-import { seedExistingArtifact } from "../lib/collaboration/seed-existing-artifact"
+import {
+  isYDocEditoriallyEmpty,
+  isYDocSnapshotEditoriallyEmpty,
+  shouldHydrateEmptyYdocFromArtifact,
+} from "../lib/collaboration/empty-ydoc"
+import { artifactHasExistingEditorContent } from "../lib/collaboration/seed-from-html"
+import {
+  convertExistingArtifactToYDoc,
+  seedExistingArtifact,
+} from "../lib/collaboration/seed-existing-artifact"
 import { createArtifactCollabProvider } from "../lib/collaboration/supabase-provider"
 import { createSupabaseCollabTransport } from "../lib/collaboration/supabase-transport"
 import type { SyncStatus } from "../lib/collaboration/sync-protocol"
 import { getSupabaseBrowser } from "../../lib/supabase-browser"
+import * as Y from "yjs"
 
 function asAuthorize(value: unknown): ArtifactCollabAuthorizeResult {
   if (!value || typeof value !== "object") return { ok: false }
@@ -48,6 +58,12 @@ export function useArtifactCollaboration(artifact: TaskArtifact | null | undefin
   const [conflicts, setConflicts] = useState<Array<Record<string, unknown>>>([])
   const [seedError, setSeedError] = useState<string | null>(null)
   const sessionKeyRef = useRef<string | null>(null)
+  const artifactRef = useRef(artifact)
+  artifactRef.current = artifact
+  const hasEditorContent = artifactHasExistingEditorContent({
+    contentJson: artifact?.content_json,
+    contentText: artifact?.content_text,
+  })
   const localUser = useMemo(() => ({
     name: "You",
     color: "#2563eb",
@@ -84,18 +100,23 @@ export function useArtifactCollaboration(artifact: TaskArtifact | null | undefin
         p_after_seq: 0,
       })
       if (cancelled) return
+      const currentArtifact = artifactRef.current
       const loadedRow = loaded && typeof loaded === "object" ? loaded as Record<string, unknown> : null
-      const hasYdoc =
-        typeof loadedRow?.snapshot_base64 === "string"
-        && loadedRow.snapshot_base64.length > 0
-        || (Array.isArray(loadedRow?.updates) && loadedRow.updates.length > 0)
+      const loadedSnapshot = typeof loadedRow?.snapshot_base64 === "string" ? loadedRow.snapshot_base64 : ""
+      const loadedHasUpdates = Array.isArray(loadedRow?.updates) && loadedRow.updates.length > 0
+      const emptyOverContent =
+        hasEditorContent
+        && Number(loadedRow?.last_included_seq ?? 0) <= 0
+        && !loadedHasUpdates
+        && isYDocSnapshotEditoriallyEmpty(loadedSnapshot || null)
+      const hasYdoc = (loadedSnapshot.length > 0 || loadedHasUpdates) && !emptyOverContent
 
       if (!hasYdoc) {
         const seeded = await seedExistingArtifact({
           supabase,
           artifactId,
-          contentJson: artifact?.content_json,
-          contentText: artifact?.content_text,
+          contentJson: currentArtifact?.content_json,
+          contentText: currentArtifact?.content_text,
         })
         if (cancelled) return
         if (seeded.status === "failed") {
@@ -155,6 +176,10 @@ export function useArtifactCollaboration(artifact: TaskArtifact | null | undefin
             onStatus: setStatus,
           }),
       })
+      if (cancelled) {
+        releaseArtifactCollabSession(artifactId)
+        return
+      }
       const nextAwareness = getOrCreateArtifactAwareness(session.document)
       setLocalAwarenessUser(nextAwareness, {
         name: presence.name,
@@ -175,7 +200,8 @@ export function useArtifactCollaboration(artifact: TaskArtifact | null | undefin
             artifactId,
             document: session.document,
             seq: Number(provider?.lastSeq ?? 0),
-            previousContentJson: artifact?.content_json ?? null,
+            previousContentJson: artifactRef.current?.content_json ?? null,
+            previousContentText: artifactRef.current?.content_text ?? null,
           })
           setProjectionStatus(result.ok ? "projected" : "error")
         },
@@ -211,9 +237,37 @@ export function useArtifactCollaboration(artifact: TaskArtifact | null | undefin
       const cache = await bindArtifactYdocLocalCache(session.document, artifactId)
       if (cancelled) {
         cache?.destroy()
+        releaseArtifactCollabSession(artifactId)
         return
       }
-      void session.provider?.connect?.()
+      void (async () => {
+        try {
+          await session.provider?.connect?.()
+          if (cancelled) return
+          const latest = artifactRef.current
+          const provider = session.provider as { lastSeq?: number } | null
+          if (
+            shouldHydrateEmptyYdocFromArtifact({
+              ydocEmpty: isYDocEditoriallyEmpty(session.document),
+              hasExistingContent: artifactHasExistingEditorContent({
+                contentJson: latest?.content_json,
+                contentText: latest?.content_text,
+              }),
+              lastSeq: Number(provider?.lastSeq ?? 0),
+            })
+          ) {
+            const converted = convertExistingArtifactToYDoc({
+              contentJson: latest?.content_json,
+              contentText: latest?.content_text,
+            })
+            if (!converted.error) {
+              Y.applyUpdate(session.document, Y.encodeStateAsUpdate(converted.document))
+            }
+          }
+        } catch {
+          if (!cancelled) setStatus("error")
+        }
+      })()
       return () => {
         session.document.off("update", onUpdate)
         projector.cancel()
@@ -240,7 +294,7 @@ export function useArtifactCollaboration(artifact: TaskArtifact | null | undefin
         setConflicts([])
       }
     }
-  }, [artifact?.content_json, artifact?.content_text, artifactId, envEnabled, localUser, locallyEligible])
+  }, [artifactId, envEnabled, hasEditorContent, locallyEligible])
 
   const displayStatus: CollabDisplayStatus =
     status === "synced" && projectionStatus === "pending"
@@ -273,7 +327,8 @@ export function useArtifactCollaboration(artifact: TaskArtifact | null | undefin
               artifactId,
               document,
               seq,
-              previousContentJson: artifact?.content_json ?? null,
+              previousContentJson: artifactRef.current?.content_json ?? null,
+              previousContentText: artifactRef.current?.content_text ?? null,
             })
             setProjectionStatus(result.ok ? "projected" : "error")
           },
