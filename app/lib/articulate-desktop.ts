@@ -101,6 +101,7 @@ export type ArticulateDesktopApi = {
     reload: (id: string) => Promise<{ ok: boolean }>
     stop: (id: string) => Promise<{ ok: boolean }>
     getState: (id: string) => Promise<DesktopBrowserState | null>
+    capture?: (id: string) => Promise<{ dataUrl: string | null }>
     observe?: (id: string) => Promise<unknown>
     agentAction?: (
       id: string,

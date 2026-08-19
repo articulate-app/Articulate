@@ -1316,6 +1316,7 @@ export function TaskList({ onTaskSelect, expandMainTaskId, selectedTaskId, editF
     currentValue: any,
     intent: 'click' | 'hover' = 'click',
   ) => {
+    if (isMobile) return
     setEditingCell({ taskId, field })
     setEditingValue(String(currentValue || ''))
     setEditIntent(intent)
@@ -3944,6 +3945,7 @@ export function TaskList({ onTaskSelect, expandMainTaskId, selectedTaskId, editF
                 listColorMode={listColorModeForRows}
                 onListColorLegendChange={onListColorLegendChange}
                 compact={isCompact}
+                disableInlineEdit={isMobile}
               />
             </tbody>
           </table>
@@ -4036,6 +4038,7 @@ export function TaskList({ onTaskSelect, expandMainTaskId, selectedTaskId, editF
                 listColorMode={listColorModeForRows}
                 onListColorLegendChange={onListColorLegendChange}
                 compact={isCompact}
+                disableInlineEdit={isMobile}
               />
             </tbody>
           </table>

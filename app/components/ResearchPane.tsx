@@ -30,6 +30,8 @@ import {
 import { TASK_DETAILS_HEADER_ROW_CLASS } from "./tasks/pane-header-tokens"
 import { useKeywordListsApi } from "../store/keyword-lists-api"
 import { usePromptSearchHistory } from "../hooks/usePromptSearchHistory"
+import { useMobileDetection } from "../hooks/use-mobile-detection"
+import { MobileAppHeader } from "./ui/mobile-app-header"
 
 type ResearchScope = ResearchTab | "both"
 
@@ -101,6 +103,7 @@ export function ResearchPane({
   initialTab = null,
   onTabChange,
 }: ResearchPaneProps) {
+  const isMobile = useMobileDetection()
   const searchParams = useSearchParams()
   const seedQuery = useMemo(() => {
     const fromProp = initialQuery?.trim() || ""
@@ -362,25 +365,29 @@ export function ResearchPane({
 
   return (
     <div className={shellClass}>
-      <div className={cn(TASK_DETAILS_HEADER_ROW_CLASS, "sticky top-0 z-30")}>
-        <div className="flex min-w-0 flex-1 items-center gap-2">
-          <h1 className="min-w-0 truncate text-[13px] font-medium text-gray-800">
-            Research
-          </h1>
+      {variant === "overlay" && isMobile ? (
+        <MobileAppHeader onBack={onClose} title="Research" />
+      ) : (
+        <div className={cn(TASK_DETAILS_HEADER_ROW_CLASS, "sticky top-0 z-30")}>
+          <div className="flex min-w-0 flex-1 items-center gap-2">
+            <h1 className="min-w-0 truncate text-[13px] font-medium text-gray-800">
+              Research
+            </h1>
+          </div>
+          {variant === "overlay" ? (
+            <Button
+              type="button"
+              variant="ghost"
+              size="sm"
+              className="h-7 w-7 p-0 text-gray-600 hover:bg-gray-100 hover:text-gray-900"
+              onClick={onClose}
+              aria-label="Close"
+            >
+              <X className="h-4 w-4" />
+            </Button>
+          ) : null}
         </div>
-        {variant === "overlay" ? (
-          <Button
-            type="button"
-            variant="ghost"
-            size="sm"
-            className="h-7 w-7 p-0 text-gray-600 hover:bg-gray-100 hover:text-gray-900"
-            onClick={onClose}
-            aria-label="Close"
-          >
-            <X className="h-4 w-4" />
-          </Button>
-        ) : null}
-      </div>
+      )}
 
       <div className="relative z-20 overflow-visible px-4 pt-3 pb-0">
         <div className="grid grid-cols-[max-content_minmax(0,1fr)] items-start gap-x-6 gap-y-2">

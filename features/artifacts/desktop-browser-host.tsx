@@ -10,6 +10,7 @@ import {
   getArticulateDesktop,
   type DesktopBrowserBounds,
 } from "../../app/lib/articulate-desktop"
+import { clipDesktopBrowserBounds, readPaneTabBarRects } from "../../app/lib/desktop-browser-bounds"
 import {
   isBrowserSurfaceOverlayActive,
   subscribeBrowserSurfaceOverlay,
@@ -68,7 +69,10 @@ export function DesktopBrowserHost({
       rafRef.current = null
       const el = hostRef.current
       if (!el) return
-      const bounds = readBounds(el, surfaceVisible)
+      const bounds = clipDesktopBrowserBounds(
+        readBounds(el, surfaceVisible),
+        readPaneTabBarRects(),
+      )
       const key = `${bounds.x}|${bounds.y}|${bounds.width}|${bounds.height}|${bounds.visible}`
       if (key === lastSentRef.current) return
       lastSentRef.current = key

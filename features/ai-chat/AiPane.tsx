@@ -1342,18 +1342,20 @@ function AiPaneInner({ isOpen, onClose, onExpand, initialScope = 'global', proje
               </DropdownMenuContent>
             </DropdownMenu>
             
-            <button
-              type="button"
-              onClick={() => onExpand?.()}
-              className={PANE_CHROME_ICON_BUTTON_CLASS}
-              title={isExpanded ? "Collapse" : "Expand"}
-            >
-              {isExpanded ? (
-                <Minimize2 className={PANE_CHROME_ICON_CLASS} />
-              ) : (
-                <Maximize2 className={PANE_CHROME_ICON_CLASS} />
-              )}
-            </button>
+            {onExpand ? (
+              <button
+                type="button"
+                onClick={() => onExpand()}
+                className={PANE_CHROME_ICON_BUTTON_CLASS}
+                title={isExpanded ? "Collapse" : "Expand"}
+              >
+                {isExpanded ? (
+                  <Minimize2 className={PANE_CHROME_ICON_CLASS} />
+                ) : (
+                  <Maximize2 className={PANE_CHROME_ICON_CLASS} />
+                )}
+              </button>
+            ) : null}
             {onClose && (
               <button
                 type="button"
@@ -1534,18 +1536,20 @@ function AiPaneInner({ isOpen, onClose, onExpand, initialScope = 'global', proje
               </DropdownMenuContent>
             </DropdownMenu>
             
-            <button
-              type="button"
-              onClick={() => onExpand?.()}
-              className={PANE_CHROME_ICON_BUTTON_CLASS}
-              title={isExpanded ? "Collapse" : "Expand"}
-            >
-              {isExpanded ? (
-                <Minimize2 className={PANE_CHROME_ICON_CLASS} />
-              ) : (
-                <Maximize2 className={PANE_CHROME_ICON_CLASS} />
-              )}
-            </button>
+            {onExpand ? (
+              <button
+                type="button"
+                onClick={() => onExpand()}
+                className={PANE_CHROME_ICON_BUTTON_CLASS}
+                title={isExpanded ? "Collapse" : "Expand"}
+              >
+                {isExpanded ? (
+                  <Minimize2 className={PANE_CHROME_ICON_CLASS} />
+                ) : (
+                  <Maximize2 className={PANE_CHROME_ICON_CLASS} />
+                )}
+              </button>
+            ) : null}
             <button
               type="button"
               onClick={onClose}

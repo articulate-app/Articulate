@@ -7,6 +7,7 @@ import { brandKitForAiFromProject, collectBrandTemplateVisualRefs } from "../_sh
 import { BROWSER_ERROR_CODES, isBrowserControllerCommand } from "../_shared/browser-agent/controller.ts";
 import {
   actOnCloudInteractiveBrowser,
+  alignCloudInteractiveBrowser,
   openCloudInteractiveBrowser,
 } from "../_shared/browser-agent/interactive-session.ts";
 import {
@@ -4016,6 +4017,7 @@ async function executeBrowserTool(runtime: any) {
     }
     if (reuseSession && activeBrowserId) {
       try {
+        await alignCloudInteractiveBrowser(activeBrowserId);
         const acted = await actOnCloudInteractiveBrowser(activeBrowserId, {
           command: "navigate",
           url: startUrl,
@@ -4189,6 +4191,7 @@ async function executeBrowserTool(runtime: any) {
     }
 
     try {
+      await alignCloudInteractiveBrowser(browserId);
       const acted = await actOnCloudInteractiveBrowser(browserId, {
         command,
         url,

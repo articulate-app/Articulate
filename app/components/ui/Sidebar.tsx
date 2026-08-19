@@ -10,6 +10,7 @@ import { cn } from "@/lib/utils"
 import { invokeEdgeFunctionFetch } from "@/lib/edge-functions"
 import { createClientComponentClient } from '@supabase/auth-helpers-nextjs'
 import { useCallback, useEffect, useState } from "react"
+import { useBodyScrollLock } from "../../hooks/use-body-scroll-lock"
 import { useQuery, useQueryClient } from "@tanstack/react-query"
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "./dialog"
 import { Button } from "./button"
@@ -671,14 +672,13 @@ export function Sidebar({
     }
   };
 
-  // Mobile overlay/drawer styles. The drawer spans the full dynamic viewport height (`100dvh`) so it
-  // never feels cut off on mobile browsers whose URL bar changes the visible height. `100vh` fallback
-  // is implicit via the arbitrary value; the inner flex column (nav scrolls, footer pinned) handles
-  // internal scrolling.
+  useBodyScrollLock(isMobileMenuOpen)
+
+  // Mobile overlay/drawer. Width is capped to the viewport so a 256px rail never flashes mid-screen.
   const mobileOverlay =
-    'fixed inset-0 z-40 bg-black bg-opacity-40 flex md:hidden transition-opacity duration-200';
+    'fixed inset-0 z-[90] bg-black/40 md:hidden';
   const mobileSidebar =
-    'fixed left-0 top-0 z-50 bg-white w-64 shadow-lg p-4 h-[100dvh] min-h-[100dvh]';
+    'fixed left-0 top-0 z-50 flex h-dvh min-h-dvh w-[min(16rem,100vw)] max-w-full flex-col bg-white shadow-lg pt-[env(safe-area-inset-top)] pb-[env(safe-area-inset-bottom)]';
 
   const objectFeed = (
     <SidebarHomeFeed
@@ -703,6 +703,7 @@ export function Sidebar({
       onCreateAiChat={handleCreateAiChat}
       onSidebarToggle={onSidebarToggle}
       onOpenSearch={onOpenSearch}
+      hideBrandRow={isMobileMenuOpen}
     />
   )
 
@@ -711,16 +712,28 @@ export function Sidebar({
       {/* Mobile Sidebar Overlay */}
       {isMobileMenuOpen && (
         <div className={mobileOverlay}>
-          <div className={cn(mobileSidebar, "flex flex-col gap-2")}>
-            <button
-              onClick={onClose}
-              className="absolute top-2 right-2 p-2 rounded hover:bg-gray-100"
-              aria-label="Close sidebar"
-            >
-              <svg width="20" height="20" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
-            </button>
-            <div className="mt-8 min-h-0 flex-1 overflow-hidden">{objectFeed}</div>
-            {accountMenu}
+          <button
+            type="button"
+            aria-label="Close sidebar"
+            className="absolute inset-0"
+            onClick={onClose}
+          />
+          <div className={cn(mobileSidebar, "relative")}>
+            <div className="flex h-12 shrink-0 items-center justify-between gap-2 px-3">
+              <span className="min-w-0 truncate text-base font-semibold tracking-tight text-gray-900">
+                Articulate
+              </span>
+              <button
+                type="button"
+                onClick={onClose}
+                className="inline-flex h-10 w-10 shrink-0 items-center justify-center rounded-lg text-gray-700 hover:bg-gray-100"
+                aria-label="Close sidebar"
+              >
+                <svg width="20" height="20" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+              </button>
+            </div>
+            <div className="min-h-0 flex-1 overflow-hidden px-3">{objectFeed}</div>
+            <div className="shrink-0 px-3">{accountMenu}</div>
           </div>
         </div>
       )}

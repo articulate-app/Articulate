@@ -52,6 +52,7 @@ import { openArtifactCenterTab } from "../../../features/artifacts/open-artifact
 import { UserAvatar } from "../UserAvatar"
 
 export const OPEN_HEADER_CREATE_EVENT = "app:open-header-create"
+export const OPEN_GLOBAL_SEARCH_EVENT = "app:open-global-search"
 export const TOGGLE_AI_PANE_EVENT = "app:toggle-ai-pane"
 export const TOGGLE_RESEARCH_EVENT = "app:toggle-research"
 export const OPEN_RESEARCH_EVENT = "app:open-research"
@@ -435,6 +436,7 @@ export function SidebarHomeFeed({
   onCreateAiChat,
   onSidebarToggle,
   onOpenSearch,
+  hideBrandRow = false,
 }: {
   showExpandedChrome: boolean
   isObjectActive: (object: SearchObjectRoute) => boolean
@@ -451,6 +453,8 @@ export function SidebarHomeFeed({
   onCreateAiChat: () => void
   onSidebarToggle?: () => void
   onOpenSearch?: () => void
+  /** Overlay drawer already owns the brand + close row. */
+  hideBrandRow?: boolean
 }) {
   const scrollRef = useRef<HTMLDivElement | null>(null)
   const supabase = useMemo(() => createClientComponentClient(), [])
@@ -884,22 +888,24 @@ export function SidebarHomeFeed({
   )
 
   const brandAndSearch = showExpandedChrome ? (
-    <div className="space-y-2 px-1 pb-2 pt-3">
-      <div className="flex items-center gap-2 px-1">
-        {onSidebarToggle ? (
-          <button
-            type="button"
-            onClick={onSidebarToggle}
-            className="inline-flex h-9 w-9 shrink-0 items-center justify-center rounded-md text-gray-700 hover:bg-gray-100"
-            aria-label="Toggle sidebar"
-          >
-            <Menu className="h-5 w-5" />
-          </button>
-        ) : null}
-        <span className="min-w-0 flex-1 truncate text-base font-semibold tracking-tight text-gray-900">
-          Articulate
-        </span>
-      </div>
+    <div className={cn("space-y-2 px-1 pb-2", hideBrandRow ? "pt-1" : "pt-3")}>
+      {hideBrandRow ? null : (
+        <div className="flex items-center gap-2 px-1">
+          {onSidebarToggle ? (
+            <button
+              type="button"
+              onClick={onSidebarToggle}
+              className="inline-flex h-9 w-9 shrink-0 items-center justify-center rounded-md text-gray-700 hover:bg-gray-100"
+              aria-label="Toggle sidebar"
+            >
+              <Menu className="h-5 w-5" />
+            </button>
+          ) : null}
+          <span className="min-w-0 flex-1 truncate text-base font-semibold tracking-tight text-gray-900">
+            Articulate
+          </span>
+        </div>
+      )}
       <NavRow icon={Search} label="Search" onClick={() => onOpenSearch?.()} />
     </div>
   ) : (

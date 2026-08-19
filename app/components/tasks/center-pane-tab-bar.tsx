@@ -96,7 +96,7 @@ export function CenterPaneTabBar({
   const showTabMenu = tabs.length > 0 || Boolean(onOpenActiveInOtherPane)
 
   return (
-    <div className={`${AI_PANE_TAB_ROW_CLASS} shrink-0`}>
+    <div className={`${AI_PANE_TAB_ROW_CLASS} shrink-0`} data-pane-tab-bar="">
       <div className="flex min-h-0 min-w-0 flex-1 items-stretch">
         {tabs.length > 0 || onDropTabFromOtherPane || onReorderTab ? (
           <PaneTabStrip

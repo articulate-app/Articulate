@@ -87,6 +87,9 @@ const articulateDesktop = {
     getState(id: string): Promise<DesktopBrowserState | null> {
       return invoke(IPC.BROWSER_GET_STATE, { id })
     },
+    capture(id: string): Promise<{ dataUrl: string | null }> {
+      return invoke(IPC.BROWSER_CAPTURE, { id })
+    },
     observe(id: string): Promise<unknown> {
       return invoke(IPC.BROWSER_OBSERVE, { id })
     },

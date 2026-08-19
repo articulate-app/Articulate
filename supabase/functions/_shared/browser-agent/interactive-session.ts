@@ -13,7 +13,13 @@ import {
 } from "./controller.ts"
 import type { BrowserAgentProvider } from "./types.ts"
 
-const DESKTOP_SCREEN = { width: 1440, height: 900 }
+/**
+ * Match Browser Use Live View (documented 16:9 embed).
+ * A 16:10 window (1440×900) is letterboxed inside that player.
+ * Always pair this with alignBrowserViewport so device-metrics
+ * overrides cannot pin the page to the top half of the capture.
+ */
+const CLOUD_LIVE_VIEW_SCREEN = { width: 1920, height: 1080 }
 
 export function isCloudBrowserConfigured(): boolean {
   return Boolean(String(Deno.env.get("BROWSER_USE_API_KEY") ?? "").trim())
@@ -58,17 +64,41 @@ export async function openCloudInteractiveBrowser(args: {
   const browser = await provider.createBrowser({
     startUrl: args.startUrl,
     timeoutMinutes: 90,
-    screen: DESKTOP_SCREEN,
+    screen: CLOUD_LIVE_VIEW_SCREEN,
+  })
+  const aligned = await provider.alignBrowserViewport({
+    browserId: browser.id,
+    screen: CLOUD_LIVE_VIEW_SCREEN,
   })
   return {
     ok: true,
-    browser_id: browser.id,
-    live_view_url: browser.liveViewUrl ?? null,
+    browser_id: aligned.browserId ?? browser.id,
+    live_view_url: aligned.liveViewUrl ?? browser.liveViewUrl ?? null,
     start_url: args.startUrl,
     current_url: args.startUrl,
     status: browser.status || "active",
     error_code: null,
     error: null,
+  }
+}
+
+export async function alignCloudInteractiveBrowser(browserId: string): Promise<{
+  resized: boolean
+  live_view_url: string | null
+  browser_id: string | null
+}> {
+  const provider = createCloudInteractiveProvider()
+  if (!provider) {
+    return { resized: false, live_view_url: null, browser_id: browserId }
+  }
+  const aligned = await provider.alignBrowserViewport({
+    browserId,
+    screen: CLOUD_LIVE_VIEW_SCREEN,
+  })
+  return {
+    resized: aligned.resized,
+    live_view_url: aligned.liveViewUrl ?? null,
+    browser_id: aligned.browserId ?? browserId,
   }
 }
 

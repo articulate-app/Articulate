@@ -1,6 +1,6 @@
 "use client";
 
-import React, { useEffect, useState } from 'react';
+import React from 'react';
 import { ChevronLeft } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { TaskDetails } from './TaskDetails';
@@ -47,16 +47,7 @@ export function MobileTaskDetail({
   onAddSubtask,
   mode = "task",
 }: MobileTaskDetailProps) {
-  const [mounted, setMounted] = useState(false);
   const isSuggestionMode = mode === "suggestion";
-
-  useEffect(() => {
-    setMounted(true);
-  }, []);
-
-  if (!mounted) {
-    return null;
-  }
 
   // In suggestion mode the suggestion object is already adapted for TaskDetails (and may briefly be
   // null while loading). Render the detail shell rather than the "No task selected" empty state so a
@@ -87,16 +78,12 @@ export function MobileTaskDetail({
 
   return (
     <div className={cn(
-      "flex flex-col h-full bg-white absolute inset-0 z-50",
-      "md:hidden", // Only show on mobile
+      "flex h-full min-h-0 flex-col bg-white",
       className
     )}>
-      {/* TaskDetails renders its own mobile header (back + title + "..." overflow menu) via
-          onMobileBack, so the wrapper no longer adds a second header (avoids a duplicate title). */}
-      <div className="flex-1 overflow-y-auto">
+      <div className="min-h-0 flex-1 overflow-y-auto">
         <TaskDetails
           isCollapsed={false}
-          // Suggestion payloads are already shaped for TaskDetails; only adapt real tasks.
           selectedTask={isSuggestionMode ? (task as any) : (task ? adaptTaskForTaskDetails(task) : null)}
           onClose={onBack}
           onCollapse={onBack}

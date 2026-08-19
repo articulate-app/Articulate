@@ -137,7 +137,7 @@ export function WorkspacePageSearchInput({
           autoComplete="off"
           inputMode="search"
           spellCheck={false}
-          className="h-full w-full min-w-0 bg-transparent px-2.5 pr-3 text-sm font-medium text-gray-900 outline-none placeholder:text-gray-400"
+          className="h-full w-full min-w-0 bg-transparent px-2.5 pr-3 text-base font-medium text-gray-900 outline-none placeholder:text-gray-400 md:text-sm"
         />
       </label>
     )
@@ -157,7 +157,7 @@ export function WorkspacePageSearchInput({
         placeholder={placeholder}
         autoFocus={autoFocus}
         autoComplete="off"
-        className="h-10 w-full rounded-md border border-gray-200 bg-white py-2 pl-3 pr-3 text-sm focus:outline-none focus:ring-2 focus:ring-gray-200"
+        className="h-10 w-full rounded-md border border-gray-200 bg-white py-2 pl-3 pr-3 text-base focus:outline-none focus:ring-2 focus:ring-gray-200 md:text-sm"
       />
     </div>
   )

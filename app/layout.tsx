@@ -1,4 +1,4 @@
-import type { Metadata } from 'next';
+import type { Metadata, Viewport } from 'next';
 import { Inter } from 'next/font/google';
 import './globals.css';
 import { ClientProviders } from './components/providers/client-providers';
@@ -20,6 +20,13 @@ export const metadata: Metadata = {
     shortcut: ['/brand-mark.png'],
     apple: [{ url: '/brand-mark.png', type: 'image/png' }],
   },
+};
+
+export const viewport: Viewport = {
+  width: 'device-width',
+  initialScale: 1,
+  viewportFit: 'cover',
+  interactiveWidget: 'resizes-content',
 };
 
 export default function RootLayout({

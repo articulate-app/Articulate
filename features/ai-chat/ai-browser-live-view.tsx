@@ -2,15 +2,21 @@
 
 import { useEffect, useRef, useState } from "react"
 import {
-  BROWSER_USE_SCREEN_HEIGHT,
-  BROWSER_USE_SCREEN_WIDTH,
+  CLOUD_LIVE_VIEW_SCREEN_HEIGHT,
+  CLOUD_LIVE_VIEW_SCREEN_WIDTH,
+  LIVE_VIEW_STREAM_HEIGHT,
+  LIVE_VIEW_STREAM_WIDTH,
   liveViewCoverLayout,
   withLiveViewEmbedParams,
 } from "../../app/lib/publishing/browser-viewport"
+import { alignBrowserViewport } from "../../app/lib/services/agentic-publishing"
 import { cn } from "../../app/lib/utils"
+
+const alignedCloudBrowsers = new Set<string>()
 
 export function AiBrowserLiveView(props: {
   liveViewUrl: string
+  browserId?: string | null
   title?: string | null
   interactive?: boolean
   className?: string
@@ -37,13 +43,29 @@ export function AiBrowserLiveView(props: {
     return () => observer.disconnect()
   }, [])
 
+  useEffect(() => {
+    const browserId = String(props.browserId ?? "").trim()
+    if (!browserId || alignedCloudBrowsers.has(browserId)) return
+    alignedCloudBrowsers.add(browserId)
+    void alignBrowserViewport({
+      browserId,
+      browserViewport: {
+        width: CLOUD_LIVE_VIEW_SCREEN_WIDTH,
+        height: CLOUD_LIVE_VIEW_SCREEN_HEIGHT,
+      },
+    }).catch(() => {
+      alignedCloudBrowsers.delete(browserId)
+    })
+  }, [props.browserId])
+
   const layout =
     host.width > 0 && host.height > 0
       ? liveViewCoverLayout({
           hostWidth: host.width,
           hostHeight: host.height,
-          remoteWidth: BROWSER_USE_SCREEN_WIDTH,
-          remoteHeight: BROWSER_USE_SCREEN_HEIGHT,
+          remoteWidth: LIVE_VIEW_STREAM_WIDTH,
+          remoteHeight: LIVE_VIEW_STREAM_HEIGHT,
+          verticalAlign: "top",
         })
       : null
 
@@ -66,7 +88,7 @@ export function AiBrowserLiveView(props: {
             left: layout?.left ?? 0,
             top: layout?.top ?? 0,
           }}
-          allow="clipboard-read; clipboard-write; fullscreen"
+          allow="autoplay; clipboard-read; clipboard-write; fullscreen"
         />
       ) : null}
     </div>

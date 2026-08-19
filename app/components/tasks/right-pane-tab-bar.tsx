@@ -180,7 +180,7 @@ export function RightPaneTabBar({
         : activeKey
 
   return (
-    <div className={`${AI_PANE_TAB_ROW_CLASS} shrink-0`}>
+    <div className={`${AI_PANE_TAB_ROW_CLASS} shrink-0`} data-pane-tab-bar="">
       <div className="flex min-h-0 min-w-0 flex-1 items-stretch">
         <PaneTabStrip
           tabs={items}

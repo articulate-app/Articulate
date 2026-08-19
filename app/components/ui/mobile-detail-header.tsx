@@ -1,7 +1,7 @@
 "use client"
 
 import * as React from "react"
-import { ChevronLeft, MoreHorizontal } from "lucide-react"
+import { MoreHorizontal } from "lucide-react"
 import { cn } from "@/lib/utils"
 import {
   DropdownMenu,
@@ -10,6 +10,7 @@ import {
   DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from "./dropdown-menu"
+import { MobileAppHeader } from "./mobile-app-header"
 
 /**
  * A single action surfaced in a mobile detail view's top-right overflow ("...") menu. Actions reuse
@@ -104,29 +105,19 @@ export function MobileDetailHeader({
   className?: string
 }) {
   return (
-    <header
-      className={cn(
-        "sticky top-0 z-10 flex min-h-12 shrink-0 items-center gap-1 border-b border-gray-200 bg-white px-2 py-1",
-        className,
-      )}
-    >
-      {onBack ? (
-        <button
-          type="button"
-          onClick={onBack}
-          aria-label={backLabel}
-          className="inline-flex h-9 w-9 shrink-0 items-center justify-center rounded-lg text-gray-600 transition hover:bg-gray-100 focus:outline-none focus:ring-2 focus:ring-blue-500"
-        >
-          <ChevronLeft className="h-5 w-5" />
-        </button>
-      ) : null}
-      {leadingSlot ? <div className="shrink-0">{leadingSlot}</div> : null}
-      <div className="min-w-0 flex-1 px-1">
-        <h1 className="truncate text-sm font-semibold text-gray-900">{title}</h1>
-        {subtitle ? <div className="truncate text-xs text-gray-500">{subtitle}</div> : null}
-      </div>
-      {rightSlot}
-      <ObjectActionsOverflow actions={actions} />
-    </header>
+    <MobileAppHeader
+      onBack={onBack}
+      backLabel={backLabel}
+      title={title}
+      subtitle={subtitle}
+      leadingExtra={leadingSlot}
+      actions={
+        <>
+          {rightSlot}
+          <ObjectActionsOverflow actions={actions} />
+        </>
+      }
+      className={className}
+    />
   )
 }

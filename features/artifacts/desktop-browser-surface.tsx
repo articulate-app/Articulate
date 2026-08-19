@@ -36,6 +36,8 @@ export type DesktopBrowserSurfaceProps = {
   className?: string
   active?: boolean
   variant?: "full" | "preview"
+  /** Snapshot stays in the HTML scroll flow. Live attaches the native view. */
+  display?: "live" | "snapshot"
   ownerId?: string | null
   priority?: number
   initialUrl?: string | null
@@ -58,6 +60,7 @@ export function DesktopBrowserSurface({
   className,
   active = true,
   variant = "full",
+  display = "live",
   ownerId = null,
   priority = 1,
   initialUrl,
@@ -77,7 +80,11 @@ export function DesktopBrowserSurface({
     agentGeneration: 0,
   })
   const [overlayActive, setOverlayActive] = useState(isBrowserSurfaceOverlayActive)
+  const [snapshotSrc, setSnapshotSrc] = useState<string | null>(null)
+  const isSnapshot = display === "snapshot"
   const createdRef = useRef(false)
+  const isSnapshotRef = useRef(isSnapshot)
+  isSnapshotRef.current = isSnapshot
   const initialUrlRef = useRef(initialUrl)
   initialUrlRef.current = initialUrl
   const onNavigationRef = useRef(onNavigation)
@@ -126,7 +133,7 @@ export function DesktopBrowserSurface({
           if (!cancelled) {
             setState(existing)
             setUrlDraftSync(existing.url)
-            await desktop.browser.show(browserId)
+            if (!isSnapshotRef.current) await desktop.browser.show(browserId)
           }
         } else if (!createdRef.current) {
           const start =
@@ -137,7 +144,7 @@ export function DesktopBrowserSurface({
           if (cancelled) return
           setState(created)
           setUrlDraftSync(created.url)
-        } else {
+        } else if (!isSnapshotRef.current) {
           await desktop.browser.show(browserId)
         }
         if (!cancelled) {
@@ -216,9 +223,33 @@ export function DesktopBrowserSurface({
   useEffect(() => {
     const desktop = getArticulateDesktop()
     if (!desktop || !ready || !isOwner) return
-    if (active && !overlayActive) void desktop.browser.show(browserId)
+    if (active && !overlayActive && !isSnapshot) void desktop.browser.show(browserId)
     else void desktop.browser.hide(browserId)
-  }, [active, browserId, ready, overlayActive, isOwner])
+  }, [active, browserId, ready, overlayActive, isOwner, isSnapshot])
+
+  useEffect(() => {
+    if (!isSnapshot || !ready) return
+    const desktop = getArticulateDesktop()
+    const capture = desktop?.browser.capture
+    if (!capture) return
+    let cancelled = false
+    const tick = async () => {
+      try {
+        const next = await capture(browserId)
+        if (!cancelled && next?.dataUrl) setSnapshotSrc(next.dataUrl)
+      } catch {
+        // Older Desktop builds may not expose capture.
+      }
+    }
+    void tick()
+    const timer = window.setInterval(() => {
+      void tick()
+    }, 1500)
+    return () => {
+      cancelled = true
+      window.clearInterval(timer)
+    }
+  }, [isSnapshot, ready, browserId])
 
   if (!isArticulateDesktopAvailable()) {
     return (
@@ -260,6 +291,23 @@ export function DesktopBrowserSurface({
   )
 
   if (variant === "preview") {
+    if (isSnapshot) {
+      return (
+        <div className={cn("relative h-full w-full overflow-hidden bg-white", className)}>
+          {snapshotSrc ? (
+            <img
+              src={snapshotSrc}
+              alt=""
+              className="h-full w-full object-cover object-top"
+            />
+          ) : (
+            <div className="flex h-full items-center justify-center px-4 text-center text-xs text-gray-400">
+              {state?.title || state?.url || "Opening browser…"}
+            </div>
+          )}
+        </div>
+      )
+    }
     return (
       <div className={cn("flex h-full min-h-0 w-full flex-col bg-transparent", className)}>
         {host}

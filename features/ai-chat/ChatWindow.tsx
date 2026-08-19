@@ -4064,7 +4064,7 @@ export function ChatWindow({
                 </div>
               </div>
             ) : (
-              <div className="flex min-h-full flex-1 flex-col justify-center">
+              <div className="flex min-h-full flex-1 flex-col justify-end md:justify-center">
                 {composerBody}
               </div>
             )}

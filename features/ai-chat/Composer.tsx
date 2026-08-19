@@ -2817,7 +2817,7 @@ export function Composer({
             contentEditable
             suppressContentEditableWarning
             data-placeholder="Ask anything, or use @…"
-            className="ai-chat-composer-input relative min-h-[80px] max-h-[400px] w-full min-w-0 overflow-y-auto break-words border-0 p-1 text-sm outline-none empty:before:pointer-events-none empty:before:text-gray-400 empty:before:content-[attr(data-placeholder)]"
+            className="ai-chat-composer-input relative min-h-[80px] max-h-[400px] w-full min-w-0 overflow-y-auto break-words border-0 p-1 text-base outline-none empty:before:pointer-events-none empty:before:text-gray-400 empty:before:content-[attr(data-placeholder)] md:text-sm"
             onInput={onEditorInput}
             onPaste={onEditorPaste}
             onKeyDown={onEditorKeyDown}

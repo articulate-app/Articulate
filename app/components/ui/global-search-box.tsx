@@ -1,7 +1,7 @@
 "use client"
 
 import React from "react"
-import { Filter, Search, X } from "lucide-react"
+import { ListFilter, Search, X } from "lucide-react"
 import { cn } from "@/lib/utils"
 import { IconTooltip } from "./icon-tooltip"
 import { GlobalSearchPreviewPanel } from "../search/global-search-preview-panel"
@@ -160,7 +160,7 @@ export function GlobalSearchBox({
             className="absolute right-2 top-1/2 -translate-y-1/2 text-gray-400 hover:text-gray-600 focus:outline-none"
             tabIndex={0}
           >
-            <Filter className="h-5 w-5" />
+            <ListFilter className="h-5 w-5" strokeWidth={1.75} />
           </button>
         </IconTooltip>
       ) : null}

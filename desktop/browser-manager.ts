@@ -453,6 +453,20 @@ export class DesktopBrowserManager {
     return true
   }
 
+  async capture(id: string): Promise<string | null> {
+    const entry = this.browsers.get(id)
+    if (!entry) return null
+    try {
+      const image = await entry.view.webContents.capturePage()
+      if (image.isEmpty()) return null
+      const width = image.getSize().width
+      const resized = width > 960 ? image.resize({ width: 960 }) : image
+      return `data:image/jpeg;base64,${resized.toJPEG(72).toString("base64")}`
+    } catch {
+      return null
+    }
+  }
+
   getState(id: string): DesktopBrowserState | null {
     const entry = this.browsers.get(id)
     if (!entry) return null

@@ -3,6 +3,8 @@
 import * as React from "react"
 import { createPortal } from "react-dom"
 import { cn } from "@/lib/utils"
+import { useBodyScrollLock } from "../../hooks/use-body-scroll-lock"
+import { MobileAppHeader } from "./mobile-app-header"
 
 interface MobileFullScreenSheetProps {
   open: boolean
@@ -11,6 +13,10 @@ interface MobileFullScreenSheetProps {
   className?: string
   /** Accessible label for the full-screen panel */
   ariaLabel?: string
+  /** Optional title shown in the shared mobile chrome. */
+  title?: React.ReactNode
+  /** When false, the sheet is a raw overlay (caller supplies chrome). Default true. */
+  showAppHeader?: boolean
 }
 
 /**
@@ -23,6 +29,8 @@ export function MobileFullScreenSheet({
   children,
   className,
   ariaLabel = "Panel",
+  title,
+  showAppHeader = true,
 }: MobileFullScreenSheetProps) {
   const [mounted, setMounted] = React.useState(false)
 
@@ -30,14 +38,7 @@ export function MobileFullScreenSheet({
     setMounted(true)
   }, [])
 
-  React.useEffect(() => {
-    if (!open) return
-    const previousOverflow = document.body.style.overflow
-    document.body.style.overflow = "hidden"
-    return () => {
-      document.body.style.overflow = previousOverflow
-    }
-  }, [open])
+  useBodyScrollLock(open)
 
   React.useEffect(() => {
     if (!open || !onOpenChange) return
@@ -58,10 +59,17 @@ export function MobileFullScreenSheet({
       className={cn(
         "fixed inset-0 z-[80] flex flex-col bg-white",
         "h-dvh min-h-dvh max-h-dvh",
+        "pt-[env(safe-area-inset-top)] pb-[env(safe-area-inset-bottom)]",
         className,
       )}
     >
-      {children}
+      {showAppHeader ? (
+        <MobileAppHeader
+          onBack={onOpenChange ? () => onOpenChange(false) : undefined}
+          title={title ?? ariaLabel}
+        />
+      ) : null}
+      <div className="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden">{children}</div>
     </div>,
     document.body,
   )

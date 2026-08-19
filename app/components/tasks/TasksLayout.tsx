@@ -82,6 +82,8 @@ import { MobileObjectOptionsDrawer } from './mobile-object-options-drawer';
 import { MobileVerticalSplitLayout } from './mobile-vertical-split-layout';
 import { MobileTasksPaneContent } from './mobile-tasks-pane-content';
 import { MobileGlobalHeaderActions } from '../ui/mobile-global-header-actions';
+import { MobileAppHeader } from '../ui/mobile-app-header';
+import { MobileTaskListToolbar } from './mobile-task-list-toolbar';
 import { TaskFilters } from './TaskFilters';
 import { ResearchPane } from '../ResearchPane';
 import { ArtifactPane } from '../../../features/artifacts/ArtifactPane';
@@ -147,6 +149,7 @@ import {
   type ResearchTab,
 } from "../../lib/center-pane-selection-url";
 import {
+  OPEN_GLOBAL_SEARCH_EVENT,
   OPEN_HEADER_CREATE_EVENT,
   OPEN_KEYWORD_RESEARCH_EVENT,
   OPEN_PROMPT_RESEARCH_EVENT,
@@ -4230,6 +4233,14 @@ export function TasksLayout({
       shallowReplaceUrl(`${effectivePathname}?${next.toString()}`)
       dispatchTasksShallowNavigation()
     }
+    const showMobileTaskDetail =
+      isLeftObjectTasks &&
+      mobileTaskDetailOpen &&
+      (isSuggestionDetailSelection ? !!selectedTaskId : !!selectedTaskData)
+    const showMobileDetail = Boolean(mobileObjectDetailTarget) || showMobileTaskDetail
+    const mobileDetailTitle = mobileObjectDetailTarget
+      ? "Details"
+      : ((selectedTaskData as { title?: string } | null)?.title || "Task")
     const renderMobileTasksPane = (view: MobileViewMode, splitBottom = false) => (
       <MobileTasksPaneContent
         variant={splitBottom ? "split-bottom" : "default"}
@@ -4256,8 +4267,86 @@ export function TasksLayout({
       />
     )
     return (
-      <div className="flex h-dvh min-h-0 w-full flex-col bg-white">
-        {/* Mobile Content */}
+      <div className="flex h-dvh min-h-0 w-full flex-col overflow-x-clip bg-white">
+        <MobileAppHeader
+          onBack={mobileObjectDetailTarget ? handleCloseDetails : undefined}
+          onCreate={showMobileDetail ? undefined : () => setMobileCreateOpen(true)}
+          title={mobileObjectDetailTarget ? mobileDetailTitle : undefined}
+          center={
+            showMobileDetail ? undefined : (
+              <div className="flex min-w-0 flex-1 items-baseline justify-center gap-2 px-1">
+                <LeftObjectSwitcher
+                  value={leftObject}
+                  onChange={navigateToLeftObject}
+                  className="h-7 px-2.5 text-xs font-normal"
+                  forceCompact
+                />
+              </div>
+            )
+          }
+          actions={
+            <MobileGlobalHeaderActions
+              onOpenAiPane={() => handleTaskAiPaneOpenChange(true)}
+              onOpenKeywordResearch={() => setIsResearchOpen(true)}
+              onOpenMoreOptions={() => setMobileOptionsOpen(true)}
+              isKeywordResearchOpen={isResearchOpen}
+            />
+          }
+        />
+        {!showMobileDetail ? (
+          <>
+            <button
+              type="button"
+              onClick={() => window.dispatchEvent(new Event(OPEN_GLOBAL_SEARCH_EVENT))}
+              className="mx-3 mb-2 flex h-10 shrink-0 items-center gap-2 rounded-md border border-gray-200 bg-white px-3 text-left"
+              aria-label="Open search"
+            >
+              <Search className="h-4 w-4 shrink-0 text-gray-400" />
+              <span
+                className={cn(
+                  "min-w-0 flex-1 truncate text-base",
+                  globalSearch?.committedQuery ? "text-gray-900" : "text-gray-400",
+                )}
+              >
+                {globalSearch?.committedQuery || "Search all"}
+              </span>
+            </button>
+            {isLeftObjectTasks ? (
+              <MobileTaskListToolbar
+                filters={filters}
+                setFilters={setFilters}
+                commitFilters={commitFilters}
+                viewMode={mobileView}
+                onViewChange={handleMobileViewChange}
+                editFields={memoizedEditFields}
+                filterOptions={mergedListFilterOptions}
+                router={router}
+                pathname={pathname}
+                params={new URLSearchParams(params.toString())}
+              />
+            ) : null}
+            {isLeftObjectTasks && mobileView === "list"
+              ? (() => {
+                  const { badges, onClearAll } = getActiveFilterBadges(
+                    filters,
+                    setFilters,
+                    router,
+                    pathname,
+                    new URLSearchParams(params.toString()),
+                    mergedListFilterOptions,
+                  )
+                  if (badges.length === 0) return null
+                  return (
+                    <FilterBadges
+                      badges={badges}
+                      onClearAll={onClearAll}
+                      className="mt-1 mb-2 px-4 shrink-0"
+                    />
+                  )
+                })()
+              : null}
+          </>
+        ) : null}
         <div className="flex min-h-0 flex-1 flex-col overflow-hidden">
           {mobileObjectDetailTarget ? (
             <div className="h-full overflow-auto">
@@ -4272,7 +4361,7 @@ export function TasksLayout({
                 onResolvedTitle={handleCenterPaneResolvedTitle}
               />
             </div>
-          ) : isLeftObjectTasks && mobileTaskDetailOpen && (isSuggestionDetailSelection ? !!selectedTaskId : !!selectedTaskData) ? (
+          ) : showMobileTaskDetail ? (
             <MobileTaskDetail
               task={isSuggestionDetailSelection ? (selectedSuggestionAsTask as any) : selectedTaskData}
               mode={isSuggestionDetailSelection ? "suggestion" : "task"}
@@ -4280,144 +4369,39 @@ export function TasksLayout({
               onTaskUpdate={onTaskUpdate}
               onAddSubtask={onAddSubtask}
             />
-          ) : (
-            <div className="h-full flex flex-col">
-                                                                  {/* Mobile Task List Header */}
-                         <div className="flex items-center justify-between p-4 bg-white">
-                           <div className="flex items-center gap-1">
-                             <button
-                               onClick={effectiveOnSidebarToggle}
-                               className="inline-flex items-center justify-center w-8 h-8 text-gray-600 hover:bg-gray-100 rounded-md transition"
-                               aria-label="Toggle sidebar"
-                             >
-                               <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                 <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 6h16M4 12h16M4 18h16" />
-                               </svg>
-                             </button>
-                             <button
-                               type="button"
-                               onClick={() => setMobileCreateOpen(true)}
-                               className="inline-flex items-center justify-center w-8 h-8 text-gray-600 hover:bg-gray-100 rounded-md transition"
-                               aria-label="Create"
-                             >
-                               <Plus className="w-5 h-5" />
-                             </button>
-                           </div>
-                           
-                           {/* Object heading/switcher — stays in the same position across object types.
-                               View mode, group by, filters, AI suggestions, etc. live in the "..." drawer
-                               so they never crowd the header. */}
-                           <div className="flex min-w-0 flex-1 items-baseline justify-center gap-2 px-2">
-                             <LeftObjectSwitcher
-                               value={leftObject}
-                              onChange={navigateToLeftObject}
-                               className="h-7 px-2.5 text-xs font-normal"
-                               forceCompact
-                             />
-                           </div>
-
-                          <MobileGlobalHeaderActions
-                            onOpenAiPane={() => handleTaskAiPaneOpenChange(true)}
-                            onOpenKeywordResearch={() => setIsResearchOpen(true)}
-                            onOpenMoreOptions={() => setMobileOptionsOpen(true)}
-                            isKeywordResearchOpen={isResearchOpen}
-                          />
-                         </div>
-
-                           {/* Mobile global search — reuses the exact desktop GlobalSearchBox (same q/committed
-                               state, preview results, and result selection) for every object type. On tasks,
-                               the inline filter icon opens the same Filter Tasks sheet as "..." > Filters;
-                               other view/group controls stay in the options drawer. */}
-                           {globalSearch ? (
-                           <div className="px-4 py-3 bg-white">
-                             <GlobalSearchBox
-                               searchValue={globalSearch.committedQuery}
-                               onSearchChange={globalSearch.setDraftQuery}
-                               onSearchCommit={(value) => globalSearch.commitSearch({ nextQuery: value })}
-                               onClearSearch={globalSearch.clearSearch}
-                               isSearchOpen={globalSearch.isOpen}
-                               onSearchOpenChange={globalSearch.setIsOpen}
-                               selectedTypeFilters={globalSearch.pendingSelectedTypes}
-                               onToggleTypeFilter={globalSearch.togglePendingTypeFilter}
-                               onPreviewResultSelect={globalSearch.openSearchResult}
-                               onShowAll={globalSearch.handleShowAll}
-                               onFilterClick={
-                                 isLeftObjectTasks
-                                   ? () => {
-                                       globalSearch.setIsOpen(false)
-                                       handleMobileFilterClick()
-                                     }
-                                   : undefined
-                               }
-                               enableShortcut={false}
-                               placeholder="Search all"
-                             />
-                           </div>
-                           ) : null}
-
-                           {/* Active filter badges (controls themselves now live in the "..." drawer to keep
-                               the header title stable and avoid duplicating toolbar controls in the header). */}
-                           {isLeftObjectTasks && mobileView === 'list' && (
-                             (() => {
-                               const { badges, onClearAll } = getActiveFilterBadges(
-                                 filters,
-                                 setFilters,
-                                 router,
-                                 pathname,
-                                 new URLSearchParams(params.toString()),
-                                 mergedListFilterOptions
-                               );
-                               if (badges.length === 0) return null;
-                               return (
-                                 <FilterBadges
-                                   badges={badges}
-                                   onClearAll={onClearAll}
-                                   className="mt-1 mb-2 px-4 shrink-0"
-                                 />
-                               );
-                             })()
-                           )}
-
-              {/* Mobile View Content — `object` URL param is the source of truth. `all` renders the desktop
-                  mixed-results pane (so it never falls back to the AI-chats tab/empty state); other non-task
-                  objects render the shared per-entity full-results pane. */}
-              <div className="flex min-h-0 flex-1 flex-col overflow-hidden">
-                {!isLeftObjectTasks ? (
-                  <div className="h-full min-h-0 overflow-hidden">
-                    {globalSearch ? (
-                      <GlobalSearchFullResultsPane
-                        query={globalSearch.committedQuery}
-                        activeTab={leftObjectSearchTab}
-                        viewScope={effectiveObjectRoute}
-                        onResultSelect={globalSearch.openSearchResult}
-                        getQueryKey={globalSearch.getFullResultsQueryKey}
-                        fetchPage={globalSearch.fetchFullResultsPage}
-                      />
-                    ) : (
-                      <div className="flex h-full items-center justify-center px-4 text-xs text-gray-500">
-                        Unable to load {leftPaneObjectLabel(leftObject).toLowerCase()}.
-                      </div>
-                    )}
-                  </div>
-                ) : mobileTaskSplitActive && secondaryPaneView ? (
-                  <MobileVerticalSplitLayout
-                    className="min-h-0 flex-1"
-                    initialTopPercent={mobileSplitTopPercentRef.current}
-                    onTopPercentChange={(topPercent) => {
-                      mobileSplitTopPercentRef.current = topPercent
-                    }}
-                    top={renderMobileTasksPane(primaryView as MobileViewMode)}
-                    bottom={
-                      <div key={secondaryPaneView} className="flex min-h-0 flex-1 flex-col overflow-hidden">
-                        {renderMobileTasksPane(secondaryPaneView as MobileViewMode, true)}
-                      </div>
-                    }
-                  />
-                ) : (
-                  renderMobileTasksPane(mobileView)
-                )}
-              </div>
+          ) : !isLeftObjectTasks ? (
+            <div className="h-full min-h-0 overflow-hidden">
+              {globalSearch ? (
+                <GlobalSearchFullResultsPane
+                  query={globalSearch.committedQuery}
+                  activeTab={leftObjectSearchTab}
+                  viewScope={effectiveObjectRoute}
+                  onResultSelect={globalSearch.openSearchResult}
+                  getQueryKey={globalSearch.getFullResultsQueryKey}
+                  fetchPage={globalSearch.fetchFullResultsPage}
+                />
+              ) : (
+                <div className="flex h-full items-center justify-center px-4 text-xs text-gray-500">
+                  Unable to load {leftPaneObjectLabel(leftObject).toLowerCase()}.
+                </div>
+              )}
             </div>
+          ) : mobileTaskSplitActive && secondaryPaneView ? (
+            <MobileVerticalSplitLayout
+              className="min-h-0 flex-1"
+              initialTopPercent={mobileSplitTopPercentRef.current}
+              onTopPercentChange={(topPercent) => {
+                mobileSplitTopPercentRef.current = topPercent
+              }}
+              top={renderMobileTasksPane(primaryView as MobileViewMode)}
+              bottom={
+                <div key={secondaryPaneView} className="flex min-h-0 flex-1 flex-col overflow-hidden">
+                  {renderMobileTasksPane(secondaryPaneView as MobileViewMode, true)}
+                </div>
+              }
+            />
+          ) : (
+            renderMobileTasksPane(mobileView)
           )}
         </div>
 
@@ -4429,6 +4413,7 @@ export function TasksLayout({
             if (!open) handleTaskAiPaneOpenChange(false)
           }}
           ariaLabel="AI Assistant"
+          title="AI"
         >
           <div className="flex h-full min-h-0 flex-col">
             <div className="min-h-0 flex-1 overflow-hidden">

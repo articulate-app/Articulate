@@ -55,14 +55,15 @@ export function ArtifactDirectoryResultRow({
   const closeCenterTab = useCenterPaneTabsStore((s) => s.closeTab)
   const updateCenterTabTitle = useCenterPaneTabsStore((s) => s.updateTitle)
   const artifactId = String(item.entity_id ?? "").trim()
-  const [title, setTitle] = useState(() => resolveTitle(item))
+  const [renamedTitle, setRenamedTitle] = useState<string | null>(null)
   const [isBusy, setIsBusy] = useState(false)
   const [renameOpen, setRenameOpen] = useState(false)
+  const title = renamedTitle ?? resolveTitle(item)
   const [renameDraft, setRenameDraft] = useState(title)
 
   useEffect(() => {
-    setTitle(resolveTitle(item))
-  }, [item])
+    setRenamedTitle(null)
+  }, [artifactId])
 
   const projectLabel =
     (typeof projectLabelOverride === "string" && projectLabelOverride.trim()) ||
@@ -114,7 +115,7 @@ export function ArtifactDirectoryResultRow({
         await invalidateLists()
         return
       }
-      setTitle(trimmed)
+      setRenamedTitle(trimmed)
       updateCenterTabTitle(buildCenterPaneTabKey("artifact", artifactId), trimmed)
       if ("snapshot" in result && result.snapshot) {
         applyArtifactCachePatch(queryClient, result.snapshot)

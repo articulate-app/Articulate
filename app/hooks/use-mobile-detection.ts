@@ -1,35 +1,22 @@
-import { useEffect, useState } from 'react';
+import { useSyncExternalStore } from 'react';
 
+const MOBILE_QUERY = '(max-width: 767px)';
+
+function subscribe(onStoreChange: () => void) {
+  const mediaQuery = window.matchMedia(MOBILE_QUERY);
+  mediaQuery.addEventListener('change', onStoreChange);
+  return () => mediaQuery.removeEventListener('change', onStoreChange);
+}
+
+function getSnapshot() {
+  return window.matchMedia(MOBILE_QUERY).matches;
+}
+
+function getServerSnapshot() {
+  return false;
+}
+
+/** Client-accurate on the first paint (no useEffect delay). SSR snapshot stays desktop. */
 export function useMobileDetection() {
-  const [isMobile, setIsMobile] = useState(false);
-
-  useEffect(() => {
-    function checkMobile() {
-      // Check if window is available (SSR safety)
-      if (typeof window === 'undefined') return;
-      
-      // Use both media query and window width for better detection
-      const mediaQuery = window.matchMedia('(max-width: 768px)');
-      const isMobileView = mediaQuery.matches || window.innerWidth < 768;
-      
-      setIsMobile(isMobileView);
-    }
-
-    // Check on mount
-    checkMobile();
-
-    // Listen for resize events
-    window.addEventListener('resize', checkMobile);
-    
-    // Listen for media query changes
-    const mediaQuery = window.matchMedia('(max-width: 768px)');
-    mediaQuery.addEventListener('change', checkMobile);
-
-    return () => {
-      window.removeEventListener('resize', checkMobile);
-      mediaQuery.removeEventListener('change', checkMobile);
-    };
-  }, []);
-
-  return isMobile;
+  return useSyncExternalStore(subscribe, getSnapshot, getServerSnapshot);
 } 

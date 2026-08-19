@@ -33,7 +33,7 @@ export function ResizableBottomSheet({
   minHeight = 0.4,
   maxHeight = 0.95,
   heightDvh,
-  lockBodyScroll = false,
+  lockBodyScroll = true,
   contentOverflow = "auto",
   title,
   children,
@@ -109,7 +109,8 @@ export function ResizableBottomSheet({
       {/* Bottom Sheet */}
       <div
         className={cn(
-          "fixed left-0 right-0 bottom-0 z-50 bg-white rounded-t-2xl shadow-xl flex flex-col transition-all",
+          "fixed left-0 right-0 bottom-0 z-50 flex flex-col rounded-t-2xl bg-white shadow-xl transition-all",
+          "pb-[env(safe-area-inset-bottom)]",
           isDragging ? "select-none" : ""
         )}
         style={sheetStyle}

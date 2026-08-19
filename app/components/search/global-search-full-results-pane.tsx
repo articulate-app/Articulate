@@ -1,7 +1,7 @@
 "use client"
 
-import { useEffect, useMemo, useRef, useState, type ReactNode, type RefObject } from "react"
-import { useInfiniteQuery, useQuery } from "@tanstack/react-query"
+import { useEffect, useMemo, useRef, type ReactNode, type RefObject } from "react"
+import { keepPreviousData, useInfiniteQuery, useQuery } from "@tanstack/react-query"
 import { Loader2 } from "lucide-react"
 import { cn } from "@/lib/utils"
 import {
@@ -38,28 +38,41 @@ function isAbortError(error: unknown): boolean {
   )
 }
 
-type ResultObjectScopeKey = "all" | "tasks" | "projects" | "mentions" | "users" | "teams" | "ai_threads" | "artifacts"
-type ResultsByObject = Record<ResultObjectScopeKey, GlobalSearchDocument[]>
-
-const EMPTY_RESULTS_BY_OBJECT: ResultsByObject = {
-  all: [],
-  tasks: [],
-  projects: [],
-  mentions: [],
-  users: [],
-  teams: [],
-  ai_threads: [],
-  artifacts: [],
+function ArtifactDirectoryHeader({ embedInParentScroll }: { embedInParentScroll: boolean }) {
+  return (
+    <div
+      className={cn(
+        "sticky top-0 z-10 flex min-w-0 items-center gap-2 bg-white py-1.5 text-sm font-medium text-gray-500",
+        embedInParentScroll ? "px-1" : "border-b border-gray-100 px-3",
+      )}
+    >
+      <span className="min-w-0 flex-1 truncate">Title</span>
+      <span className="artifact-directory-col-project">Project</span>
+      <span className="artifact-directory-col-created">Created</span>
+      <span className="w-7 shrink-0" aria-hidden />
+    </div>
+  )
 }
 
-function toObjectScopeKey(type: GlobalSearchItemEntityType): ResultObjectScopeKey {
-  if (type === "task") return "tasks"
-  if (type === "project") return "projects"
-  if (type === "mention") return "mentions"
-  if (type === "user") return "users"
-  if (type === "team") return "teams"
-  if (type === "artifact") return "artifacts"
-  return "ai_threads"
+function ArtifactDirectorySkeletonRows({ embedInParentScroll }: { embedInParentScroll: boolean }) {
+  return (
+    <div className={cn(embedInParentScroll && "divide-y divide-gray-100")} aria-hidden>
+      {Array.from({ length: 8 }, (_, index) => (
+        <div
+          key={index}
+          className={cn(
+            "flex min-h-10 w-full min-w-0 items-center gap-2 py-2",
+            embedInParentScroll ? "px-1" : "px-3",
+          )}
+        >
+          <span className="h-3.5 min-w-0 flex-1 animate-pulse rounded bg-gray-100" />
+          <span className="artifact-directory-col-project h-3.5 animate-pulse rounded bg-gray-100" />
+          <span className="artifact-directory-col-created h-3.5 animate-pulse rounded bg-gray-100" />
+          <span className="w-7 shrink-0" />
+        </div>
+      ))}
+    </div>
+  )
 }
 
 function buildScopedResultKey(
@@ -137,8 +150,6 @@ export function GlobalSearchFullResultsPane({
   const shouldFetchRemote =
     activeTab !== "task" && activeTab !== "mention" && activeTab !== "ai_thread"
   const usesClientFilter = LEFT_PANE_CLIENT_FILTER_TYPES.has(activeTab)
-  const activeObjectKey = toObjectScopeKey(activeTab)
-  const [resultsByObject, setResultsByObject] = useState<ResultsByObject>({ ...EMPTY_RESULTS_BY_OBJECT })
   const abortRetryAttemptsRef = useRef(0)
 
   const fullResultsQuery = useInfiniteQuery({
@@ -229,22 +240,14 @@ export function GlobalSearchFullResultsPane({
   ])
 
   useEffect(() => {
-    setResultsByObject({ ...EMPTY_RESULTS_BY_OBJECT })
     abortRetryAttemptsRef.current = 0
   }, [viewScope])
 
-  useEffect(() => {
-    const nextItems = fullResultsQuery.data?.pages.flat() ?? []
-    setResultsByObject((current) => ({
-      ...current,
-      [activeObjectKey]: nextItems,
-    }))
-  }, [activeObjectKey, fullResultsQuery.data?.pages])
-
-  const items = useMemo(() => {
-    const loaded = resultsByObject[activeObjectKey]
-    return usesClientFilter ? filterLeftPaneListItems(loaded, query) : loaded
-  }, [activeObjectKey, query, resultsByObject, usesClientFilter])
+  const remoteItems = fullResultsQuery.data?.pages.flat() ?? []
+  const items = useMemo(
+    () => (usesClientFilter ? filterLeftPaneListItems(remoteItems, query) : remoteItems),
+    [query, remoteItems, usesClientFilter],
+  )
 
   const directoryUserIds = useMemo(() => {
     if (!directoryMode || activeTab !== "user") return [] as number[]
@@ -278,6 +281,7 @@ export function GlobalSearchFullResultsPane({
     queryKey: ["artifact-directory-meta", artifactIds],
     enabled: artifactIds.length > 0,
     staleTime: 60_000,
+    placeholderData: keepPreviousData,
     queryFn: () => fetchArtifactDirectoryMeta(artifactIds),
   })
 
@@ -291,6 +295,9 @@ export function GlobalSearchFullResultsPane({
   const hasFetched = fullResultsQuery.status === "success"
   const fetchError = fullResultsQuery.error
   const hasAbortError = isAbortError(fetchError)
+  const isArtifactList = activeTab === "artifact"
+  const showArtifactSkeleton =
+    isArtifactList && items.length === 0 && (fullResultsQuery.isPending || fullResultsQuery.isLoading || hasAbortError)
 
   useEffect(() => {
     if (!hasAbortError) return
@@ -329,7 +336,12 @@ export function GlobalSearchFullResultsPane({
       embedInParentScroll={embedInParentScroll}
       scrollRef={embedInParentScroll ? undefined : localScrollContainerRef}
     >
-      {fullResultsQuery.isLoading ? (
+      {showArtifactSkeleton ? (
+        <div className="artifact-directory-list min-w-0 w-full overflow-x-hidden py-1">
+          <ArtifactDirectoryHeader embedInParentScroll={embedInParentScroll} />
+          <ArtifactDirectorySkeletonRows embedInParentScroll={embedInParentScroll} />
+        </div>
+      ) : fullResultsQuery.isLoading ? (
         <div className={objectPaneCenteredStateClass()}>
           <Loader2 className="h-4 w-4 animate-spin" />
           Loading {getGlobalSearchEntityLabel(activeTab).toLowerCase()}...
@@ -372,18 +384,8 @@ export function GlobalSearchFullResultsPane({
               <span className="w-7 shrink-0" aria-hidden />
             </div>
           ) : null}
-          {activeTab === "artifact" ? (
-            <div
-              className={cn(
-                "sticky top-0 z-10 flex min-w-0 items-center gap-2 bg-white py-1.5 text-sm font-medium text-gray-500",
-                embedInParentScroll ? "px-1" : "border-b border-gray-100 px-3",
-              )}
-            >
-              <span className="min-w-0 flex-1 truncate">Title</span>
-              <span className="artifact-directory-col-project">Project</span>
-              <span className="artifact-directory-col-created">Created</span>
-              <span className="w-7 shrink-0" aria-hidden />
-            </div>
+          {isArtifactList ? (
+            <ArtifactDirectoryHeader embedInParentScroll={embedInParentScroll} />
           ) : null}
           {aiGroupedItems
             ? aiGroupedItems.map((group) => (

@@ -15,6 +15,22 @@ export type BrowserViewportSize = {
 export const BROWSER_USE_SCREEN_WIDTH = 1440
 export const BROWSER_USE_SCREEN_HEIGHT = 900
 
+/**
+ * Browser Use Live View player is 16:9 (their documented iframe embed).
+ * AI Chat Cloud sessions are provisioned at this size and then CDP-aligned
+ * so the captured window fills the player (no device-metrics letterbox).
+ */
+export const CLOUD_LIVE_VIEW_SCREEN_WIDTH = 1920
+export const CLOUD_LIVE_VIEW_SCREEN_HEIGHT = 1080
+
+/**
+ * Browser Use Live View player is 16:9 (their documented iframe embed).
+ * A 16:10 host around that stream letterboxes with a black band.
+ * Viewer layout must use this stream aspect, not the remote desktop screen.
+ */
+export const LIVE_VIEW_STREAM_WIDTH = 16
+export const LIVE_VIEW_STREAM_HEIGHT = 9
+
 /** @deprecated Prefer Fit/Fill viewer modes; kept for diagnostics / older callers. */
 export type BrowserRenderScale = 1 | 1.5 | 2
 
@@ -248,6 +264,8 @@ export function liveViewCoverLayout(args: {
   hostHeight: number
   remoteWidth: number
   remoteHeight: number
+  /** Chat/overlay: pin to top so a letterboxed stream crops the black band, not the page. */
+  verticalAlign?: "top" | "center"
 }): { width: number; height: number; left: number; top: number } {
   const hostWidth = Math.max(1, Math.round(args.hostWidth))
   const hostHeight = Math.max(1, Math.round(args.hostHeight))
@@ -260,7 +278,7 @@ export function liveViewCoverLayout(args: {
     width,
     height,
     left: Math.round((hostWidth - width) / 2),
-    top: Math.round((hostHeight - height) / 2),
+    top: args.verticalAlign === "top" ? 0 : Math.round((hostHeight - height) / 2),
   }
 }
 

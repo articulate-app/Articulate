@@ -4,6 +4,7 @@ import React from "react"
 import { createPortal } from "react-dom"
 import { X } from "lucide-react"
 import { cn } from "@/lib/utils"
+import { useBodyScrollLock } from "../../hooks/use-body-scroll-lock"
 import { GlobalSearchPreviewPanel } from "../search/global-search-preview-panel"
 import {
   type GlobalSearchDocument,
@@ -94,14 +95,16 @@ export function GlobalSearchModal({
     requestAnimationFrame(() => inputRef.current?.focus())
   }, [onClearSearch])
 
+  useBodyScrollLock(open)
+
   if (!isMounted || !open) return null
 
   return createPortal(
-    <div className="fixed inset-0 z-[200] flex items-start justify-center px-4 pt-[12vh] sm:pt-[14vh]">
+    <div className="fixed inset-0 z-[200] flex items-stretch justify-center p-0 sm:items-start sm:px-4 sm:pt-[12vh] md:pt-[14vh]">
       <button
         type="button"
         aria-label="Close search"
-        className="absolute inset-0 bg-black/40"
+        className="absolute inset-0 hidden bg-black/40 sm:block"
         onClick={handleClose}
       />
       <div
@@ -109,7 +112,10 @@ export function GlobalSearchModal({
         aria-modal="true"
         aria-label="Search"
         className={cn(
-          "relative z-10 flex h-[min(72vh,36rem)] w-full max-w-xl flex-col overflow-hidden rounded-2xl bg-white shadow-2xl",
+          "relative z-10 flex w-full flex-col overflow-hidden bg-white",
+          "h-dvh max-h-dvh rounded-none",
+          "pt-[env(safe-area-inset-top)] pb-[env(safe-area-inset-bottom)]",
+          "sm:h-[min(72vh,36rem)] sm:max-h-[min(72vh,36rem)] sm:max-w-xl sm:rounded-2xl sm:pt-0 sm:pb-0 sm:shadow-2xl",
         )}
       >
         <div className="flex shrink-0 items-center gap-2 border-b border-gray-100 px-4 py-3">
@@ -140,6 +146,7 @@ export function GlobalSearchModal({
               }
             }}
             autoComplete="off"
+            inputMode="search"
             className="min-w-0 flex-1 bg-transparent text-base text-gray-900 placeholder:text-gray-400 focus:outline-none"
           />
           <button

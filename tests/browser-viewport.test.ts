@@ -4,7 +4,11 @@ import {
   BROWSER_USE_SCREEN_WIDTH,
   buildPublishBrowserTabId,
   clampBrowserViewport,
+  CLOUD_LIVE_VIEW_SCREEN_HEIGHT,
+  CLOUD_LIVE_VIEW_SCREEN_WIDTH,
   defaultBrowserUseScreen,
+  LIVE_VIEW_STREAM_HEIGHT,
+  LIVE_VIEW_STREAM_WIDTH,
   liveViewCoverLayout,
   liveViewFitLayout,
   liveViewHostCoverLayout,
@@ -26,6 +30,12 @@ describe("browser-viewport", () => {
     expect(BROWSER_USE_SCREEN_WIDTH).toBe(1440)
     expect(BROWSER_USE_SCREEN_HEIGHT).toBe(900)
     expect(defaultBrowserUseScreen()).toEqual({ width: 1440, height: 900 })
+  })
+
+  it("aligns AI Chat Cloud sessions to the 16:9 Live View player", () => {
+    expect(CLOUD_LIVE_VIEW_SCREEN_WIDTH / CLOUD_LIVE_VIEW_SCREEN_HEIGHT).toBeCloseTo(16 / 9, 5)
+    expect(CLOUD_LIVE_VIEW_SCREEN_WIDTH).toBe(1920)
+    expect(CLOUD_LIVE_VIEW_SCREEN_HEIGHT).toBe(1080)
   })
 
   it("hides Browser Use chrome so Articulate can draw its own", () => {
@@ -60,6 +70,31 @@ describe("browser-viewport", () => {
     expect(tallPane.height).toBe(250)
     expect(tallPane.left).toBe(0)
     expect(tallPane.top).toBe(375)
+  })
+
+  it("pins cover overflow to the top so a bottom letterbox is cropped first", () => {
+    const cover = liveViewCoverLayout({
+      hostWidth: 1600,
+      hostHeight: 600,
+      remoteWidth: 16,
+      remoteHeight: 9,
+      verticalAlign: "top",
+    })
+    expect(cover.top).toBe(0)
+    expect(cover.height).toBeGreaterThan(600)
+  })
+
+  it("covers a 16:10 chat card with the 16:9 Live View stream (no leftover host band)", () => {
+    const cover = liveViewCoverLayout({
+      hostWidth: 480,
+      hostHeight: 300,
+      remoteWidth: LIVE_VIEW_STREAM_WIDTH,
+      remoteHeight: LIVE_VIEW_STREAM_HEIGHT,
+    })
+    expect(LIVE_VIEW_STREAM_WIDTH / LIVE_VIEW_STREAM_HEIGHT).toBeCloseTo(16 / 9, 5)
+    expect(cover.height).toBeGreaterThanOrEqual(300)
+    expect(cover.width).toBeGreaterThanOrEqual(480)
+    expect(cover.width / cover.height).toBeCloseTo(16 / 9, 2)
   })
 
   it("Fill covers the host by cropping, never stretching", () => {

@@ -15,6 +15,7 @@ import { useMobileDetection } from "../hooks/use-mobile-detection";
 import { Sidebar } from "../components/ui/Sidebar";
 import { GlobalSearchModal } from "../components/ui/global-search-modal";
 import { HeaderCreatePopupHost } from "../components/ui/header-create-popup-host";
+import { OPEN_GLOBAL_SEARCH_EVENT } from "../components/ui/sidebar-home-feed";
 import { TaskComposerTray } from "../components/tasks/TaskComposerTray";
 import { MobileTaskComposerSheet } from "../components/tasks/MobileTaskComposerSheet";
 import { buildNewAiThreadParams } from "../lib/ai-thread-route";
@@ -184,7 +185,12 @@ export default function TasksLayout({ children, modal }: LayoutProps) {
   // Filter pane open state
   const [isFilterOpen, setIsFilterOpen] = useState(false);
   const [isSearchModalOpen, setIsSearchModalOpen] = useState(false);
-  
+
+  useEffect(() => {
+    const openSearch = () => setIsSearchModalOpen(true)
+    window.addEventListener(OPEN_GLOBAL_SEARCH_EVENT, openSearch)
+    return () => window.removeEventListener(OPEN_GLOBAL_SEARCH_EVENT, openSearch)
+  }, [])
 
   // Get access token for task edit fields
   const supabase = createClientComponentClient();
@@ -255,43 +261,40 @@ export default function TasksLayout({ children, modal }: LayoutProps) {
           onSidebarToggle: handleSidebarToggle,
         }}
       >
-        <div className="flex h-screen w-full flex-col bg-white">
+        <div className="flex h-dvh w-full flex-col overflow-x-clip bg-white">
           <div className="flex min-h-0 flex-1 w-full overflow-hidden">
-            {isMobile ? (
-              <div className="w-0 min-w-0 overflow-hidden">
-                <Sidebar
-                  isCollapsed={true}
-                  isMobileMenuOpen={isMobileMenuOpen}
-                  onClose={handleMobileMenuClose}
+            <div
+              className={cn(
+                "relative flex shrink-0 flex-col bg-white",
+                "max-md:!w-0 max-md:min-w-0 max-md:overflow-visible max-md:border-0",
+                "md:border-r md:border-gray-200",
+                !isResizingSidebar && "md:transition-[width] duration-200",
+              )}
+              style={{ width: isSidebarCollapsed ? 64 : sidebarWidth }}
+            >
+              <Sidebar
+                isCollapsed={isMobile ? true : isSidebarCollapsed}
+                isMobileMenuOpen={isMobileMenuOpen}
+                onClose={handleMobileMenuClose}
+                onOpenSearch={() => {
+                  setIsSearchModalOpen(true)
+                  handleMobileMenuClose()
+                }}
+              />
+              {!isSidebarCollapsed ? (
+                <div
+                  role="separator"
+                  aria-orientation="vertical"
+                  aria-label="Resize sidebar"
+                  title="Drag to resize"
+                  onMouseDown={(event) => {
+                    event.preventDefault();
+                    setIsResizingSidebar(true);
+                  }}
+                  className="absolute inset-y-0 right-0 z-20 hidden w-1.5 cursor-col-resize hover:bg-gray-300/80 active:bg-gray-400/80 md:block"
                 />
-              </div>
-            ) : (
-              <div
-                className={cn(
-                  "relative flex shrink-0 flex-col border-r border-gray-200 bg-white",
-                  !isResizingSidebar && "transition-[width] duration-200",
-                )}
-                style={{ width: isSidebarCollapsed ? 64 : sidebarWidth }}
-              >
-                <Sidebar
-                  isCollapsed={isSidebarCollapsed}
-                  onOpenSearch={() => setIsSearchModalOpen(true)}
-                />
-                {!isSidebarCollapsed ? (
-                  <div
-                    role="separator"
-                    aria-orientation="vertical"
-                    aria-label="Resize sidebar"
-                    title="Drag to resize"
-                    onMouseDown={(event) => {
-                      event.preventDefault();
-                      setIsResizingSidebar(true);
-                    }}
-                    className="absolute inset-y-0 right-0 z-20 w-1.5 cursor-col-resize hover:bg-gray-300/80 active:bg-gray-400/80"
-                  />
-                ) : null}
-              </div>
-            )}
+              ) : null}
+            </div>
 
             <div className="flex-1 overflow-hidden flex flex-row">
               {React.cloneElement(children as React.ReactElement, {
@@ -317,22 +320,20 @@ export default function TasksLayout({ children, modal }: LayoutProps) {
           </div>
         </div>
 
+        <GlobalSearchModal
+          open={isSearchModalOpen}
+          onOpenChange={setIsSearchModalOpen}
+          searchValue={globalSearch.committedQuery}
+          onSearchChange={globalSearch.setDraftQuery}
+          onSearchCommit={(value) => globalSearch.commitSearch({ nextQuery: value })}
+          selectedTypeFilters={globalSearch.pendingSelectedTypes}
+          onToggleTypeFilter={globalSearch.togglePendingTypeFilter}
+          onPreviewResultSelect={globalSearch.openSearchResult}
+          onShowAll={globalSearch.handleShowAll}
+          onClearSearch={globalSearch.clearSearch}
+        />
         {!isMobile ? (
-          <>
-            <GlobalSearchModal
-              open={isSearchModalOpen}
-              onOpenChange={setIsSearchModalOpen}
-              searchValue={globalSearch.committedQuery}
-              onSearchChange={globalSearch.setDraftQuery}
-              onSearchCommit={(value) => globalSearch.commitSearch({ nextQuery: value })}
-              selectedTypeFilters={globalSearch.pendingSelectedTypes}
-              onToggleTypeFilter={globalSearch.togglePendingTypeFilter}
-              onPreviewResultSelect={globalSearch.openSearchResult}
-              onShowAll={globalSearch.handleShowAll}
-              onClearSearch={globalSearch.clearSearch}
-            />
-            <HeaderCreatePopupHost onNewAiThreadClick={handleNewAiThreadClick} />
-          </>
+          <HeaderCreatePopupHost onNewAiThreadClick={handleNewAiThreadClick} />
         ) : null}
 
         <TaskComposerTray />

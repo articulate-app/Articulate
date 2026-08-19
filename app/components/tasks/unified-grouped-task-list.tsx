@@ -76,6 +76,8 @@ interface UnifiedGroupedTaskListProps<T> {
    * instead of the full column grid, so the list never needs horizontal scroll.
    */
   compact?: boolean
+  /** Mobile list: tap opens detail instead of turning cells into inputs. */
+  disableInlineEdit?: boolean
 }
 
 type FlattenedItem =
@@ -467,6 +469,7 @@ export function UnifiedGroupedTaskList<T>({
   listColorMode = null,
   onListColorLegendChange,
   compact = false,
+  disableInlineEdit = false,
 }: UnifiedGroupedTaskListProps<T>) {
   const { selectedGroupBy } = useTaskGrouping()
   // Read URL state via a shallow-nav-reactive params source so the left task list reacts to
@@ -1488,7 +1491,7 @@ export function UnifiedGroupedTaskList<T>({
               className="task-row group-header sticky z-10 bg-white/95 backdrop-blur-sm top-[var(--task-list-sticky-top,0px)]"
                 style={{ gridTemplateColumns }}
               >
-                <td className="task-cell task-cell-span-full task-group-label bg-transparent px-1 pb-1.5 pt-6">
+                <td className="task-cell task-cell-span-full task-group-label bg-transparent px-4 pb-1.5 pt-6">
                   <div className="flex w-full items-center gap-2">
                     <button
                       type="button"
@@ -1713,8 +1716,8 @@ export function UnifiedGroupedTaskList<T>({
                 'data-bulk-run': compactBulkRun.run ?? undefined,
               } as React.HTMLAttributes<HTMLTableRowElement>}
               className={cn(
-                'task-row hover:bg-gray-50/60 cursor-pointer',
-                !compact && !compactBulkRun.isBulkSelected && 'border-b border-gray-100/70',
+                'task-row hover:bg-gray-50/60 cursor-pointer border-b border-gray-100',
+                !compactBulkRun.isBulkSelected && 'border-b border-gray-100',
                 (isSelectedCompact || isCompactChecked) &&
                   !compactBulkRun.isBulkSelected &&
                   'bg-gray-100',
@@ -1729,11 +1732,14 @@ export function UnifiedGroupedTaskList<T>({
                   isMultiselectMode={isMultiselectMode}
                   isTaskSelected={isCompactChecked}
                   onTaskToggle={onTaskToggle}
+                  readOnly={disableInlineEdit}
                   dragHandle={
-                    <TaskDragHandle
-                      task={task as Record<string, unknown>}
-                      sourceGroupKey={item.groupKey}
-                    />
+                    disableInlineEdit ? undefined : (
+                      <TaskDragHandle
+                        task={task as Record<string, unknown>}
+                        sourceGroupKey={item.groupKey}
+                      />
+                    )
                   }
                 />
               </td>
@@ -1856,7 +1862,7 @@ export function UnifiedGroupedTaskList<T>({
                 'data-bulk-run': bulkRun.run ?? undefined,
               } as React.HTMLAttributes<HTMLTableRowElement>}
               className={cn(
-                'task-row hover:bg-gray-50/60 cursor-pointer',
+                'task-row hover:bg-gray-50/60 cursor-pointer border-b border-gray-100',
                 !compact && !bulkRun.isBulkSelected && 'border-b border-gray-100/70',
                 isOpenSelected && 'bg-gray-100',
               )}
@@ -1902,7 +1908,7 @@ export function UnifiedGroupedTaskList<T>({
             } as React.HTMLAttributes<HTMLTableRowElement>}
             className={cn(
               'task-row hover:bg-gray-50/60 cursor-pointer',
-              !compact && !bulkRun.isBulkSelected && 'border-b border-gray-100/70',
+              !bulkRun.isBulkSelected && 'border-b border-gray-100',
               isOpenSelected && 'bg-gray-100',
             )}
             style={{ gridTemplateColumns }}

@@ -252,6 +252,13 @@ function registerIpc() {
     if (!id) throw new Error("browser id required")
     return browserManager.getState(id)
   })
+
+  ipcMain.handle(IPC.BROWSER_CAPTURE, async (event, payload?: { id?: string }) => {
+    assertFromArticulateApp(event)
+    const id = typeof payload?.id === "string" ? payload.id.trim() : ""
+    if (!id) throw new Error("browser id required")
+    return { dataUrl: await browserManager.capture(id) }
+  })
 }
 
 function resolveAppIcon(): Electron.NativeImage | null {

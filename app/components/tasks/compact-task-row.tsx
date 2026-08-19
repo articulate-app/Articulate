@@ -1,6 +1,7 @@
 "use client"
 
 import { ChevronDown, ChevronRight, Folder } from 'lucide-react'
+import { useMobileDetection } from '../../hooks/use-mobile-detection'
 import { flexRender, type ColumnDef } from '@tanstack/react-table'
 import { cn } from '@/lib/utils'
 import { UserAvatar } from '@/components/UserAvatar'
@@ -180,6 +181,7 @@ export function CompactEditableRowContent({
   isTaskSelected = false,
   onTaskToggle,
   dragHandle,
+  readOnly = false,
 }: {
   task: any
   columns: ColumnDef<any>[]
@@ -189,9 +191,24 @@ export function CompactEditableRowContent({
   isTaskSelected?: boolean
   onTaskToggle?: (taskId: number) => void
   dragHandle?: React.ReactNode
+  /** Mobile: show static cells so a tap opens detail instead of inline editors. */
+  readOnly?: boolean
 }) {
   const isSuggestion = (task as any)?.kind === 'suggestion'
   const taskId = Number((task as any)?.id ?? (task as any)?.entity_id)
+  const isMobile = useMobileDetection()
+  const isReadOnly = readOnly || isMobile
+
+  if (isReadOnly) {
+    return (
+      <div className="flex w-full min-w-0 items-center gap-2 overflow-hidden">
+        {isMobile ? null : dragHandle}
+        <div className="min-w-0 flex-1">
+          <CompactRowContent task={task} dateField={dateField} />
+        </div>
+      </div>
+    )
+  }
 
   return (
     <div className="flex w-full min-w-0 items-center gap-2 overflow-hidden">

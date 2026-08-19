@@ -1265,3 +1265,23 @@ html, body {
     width: 4.5rem;
   }
 }
+
+/* Mobile: 16px form controls prevent iOS focus zoom; keep the document from trapping horizontal pan. */
+@media (max-width: 767px) {
+  html,
+  body {
+    overflow-x: clip;
+  }
+
+  input:not([type="checkbox"]):not([type="radio"]):not([type="range"]):not([type="file"]):not([type="button"]):not([type="submit"]):not([type="reset"]),
+  textarea,
+  select,
+  [contenteditable="true"],
+  .ai-chat-composer-input {
+    font-size: 16px !important;
+  }
+
+  .task-list-grid--compact .task-row:not(.group-header) > .task-cell {
+    border-bottom: 1px solid rgb(243 244 246);
+  }
+}
