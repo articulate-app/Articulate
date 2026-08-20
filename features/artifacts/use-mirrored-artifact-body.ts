@@ -70,7 +70,7 @@ export function useMirroredArtifactBody(args: {
       setCollabHtml(null)
       return
     }
-    let timer: ReturnType<typeof setTimeout> | null = null
+    let timer: number | null = null
     const sync = () => {
       if (timer) window.clearTimeout(timer)
       timer = window.setTimeout(() => {

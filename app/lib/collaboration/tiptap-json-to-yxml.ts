@@ -160,7 +160,7 @@ function setNodeAttrs(element: Y.XmlElement, attrs?: Record<string, unknown>) {
   if (!attrs) return
   for (const [key, value] of Object.entries(attrs)) {
     if (key === "ychange" || value == null) continue
-    element.setAttribute(key, value as string | number | boolean)
+    element.setAttribute(key, String(value))
   }
 }
 
@@ -238,18 +238,18 @@ function marksFromDeltaAttrs(attrs?: Record<string, unknown>): TipTapMark[] | un
 function yNodeToTipTap(node: unknown): TipTapNode[] {
   if (node instanceof Y.XmlText) {
     const delta = node.toDelta() as Array<{ insert?: string; attributes?: Record<string, unknown> }>
-    return delta
-      .map((op) => {
-        const text = String(op.insert ?? "")
-        if (!text) return null
-        const marks = marksFromDeltaAttrs(op.attributes)
-        return {
-          type: "text" as const,
-          text,
-          ...(marks ? { marks } : {}),
-        }
+    const nodes: TipTapNode[] = []
+    for (const op of delta) {
+      const text = String(op.insert ?? "")
+      if (!text) continue
+      const marks = marksFromDeltaAttrs(op.attributes)
+      nodes.push({
+        type: "text",
+        text,
+        ...(marks ? { marks } : {}),
       })
-      .filter((row): row is TipTapNode => row != null)
+    }
+    return nodes
   }
   if (node instanceof Y.XmlElement) {
     if (node.nodeName === "hardBreak") return [{ type: "hardBreak" }]

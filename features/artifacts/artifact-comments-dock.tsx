@@ -78,6 +78,7 @@ export function ArtifactCommentsDock({
 }: ArtifactCommentsDockProps) {
   const currentUserId = useCurrentUserStore((s) => s.publicUserId)
   const currentUserName = useCurrentUserStore((s) => s.fullName)
+  const currentUserPhoto = useCurrentUserStore((s) => s.photo)
   const notifyTaskId = taskId ?? artifact.task_id ?? null
   const notifyProjectId = projectId ?? artifact.project_id ?? null
   const createComment = useCreateArtifactCommentThread()

@@ -1601,14 +1601,11 @@ export function useGlobalSearchController({
         }
 
         let items: GlobalSearchDocument[] = []
-        const sortAlphabetically =
-          entityType === "project" || entityType === "user"
+        const sortAlphabetically = entityType === "user"
         // Left-pane object lists filter locally; always load discovery so typing never refetches.
         const preferDiscoveryList =
           isObjectRoute &&
-          (entityType === "project" ||
-            entityType === "user" ||
-            entityType === "ai_thread")
+          (entityType === "user" || entityType === "ai_thread")
         const byTitleAsc = (left: GlobalSearchDocument, right: GlobalSearchDocument) => {
           const leftTitle = (left.display_payload?.title ?? left.title ?? "").trim()
           const rightTitle = (right.display_payload?.title ?? right.title ?? "").trim()

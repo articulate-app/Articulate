@@ -130,7 +130,9 @@ export function findOutputsDropzoneElement(event: {
   if (typeof document === "undefined") return null
   const x = event.clientX
   const y = event.clientY
-  if (!Number.isFinite(x) || !Number.isFinite(y)) return null
+  if (typeof x !== "number" || typeof y !== "number" || !Number.isFinite(x) || !Number.isFinite(y)) {
+    return null
+  }
   const el = document.elementFromPoint(x, y)
   return el instanceof Element
     ? el.closest<HTMLElement>(`[${OUTPUTS_DROPZONE_ATTR}="true"]`)
