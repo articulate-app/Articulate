@@ -100,6 +100,10 @@ import {
 import { fetchTaskChannelBootstrap } from "../../app/lib/services/task-channel-bootstrap"
 import type { TaskChannelBootstrapResponse } from "../../app/lib/types/task-channel-bootstrap"
 import { isPersistedAiThreadId } from "./thread-id"
+import {
+  nextHoldEmptyComposer,
+  shouldCenterAiComposer,
+} from "./ai-composer-empty-state"
 import { enhanceBlocksWithMarkdownTables } from "./text-to-output-blocks"
 import { buildAssistantContentJsonFromMarkdown } from "./ai-chat-message-format"
 import { getAssistantContentBlocks } from "./assistant-content-blocks"
@@ -491,6 +495,10 @@ export function ChatWindow({
   const publicUserId = useCurrentUserStore((s) => s.publicUserId)
   const fullName = useCurrentUserStore((s) => s.fullName)
   const hasPersistedThreadId = isPersistedAiThreadId(thread.id)
+  const previousThreadIdRef = useRef(thread.id)
+  const [holdEmptyComposer, setHoldEmptyComposer] = useState(
+    () => !isPersistedAiThreadId(thread.id),
+  )
   const {
     usage: threadUsage,
     isLoading: isThreadUsageLoading,
@@ -2232,7 +2240,7 @@ export function ChatWindow({
 
   const centerPaneTabs = useCenterPaneTabsStore((state) => state.tabs)
 
-  // Visible UI context only — never used as an explicit write target without a pill/action.
+  // Visible UI context sent to chat so the model can choose a target. Not an automatic write.
   const ambientContext = useMemo((): AiAmbientContext => {
     const taskTab = searchParams.get("taskTab")
     const centerArtifactId = getCenterArtifactIdFromParams(searchParams)
@@ -2672,7 +2680,23 @@ export function ChatWindow({
     () => buildRenderableMessages(messages || [], pendingMsgs),
     [messages, pendingMsgs]
   )
-  const isChatEmpty = !isMessagesLoading && allMessages.length === 0
+  useEffect(() => {
+    const previousThreadId = previousThreadIdRef.current
+    previousThreadIdRef.current = thread.id
+    const nextHold = nextHoldEmptyComposer({
+      previousThreadId,
+      nextThreadId: thread.id,
+      messageCount: allMessages.length,
+      previousHold: holdEmptyComposer,
+    })
+    if (nextHold !== holdEmptyComposer) setHoldEmptyComposer(nextHold)
+  }, [allMessages.length, holdEmptyComposer, thread.id])
+  const isChatEmpty = shouldCenterAiComposer({
+    messageCount: allMessages.length,
+    isMessagesLoading,
+    hasPersistedThreadId,
+    holdEmptyComposer,
+  })
 
   const activeClarification = useMemo(() => {
     const candidate = pendingClarification ?? resolveActiveClarificationFromMessages(allMessages)

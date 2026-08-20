@@ -1,11 +1,13 @@
 import { describe, expect, it } from "vitest"
 import {
+  applyCloseLeftPaneToSearchParams,
   applyWorkspaceViewToSearchParams,
   getActiveLeftWorkspaceTab,
   getActiveMiddleWorkspaceTab,
   getActiveRightWorkspaceTab,
   isAiActiveInPane,
   isRightViewEntityType,
+  LEFT_PANE_EMPTY_VIEW,
 } from "../app/lib/workspace-pane-url"
 
 describe("workspace-pane-url", () => {
@@ -312,5 +314,56 @@ describe("workspace-pane-url", () => {
       type: "ai",
       id: "main",
     })
+  })
+
+  it("opening a right pane view from focus=middle keeps the middle+right split", () => {
+    const fromMiddleFocus = applyWorkspaceViewToSearchParams({
+      current: new URLSearchParams(
+        "layout=left,middle,right&focus=middle&centerTaskId=1&rightView=ai&taskAiOpen=true",
+      ),
+      pane: "right",
+      type: "start",
+    })
+    expect(fromMiddleFocus.get("focus")).toBe("right")
+    expect(fromMiddleFocus.get("rightView")).toBe("start")
+
+    const detailsAiSplit = applyWorkspaceViewToSearchParams({
+      current: new URLSearchParams(
+        "layout=left,middle,right&focus=right&rightView=ai&taskAiOpen=true&id=1",
+      ),
+      pane: "right",
+      type: "ai",
+    })
+    expect(detailsAiSplit.get("focus")).toBe("right")
+    expect(detailsAiSplit.get("rightView")).toBe("ai")
+  })
+
+  it("opening AI from focus=middle keeps the details+AI split instead of restoring left panes", () => {
+    const next = applyWorkspaceViewToSearchParams({
+      current: new URLSearchParams(
+        "layout=left,middle,right&focus=middle&centerArtifactId=art-1&rightView=details",
+      ),
+      pane: "right",
+      type: "ai",
+      params: { aiThreadId: "thread-a" },
+    })
+    expect(next.get("focus")).toBe("right")
+    expect(next.get("rightView")).toBe("ai")
+    expect(next.get("taskAiOpen")).toBe("true")
+    expect(next.get("centerArtifactId")).toBe("art-1")
+  })
+
+  it("closes the left pane without reseeding homepage AI", () => {
+    const next = applyCloseLeftPaneToSearchParams(
+      new URLSearchParams(
+        "layout=left,middle,right&leftPaneView=project-list&object=project&focus=left&centerTaskId=1",
+      ),
+    )
+    expect(next.get("layout")).toBe("middle,right")
+    expect(next.get("leftPaneView")).toBe(LEFT_PANE_EMPTY_VIEW)
+    expect(next.get("object")).toBeNull()
+    expect(next.get("focus")).toBeNull()
+    expect(getActiveLeftWorkspaceTab(next)).toBeNull()
+    expect(next.get("centerTaskId")).toBe("1")
   })
 })

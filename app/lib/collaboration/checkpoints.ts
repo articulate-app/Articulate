@@ -1,6 +1,7 @@
 import type { SupabaseClient } from "@supabase/supabase-js"
 import type * as Y from "yjs"
 import { bytesToBase64 } from "./binary"
+import { plainTextDiffStats } from "./plain-text-diff-stats"
 import { encodeYDocSnapshot, yDocToHtml, yDocToPlainText, yDocToTipTapJson } from "./ydoc-content"
 
 export const CHECKPOINT_IDLE_MS = 25_000
@@ -16,18 +17,23 @@ export async function createArtifactCheckpoint(args: {
   summary?: string | null
   insertCount?: number
   deleteCount?: number
+  previousText?: string | null
   aiRunId?: string | null
   aiMessageId?: string | null
   aiThreadId?: string | null
+  title?: string | null
 }): Promise<{ ok: boolean; versionId?: string; versionNumber?: number; error?: string }> {
   const encoded = encodeYDocSnapshot(args.document)
   const html = yDocToHtml(args.document)
   const text = yDocToPlainText(args.document).trim()
+  const stats = (args.insertCount != null || args.deleteCount != null)
+    ? { insert_count: args.insertCount ?? 0, delete_count: args.deleteCount ?? 0 }
+    : plainTextDiffStats(args.previousText, text)
   const { data, error } = await args.supabase.rpc("artifact_collab_checkpoint_v1", {
     p_artifact_id: args.artifactId,
     p_seq: args.seq,
     p_snapshot: {
-      title: null,
+      title: args.title ?? null,
       content_text: text,
       content_json: {
         version: 1,
@@ -39,10 +45,7 @@ export async function createArtifactCheckpoint(args: {
     },
     p_change_source: args.changeSource ?? "manual",
     p_summary: args.summary ?? null,
-    p_diff_stats: {
-      insert_count: args.insertCount ?? 0,
-      delete_count: args.deleteCount ?? 0,
-    },
+    p_diff_stats: stats,
     p_state_vector_base64: bytesToBase64(encoded.stateVector),
     p_ai_run_id: args.aiRunId ?? null,
     p_ai_message_id: args.aiMessageId ?? null,

@@ -57,6 +57,7 @@ export function TaskOverviewPreviews({
     <>
       <TaskOverviewPreviewSection
         title="Outputs"
+        outputsDropzone
         active
       >
         <div className="min-h-0">
@@ -72,10 +73,7 @@ export function TaskOverviewPreviews({
               onArtifactTextSelectForComment={onArtifactTextSelectForComment}
             />
           ) : (
-            <>
-              <div className="h-16 animate-pulse rounded-lg bg-gray-100" />
-              <AddDashedButton label="Add" className="mt-2" disabled />
-            </>
+            <AddDashedButton label="Add" className="mt-2" disabled />
           )}
         </div>
       </TaskOverviewPreviewSection>

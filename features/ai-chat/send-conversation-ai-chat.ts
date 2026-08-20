@@ -405,7 +405,12 @@ export async function sendConversationAiChatStream(args: SendConversationAiChatS
             : {}),
       ...(selectedComponentLabel ? { selected_component_label: selectedComponentLabel } : {}),
       context_source: sanitizedSelectedArtifactContext
-        ? "text_selection"
+        ? (
+          Boolean(String(sanitizedSelectedArtifactContext.selected_text ?? "").trim())
+          || Number.isFinite(Number(sanitizedSelectedArtifactContext.selection_start))
+            ? "text_selection"
+            : "artifact_tag"
+        )
         : sanitizedSelectedTextContext
           ? "text_selection"
           : contextSource ?? "none",

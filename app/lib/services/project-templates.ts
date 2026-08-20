@@ -11,11 +11,12 @@ import {
   type TemplateAssetViewKind,
   templateAssetViewKind,
 } from "../template-asset-view"
+import { fetchUserDesignTemplate, fetchUserDesignTemplates } from "./user-design-templates"
 
 export type ProjectTemplateListItem = {
   id: string
   title: string
-  projectId: number
+  projectId: number | null
   projectName: string
   projectLogo: string | null
   projectColor: string | null
@@ -31,10 +32,39 @@ export type ProjectTemplateListItem = {
 
 export type ProjectTemplateDetail = {
   template: ProjectDesignTemplate
-  projectId: number
+  projectId: number | null
   projectName: string
   projectLogo: string | null
   projectColor: string | null
+}
+
+function listItemFromTemplate(
+  template: ProjectDesignTemplate,
+  project: {
+    projectId: number | null
+    projectName: string
+    projectLogo: string | null
+    projectColor: string | null
+  },
+): ProjectTemplateListItem {
+  const title = template.title?.trim() || "Untitled template"
+  const primary = pickPrimaryTemplateAsset(template.assets)
+  const thumbAsset =
+    template.assets.find((asset) => assetThumbnail(asset)) ?? primary ?? template.assets[0]
+  return {
+    id: template.id,
+    title,
+    projectId: project.projectId,
+    projectName: project.projectName,
+    projectLogo: project.projectLogo,
+    projectColor: project.projectColor,
+    assetCount: template.assets.length,
+    thumbnailUrl: assetThumbnail(thumbAsset),
+    createdAt: template.created_at || null,
+    notes: template.notes,
+    primaryKind: primary ? templateAssetViewKind(primary) : null,
+    primaryHref: primary ? templateAssetHref(primary) : null,
+  }
 }
 
 function assetThumbnail(asset: ProjectDesignTemplateAsset | undefined): string | null {
@@ -73,25 +103,32 @@ export async function fetchAllProjectTemplates(): Promise<ProjectTemplateListIte
     const projectColor = typeof project.color === "string" ? project.color : null
     const kit = parseProjectBrandKit(project.brand_kit)
     for (const template of kit.design_templates) {
-      const title = template.title?.trim() || "Untitled template"
-      const primary = pickPrimaryTemplateAsset(template.assets)
-      const thumbAsset =
-        template.assets.find((asset) => assetThumbnail(asset)) ?? primary ?? template.assets[0]
-      rows.push({
-        id: template.id,
-        title,
-        projectId,
-        projectName,
-        projectLogo,
-        projectColor,
-        assetCount: template.assets.length,
-        thumbnailUrl: assetThumbnail(thumbAsset),
-        createdAt: template.created_at || null,
-        notes: template.notes,
-        primaryKind: primary ? templateAssetViewKind(primary) : null,
-        primaryHref: primary ? templateAssetHref(primary) : null,
-      })
+      rows.push(
+        listItemFromTemplate(template, {
+          projectId,
+          projectName,
+          projectLogo,
+          projectColor,
+        }),
+      )
     }
+  }
+
+  let personal: ProjectDesignTemplate[] = []
+  try {
+    personal = await fetchUserDesignTemplates()
+  } catch {
+    personal = []
+  }
+  for (const template of personal) {
+    rows.push(
+      listItemFromTemplate(template, {
+        projectId: null,
+        projectName: "—",
+        projectLogo: null,
+        projectColor: null,
+      }),
+    )
   }
 
   rows.sort((a, b) => {
@@ -103,11 +140,23 @@ export async function fetchAllProjectTemplates(): Promise<ProjectTemplateListIte
   return rows
 }
 
-/** Load one brand-kit design template for the template detail pane. */
+/** Load one brand-kit or personal design template for the template detail pane. */
 export async function fetchProjectTemplateDetail(args: {
-  projectId: number
+  projectId: number | null
   templateId: string
 }): Promise<ProjectTemplateDetail | null> {
+  if (args.projectId == null || args.projectId <= 0) {
+    const template = await fetchUserDesignTemplate(args.templateId)
+    if (!template) return null
+    return {
+      template,
+      projectId: null,
+      projectName: "—",
+      projectLogo: null,
+      projectColor: null,
+    }
+  }
+
   const supabase = createClientComponentClient()
   const { data, error } = await supabase
     .from("projects")

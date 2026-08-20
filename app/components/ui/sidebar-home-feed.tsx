@@ -298,7 +298,7 @@ function NavRow({
         )}
         aria-label={expandable ? `Open ${label}` : undefined}
       >
-        <Icon className="h-[18px] w-[18px] shrink-0 text-gray-700" strokeWidth={1.75} />
+        <Icon className="h-4 w-4 shrink-0 text-gray-700" strokeWidth={1.75} />
         <span className="flex min-w-0 items-center gap-1">
           <span className="truncate">{label}</span>
           {Chevron && !onToggleExpand ? (
@@ -888,20 +888,20 @@ export function SidebarHomeFeed({
   )
 
   const brandAndSearch = showExpandedChrome ? (
-    <div className={cn("space-y-2 px-1 pb-2", hideBrandRow ? "pt-1" : "pt-3")}>
+    <div className={cn("space-y-1 px-1 pb-1", hideBrandRow ? "pt-0" : "pt-0")}>
       {hideBrandRow ? null : (
-        <div className="flex items-center gap-2 px-1">
+        <div className="flex h-10 items-center gap-2 px-1">
           {onSidebarToggle ? (
             <button
               type="button"
               onClick={onSidebarToggle}
-              className="inline-flex h-9 w-9 shrink-0 items-center justify-center rounded-md text-gray-700 hover:bg-gray-100"
+              className="inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-md text-gray-700 hover:bg-gray-100"
               aria-label="Toggle sidebar"
             >
-              <Menu className="h-5 w-5" />
+              <Menu className="h-4 w-4" />
             </button>
           ) : null}
-          <span className="min-w-0 flex-1 truncate text-base font-semibold tracking-tight text-gray-900">
+          <span className="min-w-0 flex-1 truncate text-sm font-semibold tracking-tight text-gray-900">
             Articulate
           </span>
         </div>
@@ -909,25 +909,27 @@ export function SidebarHomeFeed({
       <NavRow icon={Search} label="Search" onClick={() => onOpenSearch?.()} />
     </div>
   ) : (
-    <div className="flex flex-col items-center gap-1 px-1 pb-2 pt-3">
+    <div className="flex flex-col items-center gap-0.5 px-1 pb-1">
       {onSidebarToggle ? (
-        <button
-          type="button"
-          onClick={onSidebarToggle}
-          className="inline-flex h-9 w-9 items-center justify-center rounded-md text-gray-700 hover:bg-gray-100"
-          aria-label="Toggle sidebar"
-        >
-          <Menu className="h-5 w-5" />
-        </button>
+        <div className="flex h-10 items-center justify-center">
+          <button
+            type="button"
+            onClick={onSidebarToggle}
+            className="inline-flex h-7 w-7 items-center justify-center rounded-md text-gray-700 hover:bg-gray-100"
+            aria-label="Toggle sidebar"
+          >
+            <Menu className="h-4 w-4" />
+          </button>
+        </div>
       ) : null}
       <button
         type="button"
         onClick={() => onOpenSearch?.()}
-        className="inline-flex h-9 w-9 items-center justify-center rounded-md text-gray-700 hover:bg-gray-100"
+        className="inline-flex h-8 w-8 items-center justify-center rounded-md text-gray-700 hover:bg-gray-100"
         aria-label="Search"
         title="Search"
       >
-        <Search className="h-5 w-5" strokeWidth={1.75} />
+        <Search className="h-4 w-4" strokeWidth={1.75} />
       </button>
     </div>
   )
@@ -1152,11 +1154,11 @@ export function SidebarHomeFeed({
               <DropdownMenuTrigger asChild>
                 <button
                   type="button"
-                  className="flex w-full items-center justify-center rounded-md px-0 py-2 text-gray-700 transition-colors hover:bg-gray-100"
+                  className="flex w-full items-center justify-center rounded-md px-0 py-1.5 text-gray-700 transition-colors hover:bg-gray-100"
                   aria-label="Create"
                   title="Create"
                 >
-                  <Plus className="h-5 w-5 shrink-0" strokeWidth={1.75} />
+                  <Plus className="h-4 w-4 shrink-0" strokeWidth={1.75} />
                 </button>
               </DropdownMenuTrigger>
               <DropdownMenuContent align="start" side="right" className="min-w-[180px]">
@@ -1188,7 +1190,7 @@ export function SidebarHomeFeed({
                   onNavigateObject(item.object)
                 }}
                 className={cn(
-                  "flex w-full items-center justify-center rounded-md px-0 py-2 text-gray-700 transition-colors hover:bg-gray-100",
+                  "flex w-full items-center justify-center rounded-md px-0 py-1.5 text-gray-700 transition-colors hover:bg-gray-100",
                   item.kind === "expandable" &&
                     isObjectActive(item.object) &&
                     "bg-gray-100 text-gray-900",
@@ -1196,7 +1198,7 @@ export function SidebarHomeFeed({
                 aria-label={item.name}
                 title={item.name}
               >
-                <item.icon className="h-5 w-5 shrink-0" strokeWidth={1.75} />
+                <item.icon className="h-4 w-4 shrink-0" strokeWidth={1.75} />
               </button>
             </li>
           ))}

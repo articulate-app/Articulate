@@ -127,6 +127,7 @@ export function ProjectOverviewPreviews({ projectId, onNavigateTab }: ProjectOve
 
       <TaskOverviewPreviewSection
         title="Artifacts"
+        outputsDropzone
         onViewAll={() => onNavigateTab("artifacts")}
         active={suggestionsReady}
       >

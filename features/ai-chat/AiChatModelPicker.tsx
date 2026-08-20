@@ -159,11 +159,11 @@ export function AiChatModelPicker({ modelKey, onModelKeyChange, disabled }: AiCh
   ) : null
 
   return (
-    <div ref={rootRef} className="relative">
+    <div ref={rootRef} className="relative shrink-0">
       <button type="button" onClick={() => setIsOpen((prev) => !prev)} disabled={disabled}
-        className="inline-flex h-7 items-center gap-1 rounded-sm px-1.5 text-xs font-medium text-gray-500 hover:bg-gray-100/80 hover:text-gray-700 disabled:cursor-not-allowed disabled:opacity-50"
+        className="inline-flex h-7 max-w-full min-w-0 items-center gap-1 rounded-sm px-1.5 text-xs font-medium text-gray-500 hover:bg-gray-100/80 hover:text-gray-700 disabled:cursor-not-allowed disabled:opacity-50"
         aria-haspopup="dialog" aria-expanded={isOpen} aria-label="Select AI model" title="Select AI model">
-        <span className="max-w-[150px] truncate">{currentLabel}</span>
+        <span className="max-w-[7.5rem] truncate sm:max-w-[150px]">{currentLabel}</span>
         <ChevronDown className="h-3 w-3" aria-hidden />
       </button>
 

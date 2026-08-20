@@ -2846,13 +2846,13 @@ export function Composer({
             }}
           />
         </div>
-        <div className="mt-1 flex items-center justify-between px-1 pb-1">
-          <div className="flex items-center gap-2">
+        <div className="mt-1 flex min-w-0 items-center justify-between gap-2 px-1 pb-1">
+          <div className="flex min-w-0 flex-1 items-center gap-1.5">
             <button
               ref={projectTriggerRef}
               type="button"
               onClick={openMentionPickerFromButton}
-              className="inline-flex h-7 w-7 items-center justify-center rounded-sm text-gray-500 hover:bg-gray-100/80 hover:text-gray-700"
+              className="inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-sm text-gray-500 hover:bg-gray-100/80 hover:text-gray-700"
               aria-label="Add tags or context"
               title="Add tags or context"
             >
@@ -2861,7 +2861,7 @@ export function Composer({
             <button
               type="button"
               onClick={() => fileInputRef.current?.click()}
-              className="text-gray-400 hover:text-gray-600"
+              className="shrink-0 text-gray-400 hover:text-gray-600"
               aria-label="Attach files"
               title="Attach files"
             >
@@ -2874,7 +2874,7 @@ export function Composer({
               <AiChatUsageIndicator threadId={threadId} usage={threadUsage} isLoading={isThreadUsageLoading} />
             ) : null}
           </div>
-          <div className="flex items-center gap-1.5">
+          <div className="flex shrink-0 items-center gap-1.5">
             {isAssistantStreaming ? (
               <>
                 <button

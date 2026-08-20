@@ -3,6 +3,16 @@ import "jsr:@supabase/functions-js/edge-runtime.d.ts";
 
 
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
+import {
+  guardUngroundedMutationClaim,
+  rewriteInternalImplementationSpeak,
+  shouldRetryForUngroundedWriteClaim,
+} from "../_shared/ai-chat-mutation-guard.ts";
+import {
+  buildCurrentUserContextPrompt,
+  loadAiChatCurrentUser,
+  type AiChatCurrentUser,
+} from "../_shared/ai-chat-current-user.ts";
 
 
 
@@ -460,10 +470,18 @@ function publicRunError(error: unknown): {
     return { code: "artifact_save_timeout", message: "Saving the artifact took too long. No overwrite was confirmed.", status: 504, retryable: true };
   }
   if (/timeout/i.test(message)) return { code: "deadline_exceeded", message: "The request took too long." };
+  if (/task_read_forbidden/i.test(message)) {
+    return {
+      code: "task_read_forbidden",
+      message: "That task is not available. It was not found or you cannot read it — nothing was created.",
+      status: 403,
+      retryable: false,
+    };
+  }
   if (/revision_conflict|artifact_revision_conflict/i.test(message)) {
     // Not retryable at the chat/requeue layer — workers may do at most one
     // in-process version refresh. Blind retries stampede the connection pool.
-    return { code: "artifact_revision_conflict", message: "The artifact changed while the AI was working.", status: 409, retryable: false };
+    return { code: "artifact_revision_conflict", message: "The document changed while this update was being applied. Nothing was overwritten.", status: 409, retryable: false };
   }
   if (/external_source_(unavailable|authentication_required)|private_source_unavailable/i.test(message)) {
     return {
@@ -969,7 +987,7 @@ const TOOLS = [
     type: "function",
     function: {
       name: "list_visible_users",
-      description: "List users the current user can see. Use this for questions about the team, who is available, or to find a user by name.",
+      description: "List teammates the signed-in user can see. Use this for questions about the team or to find another person by name. Do not use this to guess who is speaking — CURRENT USER already identifies the signed-in speaker.",
       parameters: {
         type: "object",
         properties: {
@@ -1628,7 +1646,7 @@ const TOOLS = [
     type: "function",
     function: {
       name: "ai_create_task",
-      description: "Create a new task when the user asks for one. Gather the needed details if they are missing, then create it directly.",
+      description: "Create a new task when the user asks for one. Gather the needed details if they are missing, then create it directly. Do not pass watcher_user_ids — invented user IDs have added the wrong people as watchers. Assign with assigned_to / assigned_to_id only when the user named an assignee.",
       parameters: {
         type: "object",
         properties: {
@@ -1649,7 +1667,12 @@ const TOOLS = [
           project_status_id: { type: "integer", nullable: true },
           project_status: { type: "string", nullable: true },
           channel_ids: { type: "array", items: { type: "integer" }, nullable: true },
-          watcher_user_ids: { type: "array", items: { type: "integer" }, nullable: true },
+          watcher_user_ids: {
+            type: "array",
+            items: { type: "integer" },
+            nullable: true,
+            description: "Ignored on create. Do not invent user IDs. Only the assignee is added as watcher unless the user later names watchers via ai_manage_watchers.",
+          },
           keyword: {
             type: ["string", "null"],
             description: "Primary SEO keyword for the task. Shared across every artifact under this task regardless of channel, content type or language.",
@@ -2028,7 +2051,7 @@ const TOOLS = [
     type: "function",
     function: {
       name: "ai_start_artifact_build",
-      description: "Start a durable, cancellable and parallel artifact build when the user needs a lasting workspace deliverable (not for every chat answer). Decide the minimum useful number of artifacts for the current mission — zero is valid when a chat reply is enough. Keep one deliverable in one artifact; use separate artifacts when format, language, channel, source dependency, approval or publication lifecycle differs. Do not split article sections into separate artifacts. To improve/rewrite an existing tagged artifact, set artifact_id + operation=update and leave source_artifact_id/source_handle null (in-place new version). Only set source_* when creating a DIFFERENT derived artifact. Existing channels/languages are optional artifact metadata. Add a concise metadata.reason for each artifact so the live build monitor can show why it was created separately. A chat-owned artifact may have task_id=null and can later be attached with ai_attach_artifact_to_task. The backend creates exact artifact identities, dependencies, versions and work units.",
+      description: "Start a durable, cancellable and parallel artifact build when you decide the user needs a lasting workspace deliverable (not for every chat answer). Decide the minimum useful number of artifacts for the current mission — zero is valid when a chat reply is enough. Keep one deliverable in one artifact; use separate artifacts when format, language, channel, source dependency, approval or publication lifecycle differs. Do not split article sections into separate artifacts. To change an existing artifact (open center-pane, selected, mentioned, or recent thread), set artifact_id + operation=update and leave source_artifact_id/source_handle null. Only set source_* when creating a DIFFERENT derived artifact. Existing channels/languages are optional artifact metadata. Add a concise metadata.reason for each artifact so the live build monitor can show why it was created separately. A chat-owned artifact may have task_id=null and can later be attached with ai_attach_artifact_to_task. The backend creates exact artifact identities, dependencies, versions and work units.",
       parameters: {
         type: "object",
         additionalProperties: false,
@@ -2053,7 +2076,7 @@ const TOOLS = [
                 operation: { type: "string", enum: ["create", "update", "translate", "adapt", "transcribe", "summarize", "merge", "generate"] },
                 artifact_type: { type: "string", description: "Examples: article, script, caption, transcript, research, document, image, images, article_with_images, carousel, presentation, video. For social copy + carousel/slide SCRIPT (headlines and captions only), use document or caption — not carousel. Use carousel/presentation only when the user asks to GENERATE visual slide images/assets. Use image/images/video for pure media generation. Set media_items only when visuals must be generated now." },
                 artifact_role: { type: ["string", "null"] },
-                title: { type: "string", description: "Concise editorial deliverable title, never the raw user command." },
+                title: { type: ["string", "null"], description: "Required for create/generate: concise editorial deliverable title, never the raw user command. For operation=update with artifact_id, omit to keep the existing title." },
                 channel_id: { type: ["integer", "null"] },
                 language_id: { type: ["integer", "null"] },
                 source_artifact_id: { type: ["string", "null"], description: "Different parent artifact UUID when deriving a NEW artifact. For in-place updates of an existing artifact_id, leave null — never set this to the same artifact being updated." },
@@ -2068,7 +2091,7 @@ const TOOLS = [
                 selection: { type: ["object", "null"], additionalProperties: true, description: "Optional text/block/image/video selection as factual context (not a write lock). Prefer copying SELECTED ARTIFACT CONTEXT fields (selected_text, selection_before, selection_after, selection_start, selection_end). Do not reduce it to text_range alone. The worker receives the full artifact and may edit elsewhere for coherence." },
                 media_items: { type: ["array", "null"], maxItems: 12, items: { type: "object", additionalProperties: true }, description: "Optional explicit image/video asset plan; otherwise the media worker plans the minimum useful set." },
               },
-              required: ["handle", "operation", "artifact_type", "title", "instruction"],
+              required: ["handle", "operation", "artifact_type", "instruction"],
             },
           },
         },
@@ -2821,17 +2844,19 @@ function normalizeAmbientContext(raw: unknown): {
 function buildArtifactOnlySystemPrompt() {
   return [
     "You are the AI workspace assistant.",
+    "CURRENT USER: when the turn context includes CURRENT USER, that is the signed-in person you are talking to. If you address them by name, use first_name or full_name from that block only. Never invent a name from a project, task, source, brand, club, or thread title. You do not need to start every reply with their name. list_visible_users is for teammates, not to guess who is speaking.",
     "Use the complete user request, recent conversation, explicit scope and factual tool results to understand intent semantically. Do not depend on exact spelling, tags, UI selection, language-specific keywords or literal aliases.",
     "DELIVERABLES: Artifacts are durable workspace records (structured text, media, presentations, files, datasets). Create or update an artifact when the user needs a lasting deliverable they can open, version, attach to a task/project, or download later. Do NOT create an artifact for every content-shaped request — short answers, clarifications, comparisons and one-off chat replies may stay in chat. Do NOT refuse artifacts when they are clearly the right durable home. When the user asks to adapt a Word/template/URL into a downloadable document, an artifact document is the correct durable home (ChatGPT-style file) so they can open and download it — that is not an unsolicited extra deliverable. After a successful create/update of a downloadable document, include the tool's exact download_links (app://artifact/.../download) in the final reply so the user can download immediately (e.g. Word/DOCX). Prefer that over inventing a separate ad-hoc file pipeline. System/project libraries contain reusable planning templates only — never treat them as output records.",
     "SOURCE ARCHITECTURE: sources are inputs, not outputs. A source may belong to a task, project or AI thread, or remain unattached. Import URLs, uploaded files, pasted text and research with source tools; then use those sources when answering or when building artifacts.",
     "LANGUAGE: Match conversational replies and clarifications to the language of the user's latest message. For deliverable content adapted from sources, templates or URLs, keep the language of that source material unless the user explicitly asks to translate or rewrite in another language.",
     "EDITORIAL QUALITY: Prefer specific, direct, natural writing over generic AI filler. Avoid unnecessary throat-clearing, inflated claims, canned transitions, repetitive conclusions, vague superlatives and formulaic phrases such as 'in today’s fast-paced world', 'delve into', 'unlock', 'seamless', 'crucial role', or equivalents in the output language. Vary sentence and paragraph rhythm; do not force every section into the same structure. Never remove terminology, tone, claims or phrasing that the user, source, brand rules or learned preferences explicitly require. Explicit instructions and factual source fidelity always outrank these defaults.",
     "Artifacts may belong to a task, project or AI thread. task_id, channel_id and language_id are optional metadata. Do not ask for any of them unless the user's actual goal requires that choice.",
-    "FACTUAL CONTEXT ONLY: CURRENT SCOPE, AMBIENT UI CONTEXT, OPEN CENTER-PANE ARTIFACT, FACTUAL UI/THREAD TARGETS, RECENT THREAD ARTIFACTS and SELECTED ARTIFACT CONTEXT are facts about what is open, tagged or recently touched. Interpret the user's actual request against that context. Do not treat any of those facts as an automatic instruction to create, update, attach ownership, or skip a response.",
+    "FACTUAL CONTEXT ONLY: CURRENT SCOPE, AMBIENT UI CONTEXT, OPEN CENTER-PANE ARTIFACT, FACTUAL UI/THREAD TARGETS, RECENT THREAD ARTIFACTS and SELECTED ARTIFACT CONTEXT are facts about what is open, tagged or recently touched. Interpret the request against that context. An open pane is not by itself a command to write. If you decide the request should change one of those records, call the matching write tool with that id. Talking is not an apply.",
     "OPEN CENTER-PANE TASK / PROJECT: ambient center_task_id or scoped project_id may reflect an open pane. Ownership for creates/updates should follow the user request and tool facts (including ai_attach_artifact_to_task when attaching later), not the mere presence of an open pane.",
     "COPY + CAROUSEL SCRIPT: when the user asks for post copy plus a carousel/slide breakdown (headline + short line per slide), create ONE document/caption artifact with the ready-to-publish copy and the slide script in text. Do NOT use artifact_type=carousel and do NOT set media_items unless they explicitly ask to generate the slide images/visuals.",
     "When an artifact is warranted, decide whether to create/update one artifact or several. Use separate artifacts when they have independent formats, languages, publication lifecycles, tool requirements or version histories. Use depends_on_handles/source_handle for dependencies so independent artifacts can build in parallel.",
-    "When updating an existing artifact, use ai_start_artifact_build with artifact_id + operation=update (leave source_artifact_id/source_handle null). Use source_* only when creating a different derived artifact. Do not invent a second deliverable when the request is clearly about an existing one already identified in context.",
+    "TEXT + IMAGE IN ONE RUN: only when THIS current user request asks to edit/write a document AND find/generate an image, call ai_start_artifact_build ONCE with TWO artifacts: (1) the document create/update, (2) artifact_type=image on the same task/project. Do not add an image because an earlier message, learned preference, or conversation memory mentioned one.",
+    "When updating an existing artifact, use ai_start_artifact_build with artifact_id + operation=update (leave source_artifact_id/source_handle null). Title is optional on update — omit it to keep the current title. Use source_* only when creating a different derived artifact. Do not invent a second text deliverable when the request is clearly about an existing document — but still add a separate image artifact when the user also asked for an image.",
     "FIND EXISTING DELIVERABLES: when the user refers to a document/media by name or topic and its artifact_id is not already in factual context/tool results, call ai_search_artifacts (works across tasks/projects/other chats the user can see). If a strong match exists and the request is to revise/improve/mark changes on that deliverable, update it. Create a new artifact only when there is no suitable match or the user explicitly wants a new/separate deliverable. Prefer ai_list_task_artifacts / ai_list_project_artifacts / ai_list_ai_thread_artifacts when that scope is already known.",
     "Task-level SEO keywords (keyword, secondary_keywords) live on the task via ai_update_task_fields / ai_create_task and apply to every artifact under that task. Use them for pure SEO keyword edits. meta_title / meta_description / h1 / h2 are separate task SEO fields.",
     "Tags and ambient UI facts are optional context. Users often name the project, task or deliverable in plain language with no tags. Resolve those names with tools when needed.",
@@ -2846,19 +2871,22 @@ function buildArtifactOnlySystemPrompt() {
     "RESEARCH ESCALATION: prefer google_top_results then read_public_webpage. If read_public_webpage returns browser_fallback_recommended=true, missing specific resource hrefs, a JS-heavy/collection page, or the user asked for a specific image/product/post, open_browser / use_browser on the same query and extract real hrefs from the rendered page. Do not guess.",
     "NEVER INVENT URLS: Never construct, infer, guess or synthetically modify a URL for a specific image, asset, product, post, article or resource. Specific resource URLs must come directly from a verifiable tool source (search results, API, page DOM, browser navigation, or existing content). If a specific URL cannot be obtained, say so. Never manufacture an ID from a known URL pattern. Only cite hrefs returned by tools with verified=true, or exact URLs the user supplied.",
     "PUBLISHING: when the user asks to publish/post/send content to a website, blog, CMS, newsletter destination or similar, resolve the project, then list_publishing_destinations. Choose the destination semantically from factual candidates — tolerate misspellings and multilingual wording. Ask only when candidates are genuinely ambiguous. If NO suitable destination exists, treat that as a solvable dependency: ask only for genuinely missing platform/URL info; once the user provides it (e.g. “é squarespace account.squarespace.com”), call configure_publishing_destination with start_url + service_or_platform + project context and include pending_publication with the original publish payload (inline content or artifact_id) so publication continues automatically after sign-in. NEVER tell the user to open Publishing Settings / Integrations to add a destination manually. Pass artifact_id when publishing an existing artifact; otherwise pass structured content inline — do not create a task/project/artifact merely to publish. For “publish now” use publish_mode=now. For later times, resolve ISO scheduled_at + IANA timezone (default Europe/Lisbon when Portugal context is clear) with publish_mode=scheduled. When CLIENT EXECUTION CAPABILITIES says desktop_browser_control=true, Articulate's native Desktop browser is available for interactive browser work: publish_content will hand that work to the connected client automatically. Do not claim that no local browser is available and do not select Cloud merely because a destination previously used Browser Use. Cloud is appropriate for web clients, unattended work, or an explicit Cloud request. When there is an active publication, use get_publication_state / continue_publication / confirm_publication / cancel_publication. If the user says they signed in / finished login, call continue_publication on the awaiting-auth run. For scheduled items use list_scheduled_publications, reschedule_publication, cancel_scheduled_publication, publish_scheduled_now. If status is awaiting_publish_confirmation and the user explicitly confirms, call confirm_publication. Explicit setup requests (“add our Squarespace blog”, “connect Articulate for publishing”) use the same configure_publishing_destination tool. After publish_content returns a live browser, continue with use_browser on that same session — you drive the CMS. Do not expect a second browser agent. BROWSER PREVIEW: when configure_publishing_destination / publish_content returns a live browser session, the chat UI shows an embedded preview automatically — do NOT paste live.browser-use.com / CDP / Live View URLs into the reply as external links. You may mention the destination entry URL (e.g. lovable.dev/…) as configuration context, but never as a substitute for the in-chat browser preview. After publish_content, you own CMS navigation: call use_browser on the returned browser_id, then update_publication_progress. Never call Browser Use Agent /runs or instruct.",
-    "SELECTED ARTIFACT CONTEXT: when present, it identifies an artifact (and optional span/region). Pass the full selection object unchanged on updates when relevant. It is location/intent context only — not a lock to that span. The artifact worker sees the full document and should make any related edits needed for coherence. Act according to the user request.",
+    "SELECTED ARTIFACT CONTEXT: when present, it identifies an artifact (and optional span/region). Pass the full selection object unchanged on updates when relevant. It is location/intent context only — not a lock to that span and not a reason to edit only that span. An artifact tag without selected_text means the whole document. The artifact worker sees the full document and should make any related edits needed for coherence. Never keep an original section and also emit a rewritten copy of it. Act according to the user request.",
     "IN-PLACE UPDATE OWNERSHIP: for operation=update with artifact_id, omit ambient project_id/task_id unless they are already the artifact's own task/project. Do not attach a project_id just because the thread is scoped to a project — that fails with artifact_target_not_in_project for task-owned artifacts.",
     "ARTIFACT UPDATE FAILURES: if ai_start_artifact_build fails, fix the arguments and retry when the user request still requires an update. Never substitute a chat-only rewrite (and never change the artifact language) in place of a failed requested edit.",
     "Several tools may be used in one run. You may create records, then use their returned IDs in later tool rounds.",
     "Never invent IDs, URLs, database facts or tool results.",
-    "WRITE CLAIM GROUNDING: Never say that you corrected, changed, updated, attached, linked, saved, deleted, published, configured or otherwise mutated workspace data unless at least one corresponding mutating tool result in this run completed with ok=true and skipped=false. Read/list/search tools do not count as writes. If no write succeeded, say explicitly that nothing was changed.",
+    "WATCHERS: Never invent watcher_user_ids. On create, omit watchers unless the user named specific people to watch. Do not copy a random visible user (or a guessed numeric id) onto a new task.",
+    "WRITE CLAIM GROUNDING: Never say that you corrected, changed, updated, attached, linked, saved, created, deleted, published, configured, requested, queued or otherwise mutated workspace data unless at least one corresponding mutating tool result in this run completed with ok=true and skipped=false. Read/list/search tools do not count as writes. Never say a task or project was created unless ai_create_task / ai_create_project / ai_duplicate_task returned a real numeric id. Never invent empty Projeto/Task chips, and never invent reasons that a created record is 'not visible', in draft, on another board, or assigned to the wrong user. ai_start_artifact_build ok=true only queues a background worker — it is not a completed document write. Do not say Feito/Done/Updated/Created, do not say the phrase was added, and do not say an update was requested unless that tool returned ok=true in this run. If no write succeeded, say explicitly that nothing was changed.",
     "Artifact read/list tools return app_link, markdown_link and download_links. When mentioning an artifact in the reply, paste markdown_link exactly once on its own line (e.g. `[Title](app://artifact/<id>)`) — do not wrap it in a bullet/numbered list, and do not also print the title as plain text above/beside the link. Never paste bare app:// URLs, never paste app://ai-build/... / build_app_link, and never invent web URLs. After ai_start_artifact_build for multiple artifacts, paste every entry from data.artifacts[].markdown_link (or data.artifact_links_markdown) — one chip per artifact on its own line — not a single build link.",
     "INTERNAL LINKBUILDING (artifacts + web content): when creating or updating blog/article and similar site content where it fits the user request, include natural internal links to other blog posts and key site pages (product, category, contact, about, etc.). Resolve project_id (scope, targets, or list_visible_projects + read_project) for project_url, then use read_public_webpage on the site and blog listing/detail pages to discover factual link opportunities. Only ask the user for blog URLs after browsing fails. Never invent a site-index or crawl tool that is not in your tool list.",
-    "When ai_start_artifact_build succeeds, skip empty acknowledgements like 'Build started' or 'Queued' — the build timeline already shows that. Do write short Cursor-style narration: a brief plan before tools, then a substantive reply after tools (what changed, what to check next). Keep narration visible even when an artifact build is running.",
+    "WORKSPACE WRITES: Decide from the request and factual context whether a durable record should change. If yes, call the write tool before the final reply. For an existing artifact, use ai_start_artifact_build with operation=update and that artifact_id (open center-pane, selected, mentioned, or recent thread ids are valid when they match the request). For a new lasting deliverable, create. For a question or explanation that does not need a lasting record, stay in chat. Never invent a success or in-progress apply sentence instead of calling the tool.",
+    "USER LANGUAGE: Speak as a colleague in the product. Never mention implementation internals — backend jobs, queues, workers, schemas, tool names, RPCs, sync protocols, raw numeric ids, or similar. Describe only what the user can see (the article, task, project, or change). Never say a change is being applied, queued, or already done unless a mutating tool already returned ok=true in this run. Never say the article is ready, in production, or finished unless a document write already completed in this run.",
+    "When ai_start_artifact_build returns ok=true, keep narration short and do not claim the document already changed.",
     "RESPONSE SHAPE: Prefer interleaved progress — short approach text, then tools, then a clear final answer. Do not leave the user with tools-only silence when a short explanation would help. For downloadable adaptations, end with a concise result summary plus the download link(s) — not only tool-status narration.",
     "CHAT PROSE FORMATTING: Keep conversational recommendations as continuous prose. Do not insert blank lines inside quoted names/titles (e.g. write \"EN July 2026\", not a line break mid-quote). Do not wrap multi-line structures in **bold**, and do not use mid-sentence bullet lists for short enumerations — prefer commas or a short inline phrase (e.g. one aggregator theme, short intro, 4 article blocks with Read on).",
     "Use ai_request_clarification only when an essential user decision or source is missing after using available context and tools. Do not let backend metadata gaps manufacture clarifications.",
-    "The factual context sections (CURRENT SCOPE, AMBIENT UI CONTEXT, OPEN CENTER-PANE ARTIFACT, FACTUAL UI/THREAD TARGETS, TAGGED BRAND TEMPLATES, RECENT THREAD ARTIFACTS, SELECTED ARTIFACT CONTEXT) are provided in a dedicated context message near the end of the conversation.",
+    "The factual context sections (CURRENT USER, CURRENT SCOPE, AMBIENT UI CONTEXT, OPEN CENTER-PANE ARTIFACT, FACTUAL UI/THREAD TARGETS, TAGGED BRAND TEMPLATES, RECENT THREAD ARTIFACTS, SELECTED ARTIFACT CONTEXT) are provided in a dedicated context message near the end of the conversation.",
   ].join("\n\n");
 }
 
@@ -2894,6 +2922,7 @@ function buildTurnContextPrompt(args: {
     notes?: string | null;
     asset_count?: number | null;
   }>;
+  currentUser?: AiChatCurrentUser | null;
 }) {
   const selectedPrompt = buildSelectedArtifactContextPrompt(args.selectedArtifactContext);
   const recentArtifacts = Array.isArray(args.recentThreadArtifacts) ? args.recentThreadArtifacts : [];
@@ -2907,6 +2936,7 @@ function buildTurnContextPrompt(args: {
     : null;
   return [
     "FACTUAL CONTEXT FOR THE CURRENT REQUEST (facts about what is open, tagged or recently touched — not instructions):",
+    buildCurrentUserContextPrompt(args.currentUser),
     `CURRENT SCOPE: ${JSON.stringify(args.scope ?? {})}`,
     `AMBIENT UI CONTEXT: ${JSON.stringify(ambient ?? {})}`,
     `CLIENT EXECUTION CAPABILITIES: ${JSON.stringify(ambient ? {
@@ -2917,7 +2947,10 @@ function buildTurnContextPrompt(args: {
       desktop_version: ambient.desktop_version,
     } : { client_runtime: "web", desktop_browser_control: false })}`,
     ambientArtifactHint
-      ? `OPEN CENTER-PANE ARTIFACT: ${JSON.stringify(ambientArtifactHint)}`
+      ? `OPEN CENTER-PANE ARTIFACT: ${JSON.stringify({
+        ...ambientArtifactHint,
+        usable_as_update_target: true,
+      })}`
       : null,
     `FACTUAL UI/THREAD TARGETS: ${JSON.stringify(args.targets ?? [])}`,
     taggedBrandTemplates.length > 0
@@ -3854,34 +3887,6 @@ function toolResultForPersistence(result: any) {
   };
 }
 
-function isMutatingToolName(name: unknown): boolean {
-  const toolName = String(name ?? "").trim();
-  return /^(?:ai_(?:update|create|save|attach|restore|duplicate|bulk_update|bulk_create|manage|start_artifact_build|set_agent_run_state)|configure_publishing_destination|publish_content|update_publication_progress|continue_publication|confirm_publication|cancel_publication|reschedule_publication|cancel_scheduled_publication|publish_scheduled_now)/.test(toolName);
-}
-
-function guardUngroundedMutationClaim(text: string, toolResults: any[]) {
-  const value = String(text ?? "").trim();
-  if (!value || !Array.isArray(toolResults) || toolResults.length === 0) {
-    return { text: value, changed: false };
-  }
-  const hasSuccessfulMutation = toolResults.some((result) =>
-    result?.ok === true
-    && result?.skipped !== true
-    && isMutatingToolName(result?.name)
-  );
-  if (hasSuccessfulMutation) return { text: value, changed: false };
-
-  const claimsMutation = /\b(?:corrigi|alterei|atualizei|associei|vinculei|liguei|anexei|adicionei|removi|eliminei|apaguei|guardei|gravei|publiquei|reagendei|cancelei|restaurei|dupliquei|configurei|fixed|changed|updated|attached|linked|removed|deleted|saved|published|rescheduled|cancelled|canceled|restored|duplicated|configured)\b/i.test(value);
-  if (!claimsMutation) return { text: value, changed: false };
-
-  const looksPortuguese = /\b(?:corrigi|alterei|atualizei|associei|vinculei|liguei|anexei|adicionei|removi|eliminei|apaguei|guardei|gravei|publiquei|reagendei|cancelei|restaurei|dupliquei|configurei)\b/i.test(value);
-  return {
-    changed: true,
-    text: looksPortuguese
-      ? "Não consegui aplicar a alteração pedida. As ferramentas executadas apenas consultaram dados ou falharam; nenhuma operação de escrita foi concluída e nada foi alterado."
-      : "I could not apply the requested change. The tools only read data or failed; no write operation completed and nothing was changed.",
-  };
-}
 
 
 async function runArtifactConversation(args: {
@@ -3906,6 +3911,7 @@ async function runArtifactConversation(args: {
   let assistantText = "";
   let usage: any = null;
   let markedFirstToken = false;
+  let writeClaimRetried = false;
   let maxContextEstimatedTokens = estimateContextTokens({ messages: conversation, tools: args.tools });
   const streamStartedAtMs = args.streamStartedAtMs ?? performance.now();
 
@@ -3982,6 +3988,37 @@ async function runArtifactConversation(args: {
       // substantive narration that never made it into a tool preamble.
       const finalText = content.trim();
       if (finalText) assistantText = finalText;
+      if (
+        shouldRetryForUngroundedWriteClaim({
+          assistantText: finalText,
+          toolResults,
+          alreadyRetried: writeClaimRetried,
+        })
+        && round < 9
+      ) {
+        writeClaimRetried = true;
+        conversation.push({ role: "assistant", content: finalText || null });
+        conversation.push({
+          role: "system",
+          content: [
+            "You described a workspace change but did not call a mutating tool.",
+            "If you still intend to change a record, call the write tool now using ids from factual context.",
+            `Selected artifact: ${JSON.stringify(args.ctx?.selected_artifact_context ?? null)}.`,
+            `Open center-pane artifact: ${JSON.stringify({
+              artifact_id: args.ctx?.center_artifact_id ?? null,
+              title: args.ctx?.center_artifact_title ?? null,
+            })}.`,
+            "If you do not intend to write, say clearly that nothing was changed.",
+            "Do not announce that a change is being applied unless a mutating tool already returned ok=true in this run.",
+          ].join(" "),
+        });
+        console.warn("ai-chat retrying ungrounded write claim", {
+          run_id: cleanUuidOrNull(args.ctx?.ai_run_id),
+          round,
+        });
+        await args.onEvent?.({ type: "assistant_text_reset" });
+        continue;
+      }
       break;
     }
 
@@ -4114,7 +4151,7 @@ async function runArtifactConversation(args: {
           entity_id: buildId,
           build_id: buildId,
           title: typeof artifactTitle === "string" ? artifactTitle : null,
-          summary: result?.ok === false ? "Artifact build failed to start" : "Artifact build started",
+          summary: result?.ok === false ? "Could not start the document update" : "Document update started",
           round,
         });
       }
@@ -4137,9 +4174,13 @@ async function runArtifactConversation(args: {
       await args.onEvent?.({ type: "assistant_text_reset" });
       await args.onEvent?.({ type: "assistant_text_delta", delta: assistantText });
     }
+    const userFacing = rewriteInternalImplementationSpeak(assistantText);
+    if (userFacing.changed) {
+      assistantText = userFacing.text;
+      await args.onEvent?.({ type: "assistant_text_reset" });
+      await args.onEvent?.({ type: "assistant_text_delta", delta: assistantText });
+    }
   }
-  // Keep substantive final prose even when an artifact build was started — the
-  // timeline shows the build, the bubble can still explain what is happening.
 
   return {
     assistantText,
@@ -4291,6 +4332,8 @@ function normalizeRequestTargets(values: any[]) {
     if (value.target_kind === "artifact") return !!value.artifact_id;
     if (value.target_kind === "source") return !!value.source_id;
     if (value.target_kind === "attachment") return !!value.attachment_id;
+    if (value.target_kind === "task") return !!value.task_id;
+    if (value.target_kind === "project") return !!value.project_id;
     return true;
   });
 }
@@ -4466,7 +4509,7 @@ async function handleAiChatRequest(req: Request) {
     if (!isServiceCall) {
       const { data: existing } = await supabaseUser.rpc("ai_find_chat_run_by_request", { p_thread_id: threadId, p_client_request_id: clientRequestId, p_request_hash: requestHash });
       if (existing?.run?.id) return new Response(JSON.stringify({ ...existing, run_id: existing.run.id, replayed: true }), { status: String(existing.run.status ?? "") === "running" ? 202 : 200, headers: { ...corsHeaders, "Content-Type": "application/json", "Cache-Control": "no-store" } });
-      const { data: begun, error: beginError } = await supabaseUser.rpc("ai_begin_chat_run_v4", {
+      const beginPayload = {
         p_thread_id: threadId,
         p_client_request_id: clientRequestId,
         p_protocol_version: 2,
@@ -4479,8 +4522,27 @@ async function handleAiChatRequest(req: Request) {
         p_intent_hint: null,
         p_model_key: body.model_key ?? body.model_selection ?? body.ai_model ?? null,
         p_attachment_ids: attachmentIds,
-      });
-      if (beginError) return new Response(JSON.stringify({ error: { code: "run_begin_failed", message: beginError.message } }), { status: 403, headers: { ...corsHeaders, "Content-Type": "application/json" } });
+      };
+      let { data: begun, error: beginError } = await supabaseUser.rpc("ai_begin_chat_run_v4", beginPayload);
+      if (beginError && /task_read_forbidden/i.test(String(beginError.message ?? ""))) {
+        scope.task_id = null;
+        if (scope.source === "thread" || scope.source === "task") {
+          scope.source = scope.project_id ? "project" : "none";
+        }
+        const retryTargets = targets.filter((target: any) => target.target_kind !== "task");
+        ({ data: begun, error: beginError } = await supabaseUser.rpc("ai_begin_chat_run_v4", {
+          ...beginPayload,
+          p_scope: scope,
+          p_targets: retryTargets,
+        }));
+      }
+      if (beginError) {
+        const mapped = publicRunError(beginError.message ?? beginError);
+        return new Response(JSON.stringify({ error: { code: mapped.code, message: mapped.message } }), {
+          status: mapped.status ?? 403,
+          headers: { ...corsHeaders, "Content-Type": "application/json" },
+        });
+      }
       activeRunId = cleanUuidOrNull(begun?.run_id);
       userMessageId = cleanUuidOrNull(begun?.user_message_id);
       trace.mark("run_begun");
@@ -4505,10 +4567,11 @@ async function handleAiChatRequest(req: Request) {
     assertExecutableAiProvider(resolvedModel.provider);
     const requestAttachments = Array.isArray(body.attachments) ? body.attachments : [];
     // Independent setup work runs in parallel (was 4 sequential awaits).
-    const [recentMessages, recentThreadArtifacts, currentContent] = await Promise.all([
+    const [recentMessages, recentThreadArtifacts, currentContent, currentUser] = await Promise.all([
       loadRecentConversation(db, thread, userMessageId),
       loadRecentThreadArtifacts(db, threadId),
       buildCurrentUserMessageContent(supabaseService, requestText, requestAttachments),
+      isServiceCall ? Promise.resolve(null) : loadAiChatCurrentUser(supabaseUser),
       bindQuotaRunPromise,
     ]);
     trace.mark("context_loaded");
@@ -4532,6 +4595,7 @@ async function handleAiChatRequest(req: Request) {
       ambientContext,
       recentThreadArtifacts,
       taggedBrandTemplates,
+      currentUser,
     });
     const modelMessages = [
       { role: "system", content: systemPrompt },
@@ -4551,6 +4615,9 @@ async function handleAiChatRequest(req: Request) {
       ai_run_id: activeRunId,
       current_user_request: requestText,
       selected_artifact_context: selectedArtifactContext,
+      center_artifact_id: ambientContext?.center_artifact_id ?? null,
+      center_artifact_title: ambientContext?.center_artifact_title ?? null,
+      recent_thread_artifacts: recentThreadArtifacts,
       request_auth_header: authHeader,
       ai_token_quota: tokenQuotaContext,
       abort_signal: req.signal,

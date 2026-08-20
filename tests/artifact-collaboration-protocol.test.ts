@@ -116,6 +116,21 @@ describe("artifact collaboration protocol", () => {
     b.destroy()
   })
 
+  it("recovers a dropped Broadcast without remounting the editor", async () => {
+    const { store, bus, docA, docB, a, b } = linkedPair()
+    await a.connect()
+    await b.connect()
+    bus.dropNext = 1
+    docA.getText("body").insert(0, "live-ai")
+    await a.flush()
+    expect(docB.getText("body").toString()).toBe("")
+    expect(store.updates).toHaveLength(1)
+    await b.catchUp()
+    expect(docB.getText("body").toString()).toBe("live-ai")
+    a.destroy()
+    b.destroy()
+  })
+
   it("6. reconnect fills a sequence gap", async () => {
     const { docA, docB, a, b } = linkedPair()
     await a.connect()
@@ -272,6 +287,7 @@ describe("artifact collaboration protocol", () => {
     expect(canAutosaveArtifactSnapshot(true)).toBe(false)
     expect(canAutosaveArtifactSnapshot(false)).toBe(true)
     expect(shouldLockArtifactDuringAiGeneration(true)).toBe(false)
+    expect(shouldLockArtifactDuringAiGeneration(false)).toBe(false)
     const editorSource = readFileSync(
       resolve("app/components/editor/RichTextEditor.tsx"),
       "utf8",

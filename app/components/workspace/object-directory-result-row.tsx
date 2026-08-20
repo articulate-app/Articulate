@@ -82,6 +82,8 @@ export type ObjectDirectoryResultRowProps = {
   isSelected?: boolean
   /** Tighter horizontal inset when nested in WorkspacePageShell. */
   denseInset?: boolean
+  /** Mobile list: larger title, secondary line under the name, bigger visual. */
+  layout?: "columns" | "stacked"
 }
 
 export function ObjectDirectoryResultRow({
@@ -93,6 +95,7 @@ export function ObjectDirectoryResultRow({
   secondaryOverride = null,
   isSelected = false,
   denseInset = false,
+  layout = "columns",
 }: ObjectDirectoryResultRowProps) {
   const queryClient = useQueryClient()
   const [settingsOpen, setSettingsOpen] = useState(false)
@@ -171,7 +174,8 @@ export function ObjectDirectoryResultRow({
     <>
       <div
         className={cn(
-          "group relative flex min-h-[52px] w-full items-center gap-3 py-2",
+          "group relative flex w-full items-center gap-3",
+          layout === "stacked" ? "min-h-[72px] py-3" : "min-h-[52px] py-2",
           denseInset ? "px-1" : "px-4",
           isSelected ? "bg-gray-100" : "hover:bg-gray-50",
         )}
@@ -180,26 +184,43 @@ export function ObjectDirectoryResultRow({
         <button
           type="button"
           onClick={() => onSelect(item)}
-          className="flex min-w-0 flex-1 items-center gap-2.5 text-left"
+          className={cn(
+            "flex min-w-0 flex-1 text-left",
+            layout === "stacked" ? "items-center gap-3" : "items-center gap-2.5",
+          )}
         >
           <LeftVisual
             payload={item.display_payload ?? { title }}
             raw={item.raw}
             isProject={mode === "project"}
             isUser={mode === "user"}
-            compact
+            compact={layout !== "stacked"}
           />
-          <span className="min-w-0 flex-1 truncate text-[15px] leading-snug text-gray-900">{title}</span>
-          <span className="w-36 shrink-0 truncate text-right text-[15px] leading-snug text-gray-500">
-            {secondary}
-          </span>
+          {layout === "stacked" ? (
+            <span className="min-w-0 flex-1">
+              <span className="block truncate text-[16px] font-medium leading-snug text-gray-900">
+                {title}
+              </span>
+              <span className="mt-0.5 block truncate text-sm text-gray-400">{secondary}</span>
+            </span>
+          ) : (
+            <>
+              <span className="min-w-0 flex-1 truncate text-[15px] leading-snug text-gray-900">{title}</span>
+              <span className="w-36 shrink-0 truncate text-right text-[15px] leading-snug text-gray-500">
+                {secondary}
+              </span>
+            </>
+          )}
         </button>
         <DropdownMenu modal={false}>
           <DropdownMenuTrigger asChild>
             <button
               type="button"
               className={cn(
-                "inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-md text-gray-500 opacity-0 transition-opacity hover:bg-gray-200 hover:text-gray-800 group-hover:opacity-100 focus:opacity-100 data-[state=open]:opacity-100",
+                "inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-md text-gray-500 transition-opacity hover:bg-gray-200 hover:text-gray-800 focus:opacity-100 data-[state=open]:opacity-100",
+                layout === "stacked"
+                  ? "opacity-100"
+                  : "opacity-0 group-hover:opacity-100",
               )}
               aria-label="Item options"
               onClick={(event) => event.stopPropagation()}

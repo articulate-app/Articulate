@@ -60,10 +60,21 @@ export function buildMiddlePaneFocusParams(
   return next
 }
 
+/**
+ * Middle + right split with the left list hidden.
+ * Used when opening the right pane from an expanded middle pane (`focus=right`
+ * plus a real right view — start, AI, browser, entity, …).
+ */
+export function isMiddleRightSplitMode(searchParams: URLSearchParams): boolean {
+  if (!isTaskDetailsFocusContext(searchParams)) return false
+  const rightView = searchParams.get("rightView")
+  return Boolean(rightView && rightView !== "details")
+}
+
 /** Focused task details + AI split — hide task list, show details left and AI right. */
 export function isTaskDetailsAiSplitMode(searchParams: URLSearchParams): boolean {
   return (
-    isTaskDetailsFocusContext(searchParams)
+    isMiddleRightSplitMode(searchParams)
     && searchParams.get("rightView") === "ai"
     && searchParams.get("taskAiOpen") === "true"
   )
@@ -146,6 +157,10 @@ export function preserveTaskDetailsFocusWhenOpeningAi(current: URLSearchParams):
   next.set("taskAiOpen", "true")
   next.set("rightView", "ai")
   if (isTaskDetailsFocusContext(next) && hasTaskSelectionInUrl(next)) {
+    next.set("focus", "right")
+  }
+  // Expanded middle + Add to chat: keep left/sidebar collapsed via the split layout.
+  if (next.get("focus") === "middle") {
     next.set("focus", "right")
   }
   return next

@@ -1,10 +1,10 @@
 "use client"
 
-import { ReactNode, useState, cloneElement, useEffect, useCallback, useRef, useMemo } from "react"
+import { ReactNode, useState, cloneElement, useEffect, useLayoutEffect, useCallback, useRef, useMemo } from "react"
 import { TaskDetails } from "./TaskDetails"
 import type { SuggestionDetailsModel } from "./SuggestionDetails"
 import { normalizeTask } from "./task-cache-utils"
-import { Menu, X, ChevronRight, Calendar, PanelLeft, PanelRight, PanelRightOpen, Maximize2, Minimize2, ChevronDown, Search, LayoutGrid, List, Plus } from "lucide-react"
+import { Menu, X, ChevronRight, Calendar, PanelLeft, PanelRight, PanelRightOpen, Maximize2, Minimize2, ChevronDown, Search, LayoutGrid, List, Plus, ListFilter } from "lucide-react"
 import { cn } from "@/lib/utils"
 import type { Task } from '../../lib/types/tasks'
 import React from "react"
@@ -82,8 +82,11 @@ import { MobileObjectOptionsDrawer } from './mobile-object-options-drawer';
 import { MobileVerticalSplitLayout } from './mobile-vertical-split-layout';
 import { MobileTasksPaneContent } from './mobile-tasks-pane-content';
 import { MobileGlobalHeaderActions } from '../ui/mobile-global-header-actions';
-import { MobileAppHeader } from '../ui/mobile-app-header';
+import { MobileAppHeader, MOBILE_CIRCLE_BUTTON_CLASS } from '../ui/mobile-app-header';
+import { MobileFloatingSearch } from '../ui/mobile-floating-search';
 import { MobileTaskListToolbar } from './mobile-task-list-toolbar';
+import { MobileScopePills } from '../ui/mobile-scope-pills';
+import type { ProjectListScope } from '../../lib/project-list-scope';
 import { TaskFilters } from './TaskFilters';
 import { ResearchPane } from '../ResearchPane';
 import { ArtifactPane } from '../../../features/artifacts/ArtifactPane';
@@ -118,6 +121,7 @@ import { getCenterTemplateIdFromParams } from '../../lib/template-selection-url'
 import type { AiActiveFieldContext } from '../../../features/ai-chat/active-field-context';
 import { ProjectSEOSettings } from '../../../features/tasks/components/ProjectSEOSettings';
 import { GlobalSearchFullResultsPane } from '../search/global-search-full-results-pane';
+import { ArtifactDeletedDialog } from '../../../features/artifacts/artifact-deleted-dialog';
 import { GlobalSearchAllTabPane } from '../search/global-search-all-tab-pane';
 import { ActiveSearchChip } from "../search/active-search-chip";
 import { OBJECT_PANE_CHIP_ROW_CLASS } from "../search/object-pane-content";
@@ -149,7 +153,6 @@ import {
   type ResearchTab,
 } from "../../lib/center-pane-selection-url";
 import {
-  OPEN_GLOBAL_SEARCH_EVENT,
   OPEN_HEADER_CREATE_EVENT,
   OPEN_KEYWORD_RESEARCH_EVENT,
   OPEN_PROMPT_RESEARCH_EVENT,
@@ -195,7 +198,7 @@ import {
   parseTasksSplitViewState,
   type TasksSplitViewState,
 } from "../../lib/tasks-split-view-state";
-import { buildAiPaneFocusParams, buildMiddlePaneFocusParams, isAiPaneFocusMode, isMiddlePaneFocusMode, isTaskDetailsAiSplitMode, isTaskDetailsFocusContext, preserveTaskDetailsFocusWhenOpeningAi } from "./ai-pane-focus-url";
+import { buildAiPaneFocusParams, buildMiddlePaneFocusParams, isAiPaneFocusMode, isMiddlePaneFocusMode, isMiddleRightSplitMode, isTaskDetailsFocusContext, preserveTaskDetailsFocusWhenOpeningAi } from "./ai-pane-focus-url";
 import { clearSearchQuery, getCurrentObjectRoute, type SearchObjectRoute } from "../../lib/search-routing";
 import {
   getInitialSplitLayoutMountState,
@@ -213,6 +216,7 @@ import {
   reorderWorkspaceTabInPane,
 } from "../../lib/open-workspace-view";
 import {
+  applyCloseLeftPaneToSearchParams,
   getActiveLeftWorkspaceTab,
   getActiveMiddleWorkspaceTab,
   getActiveRightWorkspaceTab,
@@ -753,6 +757,15 @@ export function TasksLayout({
   // Measure the actual available space in the left-pane toolbar (not the viewport) so the object
   // switcher can adaptively show pills vs. overflow. `null` until measured -> compact fallback.
   const { ref: leftToolbarScrollRef, width: leftToolbarWidth } = useElementWidth<HTMLDivElement>();
+  const [collapseLeftListChrome, setCollapseLeftListChrome] = useState(false);
+  useLayoutEffect(() => {
+    if (leftToolbarWidth == null || leftToolbarWidth <= 0) return
+    setCollapseLeftListChrome((prev) => {
+      if (!prev && leftToolbarWidth < 140) return true
+      if (prev && leftToolbarWidth > 220) return false
+      return prev
+    })
+  }, [leftToolbarWidth]);
   const effectiveQuery = useMemo(() => {
     if (typeof window === "undefined") {
       return params.get("q")?.trim() ?? "";
@@ -874,6 +887,38 @@ export function TasksLayout({
   // Inline search state for task list
   const [isInlineSearchOpen, setIsInlineSearchOpen] = useState(false);
   const [inlineSearchValue, setInlineSearchValue] = useState('');
+  const mobileListSearchTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  const handleMobileListSearchChange = useCallback((value: string) => {
+    setInlineSearchValue(value)
+    setIsInlineSearchOpen(Boolean(value.trim()))
+    if (!isLeftObjectTasks) return
+    if (mobileListSearchTimeoutRef.current) clearTimeout(mobileListSearchTimeoutRef.current)
+    mobileListSearchTimeoutRef.current = setTimeout(() => {
+      setSearchValue(value)
+      const live =
+        typeof window !== "undefined"
+          ? new URLSearchParams(window.location.search)
+          : new URLSearchParams(params.toString())
+      if (value) live.set("q", value)
+      else live.delete("q")
+      shallowReplaceUrl(`${effectivePathname}?${live.toString()}`)
+    }, 280)
+  }, [effectivePathname, isLeftObjectTasks, params, setSearchValue, shallowReplaceUrl])
+
+  const handleMobileListSearchClear = useCallback(() => {
+    if (mobileListSearchTimeoutRef.current) clearTimeout(mobileListSearchTimeoutRef.current)
+    setInlineSearchValue("")
+    setIsInlineSearchOpen(false)
+    if (!isLeftObjectTasks) return
+    setSearchValue("")
+    const live =
+      typeof window !== "undefined"
+        ? new URLSearchParams(window.location.search)
+        : new URLSearchParams(params.toString())
+    live.delete("q")
+    shallowReplaceUrl(`${effectivePathname}?${live.toString()}`)
+  }, [effectivePathname, isLeftObjectTasks, params, setSearchValue, shallowReplaceUrl])
 
   // Duplicate task state
   const [isDuplicateTaskOpen, setIsDuplicateTaskOpen] = useState(false);
@@ -976,6 +1021,7 @@ export function TasksLayout({
   const effectiveOnSidebarToggle = sidebarContext?.onSidebarToggle ?? _onSidebarToggle;
   const effectiveSidebarCollapsed = isSidebarCollapsed;
   const aiFocusCollapsedSidebarRef = useRef(false);
+  const middleFocusCollapsedSidebarRef = useRef(false);
   const [mobileView, setMobileView] = useState<MobileViewMode>('list');
   const [mobileFilterOpen, setMobileFilterOpen] = useState(false);
   const [mobileOptionsOpen, setMobileOptionsOpen] = useState(false);
@@ -1005,6 +1051,16 @@ export function TasksLayout({
     const latestSearchParams = getLatestSearchParams()
     latestSearchParams.set("mentionsTab", nextTab)
     shallowReplaceSearchParams(effectivePathname, latestSearchParams, "mentions-tab-change")
+  }, [effectivePathname, getLatestSearchParams])
+  const projectsTab = useMemo((): ProjectListScope => {
+    const raw = params.get("projectsTab")
+    return raw === "created" || raw === "shared" ? raw : "all"
+  }, [params])
+  const handleProjectsTabChange = useCallback((nextTab: ProjectListScope) => {
+    const latestSearchParams = getLatestSearchParams()
+    if (nextTab === "all") latestSearchParams.delete("projectsTab")
+    else latestSearchParams.set("projectsTab", nextTab)
+    shallowReplaceSearchParams(effectivePathname, latestSearchParams, "projects-tab-change")
   }, [effectivePathname, getLatestSearchParams])
 
   // Only sync Zustand state from URL on initial mount (never set selectedTaskId from URL after mount)
@@ -3789,11 +3845,32 @@ export function TasksLayout({
     }
   }, [effectiveOnSidebarToggle, effectivePathname, effectiveSidebarCollapsed, getLatestSearchParams])
 
+  const collapseSidebarForMiddleFocus = useCallback(() => {
+    if (effectiveSidebarCollapsed === false && typeof effectiveOnSidebarToggle === "function") {
+      middleFocusCollapsedSidebarRef.current = true
+      effectiveOnSidebarToggle()
+    }
+  }, [effectiveOnSidebarToggle, effectiveSidebarCollapsed])
+
+  const restoreSidebarAfterMiddleFocus = useCallback(() => {
+    if (
+      middleFocusCollapsedSidebarRef.current &&
+      effectiveSidebarCollapsed === true &&
+      typeof effectiveOnSidebarToggle === "function"
+    ) {
+      middleFocusCollapsedSidebarRef.current = false
+      effectiveOnSidebarToggle()
+      return
+    }
+    middleFocusCollapsedSidebarRef.current = false
+  }, [effectiveOnSidebarToggle, effectiveSidebarCollapsed])
+
   const handleExpandDetailsPane = useCallback(() => {
     const latestParams = getLatestSearchParams()
     const currentlyFocused = isMiddlePaneFocusMode(latestParams)
     const nextParams = buildMiddlePaneFocusParams(latestParams, !currentlyFocused)
     if (currentlyFocused) {
+      restoreSidebarAfterMiddleFocus()
       const group = newLayoutDesktopPanelGroupRef.current
       if (group && detailsPaneExpandedLayoutBackupRef.current) {
         const restored = detailsPaneExpandedLayoutBackupRef.current
@@ -3805,6 +3882,7 @@ export function TasksLayout({
       detailsPaneExpandedLayoutBackupRef.current = null
       setIsDetailsPaneExpandedMax(false)
     } else {
+      collapseSidebarForMiddleFocus()
       const group = newLayoutDesktopPanelGroupRef.current
       if (group && !detailsPaneExpandedLayoutBackupRef.current) {
         const layout = group.getLayout()
@@ -3823,7 +3901,12 @@ export function TasksLayout({
       }
     }
     shallowReplaceSearchParams(effectivePathname, nextParams, "middle-pane-focus-toggle")
-  }, [effectivePathname, getLatestSearchParams])
+  }, [
+    collapseSidebarForMiddleFocus,
+    effectivePathname,
+    getLatestSearchParams,
+    restoreSidebarAfterMiddleFocus,
+  ])
 
   const handleExpandRightPane = useCallback(() => {
     const latestParams = getLatestSearchParams()
@@ -3914,6 +3997,28 @@ export function TasksLayout({
     shallowReplaceSearchParams(effectivePathname, nextParams, "right-pane-close")
   }, [closeRightPaneTab, effectivePathname, getLatestSearchParams, setRightPaneActiveKey])
 
+  const handleCloseLeftPane = useCallback(() => {
+    closeAllLeftPaneTabs()
+    const latest = getLatestSearchParams()
+    const nextParams = applyCloseLeftPaneToSearchParams(latest)
+    const middleOpen = Boolean(getActiveMiddleWorkspaceTab(nextParams))
+    const rightOpen =
+      latest.get("taskAiOpen") === "true" || Boolean(getActiveRightWorkspaceTab(latest))
+    if (!middleOpen && !rightOpen) {
+      nextParams.set("centerView", "start")
+      const layout = new Set((nextParams.get("layout") || "middle").split(",").filter(Boolean))
+      layout.add("middle")
+      nextParams.set("layout", Array.from(layout).join(","))
+    }
+    shallowReplaceSearchParams(effectivePathname, nextParams, "left-pane-close")
+    if (!middleOpen && !rightOpen) {
+      openWorkspaceView(
+        { type: "start", title: "New" },
+        { pane: "middle", pathname: effectivePathname, source: "left-pane-close-seed-middle" },
+      )
+    }
+  }, [closeAllLeftPaneTabs, effectivePathname, getLatestSearchParams])
+
   // Sync mobile task detail state with URL
   useEffect(() => {
     if (isMobile && selectedTaskId) {
@@ -3951,11 +4056,19 @@ export function TasksLayout({
       : new URLSearchParams(params.toString())
   const isAiFocusModeEnabled = isAiPaneFocusMode(liveFocusParams)
   const isDetailsFocusModeEnabled = isMiddlePaneFocusMode(liveFocusParams)
-  const isTaskDetailsAiSplitModeEnabled = isTaskDetailsAiSplitMode(liveFocusParams)
+  const isMiddleRightSplitModeEnabled = isMiddleRightSplitMode(liveFocusParams)
   const isRightPaneSoloLayout =
     liveFocusParams.get("layout") === "right" && !isAiFocusModeEnabled
+  const liveLayoutPanes = (liveFocusParams.get("layout") || "left,middle").split(",").filter(Boolean)
+  const isLeftPaneClosed =
+    !isMobile &&
+    !isAiFocusModeEnabled &&
+    !isDetailsFocusModeEnabled &&
+    !isMiddleRightSplitModeEnabled &&
+    !isRightPaneSoloLayout &&
+    !liveLayoutPanes.includes("left")
   const isLeftPaneHiddenInDesktopSplit =
-    isAiFocusModeEnabled || isDetailsFocusModeEnabled || isTaskDetailsAiSplitModeEnabled || isRightPaneSoloLayout
+    isAiFocusModeEnabled || isDetailsFocusModeEnabled || isMiddleRightSplitModeEnabled || isRightPaneSoloLayout || isLeftPaneClosed
   useEffect(() => {
     if (!isAiFocusModeEnabled) {
       setHasMountedSplitLayout(true)
@@ -3967,6 +4080,19 @@ export function TasksLayout({
       effectiveOnSidebarToggle()
     }
   }, [effectiveOnSidebarToggle, effectiveSidebarCollapsed, isAiFocusModeEnabled])
+  useEffect(() => {
+    if (!isDetailsFocusModeEnabled) return
+    if (effectiveSidebarCollapsed === false && typeof effectiveOnSidebarToggle === "function") {
+      middleFocusCollapsedSidebarRef.current = true
+      effectiveOnSidebarToggle()
+    }
+  }, [effectiveOnSidebarToggle, effectiveSidebarCollapsed, isDetailsFocusModeEnabled])
+  useEffect(() => {
+    if (!isMiddleRightSplitModeEnabled || !middleFocusCollapsedSidebarRef.current) return
+    if (effectiveSidebarCollapsed === false && typeof effectiveOnSidebarToggle === "function") {
+      effectiveOnSidebarToggle()
+    }
+  }, [effectiveOnSidebarToggle, effectiveSidebarCollapsed, isMiddleRightSplitModeEnabled])
   useEffect(() => {
     if (!isAiFocusModeEnabled && !isRightPaneSoloLayout) return
     const group = newLayoutDesktopPanelGroupRef.current
@@ -3996,7 +4122,7 @@ export function TasksLayout({
     setIsDetailsPaneExpandedMax(true)
   }, [isDetailsFocusModeEnabled])
   useEffect(() => {
-    if (!isTaskDetailsAiSplitModeEnabled) return
+    if (!isMiddleRightSplitModeEnabled) return
     const group = newLayoutDesktopPanelGroupRef.current
     if (!group) return
     const current = group.getLayout()
@@ -4022,9 +4148,39 @@ export function TasksLayout({
     setIsAiPaneExpandedMax(false)
     // Intentionally omit detailsPanelPercent: onResize already updates it; depending on it
     // re-enters setLayout and can infinite-loop on float drift from the panel group.
-  }, [isTaskDetailsAiSplitModeEnabled])
+  }, [isMiddleRightSplitModeEnabled])
+  const wasLeftPaneClosedRef = useRef(false)
+  useEffect(() => {
+    const group = newLayoutDesktopPanelGroupRef.current
+    if (!group) return
+    const current = group.getLayout()
+    if (current.length < 3) return
+    if (isLeftPaneClosed) {
+      wasLeftPaneClosedRef.current = true
+      if ((current[0] ?? 0) === 0) return
+      const nextDetails = (current[1] ?? 0) + (current[0] ?? 0)
+      group.setLayout([0, nextDetails, current[2] ?? 0])
+      setMainPanelPercent(0)
+      setDetailsPanelPercent(nextDetails)
+      return
+    }
+    if (!wasLeftPaneClosedRef.current) return
+    wasLeftPaneClosedRef.current = false
+    if ((current[0] ?? 0) >= 20) return
+    const nextLeft = 30
+    const nextDetails = Math.max(20, (current[1] ?? 50) - 15)
+    const nextAi = Math.max(0, 100 - nextLeft - nextDetails)
+    group.setLayout([nextLeft, nextDetails, nextAi])
+    setMainPanelPercent(nextLeft)
+    setDetailsPanelPercent(nextDetails)
+    setAiPanelPercent(nextAi)
+  }, [isLeftPaneClosed])
   useEffect(() => {
     if (isDetailsFocusModeEnabled || !isDetailsPaneExpandedMax) return
+    // Open right pane / Add to chat from expanded middle: stay in the middle+right split.
+    // Do not restore the app sidebar or the left list pane.
+    if (isMiddleRightSplitModeEnabled) return
+    restoreSidebarAfterMiddleFocus()
     const group = newLayoutDesktopPanelGroupRef.current
     if (!group) {
       setIsDetailsPaneExpandedMax(false)
@@ -4040,7 +4196,12 @@ export function TasksLayout({
     }
     detailsPaneExpandedLayoutBackupRef.current = null
     setIsDetailsPaneExpandedMax(false)
-  }, [isDetailsFocusModeEnabled, isDetailsPaneExpandedMax])
+  }, [
+    isDetailsFocusModeEnabled,
+    isDetailsPaneExpandedMax,
+    isMiddleRightSplitModeEnabled,
+    restoreSidebarAfterMiddleFocus,
+  ])
 
   // Keep the right-pane tab store in sync with entity workspace views (pane-neutral).
   // Must run before any early return so hook order stays stable across loading → ready.
@@ -4241,6 +4402,21 @@ export function TasksLayout({
     const mobileDetailTitle = mobileObjectDetailTarget
       ? "Details"
       : ((selectedTaskData as { title?: string } | null)?.title || "Task")
+    void tasksShallowUrlEpoch
+    const mobileLiveSearch =
+      typeof window !== "undefined"
+        ? new URLSearchParams(window.location.search)
+        : new URLSearchParams(params.toString())
+    const mobileLeftWorkspaceTab = getActiveLeftWorkspaceTab(mobileLiveSearch)
+    const mobileMiddleWorkspaceTab = getActiveMiddleWorkspaceTab(mobileLiveSearch)
+    const isMobileTemplateList = mobileLeftWorkspaceTab?.type === "template-list"
+    const isMobileTemplateDetail = mobileMiddleWorkspaceTab?.type === "template"
+    const showMobileTemplates = isMobileTemplateList || isMobileTemplateDetail
+    const mobileListHeaderTitle = isMobileTemplateDetail
+      ? mobileMiddleWorkspaceTab.title || "Template"
+      : isMobileTemplateList
+        ? "Templates"
+        : undefined
     const renderMobileTasksPane = (view: MobileViewMode, splitBottom = false) => (
       <MobileTasksPaneContent
         variant={splitBottom ? "split-bottom" : "default"}
@@ -4269,60 +4445,95 @@ export function TasksLayout({
     return (
       <div className="flex h-dvh min-h-0 w-full flex-col overflow-x-clip bg-white">
         <MobileAppHeader
-          onBack={mobileObjectDetailTarget ? handleCloseDetails : undefined}
-          onCreate={showMobileDetail ? undefined : () => setMobileCreateOpen(true)}
-          title={mobileObjectDetailTarget ? mobileDetailTitle : undefined}
+          onBack={
+            mobileObjectDetailTarget || isMobileTemplateDetail
+              ? handleCloseDetails
+              : undefined
+          }
+          title={
+            mobileObjectDetailTarget
+              ? mobileDetailTitle
+              : showMobileTemplates
+                ? mobileListHeaderTitle
+                : undefined
+          }
           center={
-            showMobileDetail ? undefined : (
-              <div className="flex min-w-0 flex-1 items-baseline justify-center gap-2 px-1">
-                <LeftObjectSwitcher
-                  value={leftObject}
-                  onChange={navigateToLeftObject}
-                  className="h-7 px-2.5 text-xs font-normal"
-                  forceCompact
-                />
-              </div>
+            showMobileDetail || showMobileTemplates ? undefined : (
+              <LeftObjectSwitcher
+                value={leftObject}
+                onChange={navigateToLeftObject}
+                className="justify-center"
+                forceCompact
+                variant="title"
+              />
             )
           }
           actions={
-            <MobileGlobalHeaderActions
-              onOpenAiPane={() => handleTaskAiPaneOpenChange(true)}
-              onOpenKeywordResearch={() => setIsResearchOpen(true)}
-              onOpenMoreOptions={() => setMobileOptionsOpen(true)}
-              isKeywordResearchOpen={isResearchOpen}
-            />
+            showMobileDetail || showMobileTemplates ? (
+              <MobileGlobalHeaderActions
+                onOpenAiPane={() => handleTaskAiPaneOpenChange(true)}
+                onOpenKeywordResearch={() => setIsResearchOpen(true)}
+                onOpenMoreOptions={() => setMobileOptionsOpen(true)}
+                isKeywordResearchOpen={isResearchOpen}
+              />
+            ) : (
+              <>
+                {isLeftObjectTasks ? (
+                  <button
+                    type="button"
+                    onClick={handleMobileFilterClick}
+                    className={MOBILE_CIRCLE_BUTTON_CLASS}
+                    aria-label="Filter tasks"
+                  >
+                    <ListFilter className="h-5 w-5" strokeWidth={1.75} />
+                  </button>
+                ) : null}
+                <button
+                  type="button"
+                  onClick={() => setMobileCreateOpen(true)}
+                  className={MOBILE_CIRCLE_BUTTON_CLASS}
+                  aria-label="Create"
+                >
+                  <Plus className="h-5 w-5" strokeWidth={1.75} />
+                </button>
+                <MobileGlobalHeaderActions
+                  onOpenAiPane={() => handleTaskAiPaneOpenChange(true)}
+                  onOpenKeywordResearch={() => setIsResearchOpen(true)}
+                  onOpenMoreOptions={() => setMobileOptionsOpen(true)}
+                  isKeywordResearchOpen={isResearchOpen}
+                />
+              </>
+            )
           }
         />
-        {!showMobileDetail ? (
+        {!showMobileDetail && !showMobileTemplates ? (
           <>
-            <button
-              type="button"
-              onClick={() => window.dispatchEvent(new Event(OPEN_GLOBAL_SEARCH_EVENT))}
-              className="mx-3 mb-2 flex h-10 shrink-0 items-center gap-2 rounded-md border border-gray-200 bg-white px-3 text-left"
-              aria-label="Open search"
-            >
-              <Search className="h-4 w-4 shrink-0 text-gray-400" />
-              <span
-                className={cn(
-                  "min-w-0 flex-1 truncate text-base",
-                  globalSearch?.committedQuery ? "text-gray-900" : "text-gray-400",
-                )}
-              >
-                {globalSearch?.committedQuery || "Search all"}
-              </span>
-            </button>
             {isLeftObjectTasks ? (
               <MobileTaskListToolbar
                 filters={filters}
-                setFilters={setFilters}
                 commitFilters={commitFilters}
-                viewMode={mobileView}
-                onViewChange={handleMobileViewChange}
-                editFields={memoizedEditFields}
-                filterOptions={mergedListFilterOptions}
-                router={router}
-                pathname={pathname}
-                params={new URLSearchParams(params.toString())}
+              />
+            ) : null}
+            {leftObject === "projects" ? (
+              <MobileScopePills
+                options={[
+                  { id: "all", label: "All" },
+                  { id: "created", label: "Created by you" },
+                  { id: "shared", label: "Shared with you" },
+                ] as const}
+                value={projectsTab}
+                onChange={handleProjectsTabChange}
+              />
+            ) : null}
+            {leftObject === "mentions" ? (
+              <MobileScopePills
+                options={[
+                  { id: "received", label: "Received" },
+                  { id: "sent", label: "Sent" },
+                  { id: "unseen", label: "Unseen" },
+                ] as const}
+                value={mentionsTab}
+                onChange={handleMentionsTabChange}
               />
             ) : null}
             {isLeftObjectTasks && mobileView === "list"
@@ -4347,8 +4558,20 @@ export function TasksLayout({
               : null}
           </>
         ) : null}
-        <div className="flex min-h-0 flex-1 flex-col overflow-hidden">
-          {mobileObjectDetailTarget ? (
+        <div className="relative flex min-h-0 flex-1 flex-col overflow-hidden">
+          {isMobileTemplateDetail && mobileMiddleWorkspaceTab ? (
+            <div className="h-full min-h-0 overflow-hidden">
+              <WorkspaceViewRenderer
+                tab={mobileMiddleWorkspaceTab}
+                paneId="middle"
+                onCloseTab={handleCloseDetails}
+              />
+            </div>
+          ) : isMobileTemplateList && mobileLeftWorkspaceTab ? (
+            <div className="h-full min-h-0 overflow-hidden">
+              <WorkspaceViewRenderer tab={mobileLeftWorkspaceTab} paneId="left" />
+            </div>
+          ) : mobileObjectDetailTarget ? (
             <div className="h-full overflow-auto">
               <GlobalSearchDetailsPane
                 target={mobileObjectDetailTarget}
@@ -4373,12 +4596,14 @@ export function TasksLayout({
             <div className="h-full min-h-0 overflow-hidden">
               {globalSearch ? (
                 <GlobalSearchFullResultsPane
-                  query={globalSearch.committedQuery}
+                  query={inlineSearchValue}
                   activeTab={leftObjectSearchTab}
                   viewScope={effectiveObjectRoute}
                   onResultSelect={globalSearch.openSearchResult}
                   getQueryKey={globalSearch.getFullResultsQueryKey}
                   fetchPage={globalSearch.fetchFullResultsPage}
+                  directoryMode={leftObject === "projects" || leftObject === "users"}
+                  comfortableRows
                 />
               ) : (
                 <div className="flex h-full items-center justify-center px-4 text-xs text-gray-500">
@@ -4401,8 +4626,18 @@ export function TasksLayout({
               }
             />
           ) : (
-            renderMobileTasksPane(mobileView)
+            <div className="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden">
+              {renderMobileTasksPane(mobileView)}
+            </div>
           )}
+          {!showMobileDetail && !showMobileTemplates ? (
+            <MobileFloatingSearch
+              placeholder={`Search ${leftPaneObjectLabel(leftObject).toLowerCase()}`}
+              value={inlineSearchValue}
+              onChange={handleMobileListSearchChange}
+              onClear={handleMobileListSearchClear}
+            />
+          ) : null}
         </div>
 
         {/* AI pane — full-screen overlay on mobile. Reuses the same AiPane component and AI thread
@@ -4476,6 +4711,8 @@ export function TasksLayout({
           </ResizableBottomSheet>
         )}
 
+        <ArtifactDeletedDialog />
+
         {/* Mobile object options "..." drawer — surfaces the same desktop toolbar controls
             (view mode, group by, filters, AI suggestions, date field, multiselect) for the active object. */}
         <MobileObjectOptionsDrawer
@@ -4523,6 +4760,8 @@ export function TasksLayout({
           }
           mentionsTab={mentionsTab}
           onMentionsTabChange={handleMentionsTabChange}
+          onOpenAiPane={() => handleTaskAiPaneOpenChange(true)}
+          onOpenResearch={() => setIsResearchOpen(true)}
         />
       </div>
     );
@@ -4625,7 +4864,7 @@ export function TasksLayout({
     (!!activeMiddleWorkspaceTab ||
       isThreadChatRequested ||
       isDetailsFocusModeEnabled ||
-      isTaskDetailsAiSplitModeEnabled ||
+      isMiddleRightSplitModeEnabled ||
       !!selectedTaskId ||
       !!globalSearch?.selectedDetailTarget ||
       hasCenterPaneSelectionFromParams ||
@@ -4674,7 +4913,7 @@ export function TasksLayout({
   })()
   const aiPaneFocusChrome = getAiPaneFocusLayoutChrome({
     isAiFocusModeEnabled: isAiFocusModeEnabled || isDetailsFocusModeEnabled,
-    isTaskDetailsAiSplitMode: isTaskDetailsAiSplitModeEnabled,
+    isTaskDetailsAiSplitMode: isMiddleRightSplitModeEnabled,
     showDetailsPanel,
     showAiPanel: showRightToolPanel,
   })
@@ -4884,7 +5123,7 @@ export function TasksLayout({
     // Never fall through to tasksView calendar/kanban (that was swapping the left pane on mention open).
     if (!isLeftObjectTasks) {
       // Prefer the inline draft so filtering is instant while typing (no URL/RPC round-trip).
-      const objectListQuery = isInlineSearchOpen ? inlineSearchValue : ""
+      const objectListQuery = inlineSearchValue
       return (
         <div className="flex h-full min-h-0 flex-col">
           {renderPaneToolbar("list", "single")}
@@ -5237,6 +5476,20 @@ export function TasksLayout({
         isExpanded={isDetailsFocusModeEnabled || isDetailsPaneExpandedMax}
         onExpand={handleExpandDetailsPane}
         onClosePane={handleCloseMiddlePane}
+        onOpenLeftPane={
+          isLeftPaneClosed
+            ? () => {
+                openWorkspaceView(
+                  { type: "start", title: "New" },
+                  {
+                    pane: "left",
+                    pathname: effectivePathname,
+                    source: "center-tab-open-left-pane",
+                  },
+                )
+              }
+            : undefined
+        }
         onOpenActiveInOtherPane={() => {
           openActiveWorkspaceTabInOtherPane("middle", {
             pathname: effectivePathname,
@@ -5256,7 +5509,7 @@ export function TasksLayout({
           reorderWorkspaceTabInPane("middle", tabKey, meta?.beforeKey)
         }}
         onOpenRightPane={
-          !showRightToolPanel && !isMobile
+          !isMobile && (!showRightToolPanel || isDetailsFocusModeEnabled)
             ? () => {
                 openWorkspaceView(
                   { type: "start", title: "New" },
@@ -5713,6 +5966,20 @@ export function TasksLayout({
         isExpanded={isAiFocusModeEnabled || isRightPaneSoloLayout || isAiPaneExpandedMax}
         onExpand={handleExpandRightPane}
         onClosePane={handleCloseRightPane}
+        onOpenLeftPane={
+          isLeftPaneClosed && !showDetailsPanel
+            ? () => {
+                openWorkspaceView(
+                  { type: "start", title: "New" },
+                  {
+                    pane: "left",
+                    pathname: effectivePathname,
+                    source: "right-tab-open-left-pane",
+                  },
+                )
+              }
+            : undefined
+        }
         pathname={effectivePathname}
         searchValue={globalSearch?.committedQuery ?? ""}
         onSearchChange={globalSearch?.setDraftQuery}
@@ -5866,6 +6133,7 @@ export function TasksLayout({
           onReorderTab={(tabKey, meta) => {
             reorderWorkspaceTabInPane("left", tabKey, meta?.beforeKey)
           }}
+          onClosePane={handleCloseLeftPane}
           isExpanded={focus === "left"}
           onExpand={() => {
             if (focus === "left") {
@@ -5938,7 +6206,7 @@ export function TasksLayout({
           onResize={setMainPanelPercent}
           className={cn(
             // Border on the scrolling pane so the scrollbar sits flush against it (not inset from a sibling border-l).
-            aiPaneFocusChrome.showPrimaryDivider && "border-r border-gray-200",
+            aiPaneFocusChrome.showPrimaryDivider && !isLeftPaneClosed && "border-r border-gray-200",
           )}
         >
           <div className={cn("h-full min-h-0", isLeftPaneHiddenInDesktopSplit ? "pointer-events-none invisible" : "visible")}>
@@ -5948,7 +6216,7 @@ export function TasksLayout({
         <PanelResizeHandle
           className={cn(
             "w-px bg-transparent hover:bg-gray-300 transition-colors",
-            aiPaneFocusChrome.showPrimaryDivider ? "block" : "hidden",
+            aiPaneFocusChrome.showPrimaryDivider && !isLeftPaneClosed ? "block" : "hidden",
           )}
         />
         <Panel
@@ -5956,7 +6224,7 @@ export function TasksLayout({
           minSize={
             showDetailsPanel
               ? isAiFocusModeEnabled || isLeftPaneHiddenInDesktopSplit
-                ? isTaskDetailsAiSplitModeEnabled
+                ? isMiddleRightSplitModeEnabled
                   ? 25
                   : 0
                 : (isAiPaneExpandedMax ? 8 : isDetailsPaneExpandedMax ? 18 : 15)
@@ -5986,7 +6254,7 @@ export function TasksLayout({
                 ? 0
                 : isDetailsFocusModeEnabled
                   ? 0
-                  : isTaskDetailsAiSplitModeEnabled
+                  : isMiddleRightSplitModeEnabled
                     ? 25
                     : isAiPaneExpandedMax
                       ? 50
@@ -6022,6 +6290,7 @@ export function TasksLayout({
         />
 
         <SettingsPanel open={isSettingsOpen} onClose={closeSettings} />
+        <ArtifactDeletedDialog />
 
       </div>
     );
@@ -6160,7 +6429,7 @@ export function TasksLayout({
 
                     {showChromeActions ? (
                       <div className="flex shrink-0 items-center gap-0.5">
-                        {isLeftObjectTasks ? (
+                        {!collapseLeftListChrome && isLeftObjectTasks ? (
                           <FilterCascadingDropdown
                             editFields={editFields}
                             filterOptions={mergedListFilterOptions}
@@ -6173,7 +6442,7 @@ export function TasksLayout({
                             className="shrink-0"
                           />
                         ) : null}
-                        {!isInlineSearchOpen ? (
+                        {!collapseLeftListChrome && !isInlineSearchOpen ? (
                         <button
                           type="button"
                           className={cn(expandButton, "ml-0 shrink-0")}
@@ -6192,6 +6461,32 @@ export function TasksLayout({
                           ariaLabel="More list options"
                           triggerClassName="h-7 w-7"
                         >
+                          {collapseLeftListChrome && isLeftObjectTasks ? (
+                            <FilterCascadingDropdown
+                              editFields={editFields}
+                              filterOptions={mergedListFilterOptions}
+                              filters={filters}
+                              setFilters={setFilters}
+                              router={router}
+                              pathname={pathname}
+                              params={new URLSearchParams(params.toString())}
+                              variant="submenu"
+                            />
+                          ) : null}
+                          {collapseLeftListChrome && !isInlineSearchOpen ? (
+                            <DropdownMenuItem
+                              onSelect={() => {
+                                setIsInlineSearchOpen(true)
+                                setInlineSearchValue("")
+                              }}
+                            >
+                              <Search className="mr-2 h-4 w-4" />
+                              Search
+                            </DropdownMenuItem>
+                          ) : null}
+                          {collapseLeftListChrome && (isLeftObjectTasks || leftObject === "mentions") ? (
+                            <DropdownMenuSeparator />
+                          ) : null}
                           {leftObject === "mentions" ? (
                             <>
                               <DropdownMenuItem onClick={() => handleMentionsTabChange("received")}>
@@ -6828,6 +7123,7 @@ export function TasksLayout({
         </div>
       )}
 
+      <ArtifactDeletedDialog />
     </div>
   );
 }

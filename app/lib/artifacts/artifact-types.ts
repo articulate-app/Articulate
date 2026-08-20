@@ -128,6 +128,9 @@ export type ArtifactVersionSummary = {
   title: string | null
   status: string | null
   content_preview: string | null
+  previous_content_preview: string | null
+  insert_count: number
+  delete_count: number
   asset_count: number
   is_current: boolean
 }

@@ -91,6 +91,61 @@ export type ProjectDesignTemplate = {
   created_at: string
 }
 
+function newDesignTemplateId(): string {
+  if (typeof crypto !== "undefined" && typeof crypto.randomUUID === "function") {
+    return crypto.randomUUID()
+  }
+  return `tpl-${Date.now().toString(36)}`
+}
+
+/** Build a URL/link template card (project or personal). */
+export function buildLinkDesignTemplate(args: {
+  url: string
+  title?: string | null
+  notes?: string | null
+}): ProjectDesignTemplate {
+  const url = args.url.trim()
+  let hostname: string | null = null
+  try {
+    hostname = new URL(url).hostname.replace(/^www\./, "")
+  } catch {
+    /* ignore */
+  }
+  const lowerUrl = url.toLowerCase()
+  const looksLikeHtml =
+    lowerUrl.endsWith(".html")
+    || lowerUrl.endsWith(".htm")
+    || lowerUrl.includes(".html?")
+    || lowerUrl.includes(".htm?")
+  const looksLikeDocx =
+    lowerUrl.endsWith(".docx")
+    || lowerUrl.endsWith(".doc")
+    || lowerUrl.includes(".docx?")
+    || lowerUrl.includes(".doc?")
+  const title = args.title?.trim() || hostname || url
+  return {
+    id: newDesignTemplateId(),
+    title,
+    notes: args.notes?.trim() || null,
+    assets: [
+      {
+        id: newDesignTemplateId(),
+        media_type: looksLikeHtml ? "html" : looksLikeDocx ? "docx" : "url",
+        title,
+        url,
+        storage_path: null,
+        mime_type: looksLikeHtml
+          ? "text/html"
+          : looksLikeDocx
+            ? "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+            : null,
+      },
+    ],
+    source_artifact_id: null,
+    created_at: new Date().toISOString(),
+  }
+}
+
 /** Known stock / photography libraries teams often approve for creatives. */
 export type ProjectApprovedImageBankProvider =
   | "istock"

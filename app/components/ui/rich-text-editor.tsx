@@ -78,6 +78,11 @@ interface LegacyRichTextEditorProps {
   collaborationDocument?: import("yjs").Doc | null;
   collaborationAwareness?: import("y-protocols/awareness").Awareness | null;
   collaborationUser?: { name: string; color: string } | null;
+  collabConflicts?: import("../../lib/collaboration/collab-conflict").CollabConflictSpan[];
+  onResolveCollabConflict?: (
+    id: string,
+    choice: import("../../lib/collaboration/collab-conflict").CollabConflictChoice,
+  ) => void;
 }
 
 function stripHtmlToText(html: string): string {
@@ -122,6 +127,8 @@ export function RichTextEditor({
   collaborationDocument = null,
   collaborationAwareness = null,
   collaborationUser = null,
+  collabConflicts,
+  onResolveCollabConflict,
 }: LegacyRichTextEditorProps) {
   const wrapperRef = React.useRef<HTMLDivElement | null>(null);
   const lastKnownValueRef = React.useRef<string>(value ?? "");
@@ -202,6 +209,8 @@ export function RichTextEditor({
         collaborationDocument={collaborationDocument}
         collaborationAwareness={collaborationAwareness}
         collaborationUser={collaborationUser}
+        collabConflicts={collabConflicts}
+        onResolveCollabConflict={onResolveCollabConflict}
         className={`flex flex-col ${autoGrow ? "h-auto" : "h-full min-h-0"} ${editorWrapperClassName ?? ""}`}
         editorClassName={editorClassName}
         onAIAction={onAiActionClick ? handleAIAction : undefined}

@@ -77,6 +77,7 @@ export function MentionsFullResultsPane({
   filterQuery = "",
   embedInParentScroll = false,
   scrollRootRef = null,
+  comfortableRows = false,
 }: {
   onResultSelect: (item: GlobalSearchDocument) => void
   viewScope: string
@@ -85,6 +86,7 @@ export function MentionsFullResultsPane({
   /** Parent page owns the single scrollbar (Inbox page layout). */
   embedInParentScroll?: boolean
   scrollRootRef?: RefObject<HTMLElement | null> | null
+  comfortableRows?: boolean
 }) {
   const searchParams = useSearchParams()
   const queryClient = useQueryClient()
@@ -215,6 +217,7 @@ export function MentionsFullResultsPane({
                 key={`${viewScope}:list:mention:${String(item.entity_id ?? item.title)}:${group.label}:${index}`}
                 item={item}
                 onSelect={handleMentionSelect}
+                density={comfortableRows ? "comfortable" : "compact"}
                 className={embedInParentScroll ? "h-auto min-h-10 px-1 py-2" : undefined}
               />
             ))}

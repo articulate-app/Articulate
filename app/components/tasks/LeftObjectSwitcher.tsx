@@ -30,6 +30,7 @@ export function LeftObjectSwitcher({
   containerWidth,
   isTaskView = false,
   forceCompact = false,
+  variant = "default",
 }: {
   value: LeftPaneObject
   onChange: (nextValue: LeftPaneObject) => void
@@ -40,6 +41,8 @@ export function LeftObjectSwitcher({
   isTaskView?: boolean
   /** Force the compact single-dropdown layout regardless of width (e.g. mobile header). */
   forceCompact?: boolean
+  /** `title` renders the active object as a centered page heading (mobile list chrome). */
+  variant?: "default" | "title"
 }) {
   const [open, setOpen] = useState(false)
 
@@ -69,10 +72,14 @@ export function LeftObjectSwitcher({
           <button
             type="button"
             className={cn(
-              AI_PANE_TAB_CHIP_CLASS,
-              "max-w-none",
-              activeInOverflow ? AI_PANE_TAB_ACTIVE_CLASS : AI_PANE_TAB_INACTIVE_CLASS,
-              "font-normal",
+              variant === "title"
+                ? "inline-flex max-w-full items-center justify-center gap-0.5 text-[15px] font-semibold tracking-tight text-gray-900"
+                : cn(
+                    AI_PANE_TAB_CHIP_CLASS,
+                    "max-w-none",
+                    activeInOverflow ? AI_PANE_TAB_ACTIVE_CLASS : AI_PANE_TAB_INACTIVE_CLASS,
+                    "font-normal",
+                  ),
             )}
             aria-label={
               state.mode === "dropdown"
@@ -86,7 +93,7 @@ export function LeftObjectSwitcher({
             <span className="truncate">
               {state.mode === "dropdown" ? leftPaneObjectLabel(value) : overflowLabel}
             </span>
-            <ChevronDown className="h-3.5 w-3.5 shrink-0 opacity-70" />
+            <ChevronDown className={cn("shrink-0 opacity-50", variant === "title" ? "h-4 w-4" : "h-3.5 w-3.5")} />
           </button>
         </DropdownMenuTrigger>
       </IconTooltip>

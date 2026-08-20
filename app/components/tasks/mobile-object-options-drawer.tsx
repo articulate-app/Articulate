@@ -16,6 +16,7 @@ import {
   MobileSplitOverflowHost,
   pickOverflowMenuChild,
 } from "./mobile-split-overflow-host"
+import { useArtifactDeletedStore } from "../../store/artifact-deleted-store"
 
 type MentionsTab = "received" | "sent" | "unseen"
 
@@ -59,6 +60,8 @@ export interface MobileObjectOptionsDrawerProps {
   // Mentions sub-tab -------------------------------------------------------------------------------
   mentionsTab: string
   onMentionsTabChange: (tab: MentionsTab) => void
+  onOpenAiPane?: () => void
+  onOpenResearch?: () => void
 }
 
 /** Level-1 row: a tappable category that either drills into a value list or fires an action. */
@@ -295,6 +298,33 @@ export function MobileObjectOptionsDrawer(props: MobileObjectOptionsDrawerProps)
     isTasks && category
       ? categoryTitle[category]
       : `${leftPaneObjectLabel(object)} options`
+
+  const renderToolRows = () => {
+    if (!props.onOpenAiPane && !props.onOpenResearch) return null
+    return (
+      <>
+        <SectionLabel>Tools</SectionLabel>
+        {props.onOpenAiPane ? (
+          <CategoryRow
+            label="AI pane"
+            onClick={() => {
+              onClose()
+              props.onOpenAiPane?.()
+            }}
+          />
+        ) : null}
+        {props.onOpenResearch ? (
+          <CategoryRow
+            label="Research"
+            onClick={() => {
+              onClose()
+              props.onOpenResearch?.()
+            }}
+          />
+        ) : null}
+      </>
+    )
+  }
 
   const renderSplitSharedSection = () => (
     <>
@@ -568,10 +598,26 @@ export function MobileObjectOptionsDrawer(props: MobileObjectOptionsDrawerProps)
               }}
             />
           ))}
+          {renderToolRows()}
         </div>
       ) : (
-        <div className="px-4 py-8 text-center text-sm text-gray-500">
-          No additional list options for {leftPaneObjectLabel(object).toLowerCase()}.
+        <div className="flex flex-col py-1">
+          {object === "artifacts" ? (
+            <CategoryRow
+              label="Deleted"
+              onClick={() => {
+                onClose()
+                useArtifactDeletedStore.getState().open({})
+              }}
+            />
+          ) : null}
+          {renderToolRows() ?? (
+            object === "artifacts" ? null : (
+              <div className="px-4 py-8 text-center text-sm text-gray-500">
+                No additional list options for {leftPaneObjectLabel(object).toLowerCase()}.
+              </div>
+            )
+          )}
         </div>
       )}
     </ResizableBottomSheet>

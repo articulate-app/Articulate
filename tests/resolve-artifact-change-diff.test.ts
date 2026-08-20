@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest"
 import {
   computeArtifactChangeStats,
   isSuspiciousFullRewriteStats,
+  progressiveLiveAfterHtml,
   resolveArtifactChangeSides,
   resolveArtifactPreviewChangeInput,
   splitArtifactChangeSegments,
@@ -203,38 +204,27 @@ describe("resolveArtifactChangeSides", () => {
     expect(sides.stats.added).toBeLessThan(200)
   })
 
-  it("scopes live section hints only when both before and after section HTML exist", () => {
+  it("ignores unpersisted section HTML while busy and uses the live artifact instead", () => {
+    const liveJson = { blocks: [{ id: "body", type: "rich_text", html: "<p>full before</p>" }] }
     const scoped = resolveArtifactPreviewChangeInput({
       phase: "preview",
       isBusy: true,
       beforeContentText: "full before",
-      beforeContentJson: { blocks: [{ id: "body", type: "rich_text", html: "<p>full before</p>" }] },
-      contentText: "full after",
-      contentJson: { blocks: [{ id: "body", type: "rich_text", html: "<p>full after</p>" }] },
+      beforeContentJson: liveJson,
+      contentText: "worker draft after",
+      contentJson: { blocks: [{ id: "body", type: "rich_text", html: "<p>worker draft after</p>" }] },
       sectionHtml: "<p>new paragraph</p>",
       sectionBeforeHtml: "<p>old paragraph</p>",
+      fallbackAfterText: "full before",
+      fallbackAfterContentJson: liveJson,
     })
-    expect(scoped?.beforeHtml).toBe("<p>old paragraph</p>")
-    expect(scoped?.afterHtml).toBe("<p>new paragraph</p>")
-
-    const unscoped = resolveArtifactPreviewChangeInput({
-      phase: "preview",
-      isBusy: true,
-      beforeContentText: "full before",
-      beforeContentJson: { blocks: [{ id: "body", type: "rich_text", html: "<p>full before</p>" }] },
-      contentText: "full after",
-      contentJson: { blocks: [{ id: "body", type: "rich_text", html: "<p>full after</p>" }] },
-      sectionHtml: "<p>new paragraph</p>",
-      sectionBeforeHtml: null,
-    })
-    expect(unscoped?.beforeHtml).toBeNull()
-    expect(unscoped?.afterHtml).toBeNull()
-    expect(unscoped?.afterContentJson).toEqual({
-      blocks: [{ id: "body", type: "rich_text", html: "<p>full after</p>" }],
-    })
+    expect(scoped?.beforeHtml).toBeNull()
+    expect(scoped?.afterHtml).toBeNull()
+    expect(scoped?.afterContentJson).toEqual(liveJson)
+    expect(scoped?.afterText).toBe("full before")
   })
 
-  it("uses progressive section_html while busy when full after body is not ready yet", () => {
+  it("does not invent an after document from section_html or stream snippets", () => {
     const progressive = resolveArtifactPreviewChangeInput({
       phase: "preview",
       isBusy: true,
@@ -246,23 +236,38 @@ describe("resolveArtifactChangeSides", () => {
       sectionBeforeHtml: null,
       streamSnippet: "Water-resistant materials draft…",
     })
-    expect(progressive?.afterHtml).toBe("<p>Water-resistant materials draft…</p>")
-    expect(progressive?.afterText).toBe("<p>Water-resistant materials draft…</p>")
+    expect(progressive).toBeNull()
   })
 
-  it("prefers progressive section_html while streaming even when baseline contentJson exists", () => {
+  it("mirrors the live artifact while streaming instead of worker section_html", () => {
+    const liveJson = { blocks: [{ id: "body", type: "rich_text", html: "<p>old</p>" }] }
     const progressive = resolveArtifactPreviewChangeInput({
       phase: "preview",
       isBusy: true,
       streaming: true,
       beforeContentText: "old",
-      beforeContentJson: { blocks: [{ id: "body", type: "rich_text", html: "<p>old</p>" }] },
+      beforeContentJson: liveJson,
       contentText: "old",
-      contentJson: { blocks: [{ id: "body", type: "rich_text", html: "<p>old</p>" }] },
+      contentJson: liveJson,
       sectionHtml: "<table><tr><td>Newsletter draft…</td></tr></table>",
       sectionBeforeHtml: null,
+      fallbackAfterText: "old",
+      fallbackAfterContentJson: liveJson,
     })
-    expect(progressive?.afterHtml).toBe("<table><tr><td>Newsletter draft…</td></tr></table>")
-    expect(progressive?.afterContentJson).toBeNull()
+    expect(progressive?.afterHtml).toBeNull()
+    expect(progressive?.afterContentJson).toEqual(liveJson)
+    expect(progressive?.afterText).toBe("old")
+    const sides = resolveArtifactChangeSides(progressive!)
+    expect(sides.hasChanges).toBe(false)
+  })
+
+  it("never treats worker stream HTML as the live artifact overlay", () => {
+    expect(
+      progressiveLiveAfterHtml({
+        streaming: true,
+        sectionHtml: "<p>ghost intro that was never saved</p>",
+        streamSnippet: "ghost intro",
+      }),
+    ).toBeNull()
   })
 })

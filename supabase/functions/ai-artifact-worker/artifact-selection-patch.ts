@@ -1,3 +1,5 @@
+import { normalizeLeftoverMarkdownHtml } from "../_shared/tiptap-json-to-yxml.ts"
+
 /**
  * Pure helpers for targeted artifact selection edits.
  * Used by the AI artifact worker and unit tests.
@@ -216,7 +218,7 @@ export function extractHtmlSectionByHeading(
  * <ul>/<ol>/<li>. TipTap only renders proper list tags — `- item` text stays flat.
  */
 export function normalizeMixedMarkdownInHtml(html: string): string {
-  const raw = String(html ?? "").replace(/\r\n/g, "\n")
+  const raw = normalizeLeftoverMarkdownHtml(String(html ?? "").replace(/\r\n/g, "\n"))
   if (!raw.trim()) return raw
 
   // `<p>- item</p>` / `<p>1. item</p>` → collect into lists
@@ -409,6 +411,17 @@ export function preserveMediaFiguresInHtml(
     }
   }
   return out
+}
+
+/** True when next still contains the entire previous document unchanged (append, not replace). */
+export function htmlKeepsEntirePreviousDocument(
+  previousHtml: string | null | undefined,
+  nextHtml: string | null | undefined,
+): boolean {
+  const previous = String(previousHtml ?? "").replace(/\s+/g, " ").trim()
+  const next = String(nextHtml ?? "").replace(/\s+/g, " ").trim()
+  if (previous.length < 40 || next.length <= previous.length) return false
+  return next.includes(previous)
 }
 
 /**
@@ -794,7 +807,7 @@ export function applyTextRangeReplacement(
 export function simpleMarkdownToHtml(markdown: string): string {
   const raw = String(markdown ?? "").replace(/\r\n/g, "\n").trim()
   if (!raw) return ""
-  if (/<\/?[a-z][\s\S]*>/i.test(raw)) return raw
+  if (/<\/?[a-z][\s\S]*>/i.test(raw)) return normalizeMixedMarkdownInHtml(raw)
 
   const lines = raw.split("\n")
   const parts: string[] = []

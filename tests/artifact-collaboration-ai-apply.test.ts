@@ -27,10 +27,15 @@ describe("artifact collaboration AI apply (unit)", () => {
     if (!result.ok) {
       expect(result.status).toBe("conflict")
       expect(result.reason).toBe("expected_text_mismatch")
-      expect(proposalConflictPayload({
+      const payload = proposalConflictPayload({
         expectedText: "The original sentence.",
         currentText: result.currentText,
-      }).kind).toBe("expected_text_mismatch")
+        incomingText: "The AI sentence.",
+      })
+      expect(payload.kind).toBe("span_conflict")
+      expect(String(payload.current)).toContain("user rewrote")
+      expect(String(payload.incoming)).toContain("AI sentence")
+      expect(String(payload.current).length).toBeLessThan(80)
     }
     expect(yDocToPlainText(ydoc)).toContain("The user rewrote this sentence.")
   })

@@ -77,6 +77,17 @@ describe("artifact-rich-diff-html", () => {
     expect(html).toContain("<strong>world</strong>")
   })
 
+  it("keeps after-block anchors when nearby words change", () => {
+    const before =
+      "<p>Pode ser pedida uma colonoscopia para excluir outras causas.</p>"
+    const after =
+      '<p>Pode ser pedida uma <a href="https://www.jcs.pt/pt/blog-da-saude/colonoscopia-como-e-feita-e-quais-os-riscos/">colonoscopia</a> para excluir outras causas intestinais.</p>'
+    const html = buildArtifactTrackChangesHtml(before, after)
+    expect(html).toContain('href="https://www.jcs.pt/pt/blog-da-saude/colonoscopia-como-e-feita-e-quais-os-riscos/"')
+    expect(html).toContain("colonoscopia")
+    expect(html).toContain("intestinais")
+  })
+
   it("keeps identical headings anchored when body paragraphs shift", () => {
     const before = [
       "<h2>Prevention in the workplace</h2>",

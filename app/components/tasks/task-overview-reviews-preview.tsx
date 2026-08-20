@@ -71,11 +71,6 @@ export function TaskOverviewReviewsPreview({
             onCancel={() => setIsAddingReview(false)}
           />
         ) : null}
-        {reviewsQuery.isLoading && !summaryVisible && !isAddingReview ? (
-          <div className="space-y-2">
-            <div className="h-16 animate-pulse rounded-lg bg-gray-100" />
-          </div>
-        ) : null}
         {reviewsQuery.isError && !isAddingReview ? (
           <div className="flex items-center gap-2 text-sm text-red-600">
             <span>Could not load preview.</span>

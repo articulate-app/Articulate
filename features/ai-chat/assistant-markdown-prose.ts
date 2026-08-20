@@ -129,6 +129,58 @@ export function splitPackedMarkdownLists(markdown: string): string {
     .replace(/([^\n])[ \t]+(\d+\.[ \t]+\S+)/g, "$1\n$2")
 }
 
+/** Split ATX headings the model glued onto the previous sentence (`…calma. ### Título`). */
+export function splitPackedMarkdownHeadings(markdown: string): string {
+  return String(markdown ?? "")
+    .replace(/([^\n])[ \t]+(#{1,6}[ \t]+\S+)/g, "$1\n\n$2")
+    .replace(/([^\n#])(#{1,6}[ \t]+\S+)/g, "$1\n\n$2")
+}
+
+const HEADING_BODY_SKIP_CAPS =
+  /^(?:The|A|An|To|Of|For|In|On|At|And|Or|But|As|Vs|De|Do|Da|Das|Dos|Em|Um|Uma|Os|As|O|A|E|Ou)$/i
+
+/**
+ * Split a heading that ate its own paragraph
+ * (`### Destacar o ganho Mostrar capturas…` → heading + body).
+ */
+export function splitPackedHeadingBodies(markdown: string): string {
+  return String(markdown ?? "").replace(/^(#{1,6}[ \t]+)(.+)$/gm, (full, marks: string, rest: string) => {
+    const trimmed = rest.trim()
+    if (trimmed.length < 80) return full
+    const words = trimmed.split(/\s+/)
+    if (words.length < 8) return full
+    const lastSplit = Math.min(14, words.length - 4)
+    for (let index = 3; index <= lastSplit; index += 1) {
+      const next = words[index] ?? ""
+      if (!/^[A-ZÁÉÍÓÚÂÊÔÃÕÀ]/.test(next)) continue
+      if (HEADING_BODY_SKIP_CAPS.test(next)) continue
+      const title = words.slice(0, index).join(" ")
+      const body = words.slice(index).join(" ")
+      if (title.length > 90 || /[.!?:]$/.test(title)) continue
+      if (body.length < 40) continue
+      return `${marks}${title}\n\n${body}`
+    }
+    return full
+  })
+}
+
+const CJK_RUN = /[\u3400-\u9fff]+/g
+
+/**
+ * Drop isolated CJK runs leaked into Latin/Portuguese prose
+ * (`ilusão de成功率 infalível` → `ilusão de infalível`).
+ */
+export function stripLeakedCjkInLatinProse(markdown: string): string {
+  const source = String(markdown ?? "")
+  if (!CJK_RUN.test(source)) return source
+  CJK_RUN.lastIndex = 0
+  if (!/[A-Za-zÀ-ÿ]/.test(source)) return source
+  return source
+    .replace(CJK_RUN, " ")
+    .replace(/[ \t]{2,}/g, " ")
+    .replace(/[ \t]+\n/g, "\n")
+}
+
 /** Apply all chat-prose markdown softeners before marked/HTML render. */
 export function softenAssistantMarkdownProse(markdown: string): string {
   let out = String(markdown ?? "")
@@ -136,6 +188,9 @@ export function softenAssistantMarkdownProse(markdown: string): string {
   out = flattenMultilineBoldSpans(out)
   out = flattenInlineStructureListsAfterBold(out)
   out = splitPackedMarkdownLists(out)
+  out = splitPackedMarkdownHeadings(out)
+  out = splitPackedHeadingBodies(out)
+  out = stripLeakedCjkInLatinProse(out)
   out = repairGluedQuoteSpacing(out)
   return out
 }

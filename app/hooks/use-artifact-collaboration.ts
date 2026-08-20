@@ -1,6 +1,7 @@
 "use client"
 
 import { useEffect, useMemo, useRef, useState } from "react"
+import { useQueryClient } from "@tanstack/react-query"
 import type { Awareness } from "y-protocols/awareness"
 import type { TaskArtifact } from "../lib/artifacts/artifact-types"
 import { presenceColor, type ArtifactCollabAuthorizeResult } from "../lib/collaboration/auth"
@@ -30,6 +31,7 @@ import {
   convertExistingArtifactToYDoc,
   seedExistingArtifact,
 } from "../lib/collaboration/seed-existing-artifact"
+import { repairLeftoverMarkdownYDoc, repairLiteralHtmlAnchorsYDoc } from "../lib/collaboration/ydoc-content"
 import { createArtifactCollabProvider } from "../lib/collaboration/supabase-provider"
 import { createSupabaseCollabTransport } from "../lib/collaboration/supabase-transport"
 import type { SyncStatus } from "../lib/collaboration/sync-protocol"
@@ -44,6 +46,7 @@ function asAuthorize(value: unknown): ArtifactCollabAuthorizeResult {
 export type CollabDisplayStatus = SyncStatus | "local"
 
 export function useArtifactCollaboration(artifact: TaskArtifact | null | undefined) {
+  const queryClient = useQueryClient()
   const locallyEligible = isCollaborativeRichTextEditorKind(
     resolveArtifactEditorKind(artifact),
   )
@@ -186,9 +189,7 @@ export function useArtifactCollaboration(artifact: TaskArtifact | null | undefin
         color: presence.color,
       })
       sessionKeyRef.current = artifactId
-      setDocument(session.document)
       setAwareness(nextAwareness)
-      setEnabled(true)
       setSeedError(null)
 
       const projector = createDebouncedProjection({
@@ -216,23 +217,43 @@ export function useArtifactCollaboration(artifact: TaskArtifact | null | undefin
               document: session.document,
               seq: Number(provider?.lastSeq ?? 0),
               changeSource: "manual",
-              summary: "Idle editorial checkpoint",
+              previousText: artifactRef.current?.content_text ?? null,
             })
           })
         },
       })
+      let historyTimer: ReturnType<typeof setTimeout> | null = null
       const onUpdate = (_update: Uint8Array, origin: unknown) => {
-        if (origin === "remote" || origin === "load") return
+        if (origin === "remote" || origin === "load") {
+          if (origin === "remote") {
+            if (historyTimer) clearTimeout(historyTimer)
+            historyTimer = setTimeout(() => {
+              void queryClient.invalidateQueries({ queryKey: ["artifact-versions", artifactId] })
+            }, 250)
+          }
+          return
+        }
         setStatus("syncing")
         projector.schedule()
         checkpoints.touch()
       }
       session.document.on("update", onUpdate)
 
-      const { data: conflictRows } = await supabase.rpc("artifact_collab_list_conflicts_v1", {
-        p_artifact_id: artifactId,
-      })
-      if (!cancelled && Array.isArray(conflictRows)) setConflicts(conflictRows)
+      const loadConflicts = async () => {
+        const { data: conflictRows } = await supabase.rpc("artifact_collab_list_conflicts_v1", {
+          p_artifact_id: artifactId,
+        })
+        const next = Array.isArray(conflictRows)
+          ? conflictRows
+          : Array.isArray((conflictRows as { conflicts?: unknown } | null)?.conflicts)
+            ? (conflictRows as { conflicts: unknown[] }).conflicts
+            : []
+        if (!cancelled) setConflicts(next as Array<Record<string, unknown>>)
+      }
+      await loadConflicts()
+      const conflictTimer = window.setInterval(() => {
+        void loadConflicts()
+      }, 4000)
 
       const cache = await bindArtifactYdocLocalCache(session.document, artifactId)
       if (cancelled) {
@@ -240,35 +261,51 @@ export function useArtifactCollaboration(artifact: TaskArtifact | null | undefin
         releaseArtifactCollabSession(artifactId)
         return
       }
-      void (async () => {
-        try {
-          await session.provider?.connect?.()
-          if (cancelled) return
-          const latest = artifactRef.current
-          const provider = session.provider as { lastSeq?: number } | null
-          if (
-            shouldHydrateEmptyYdocFromArtifact({
-              ydocEmpty: isYDocEditoriallyEmpty(session.document),
-              hasExistingContent: artifactHasExistingEditorContent({
-                contentJson: latest?.content_json,
-                contentText: latest?.content_text,
-              }),
-              lastSeq: Number(provider?.lastSeq ?? 0),
-            })
-          ) {
-            const converted = convertExistingArtifactToYDoc({
+      try {
+        await cache?.whenReady
+        await session.provider?.connect?.()
+        if (cancelled) return
+        const latest = artifactRef.current
+        const provider = session.provider as { lastSeq?: number } | null
+        if (
+          shouldHydrateEmptyYdocFromArtifact({
+            ydocEmpty: isYDocEditoriallyEmpty(session.document),
+            hasExistingContent: artifactHasExistingEditorContent({
               contentJson: latest?.content_json,
               contentText: latest?.content_text,
-            })
-            if (!converted.error) {
-              Y.applyUpdate(session.document, Y.encodeStateAsUpdate(converted.document))
-            }
+            }),
+            lastSeq: Number(provider?.lastSeq ?? 0),
+          })
+        ) {
+          const converted = convertExistingArtifactToYDoc({
+            contentJson: latest?.content_json,
+            contentText: latest?.content_text,
+          })
+          if (!converted.error) {
+            Y.applyUpdate(session.document, Y.encodeStateAsUpdate(converted.document))
           }
-        } catch {
-          if (!cancelled) setStatus("error")
         }
-      })()
+      } catch {
+        if (!cancelled) setStatus("error")
+      }
+      // Bind TipTap only after load/hydrate so the snapshot editor does not
+      // remount onto an empty Y.Doc (blank → stale cache → real content).
+      if (!cancelled) {
+        const ydocEmpty = isYDocEditoriallyEmpty(session.document)
+        const artifactHasContent = artifactHasExistingEditorContent({
+          contentJson: artifactRef.current?.content_json,
+          contentText: artifactRef.current?.content_text,
+        })
+        if (!(ydocEmpty && artifactHasContent)) {
+          repairLeftoverMarkdownYDoc(session.document)
+          repairLiteralHtmlAnchorsYDoc(session.document)
+          setDocument(session.document)
+          setEnabled(true)
+        }
+      }
       return () => {
+        window.clearInterval(conflictTimer)
+        if (historyTimer) clearTimeout(historyTimer)
         session.document.off("update", onUpdate)
         projector.cancel()
         checkpoints.cancel()
@@ -291,10 +328,9 @@ export function useArtifactCollaboration(artifact: TaskArtifact | null | undefin
         setAwareness(null)
         setEnabled(false)
         setPeers([])
-        setConflicts([])
       }
     }
-  }, [artifactId, envEnabled, hasEditorContent, locallyEligible])
+  }, [artifactId, envEnabled, locallyEligible, queryClient])
 
   const displayStatus: CollabDisplayStatus =
     status === "synced" && projectionStatus === "pending"
@@ -312,6 +348,12 @@ export function useArtifactCollaboration(artifact: TaskArtifact | null | undefin
       peers,
       conflicts,
       seedError,
+      dismissConflict: async (id: string) => {
+        if (!artifactId || !id) return
+        const supabase = getSupabaseBrowser()
+        await supabase.rpc("artifact_collab_dismiss_conflict_v1", { p_proposal_id: id })
+        setConflicts((current) => current.filter((row) => String(row.id ?? "") !== id))
+      },
       user: localUser,
       flush: async () => {
         if (!artifactId) return
@@ -336,7 +378,6 @@ export function useArtifactCollaboration(artifact: TaskArtifact | null | undefin
       },
     }),
     [
-      artifact?.content_json,
       artifactId,
       awareness,
       conflicts,

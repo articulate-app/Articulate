@@ -230,15 +230,15 @@ export function LeftVisual({
     null
   const photoUrl = resolveAssetUrl(photoPath)
   const logoUrl = resolveAssetUrl(logoPath)
-  const boxClass = compact ? "h-5 w-5" : "h-9 w-9"
-  const radiusClass = compact ? "rounded-md" : "rounded-lg"
+  const boxClass = compact ? "h-5 w-5" : "h-11 w-11"
+  const radiusClass = compact ? "rounded-md" : "rounded-xl"
 
   // Users: photo first, then initials avatar.
   if (isUser) {
-    return <UserAvatar name={label} photoUrl={imageFailed ? null : photoUrl} size="xs" />
+    return <UserAvatar name={label} photoUrl={imageFailed ? null : photoUrl} size={compact ? "xs" : "md"} />
   }
 
-  // Projects: folder icon tinted with project color (bordered square, no logos).
+  // Projects: folder / color inside a gray rounded square.
   if (isProject) {
     const folderColor = color || "#9ca3af"
     return (
@@ -247,21 +247,31 @@ export function LeftVisual({
         className={cn(
           boxClass,
           radiusClass,
-          "inline-flex shrink-0 items-center justify-center border border-gray-200 bg-white",
+          "inline-flex shrink-0 items-center justify-center bg-gray-100",
         )}
       >
-        <Folder
-          className={cn(compact ? "h-3 w-3" : "h-4 w-4")}
-          style={{ color: folderColor }}
-          strokeWidth={1.75}
-          aria-hidden
-        />
+        {logoUrl && !imageFailed ? (
+          // eslint-disable-next-line @next/next/no-img-element
+          <img
+            src={logoUrl}
+            alt=""
+            onError={() => setImageFailed(true)}
+            className={cn(compact ? "h-3.5 w-3.5" : "h-6 w-6", "rounded-sm object-cover")}
+          />
+        ) : (
+          <Folder
+            className={cn(compact ? "h-3 w-3" : "h-5 w-5")}
+            style={{ color: folderColor }}
+            strokeWidth={1.75}
+            aria-hidden
+          />
+        )}
       </span>
     )
   }
 
   if (photoUrl && !imageFailed) {
-    return <UserAvatar name={label} photoUrl={photoUrl} size="xs" />
+    return <UserAvatar name={label} photoUrl={photoUrl} size={compact ? "xs" : "md"} />
   }
 
   if (logoUrl && !imageFailed) {
@@ -286,7 +296,7 @@ export function LeftVisual({
     )
   }
 
-  return <UserAvatar name={label} photoUrl={null} size="xs" />
+  return <UserAvatar name={label} photoUrl={null} size={compact ? "xs" : "md"} />
 }
 
 function ProjectMarker({ payload }: { payload: GlobalSearchDisplayPayload }) {
@@ -468,6 +478,7 @@ export function SearchResultRow({
   sectionType,
   projectLabelOverride = null,
   createdAtOverride = null,
+  density = "compact",
 }: {
   item: GlobalSearchDocument
   onSelect: (item: GlobalSearchDocument) => void
@@ -476,6 +487,7 @@ export function SearchResultRow({
   sectionType?: string
   projectLabelOverride?: string | null
   createdAtOverride?: string | null
+  density?: "compact" | "comfortable"
 }) {
   const payload = getPayload(item)
   const isMention = item.entity_type === "mention"
@@ -517,7 +529,20 @@ export function SearchResultRow({
   // Tasks use the compact row layout (marker + title | avatar + date) — never subtitle/meta text.
   // Users: name only (hide email subtitle).
   // AI chats: title only (or response snippet when the title is generic).
-  const showSubtitle = false
+  const isComfortable = density === "comfortable"
+  const comfortableMentionTitle = isComfortable && isMention
+    ? (payload.title?.trim() || mentionSenderAvatar?.name || previewTitle)
+    : previewTitle
+  const comfortableSubtitle = isComfortable
+    ? (isMention
+        ? (payload.preview?.trim() && payload.preview.trim() !== comfortableMentionTitle
+            ? payload.preview.trim()
+            : mentionDateLabel)
+        : previewSubtitle && previewSubtitle !== comfortableMentionTitle
+          ? previewSubtitle
+          : null)
+    : null
+  const showSubtitle = Boolean(comfortableSubtitle)
   // Keep lists quiet — no watcher stacks on the right.
   const showRightAvatarStack = false
 
@@ -638,8 +663,9 @@ export function SearchResultRow({
       type="button"
       onClick={() => onSelect(item)}
       className={cn(
-        "relative flex h-8 w-full items-center px-3 text-left transition hover:bg-gray-50",
-        isAiThread ? "gap-4" : "gap-2",
+        "relative flex w-full items-center text-left transition hover:bg-gray-50",
+        isComfortable ? "min-h-[64px] gap-3 px-4 py-3" : "h-8 px-3",
+        !isComfortable && (isAiThread ? "gap-4" : "gap-2"),
         className,
       )}
     >
@@ -648,7 +674,7 @@ export function SearchResultRow({
           <UserAvatar
             name={mentionSenderAvatar?.name ?? payload.title ?? null}
             photoUrl={getPublicAssetUrl(mentionSenderAvatar?.photo ?? null)}
-            size="xs"
+            size={isComfortable ? "md" : "xs"}
           />
         </div>
       ) : showLeftVisual ? (
@@ -658,7 +684,7 @@ export function SearchResultRow({
             raw={item.raw}
             isProject={isProject}
             isUser={isUser}
-            compact
+            compact={!isComfortable}
           />
         </div>
       ) : showTypeIcon ? (
@@ -666,10 +692,15 @@ export function SearchResultRow({
       ) : null}
       <div className="min-w-0 flex-1">
         <div className="flex min-w-0 items-center gap-2">
-          <div className="min-w-0 flex-1 truncate text-sm font-normal text-gray-900">
-            {previewTitle}
+          <div
+            className={cn(
+              "min-w-0 flex-1 truncate text-gray-900",
+              isComfortable ? "text-[16px] font-medium leading-snug" : "text-sm font-normal",
+            )}
+          >
+            {comfortableMentionTitle}
           </div>
-          {mentionDateLabel ? (
+          {mentionDateLabel && !isComfortable ? (
             <div className="shrink-0 whitespace-nowrap pl-2 text-sm font-normal text-gray-500">
               {mentionDateLabel}
             </div>
@@ -682,8 +713,8 @@ export function SearchResultRow({
             />
           ) : null}
         </div>
-        {showSubtitle && previewSubtitle ? (
-          <div className="truncate text-[11px] text-gray-500">{previewSubtitle}</div>
+        {showSubtitle && comfortableSubtitle ? (
+          <div className="mt-0.5 truncate text-sm text-gray-400">{comfortableSubtitle}</div>
         ) : null}
         {showBadges && !isAiThread ? <BadgesLine payload={payload} /> : null}
         {showMeta && !isAiThread ? (

@@ -5,6 +5,7 @@ import {
   buildMiddlePaneFocusParams,
   isAiPaneFocusMode,
   isMiddlePaneFocusMode,
+  isMiddleRightSplitMode,
   isTaskAiPaneOpen,
   isTaskDetailsAiSplitMode,
   isTaskDetailsOnlyFocusMode,
@@ -62,6 +63,30 @@ describe("ai pane focus url helpers", () => {
     expect(next.get("id")).toBe("13131")
     expect(next.get("aiThreadId")).toBe("thread-a")
     expect(isTaskDetailsAiSplitMode(next)).toBe(true)
+  })
+
+  it("converts expanded middle focus into the details+AI split when opening ai", () => {
+    const current = new URLSearchParams(
+      "layout=left,middle,right&focus=middle&centerArtifactId=art-1&rightView=ai&taskAiOpen=true",
+    )
+    const next = preserveTaskDetailsFocusWhenOpeningAi(current)
+
+    expect(next.get("focus")).toBe("right")
+    expect(next.get("rightView")).toBe("ai")
+    expect(next.get("taskAiOpen")).toBe("true")
+    expect(next.get("centerArtifactId")).toBe("art-1")
+    expect(isTaskDetailsAiSplitMode(next)).toBe(true)
+    expect(isMiddleRightSplitMode(next)).toBe(true)
+    expect(isMiddlePaneFocusMode(next)).toBe(false)
+  })
+
+  it("treats focus=right + rightView=start as a middle+right split", () => {
+    const params = new URLSearchParams(
+      "layout=left,middle,right&focus=right&centerArtifactId=art-1&rightView=start",
+    )
+    expect(isMiddleRightSplitMode(params)).toBe(true)
+    expect(isTaskDetailsAiSplitMode(params)).toBe(false)
+    expect(isMiddlePaneFocusMode(params)).toBe(false)
   })
 
   it("does not force focus=right when opening ai without focused task context", () => {

@@ -201,7 +201,7 @@ function AiPaneTabStrip({
             return (
             <div
               key={isOptimistic ? `optimistic-${tab.optimisticId}` : tab.id}
-              className={`${AI_PANE_TAB_CHIP_CLASS} ${
+              className={`${AI_PANE_TAB_CHIP_CLASS} group/tab ${
                 isActive ? AI_PANE_TAB_ACTIVE_CLASS : AI_PANE_TAB_INACTIVE_CLASS
               }`}
               onClick={() => {
@@ -248,7 +248,7 @@ function AiPaneTabStrip({
                         e.stopPropagation()
                         onCloseTab(tabId)
                       }}
-                      className="rounded p-0.5 text-gray-400 opacity-70 hover:bg-black/5 hover:text-gray-700 hover:opacity-100"
+                      className="rounded p-0.5 text-gray-400 opacity-0 hover:bg-black/5 hover:text-gray-700 group-hover/tab:opacity-100 focus-visible:opacity-100"
                       title="Close tab"
                     >
                       <XIcon className="h-3 w-3" />
@@ -315,7 +315,10 @@ function AiPaneInner({ isOpen, onClose, onExpand, initialScope = 'global', proje
       // lag behind shallow prefs writes (settings=open), and a full replace would wipe them.
       logAiChatDebug("workspace-url.merge", { reason, threadId })
       mergeWorkspaceUrlState(
-        { aiThreadId: threadId },
+        {
+          aiThreadId: threadId,
+          ...(threadId ? { newAiThread: null } : {}),
+        },
         { source: `ai-pane:${reason}`, mode: "replace" },
       )
     },
@@ -442,8 +445,7 @@ function AiPaneInner({ isOpen, onClose, onExpand, initialScope = 'global', proje
     }
 
     if (forceNewThread && isOpen) {
-      logAiChatDebug("thread.force-new.consume", { source: "url-flag" })
-      onForceNewThreadConsumed?.()
+      logAiChatDebug("thread.force-new.start", { source: "url-flag" })
       if (!creatingLockRef.current) {
         void handleNewChat()
       }
@@ -733,7 +735,6 @@ function AiPaneInner({ isOpen, onClose, onExpand, initialScope = 'global', proje
     previousActiveIdRef.current = null
     setOptimisticTab(nextOptimisticTab)
     setActive(optimisticThread)
-    navigateToThreadId(null, "new-chat-optimistic")
     
     // Reset flag after state update
     requestAnimationFrame(() => {
@@ -758,6 +759,7 @@ function AiPaneInner({ isOpen, onClose, onExpand, initialScope = 'global', proje
       clearOptimisticThread()
       setActive(newThread)
       navigateToThreadId(newThread.id, "new-chat-created")
+      onForceNewThreadConsumed?.()
       setOpenTabs(prev => {
         if (prev.some((tab) => tab.id === newThread.id)) return prev
         return [...prev, newThread]
@@ -774,6 +776,7 @@ function AiPaneInner({ isOpen, onClose, onExpand, initialScope = 'global', proje
       }
     } catch (error) {
       console.error('Failed to create new chat:', error)
+      onForceNewThreadConsumed?.()
       clearOptimisticThread()
       setActive(previousActive)
       navigateToThreadId(previousActive?.id ?? null, "new-chat-create-failed")

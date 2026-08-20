@@ -2,7 +2,6 @@
 
 import React, { useCallback, useEffect, useRef, useState } from "react"
 import { createPortal } from "react-dom"
-import { MessageSquareText, Sparkles } from "lucide-react"
 
 type SelectionAnchor = { left: number; top: number }
 
@@ -146,7 +145,7 @@ export function SelectionAskAiMenu<T>({
       }}
       onMouseDown={(event) => event.preventDefault()}
     >
-      <div className="flex items-center overflow-hidden rounded-lg border border-gray-200 bg-white shadow-lg">
+      <div className="flex items-stretch overflow-hidden rounded-full border border-gray-300 bg-white shadow-sm">
         <button
           type="button"
           onClick={() => {
@@ -154,9 +153,8 @@ export function SelectionAskAiMenu<T>({
             setActive(null)
             onAsk(context)
           }}
-          className="inline-flex items-center gap-1.5 px-2.5 py-1.5 text-xs font-medium text-violet-700 hover:bg-violet-50"
+          className="px-3.5 py-1.5 text-[13px] font-medium text-gray-900 hover:bg-gray-50"
         >
-          <Sparkles className="h-3.5 w-3.5" aria-hidden />
           Add to chat
         </button>
         {onComment ? (
@@ -167,9 +165,8 @@ export function SelectionAskAiMenu<T>({
               setActive(null)
               onComment(context)
             }}
-            className="inline-flex items-center gap-1.5 border-l border-gray-100 px-2.5 py-1.5 text-xs font-medium text-gray-700 hover:bg-gray-50"
+            className="border-l border-gray-300 px-3.5 py-1.5 text-[13px] font-medium text-gray-900 hover:bg-gray-50"
           >
-            <MessageSquareText className="h-3.5 w-3.5" aria-hidden />
             Comment
           </button>
         ) : null}

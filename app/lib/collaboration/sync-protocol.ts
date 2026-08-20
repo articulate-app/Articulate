@@ -85,6 +85,25 @@ export function applyBufferedBroadcasts(
   return nextSeq
 }
 
+/** Apply only unseen persisted updates while the editor stays mounted. */
+export function applyCatchUpDocument(
+  document: Y.Doc,
+  loaded: LoadDocumentResult,
+  appliedKeys: Set<string>,
+  lastSeq: number,
+): number {
+  let nextSeq = lastSeq
+  if (loaded.snapshot && loaded.snapshot.byteLength > 0 && loaded.lastIncludedSeq > lastSeq) {
+    Y.applyUpdate(document, loaded.snapshot, COLLAB_LOAD_ORIGIN)
+    nextSeq = Math.max(nextSeq, loaded.lastIncludedSeq)
+  }
+  for (const update of loaded.updates) {
+    applyPersistedUpdate(document, update.update, appliedKeys, update.idempotencyKey)
+    if (update.seq > nextSeq) nextSeq = update.seq
+  }
+  return nextSeq
+}
+
 export function compactUpdatesIntoSnapshot(args: {
   snapshot: Uint8Array | null
   updates: PersistedCollabUpdate[]

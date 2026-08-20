@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest"
 import {
+  buildHtmlWordClipboardPayload,
   buildNormalizedExportFromLiveOutput,
   buildSeoFromBootstrap,
   buildTaskDocxExportModel,
@@ -418,6 +419,45 @@ describe("task-docx-export-model", () => {
     expect(word).toContain("mso-style-name:'Heading 2'")
     expect(word).toContain('class="MsoHeading3"')
     expect(word).not.toMatch(/<h2[\s>]/i)
+  })
+
+  it("buildHtmlWordClipboardPayload keeps headings for Word paste", async () => {
+    const { JSDOM } = await import("jsdom")
+    const domWindow = new JSDOM("<!doctype html><html><body></body></html>").window
+    const previous = {
+      DOMParser: (globalThis as { DOMParser?: typeof DOMParser }).DOMParser,
+      document: (globalThis as { document?: Document }).document,
+      Node: (globalThis as { Node?: typeof Node }).Node,
+    }
+    ;(globalThis as unknown as { DOMParser: typeof domWindow.DOMParser }).DOMParser = domWindow.DOMParser
+    ;(globalThis as unknown as { document: Document }).document = domWindow.document as unknown as Document
+    ;(globalThis as unknown as { Node: typeof domWindow.Node }).Node = domWindow.Node
+
+    try {
+      const payload = buildHtmlWordClipboardPayload({
+        html: "<h2>Market timing</h2><p>Stay invested.</p>",
+        plainText: "Market timing\n\nStay invested.",
+      })
+
+      expect(payload).not.toBeNull()
+      expect(payload?.htmlBody).toContain('class="MsoHeading2"')
+      expect(payload?.htmlBody).toContain("Market timing")
+      expect(payload?.htmlDocument).toContain("mso-style-name:\"Heading 2\"")
+      expect(payload?.rtfDocument).toContain("heading 2")
+      expect(payload?.plainText).toContain("Stay invested.")
+    } finally {
+      if (previous.DOMParser) {
+        ;(globalThis as unknown as { DOMParser: typeof DOMParser }).DOMParser = previous.DOMParser
+      } else {
+        delete (globalThis as { DOMParser?: typeof DOMParser }).DOMParser
+      }
+      if (previous.document) {
+        ;(globalThis as unknown as { document: Document }).document = previous.document
+      }
+      if (previous.Node) {
+        ;(globalThis as unknown as { Node: typeof Node }).Node = previous.Node
+      }
+    }
   })
 
   it("cleanClipboardHtml removes trailing br tags inside headings", () => {

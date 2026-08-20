@@ -199,26 +199,13 @@ export function CompactEditableRowContent({
   const isMobile = useMobileDetection()
   const isReadOnly = readOnly || isMobile
 
+  const showSelectLead = isMultiselectMode && !isSuggestion
+  const showHoverGrip = Boolean(dragHandle) && !isMultiselectMode && !isMobile
+
   if (isReadOnly) {
     return (
-      <div className="flex w-full min-w-0 items-center gap-2 overflow-hidden">
-        {isMobile ? null : dragHandle}
-        <div className="min-w-0 flex-1">
-          <CompactRowContent task={task} dateField={dateField} />
-        </div>
-      </div>
-    )
-  }
-
-  return (
-    <div className="flex w-full min-w-0 items-center gap-2 overflow-hidden">
-      {isMultiselectMode ? (
-        // Mirror the expanded list: a checkbox per selectable row, suggestions are not selectable
-        // (empty spacer keeps the project marker / title aligned across rows). stopPropagation so the
-        // checkbox toggles selection without triggering row click-to-open.
-        isSuggestion ? (
-          <span className="w-4 shrink-0" aria-hidden />
-        ) : (
+      <div className="flex w-full min-w-0 items-center overflow-hidden">
+        {showSelectLead ? (
           <input
             type="checkbox"
             checked={!!isTaskSelected}
@@ -227,13 +214,43 @@ export function CompactEditableRowContent({
               e.stopPropagation()
               if (Number.isFinite(taskId)) onTaskToggle?.(taskId)
             }}
-            className="h-4 w-4 shrink-0 rounded border-gray-300 text-blue-600 focus:ring-blue-500"
+            className="mr-2 h-4 w-4 shrink-0 rounded border-gray-300 text-blue-600 focus:ring-blue-500"
             aria-label="Select task"
           />
-        )
+        ) : showHoverGrip ? (
+          <div className="w-0 shrink-0 overflow-hidden transition-[width] duration-150 [@media(hover:hover)]:group-hover/task-row:mr-1.5 [@media(hover:hover)]:group-hover/task-row:w-5">
+            {dragHandle}
+          </div>
+        ) : null}
+        <div className="min-w-0 flex-1">
+          <CompactRowContent task={task} dateField={dateField} />
+        </div>
+      </div>
+    )
+  }
+
+  return (
+    <div className="flex w-full min-w-0 items-center overflow-hidden">
+      {showSelectLead ? (
+        <input
+          type="checkbox"
+          checked={!!isTaskSelected}
+          onClick={(e) => e.stopPropagation()}
+          onChange={(e) => {
+            e.stopPropagation()
+            if (Number.isFinite(taskId)) onTaskToggle?.(taskId)
+          }}
+          className="mr-2 h-4 w-4 shrink-0 rounded border-gray-300 text-blue-600 focus:ring-blue-500"
+          aria-label="Select task"
+        />
+      ) : isSuggestion && isMultiselectMode ? (
+        <span className="mr-2 w-4 shrink-0" aria-hidden />
+      ) : showHoverGrip ? (
+        <div className="w-0 shrink-0 overflow-hidden transition-[width] duration-150 [@media(hover:hover)]:group-hover/task-row:mr-1.5 [@media(hover:hover)]:group-hover/task-row:w-5">
+          {dragHandle}
+        </div>
       ) : null}
       <div className="flex min-w-0 flex-1 items-center gap-1.5 overflow-hidden text-left">
-        {dragHandle}
         <div className="min-w-0 flex-1 overflow-hidden">{renderColumnCell(columns, 'title', task)}</div>
       </div>
       <div className="ml-2 flex shrink-0 items-center justify-end gap-1.5">

@@ -41,7 +41,7 @@ import { RichTextEditor } from "../editor/RichTextEditor"
 import { ArtifactHtmlDocumentView } from "../../../features/artifacts/artifact-html-document-view"
 
 export type WorkspaceTemplateViewProps = {
-  /** Composite id: `{projectId}:{templateId}`. */
+  /** Composite id: `{projectId}:{templateId}` or `u:{templateId}` when unattached. */
   workspaceId: string
   paneId: WorkspacePaneId
   /** @deprecated Close lives on the tab strip. */
@@ -350,13 +350,13 @@ export function WorkspaceTemplateView({
     <div className="flex h-full min-h-0 flex-col overflow-hidden bg-white">
       <div className="flex h-10 min-h-10 items-center gap-2 bg-white px-4">
         <div className="flex min-w-0 flex-1 items-center gap-2">
-          {detailQuery.data ? (
+          {detailQuery.data?.projectId != null ? (
             <button
               type="button"
               className="max-w-[40%] shrink-0 truncate text-left text-sm text-gray-500 hover:text-gray-800 hover:underline"
               onClick={() => {
                 const detail = detailQuery.data
-                if (!detail) return
+                if (!detail || detail.projectId == null) return
                 openWorkspaceView(
                   {
                     type: "project",

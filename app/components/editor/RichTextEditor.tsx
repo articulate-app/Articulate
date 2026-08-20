@@ -19,6 +19,13 @@ import type { Awareness } from "y-protocols/awareness";
 import type { Doc as YDoc } from "yjs";
 import { canReplaceCollaborativeEditorContent } from "../../lib/collaboration/editor-sync";
 import { CommentMark } from "./CommentMark";
+import {
+  CollabConflictExtension,
+  syncCollabConflictDecorations,
+} from "./CollabConflictExtension";
+import type { CollabConflictChoice, CollabConflictSpan } from "../../lib/collaboration/collab-conflict";
+
+const EMPTY_COLLAB_CONFLICTS: CollabConflictSpan[] = [];
 import { EditorToolbar } from "./EditorToolbar";
 import { CompactToolbar } from "./CompactToolbar";
 import { BubbleToolbar } from "./BubbleToolbar";
@@ -110,6 +117,9 @@ const AttachmentBlock = Node.create({
       src: {
         default: "",
         parseHTML: (element) => {
+          if (element.tagName === "IMG" || element.tagName === "VIDEO") {
+            return element.getAttribute("src") ?? "";
+          }
           const media =
             element.querySelector("img") ??
             element.querySelector("video");
@@ -207,7 +217,17 @@ const AttachmentBlock = Node.create({
     };
   },
   parseHTML() {
-    return [{ tag: "figure[data-attachment-id]" }];
+    return [
+      { tag: "figure[data-attachment-id]" },
+      {
+        tag: "figure",
+        getAttrs: (element) => {
+          const host = element as HTMLElement;
+          return host.querySelector("img[src]") ? {} : false;
+        },
+      },
+      { tag: "img[src]" },
+    ];
   },
   renderHTML({ HTMLAttributes }) {
     const attachmentIdAttr =
@@ -489,6 +509,8 @@ export interface RichTextEditorProps {
   collaborationDocument?: YDoc | null;
   collaborationAwareness?: Awareness | null;
   collaborationUser?: { name: string; color: string } | null;
+  collabConflicts?: CollabConflictSpan[];
+  onResolveCollabConflict?: (id: string, choice: CollabConflictChoice) => void;
 }
 
 export const RichTextEditor: React.FC<RichTextEditorProps> = ({
@@ -520,6 +542,8 @@ export const RichTextEditor: React.FC<RichTextEditorProps> = ({
   collaborationDocument = null,
   collaborationAwareness = null,
   collaborationUser = null,
+  collabConflicts,
+  onResolveCollabConflict,
 }) => {
   const pathname = usePathname();
   const resolveElementTarget = React.useCallback((rawTarget: EventTarget | null): Element | null => {
@@ -739,6 +763,7 @@ export const RichTextEditor: React.FC<RichTextEditorProps> = ({
       TaskList,
       TaskItem.configure({ nested: true }),
       CommentMark,
+      CollabConflictExtension,
       ...(collaborationDocument
         ? [Collaboration.configure({ document: collaborationDocument })]
         : []),
@@ -1073,6 +1098,16 @@ export const RichTextEditor: React.FC<RichTextEditorProps> = ({
     }
   }, [editor, readOnly]);
 
+  const resolveCollabConflictRef = React.useRef(onResolveCollabConflict);
+  resolveCollabConflictRef.current = onResolveCollabConflict;
+  React.useEffect(() => {
+    syncCollabConflictDecorations(
+      editor,
+      collabConflicts ?? EMPTY_COLLAB_CONFLICTS,
+      (id, choice) => resolveCollabConflictRef.current?.(id, choice),
+    );
+  }, [collabConflicts, editor]);
+
   return (
     <div
       ref={editorRootRef}
@@ -1157,6 +1192,9 @@ export const RichTextEditor: React.FC<RichTextEditorProps> = ({
             event.stopPropagation();
             return;
           }
+          // OS file drags (Word/PDF) must bubble so Outputs can show its dropzone.
+          const types = Array.from(event.dataTransfer?.types ?? []);
+          if (types.includes("Files") || types.includes("application/x-moz-file")) return;
           event.preventDefault();
           event.stopPropagation();
         }}
@@ -1166,6 +1204,8 @@ export const RichTextEditor: React.FC<RichTextEditorProps> = ({
             event.stopPropagation();
             return;
           }
+          const types = Array.from(event.dataTransfer?.types ?? []);
+          if (types.includes("Files") || types.includes("application/x-moz-file")) return;
           event.preventDefault();
           event.stopPropagation();
         }}
@@ -1175,8 +1215,6 @@ export const RichTextEditor: React.FC<RichTextEditorProps> = ({
             event.stopPropagation();
             return;
           }
-          event.preventDefault();
-          event.stopPropagation();
           if (isUploadingAttachmentRef.current) return;
           if (!onInsertAttachment || !editor) return;
           const files = Array.from(event.dataTransfer?.files ?? []);
@@ -1184,6 +1222,8 @@ export const RichTextEditor: React.FC<RichTextEditorProps> = ({
             (file) => file.type.toLowerCase().startsWith("image/") || file.type.toLowerCase().startsWith("video/")
           );
           if (!media) return;
+          event.preventDefault();
+          event.stopPropagation();
           const coords = editor.view.posAtCoords({ left: event.clientX, top: event.clientY });
           void pickAndInsertAttachment(media, editor, coords?.pos);
         }}

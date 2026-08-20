@@ -158,6 +158,33 @@ function tokensToHtml(tokens: DiffToken[]): string {
     .join("")
 }
 
+function extractAnchors(html: string): Array<{ href: string; text: string }> {
+  const anchors: Array<{ href: string; text: string }> = []
+  const re = /<a\b[^>]*href\s*=\s*(?:"([^"]*)"|'([^']*)')[^>]*>([\s\S]*?)<\/a>/gi
+  let match: RegExpExecArray | null
+  while ((match = re.exec(String(html ?? ""))) != null) {
+    const href = String(match[1] ?? match[2] ?? "").trim()
+    const text = plainFromHtml(match[3] ?? "").trim()
+    if (href && text) anchors.push({ href, text })
+  }
+  return anchors
+}
+
+/** Word-diff rebuilds from plain text; put after-block anchors back on matching words. */
+function restoreAnchorsFromSource(html: string, sourceBlock: string): string {
+  const anchors = extractAnchors(sourceBlock)
+  if (anchors.length === 0) return html
+  let out = html
+  for (const { href, text } of anchors) {
+    const escaped = escapeHtml(text)
+    if (!escaped || !out.includes(escaped)) continue
+    const safeHref = escapeHtml(href)
+    if (out.includes(`href="${safeHref}"`)) continue
+    out = out.replace(escaped, `<a href="${safeHref}">${escaped}</a>`)
+  }
+  return out
+}
+
 function wrapBlockWithClass(blockHtml: string, className: string): string {
   const trimmed = String(blockHtml).trim()
   if (!trimmed) return ""
@@ -339,7 +366,8 @@ function emitChangedBlock(beforeBlock: string, afterBlock: string): string {
   // Near-identical blocks should never become full red+green replacements —
   // that created false "SEO Meta Title…" removal cards for unchanged copy.
   if (similarity >= 0.9 && hasShared) {
-    return `<${tag === "table" || tag === "ul" || tag === "ol" || tag === "figure" || tag === "hr" ? "div" : tag} class="artifact-diff-inline">${tokensToHtml(tokens)}</${tag === "table" || tag === "ul" || tag === "ol" || tag === "figure" || tag === "hr" ? "div" : tag}>`
+    const inner = restoreAnchorsFromSource(tokensToHtml(tokens), afterBlock)
+    return `<${tag === "table" || tag === "ul" || tag === "ol" || tag === "figure" || tag === "hr" ? "div" : tag} class="artifact-diff-inline">${inner}</${tag === "table" || tag === "ul" || tag === "ol" || tag === "figure" || tag === "hr" ? "div" : tag}>`
   }
 
   if (
@@ -362,7 +390,7 @@ function emitChangedBlock(beforeBlock: string, afterBlock: string): string {
       .join("")
   }
 
-  return `<${tag} class="artifact-diff-inline">${tokensToHtml(tokens)}</${tag}>`
+  return `<${tag} class="artifact-diff-inline">${restoreAnchorsFromSource(tokensToHtml(tokens), afterBlock)}</${tag}>`
 }
 
 function blockSimilarity(a: string, b: string): number {

@@ -23,6 +23,20 @@ const nextConfig = {
     'y-protocols',
     'yjs',
   ],
+  webpack: (config) => {
+    // unpdf's bundled PDF.js uses private fields Next 14 SWC cannot parse.
+    // PDF drop-import uses features/artifacts/pdf-bytes-to-text.ts instead.
+    config.resolve.alias = {
+      ...(config.resolve.alias || {}),
+      unpdf: false,
+    }
+    config.plugins.push(
+      new (require('webpack').IgnorePlugin)({
+        resourceRegExp: /(?:^|\/)unpdf(?:\/|$)/,
+      })
+    )
+    return config
+  },
 }
 
 module.exports = nextConfig 

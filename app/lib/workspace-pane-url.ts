@@ -939,6 +939,12 @@ export function applyWorkspaceViewToSearchParams(args: ApplyWorkspaceViewArgs): 
 
   // ── right pane ──────────────────────────────────────────────────────────
   // Strict isolation: mutate only rightView / right* params. Preserve all center*.
+  // Opening any right view from an expanded middle pane becomes the
+  // middle+right split (`focus=right`) so the left list and app sidebar stay
+  // collapsed. Do not delete `focus=right` (existing details+AI split).
+  if (next.get("focus") === "middle") {
+    next.set("focus", "right")
+  }
   if (type === "ai") {
     ensurePaneInLayout(next, "right")
     next.set("rightView", "ai")
@@ -1054,6 +1060,23 @@ export function applyWorkspaceViewToSearchParams(args: ApplyWorkspaceViewArgs): 
 
 export function workspaceTabKeyForUrlTab(tab: WorkspaceTab): string {
   return tab.key || buildWorkspaceTabKey(tab.type, tab.id)
+}
+
+/**
+ * Hide the left workspace column. Marks `leftPaneView=none` so homepage AI
+ * does not re-seed, and drops `left` from `layout`.
+ */
+export function applyCloseLeftPaneToSearchParams(current: URLSearchParams): URLSearchParams {
+  const next = new URLSearchParams(current.toString())
+  clearLeftPaneSelectionParams(next)
+  next.set(LEFT_PANE_VIEW_PARAM, LEFT_PANE_EMPTY_VIEW)
+  next.delete("object")
+  if (next.get("focus") === "left") next.delete("focus")
+  const layout = new Set((next.get("layout") || "left,middle").split(",").filter(Boolean))
+  layout.delete("left")
+  if (layout.size === 0) layout.add("middle")
+  next.set("layout", Array.from(layout).join(","))
+  return next
 }
 
 /**

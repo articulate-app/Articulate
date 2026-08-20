@@ -1,6 +1,7 @@
 import type { JSONContent } from "@tiptap/core"
 import * as Y from "yjs"
 import { applyLoadedDocument, COLLAB_REMOTE_ORIGIN } from "./sync-protocol"
+import { localizeApplyConflict } from "./tiptap-json-to-yxml"
 import {
   htmlToTipTapJson,
   replaceYDocContent,
@@ -108,12 +109,21 @@ export function loadYdocFromPersisted(args: {
 export function proposalConflictPayload(args: {
   expectedText?: string | null
   currentText: string
+  incomingText?: string | null
   target?: unknown
 }): Record<string, unknown> {
+  const span = localizeApplyConflict({
+    expectedText: args.expectedText,
+    liveText: args.currentText,
+    patchedText: args.incomingText ?? "",
+  })
   return {
-    kind: "expected_text_mismatch",
-    expected_text: args.expectedText ?? null,
-    current_text: args.currentText,
+    kind: "span_conflict",
+    current: span.current,
+    incoming: span.incoming,
+    expected: span.expected ?? null,
+    expected_text: span.expected ?? null,
+    current_text: span.current,
     target: args.target ?? {},
     resolvable: true,
   }

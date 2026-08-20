@@ -5,6 +5,7 @@ import {
   buildPatchedArtifactContent,
   ensureRichTextBlocksHaveHtml,
   finalizeArtifactUpdateContent,
+  htmlKeepsEntirePreviousDocument,
   mergeArtifactSelection,
   preserveMediaFiguresInHtml,
   resolveHtmlExactSelection,
@@ -130,6 +131,14 @@ describe("artifact-selection-patch", () => {
     expect(html).toContain("<strong>bold</strong>")
   })
 
+  it("converts leftover markdown headings inside already-wrapped HTML", () => {
+    const html = simpleMarkdownToHtml("<p># Title<br>Body copy.</p><p>## Section</p>")
+    expect(html).toContain("<h1>Title</h1>")
+    expect(html).toContain("<p>Body copy.</p>")
+    expect(html).toContain("<h2>Section</h2>")
+    expect(html).not.toContain("# Title")
+  })
+
   it("reinserts missing media figures into regenerated HTML", () => {
     const previous = [
       "<h1>Title</h1>",
@@ -241,5 +250,15 @@ describe("artifact-selection-patch", () => {
     expect(nextHtml).toContain("Hi world")
     expect(nextHtml).not.toContain("data-attachment-id")
     expect(result.applied).toBe(2)
+  })
+
+  it("detects a full-document append that kept the previous HTML", () => {
+    const previous = "<h2>Cetose e cetoacidose</h2><p>A cetose aparece quando ha falta de insulina.</p>"
+    const appended = `${previous}<h2>Cetose e cetoacidose</h2><p>A cetose aparece quando há falta de insulina.</p>`
+    expect(htmlKeepsEntirePreviousDocument(previous, appended)).toBe(true)
+    expect(htmlKeepsEntirePreviousDocument(
+      previous,
+      "<h2>Cetose e cetoacidose</h2><p>A cetose aparece quando há falta de insulina.</p>",
+    )).toBe(false)
   })
 })

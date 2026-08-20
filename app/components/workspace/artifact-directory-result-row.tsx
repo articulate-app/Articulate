@@ -6,21 +6,30 @@
 
 import { useEffect, useState } from "react"
 import { useQueryClient } from "@tanstack/react-query"
-import { MoreHorizontal, Pencil, Trash2 } from "lucide-react"
+import { FolderPlus, LayoutTemplate, MoreHorizontal, Pencil, Trash2 } from "lucide-react"
 import { cn, formatCompactDateDisplay } from "@/lib/utils"
+import { AttachmentFileKindIcon } from "../../../features/ai-chat/AttachmentFileChip"
+import type { AttachmentFileKind } from "../../../features/ai-chat/attachment-file-meta"
+import { resolveArtifactDirectoryFileKindFromRow } from "../../lib/artifacts/artifact-file-kind"
 import type { GlobalSearchDocument } from "../../lib/global-search-types"
 import { isArtifactRevisionConflictError } from "../../lib/artifacts/artifact-types"
 import { buildCenterPaneTabKey, useCenterPaneTabsStore } from "../../store/center-pane-tabs"
 import {
+  attachArtifactToProject,
   deleteArtifact,
   getArtifact,
   saveWorkspaceArtifact,
 } from "../../lib/services/artifacts"
+import { createProjectDesignTemplateFromArtifact } from "../../lib/services/project-brand-kit"
+import { toast } from "../ui/use-toast"
+import { ProjectPickDialog } from "./project-pick-dialog"
+import { ProjectPickSubmenu } from "./project-pick-submenu"
 import {
   applyArtifactCachePatch,
   forgetDeletedArtifact,
 } from "../../../features/artifacts/artifact-query-cache"
 import { Button } from "../ui/button"
+import { ConfirmDialog } from "../ui/confirm-dialog"
 import { Dialog, DialogContent, DialogFooter, DialogTitle } from "../ui/dialog"
 import {
   DropdownMenu,
@@ -39,6 +48,7 @@ export type ArtifactDirectoryResultRowProps = {
   onSelect: (item: GlobalSearchDocument) => void
   projectLabelOverride?: string | null
   createdAtOverride?: string | null
+  fileKindOverride?: AttachmentFileKind | null
   isSelected?: boolean
   denseInset?: boolean
 }
@@ -48,6 +58,7 @@ export function ArtifactDirectoryResultRow({
   onSelect,
   projectLabelOverride = null,
   createdAtOverride = null,
+  fileKindOverride = null,
   isSelected = false,
   denseInset = false,
 }: ArtifactDirectoryResultRowProps) {
@@ -58,6 +69,7 @@ export function ArtifactDirectoryResultRow({
   const [renamedTitle, setRenamedTitle] = useState<string | null>(null)
   const [isBusy, setIsBusy] = useState(false)
   const [renameOpen, setRenameOpen] = useState(false)
+  const [deleteOpen, setDeleteOpen] = useState(false)
   const title = renamedTitle ?? resolveTitle(item)
   const [renameDraft, setRenameDraft] = useState(title)
 
@@ -65,6 +77,11 @@ export function ArtifactDirectoryResultRow({
     setRenamedTitle(null)
   }, [artifactId])
 
+  const existingProjectId =
+    (typeof item.project_id === "number" && item.project_id > 0 ? item.project_id : null)
+    ?? (typeof item.raw?.project_id === "number" && item.raw.project_id > 0
+      ? item.raw.project_id
+      : null)
   const projectLabel =
     (typeof projectLabelOverride === "string" && projectLabelOverride.trim()) ||
     item.display_payload?.left?.label?.trim() ||
@@ -76,6 +93,16 @@ export function ArtifactDirectoryResultRow({
         item.created_at ||
         (typeof item.raw?.created_at === "string" ? item.raw.created_at : null),
     ) || "—"
+  const fileKind: AttachmentFileKind =
+    fileKindOverride
+    ?? (typeof item.raw?.file_kind === "string" ? item.raw.file_kind as AttachmentFileKind : null)
+    ?? resolveArtifactDirectoryFileKindFromRow({
+      title,
+      artifact_type: item.raw?.artifact_type,
+      import_file_name: item.raw?.import_file_name,
+      import_kind: item.raw?.import_kind,
+      metadata: item.raw?.metadata,
+    })
 
   const invalidateLists = async () => {
     await Promise.all([
@@ -85,6 +112,7 @@ export function ArtifactDirectoryResultRow({
       queryClient.invalidateQueries({ queryKey: ["project-artifacts"] }),
       queryClient.invalidateQueries({ queryKey: ["ai-thread-artifacts"] }),
       queryClient.invalidateQueries({ queryKey: ["artifact"] }),
+      queryClient.invalidateQueries({ queryKey: ["deleted-artifacts"] }),
     ])
   }
 
@@ -129,19 +157,80 @@ export function ArtifactDirectoryResultRow({
     }
   }
 
+  const saveAsProjectTemplate = async (projectId: number, projectName?: string) => {
+    const result = await createProjectDesignTemplateFromArtifact({
+      projectId,
+      artifactId,
+      title,
+      notes: `Saved from output “${title}”.`,
+    })
+    if (result.error || !result.template) {
+      throw result.error ?? new Error("Could not save as project template")
+    }
+    toast({
+      title: "Saved as project template",
+      description: projectName ? `${title} · ${projectName}` : title,
+    })
+    await queryClient.invalidateQueries({ queryKey: ["project-brand-kit", projectId] })
+  }
+
+  const handlePickProject = async (
+    mode: "attach" | "template",
+    project: { id: number; name: string },
+  ) => {
+    if (!artifactId || isBusy) return
+    setIsBusy(true)
+    try {
+      if (mode === "attach" || !existingProjectId) {
+        const attached = await attachArtifactToProject({ artifactId, projectId: project.id })
+        if (attached.artifact) applyArtifactCachePatch(queryClient, attached.artifact)
+        await invalidateLists()
+        if (mode === "attach") {
+          toast({ title: "Added to project", description: project.name })
+        }
+      }
+      if (mode === "template") {
+        await saveAsProjectTemplate(project.id, project.name)
+      }
+    } catch (error) {
+      toast({
+        title: mode === "template" ? "Could not save template" : "Could not add to project",
+        description: error instanceof Error ? error.message : "Try again",
+        variant: "destructive",
+      })
+    } finally {
+      setIsBusy(false)
+    }
+  }
+
+  const handleSaveAsTemplate = async () => {
+    if (!artifactId || isBusy) return
+    if (!existingProjectId) return
+    setIsBusy(true)
+    try {
+      await saveAsProjectTemplate(existingProjectId, projectLabel === "—" ? undefined : projectLabel)
+    } catch (error) {
+      toast({
+        title: "Could not save template",
+        description: error instanceof Error ? error.message : "Try again",
+        variant: "destructive",
+      })
+    } finally {
+      setIsBusy(false)
+    }
+  }
+
   const handleDelete = async () => {
     if (!artifactId || isBusy) return
-    const confirmed = window.confirm("Delete this output? This cannot be undone from here.")
-    if (!confirmed) return
     setIsBusy(true)
     try {
       await deleteArtifact({ artifactId })
       forgetDeletedArtifact(queryClient, artifactId)
       closeCenterTab(buildCenterPaneTabKey("artifact", artifactId))
+      setDeleteOpen(false)
       await invalidateLists()
     } catch (error) {
       console.error("Failed to delete artifact", error)
-      window.alert("Could not delete this output.")
     } finally {
       setIsBusy(false)
     }
@@ -160,8 +249,9 @@ export function ArtifactDirectoryResultRow({
         <button
           type="button"
           onClick={() => onSelect(item)}
-          className="flex min-w-0 flex-1 items-center gap-2 text-left"
+          className="flex min-w-0 flex-1 items-center gap-2.5 text-left"
         >
+          <AttachmentFileKindIcon kind={fileKind} size="sm" />
           <span
             className="min-w-0 flex-1 truncate text-sm font-normal text-gray-900"
             title={title}
@@ -209,12 +299,40 @@ export function ArtifactDirectoryResultRow({
               <Pencil className="h-4 w-4 text-gray-500" strokeWidth={1.75} />
               Rename
             </DropdownMenuItem>
+            {existingProjectId ? null : (
+              <ProjectPickSubmenu
+                label="Add to project"
+                icon={<FolderPlus className="h-4 w-4 text-gray-500" strokeWidth={1.75} />}
+                disabled={isBusy}
+                onPick={(project) => {
+                  void handlePickProject("attach", project)
+                }}
+              />
+            )}
+            {existingProjectId ? (
+              <DropdownMenuItem
+                className="gap-2"
+                onSelect={() => {
+                  void handleSaveAsTemplate()
+                }}
+              >
+                <LayoutTemplate className="h-4 w-4 text-gray-500" strokeWidth={1.75} />
+                Save as project template
+              </DropdownMenuItem>
+            ) : (
+              <ProjectPickSubmenu
+                label="Save as project template"
+                icon={<LayoutTemplate className="h-4 w-4 text-gray-500" strokeWidth={1.75} />}
+                disabled={isBusy}
+                onPick={(project) => {
+                  void handlePickProject("template", project)
+                }}
+              />
+            )}
             <DropdownMenuSeparator />
             <DropdownMenuItem
               className="gap-2 text-red-600 focus:text-red-600"
-              onSelect={() => {
-                void handleDelete()
-              }}
+              onSelect={() => setDeleteOpen(true)}
             >
               <Trash2 className="h-4 w-4" strokeWidth={1.75} />
               Delete
@@ -263,6 +381,22 @@ export function ArtifactDirectoryResultRow({
           </DialogFooter>
         </DialogContent>
       </Dialog>
+
+      {/* Project pick is inline in the ⋯ menu (ProjectPickSubmenu). */}
+      <ConfirmDialog
+        open={deleteOpen}
+        title="Delete output"
+        description="This output will move to Deleted. You can restore it or delete it permanently from the Outputs list."
+        confirmLabel="Delete"
+        busy={isBusy}
+        busyLabel="Deleting…"
+        onOpenChange={(open) => {
+          if (!isBusy) setDeleteOpen(open)
+        }}
+        onConfirm={() => {
+          void handleDelete()
+        }}
+      />
     </>
   )
 }

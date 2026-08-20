@@ -1510,6 +1510,54 @@ export function buildComponentsClipboardHtmlDocument(
   return { htmlBody, htmlDocument, plainText, rtfDocument, target }
 }
 
+export function buildHtmlWordClipboardPayload(params: {
+  html: string
+  plainText?: string
+}): {
+  htmlBody: string
+  htmlDocument: string
+  plainText: string
+  rtfDocument: string | null
+} | null {
+  const html = params.html.trim()
+  if (!html) return null
+
+  const nodes = htmlToExportStructuredNodes(html)
+  const htmlBody = nodes.length > 0
+    ? renderStructuredNodesToClipboardHtml(nodes, "word")
+    : htmlToSemanticExportHtml(html, "word")
+  if (!htmlBody.trim()) return null
+
+  const plainText = params.plainText?.trim()
+    || htmlBody.replace(/<[^>]+>/g, " ").replace(/\s+/g, " ").trim()
+  if (!plainText) return null
+
+  return {
+    htmlBody,
+    htmlDocument: wrapHtmlForClipboardPaste(htmlBody, "word"),
+    plainText,
+    rtfDocument: nodes.length > 0 ? structuredNodesToRtfDocument(nodes) : null,
+  }
+}
+
+/** Copy semantic HTML as Word-oriented clipboard flavors (HTML + RTF headings). */
+export async function copyHtmlToWordClipboard(params: {
+  html: string
+  plainText?: string
+}): Promise<CopyComponentContentResult> {
+  const built = buildHtmlWordClipboardPayload(params)
+  if (!built) {
+    return { ok: false, reason: "empty", message: "No content to copy" }
+  }
+  return writeStructuredContentToClipboard({
+    htmlDocument: built.htmlDocument,
+    htmlFragment: built.htmlBody,
+    plainText: built.plainText,
+    rtfDocument: built.rtfDocument,
+    target: "word",
+  })
+}
+
 export async function copyComponentsToClipboard(
   components: NormalizedComponentExport[],
   options: ComponentRenderOptions = DEFAULT_CLIPBOARD_RENDER_OPTIONS,

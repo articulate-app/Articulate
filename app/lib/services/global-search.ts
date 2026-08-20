@@ -635,6 +635,60 @@ function normalizeGlobalSearchSections(value: unknown): GlobalSearchSection[] {
   return sections.map(normalizeGlobalSearchSection).filter(Boolean) as GlobalSearchSection[]
 }
 
+type DirectoryDiscoveryCacheEntry = {
+  items: GlobalSearchDocument[]
+  fetchedLimit: number
+  exhausted: boolean
+}
+
+const directoryDiscoveryCache = new Map<string, DirectoryDiscoveryCacheEntry>()
+
+function pickDiscoverySection(
+  sections: GlobalSearchSection[],
+  entityType: GlobalSearchItemEntityType,
+): GlobalSearchSection | undefined {
+  return (
+    sections.find((entry) => entry.type === entityType) ??
+    sections.find((entry) => entry.entity_type === entityType) ??
+    sections.find((entry) =>
+      entityType === "ai_thread"
+        ? entry.type === "ai_threads" || entry.entity_type === "ai_thread"
+        : false,
+    )
+  )
+}
+
+/**
+ * Paginated discovery slice. First page fetches only `limit` rows (fast).
+ * Later pages grow the same result set and reuse cache so we do not re-download
+ * 500 rows every time the list asks for the next 25.
+ */
+export async function fetchDiscoveryDirectorySlice(args: {
+  entityType: GlobalSearchItemEntityType
+  offset: number
+  limit: number
+  signal?: AbortSignal
+}): Promise<GlobalSearchDocument[]> {
+  const needed = Math.max(1, args.offset + args.limit)
+  const cached = directoryDiscoveryCache.get(args.entityType)
+  if (cached && (cached.exhausted || cached.fetchedLimit >= needed)) {
+    return cached.items.slice(args.offset, args.offset + args.limit)
+  }
+
+  const sections = await fetchGlobalSearchDiscoverySections({
+    entityTypes: [args.entityType],
+    perTypeLimit: needed,
+    signal: args.signal,
+  })
+  const items = pickDiscoverySection(sections, args.entityType)?.items ?? []
+  directoryDiscoveryCache.set(args.entityType, {
+    items,
+    fetchedLimit: needed,
+    exhausted: items.length < needed,
+  })
+  return items.slice(args.offset, args.offset + args.limit)
+}
+
 export async function fetchGlobalSearchDiscoverySections(args: {
   entityTypes: GlobalSearchItemEntityType[] | null
   perTypeLimit: number

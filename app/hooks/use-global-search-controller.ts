@@ -22,6 +22,7 @@ import {
   fetchGlobalSearchAllTabCounts,
   fetchGlobalSearchAllTabItems,
   fetchGlobalSearchDiscoverySections,
+  fetchDiscoveryDirectorySlice,
   fetchGlobalSearchDiscoveryCounts,
   fetchGlobalSearchDocumentsByType,
   trackGlobalObjectOpen,
@@ -52,6 +53,8 @@ import {
   seedEntityPreviewFromSearchDocument,
 } from "../lib/entity-preview-from-search"
 import { openArtifactCenterTab } from "../../features/artifacts/open-artifact-center-tab"
+import { fetchArtifactDirectoryPage } from "../lib/services/artifacts"
+import { fetchProjectDirectoryPage } from "../lib/services/projects"
 
 function optionalString(value: unknown): string | null {
   if (typeof value === "number" && Number.isFinite(value)) return String(value)
@@ -1513,7 +1516,11 @@ export function useGlobalSearchController({
         "global-search",
         "full",
         routeObject,
-        usesLocalFilter ? "object-list" : objectDataSource,
+        entityType === "artifact"
+          ? "artifact-table"
+          : usesLocalFilter
+            ? "object-list"
+            : objectDataSource,
         usesLocalFilter ? "" : searchValue.trim(),
         entityType,
       ]
@@ -1547,6 +1554,42 @@ export function useGlobalSearchController({
       const isRootAllNoQuery = routeObject === "all" && !hasQuery
 
       try {
+        if (entityType === "artifact") {
+          const directoryLimit = Math.max(500, offset + limit)
+          const discovered = await fetchArtifactDirectoryPage({
+            offset: 0,
+            limit: directoryLimit,
+          })
+          const items = discovered.slice(offset, offset + limit)
+          if (requestId !== objectFetchRequestIdRef.current) {
+            return items
+          }
+          console.log("[object fetch success]", {
+            requestId,
+            objectType: entityType,
+            count: items.length,
+            raw: items,
+          })
+          return items
+        }
+
+        if (entityType === "project") {
+          const items = await fetchProjectDirectoryPage({
+            offset,
+            limit,
+          })
+          if (requestId !== objectFetchRequestIdRef.current) {
+            return items
+          }
+          console.log("[object fetch success]", {
+            requestId,
+            objectType: entityType,
+            count: items.length,
+            raw: items,
+          })
+          return items
+        }
+
         if (isRootAllNoQuery) {
           // Root all + empty query is discovery mode in the all-tab query path.
           console.log("[object fetch success]", {
@@ -1565,7 +1608,6 @@ export function useGlobalSearchController({
           isObjectRoute &&
           (entityType === "project" ||
             entityType === "user" ||
-            entityType === "artifact" ||
             entityType === "ai_thread")
         const byTitleAsc = (left: GlobalSearchDocument, right: GlobalSearchDocument) => {
           const leftTitle = (left.display_payload?.title ?? left.title ?? "").trim()
@@ -1584,29 +1626,11 @@ export function useGlobalSearchController({
             items = [...items].sort(byTitleAsc)
           }
         } else {
-          // Projects/users: pull a wide discovery page, sort A–Z, then slice for pagination.
-          const discoveryLimit =
-            sortAlphabetically || preferDiscoveryList
-              ? Math.max(500, offset + limit)
-              : Math.max(limit, offset + limit)
-          const sections = await fetchGlobalSearchDiscoverySections({
-            entityTypes: [entityType],
-            perTypeLimit: discoveryLimit,
-            // Do not inherit stale route-cancel signals for empty-query object list fetches.
+          items = await fetchDiscoveryDirectorySlice({
+            entityType,
+            offset,
+            limit,
           })
-          const section =
-            sections.find((entry) => entry.type === entityType) ??
-            sections.find((entry) => entry.entity_type === entityType) ??
-            sections.find((entry) =>
-              entityType === "ai_thread"
-                ? entry.type === "ai_threads" || entry.entity_type === "ai_thread"
-                : false,
-            )
-          const discoveredItems = section?.items ?? []
-          const ordered = sortAlphabetically
-            ? [...discoveredItems].sort(byTitleAsc)
-            : discoveredItems
-          items = ordered.slice(offset, offset + limit)
         }
         if (requestId !== objectFetchRequestIdRef.current) {
           console.debug("[object fetch stale success ignored]", {

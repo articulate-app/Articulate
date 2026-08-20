@@ -1260,9 +1260,16 @@ export function TaskDetails({
   useEffect(() => {
     const isOutputEditorTarget = (target: EventTarget | null): boolean => {
       if (!target) return false
-      if (target instanceof Element) return !!target.closest('[data-output-editor="true"]')
-      if (target instanceof Node) return !!target.parentElement?.closest('[data-output-editor="true"]')
-      return false
+      const el = target instanceof Element
+        ? target
+        : target instanceof Node
+          ? target.parentElement
+          : null
+      if (!el) return false
+      return Boolean(
+        el.closest('[data-output-editor="true"]')
+        || el.closest('[data-outputs-dropzone="true"]'),
+      )
     }
 
     const routeCommentFileDrop = (files: FileList) => {
@@ -1277,6 +1284,8 @@ export function TaskDetails({
 
     const handleDragOver = (e: DragEvent) => {
       if (isOutputEditorTarget(e.target)) return
+      // Overview file drops belong to Outputs — don't steal them as attachments.
+      if (activeTaskTab !== "attachments") return
       e.preventDefault()
       setIsDraggingOver(true)
     }
@@ -1286,13 +1295,13 @@ export function TaskDetails({
     }
     const handleDrop = async (e: DragEvent) => {
       if (isOutputEditorTarget(e.target)) return
+      if (activeTaskTab !== "attachments") return
       e.preventDefault()
       setIsDraggingOver(false)
       if (e.dataTransfer?.files && e.dataTransfer.files.length > 0 && task) {
         if (commentInputRef.current && commentInputRef.current.contains(e.target as Node)) {
           if (routeCommentFileDrop(e.dataTransfer.files)) return
         }
-        if (activeTaskTab !== "attachments") return
         await attachmentsUpload.uploadFiles(e.dataTransfer.files)
       }
     }
@@ -3146,8 +3155,8 @@ export function TaskDetails({
           column and the comments column share the same parent height via the top-level flex split. */}
       <div className="relative flex min-h-0 flex-1 flex-col overflow-hidden">
         {activeTaskTab === "overview" ? (
-          <div className="relative min-h-0 flex-1 overflow-hidden">
-            <div ref={overviewScrollRef} className="absolute inset-0 overflow-auto overflow-x-hidden [scrollbar-gutter:stable]">
+          <div className="relative isolate min-h-0 flex-1 overflow-hidden">
+            <div ref={overviewScrollRef} className="absolute inset-0 z-0 overflow-auto overflow-x-hidden [scrollbar-gutter:stable]">
           <section className={cn(CHAT_CONTENT_COLUMN_CLASS, "px-4 pb-0")}>
               {/* Banner is rendered in the header for suggestion mode */}
           <TaskOverviewPreviewSection
@@ -3796,7 +3805,7 @@ export function TaskDetails({
           </TaskOverviewPreviewSection>
 
           <TaskOverviewPreviewSection title="Briefing">
-              <div className="relative min-h-[120px] w-full min-w-0 overflow-hidden rounded-md border border-gray-200 bg-white">
+              <div className="relative z-0 min-h-[120px] w-full min-w-0 overflow-hidden rounded-md border border-gray-200 bg-white">
                 {isSuggestionMode && !hasMountedSuggestionBriefingEditor ? (
                   <div className="min-h-[120px] w-full bg-white" />
                 ) : (
@@ -3942,7 +3951,7 @@ export function TaskDetails({
             </div>
             {!isSuggestionMode ? (
               <div
-                className="pointer-events-none absolute inset-0 z-10 flex flex-col justify-end"
+                className="pointer-events-none absolute inset-0 z-40 flex flex-col justify-end"
                 style={{ paddingRight: overviewGutterWidth }}
               >
                 <div
@@ -3950,7 +3959,7 @@ export function TaskDetails({
                   ref={overviewCommentDockRef}
                   className={cn(
                     CHAT_CONTENT_COLUMN_CLASS,
-                    "pointer-events-auto bg-white px-4 py-2",
+                    "pointer-events-auto bg-white px-4 py-2 shadow-[0_-8px_16px_rgba(255,255,255,0.9)]",
                   )}
                 />
               </div>
@@ -3972,7 +3981,7 @@ export function TaskDetails({
                   </section>
                 </div>
                 <div
-                  className="pointer-events-none absolute inset-0 z-10 flex flex-col justify-end"
+                  className="pointer-events-none absolute inset-0 z-40 flex flex-col justify-end"
                   style={{ paddingRight: commentsGutterWidth }}
                 >
                   <div
@@ -4074,7 +4083,7 @@ export function TaskDetails({
           )}
 
           {!isSuggestionMode && activeTaskTab === "artifacts" && taskIdNum ? (
-            <section className="p-4 pb-0">
+            <section className="p-4 pb-0" data-outputs-dropzone="true">
               <h3 className="mb-3 text-base font-medium text-gray-900">Outputs</h3>
               <ArtifactWorkspace
                 taskId={taskIdNum}
@@ -4082,6 +4091,7 @@ export function TaskDetails({
                 defaultLanguageId={task?.language_id ? Number(task.language_id) : null}
                 projectId={task?.project_id_int ?? null}
                 contextProjectName={task?.project?.name ?? currentProjectName ?? null}
+                layout="stack"
                 hideHeading
               />
             </section>

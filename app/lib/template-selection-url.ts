@@ -10,21 +10,40 @@ function nonEmpty(value: string | null): string | null {
   return typeof value === "string" && value.trim().length > 0 ? value.trim() : null
 }
 
-/** Tab / URL identity: `{projectId}:{templateId}`. */
-export function buildTemplateWorkspaceId(projectId: number, templateId: string): string {
-  return `${projectId}:${templateId.trim()}`
+export type TemplateWorkspaceRef = {
+  /** Null for personal templates that are not attached to a project yet. */
+  projectId: number | null
+  templateId: string
+}
+
+const PERSONAL_TEMPLATE_PREFIX = "u"
+
+/** Tab / URL identity: `{projectId}:{templateId}` or `u:{templateId}` when unattached. */
+export function buildTemplateWorkspaceId(
+  projectId: number | null | undefined,
+  templateId: string,
+): string {
+  const id = templateId.trim()
+  if (!id) return ""
+  if (projectId == null || projectId <= 0) return `${PERSONAL_TEMPLATE_PREFIX}:${id}`
+  return `${projectId}:${id}`
 }
 
 export function parseTemplateWorkspaceId(
   raw: string | null | undefined,
-): { projectId: number; templateId: string } | null {
+): TemplateWorkspaceRef | null {
   const value = typeof raw === "string" ? raw.trim() : ""
   if (!value) return null
   const colon = value.indexOf(":")
   if (colon <= 0) return null
-  const projectId = Number(value.slice(0, colon))
+  const owner = value.slice(0, colon)
   const templateId = value.slice(colon + 1).trim()
-  if (!Number.isFinite(projectId) || projectId <= 0 || !templateId) return null
+  if (!templateId) return null
+  if (owner === PERSONAL_TEMPLATE_PREFIX) {
+    return { projectId: null, templateId }
+  }
+  const projectId = Number(owner)
+  if (!Number.isFinite(projectId) || projectId <= 0) return null
   return { projectId, templateId }
 }
 

@@ -38,16 +38,20 @@ export function createSupabaseCollabTransport(args: {
   }
 
   return {
-    async persistUpdate(update, idempotencyKey) {
+    async persistUpdate(update, idempotencyKey, baseSeq) {
       const { data, error } = await args.supabase.rpc("artifact_collab_persist_update_v1", {
         p_artifact_id: args.artifactId,
         p_update_base64: bytesToBase64(update),
         p_idempotency_key: idempotencyKey,
         p_client_id: args.clientId ?? null,
         p_origin: "user",
+        p_base_seq: baseSeq ?? null,
       })
       if (error) throw new Error(error.message)
       const row = asRecord(data) ?? {}
+      if (row.ok === false && row.code === "stale_base") {
+        throw new Error("stale_base")
+      }
       return {
         id: String(row.id ?? ""),
         seq: Number(row.seq ?? 0),

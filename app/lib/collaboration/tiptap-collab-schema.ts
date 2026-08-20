@@ -73,7 +73,10 @@ export const CollabAttachmentBlock = Node.create({
       },
       src: {
         default: "",
-        parseHTML: (el) => el.querySelector("img,video")?.getAttribute("src") ?? "",
+        parseHTML: (el) =>
+          el.tagName === "IMG" || el.tagName === "VIDEO"
+            ? el.getAttribute("src") ?? ""
+            : el.querySelector("img,video")?.getAttribute("src") ?? "",
       },
       fileName: {
         default: "",
@@ -81,12 +84,26 @@ export const CollabAttachmentBlock = Node.create({
       },
       widthPct: { default: 100, parseHTML: (el) => Number(el.getAttribute("data-width-pct") ?? 100) || 100 },
       commentPins: { default: "[]", parseHTML: (el) => el.getAttribute("data-comment-pins") ?? "[]" },
-      alt: { default: "", parseHTML: (el) => el.querySelector("img")?.getAttribute("alt") ?? "" },
+      alt: {
+        default: "",
+        parseHTML: (el) =>
+          el.tagName === "IMG" ? el.getAttribute("alt") ?? "" : el.querySelector("img")?.getAttribute("alt") ?? "",
+      },
       commentCount: { default: 0, parseHTML: (el) => Number(el.getAttribute("data-comment-count") ?? 0) || 0 },
     }
   },
   parseHTML() {
-    return [{ tag: "figure[data-attachment-id]" }]
+    return [
+      { tag: "figure[data-attachment-id]" },
+      {
+        tag: "figure",
+        getAttrs: (element) => {
+          const host = element as HTMLElement
+          return host.querySelector("img[src]") ? {} : false
+        },
+      },
+      { tag: "img[src]" },
+    ]
   },
   renderHTML({ HTMLAttributes }) {
     const src = String(HTMLAttributes.src ?? "")

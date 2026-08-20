@@ -38,6 +38,9 @@ import {
   openWorkspaceNewTabAi,
   openWorkspaceNewTabMessage,
 } from "../../lib/workspace-new-tab-actions"
+import { WorkspaceAddOutputButton } from "./workspace-add-output-button"
+import { WorkspaceOutputsDeletedMenu } from "./workspace-outputs-deleted-menu"
+import { WorkspaceOutputsListDropzone } from "./workspace-outputs-list-dropzone"
 import {
   WorkspacePageAddButton,
   WorkspacePageSearchInput,
@@ -184,8 +187,7 @@ export function WorkspaceObjectListView({
   )
 
   if (usePageLayout) {
-    return (
-      <WorkspaceHostPaneProvider pane={paneId}>
+    const page = (
         <WorkspacePageShell
           scrollRef={pageScrollRef}
           title={title}
@@ -220,6 +222,11 @@ export function WorkspaceObjectListView({
                     })
                   }
                 />
+              ) : listType === "artifact-list" ? (
+                <>
+                  <WorkspaceAddOutputButton openPane={openPane} />
+                  <WorkspaceOutputsDeletedMenu />
+                </>
               ) : addLabel && addType ? (
                 <WorkspacePageAddButton
                   label={addLabel}
@@ -259,6 +266,16 @@ export function WorkspaceObjectListView({
           ) : null}
           {results}
         </WorkspacePageShell>
+    )
+    return (
+      <WorkspaceHostPaneProvider pane={paneId}>
+        {listType === "artifact-list" ? (
+          <WorkspaceOutputsListDropzone openPane={openPane}>
+            {page}
+          </WorkspaceOutputsListDropzone>
+        ) : (
+          page
+        )}
       </WorkspaceHostPaneProvider>
     )
   }

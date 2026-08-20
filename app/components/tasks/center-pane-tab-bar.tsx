@@ -39,6 +39,8 @@ type CenterPaneTabBarProps = {
   onExpand?: () => void
   /** Close the middle details pane entirely. */
   onClosePane?: () => void
+  /** Re-open the collapsed left workspace pane — rendered left of the tabs. */
+  onOpenLeftPane?: () => void
   /** Re-open the collapsed right tool pane (AI / browser). */
   onOpenRightPane?: () => void
   /** Open/duplicate the active tab in the other workspace pane. */
@@ -77,6 +79,7 @@ export function CenterPaneTabBar({
   isExpanded = false,
   onExpand,
   onClosePane,
+  onOpenLeftPane,
   onOpenRightPane,
   onOpenActiveInOtherPane,
   onDropTabFromOtherPane,
@@ -97,6 +100,17 @@ export function CenterPaneTabBar({
 
   return (
     <div className={`${AI_PANE_TAB_ROW_CLASS} shrink-0`} data-pane-tab-bar="">
+      {onOpenLeftPane ? (
+        <button
+          type="button"
+          onClick={onOpenLeftPane}
+          className={`${PANE_CHROME_ICON_BUTTON_CLASS} ml-0.5`}
+          title="Open left pane"
+          aria-label="Open left pane"
+        >
+          <PaneOpenIcon className={`${PANE_CHROME_ICON_CLASS} -scale-x-100`} />
+        </button>
+      ) : null}
       <div className="flex min-h-0 min-w-0 flex-1 items-stretch">
         {tabs.length > 0 || onDropTabFromOtherPane || onReorderTab ? (
           <PaneTabStrip

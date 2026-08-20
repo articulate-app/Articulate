@@ -24,6 +24,8 @@ export type WorkspacePageShellProps = {
   columnClassName?: string
   /** Mark the outer scroll root for task-list virtualization (`data-task-scroll-container`). */
   taskScrollContainer?: boolean
+  /** Hide the in-page headline when an outer chrome already shows the title (mobile). */
+  hideHeadline?: boolean
 }
 
 /**
@@ -40,11 +42,12 @@ export function WorkspacePageShell({
   layout = "scroll",
   columnClassName,
   taskScrollContainer = false,
+  hideHeadline = false,
 }: WorkspacePageShellProps) {
   // `columnClassName` last so callers can override default width/padding (e.g. Tasks `px-6`).
   const column = cn(
     "flex min-w-0 flex-col gap-4 px-4",
-    layout === "fill" ? "min-h-0 flex-1 py-6" : "py-6",
+    layout === "fill" ? "min-h-0 flex-1 py-6" : hideHeadline ? "py-3" : "py-6",
     columnClassName ?? CHAT_CONTENT_COLUMN_CLASS,
   )
 
@@ -54,10 +57,14 @@ export function WorkspacePageShell({
         className={cn("flex h-full min-h-0 flex-col overflow-hidden bg-white", className)}
       >
         <div className={column}>
-          <div className="flex shrink-0 items-center justify-between gap-3">
-            <h2 className="text-lg font-medium tracking-tight text-gray-900">{title}</h2>
-            {actions ? <div className="flex shrink-0 items-center gap-1">{actions}</div> : null}
-          </div>
+          {hideHeadline ? (
+            actions ? <div className="flex shrink-0 items-center justify-end gap-1">{actions}</div> : null
+          ) : (
+            <div className="flex shrink-0 items-center justify-between gap-3">
+              <h2 className="text-lg font-medium tracking-tight text-gray-900">{title}</h2>
+              {actions ? <div className="flex shrink-0 items-center gap-1">{actions}</div> : null}
+            </div>
+          )}
           {children}
         </div>
       </div>
@@ -71,10 +78,14 @@ export function WorkspacePageShell({
       className={cn("h-full min-h-0 overflow-auto bg-white [scrollbar-gutter:stable]", className)}
     >
       <div className={column}>
-        <div className="flex items-center justify-between gap-3">
-          <h2 className="text-lg font-medium tracking-tight text-gray-900">{title}</h2>
-          {actions ? <div className="flex shrink-0 items-center gap-1">{actions}</div> : null}
-        </div>
+        {hideHeadline ? (
+          actions ? <div className="flex items-center justify-end gap-1">{actions}</div> : null
+        ) : (
+          <div className="flex items-center justify-between gap-3">
+            <h2 className="text-lg font-medium tracking-tight text-gray-900">{title}</h2>
+            {actions ? <div className="flex shrink-0 items-center gap-1">{actions}</div> : null}
+          </div>
+        )}
         {children}
       </div>
     </div>

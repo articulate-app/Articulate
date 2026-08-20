@@ -284,7 +284,7 @@ function applyBuildPreviewEventsFromSnapshot(
         || (typeof payload.error_message === "string" && payload.error_message.trim())
         || (typeof payload.message === "string" && payload.message.trim())
         || (typeof payload.reason === "string" && payload.reason.trim())
-        || "Work unit failed"
+        || "The update could not be applied."
       const matchUnit = type === "build.failed" ? null : unitId
       const liveArtifactPreviews = useAiBuildArtifactPreviewStore.getState()
       for (const row of Object.values(liveArtifactPreviews.previews)) {
@@ -594,7 +594,7 @@ async function reconcileBuild(
           useAiBuildArtifactPreviewStore.getState().forceTerminalForBuild(
             buildId,
             buildFailed ? "failed" : "saved",
-            buildFailed ? (unitError ?? "Work unit failed") : null,
+            buildFailed ? (unitError ?? "The update could not be applied.") : null,
           )
           if (options?.queryClient) {
             options.queryClient.invalidateQueries({ queryKey: ["artifact"] })
@@ -821,7 +821,7 @@ function settleTerminalArtifactPreviewCards(buildId: string): void {
   useAiBuildArtifactPreviewStore.getState().forceTerminalForBuild(
     id,
     buildFailed ? "failed" : "saved",
-    buildFailed ? (unitError ?? "Work unit failed") : null,
+    buildFailed ? (unitError ?? "The update could not be applied.") : null,
   )
 }
 

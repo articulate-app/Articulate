@@ -7,6 +7,7 @@ import {
   ensureRichTextBlocksHaveHtml,
   extractPrimaryArtifactHtml,
   finalizeArtifactUpdateContent,
+  htmlKeepsEntirePreviousDocument,
   mergeArtifactSelection,
   type ArtifactSelectionLike,
 } from "./artifact-selection-patch.ts";
@@ -75,6 +76,42 @@ function uuidOrNull(value: unknown): string | null {
 function positiveInt(value: unknown): number | null {
   const n = Number(value);
   return Number.isInteger(n) && n > 0 ? n : null;
+}
+
+async function broadcastArtifactYdocUpdate(
+  admin: ReturnType<typeof createClient>,
+  artifactId: string,
+  update: Uint8Array,
+  seq: number,
+  key: string,
+) {
+  const channel = admin.channel(`artifact:${artifactId}`, {
+    config: { private: true, broadcast: { self: false } },
+  });
+  await new Promise<void>((resolve, reject) => {
+    const timer = setTimeout(() => reject(new Error("broadcast_subscribe_timeout")), 2500);
+    channel.subscribe((status) => {
+      if (status === "SUBSCRIBED") {
+        clearTimeout(timer);
+        resolve();
+      }
+      if (status === "CHANNEL_ERROR" || status === "TIMED_OUT") {
+        clearTimeout(timer);
+        reject(new Error("broadcast_subscribe_failed"));
+      }
+    });
+  });
+  let binary = "";
+  update.forEach((value) => {
+    binary += String.fromCharCode(value);
+  });
+  const sent = await channel.send({
+    type: "broadcast",
+    event: "ydoc-update",
+    payload: { key, seq, update_base64: btoa(binary) },
+  });
+  await admin.removeChannel(channel);
+  if (sent !== "ok") throw new Error(String(sent));
 }
 
 /** Body fields must not be recursively starved — nested /8 caps were truncating HTML to ~800 chars. */
@@ -714,11 +751,12 @@ function buildInitialMessages(
     "SHARED CONTEXT (when present) contains user-provided facts and constraints that are MANDATORY for this deliverable: names, quotes, figures, style and length requirements. Use them faithfully. Never replace user-provided facts with invented content.",
     "Sources are inputs; artifacts are outputs. Read a source only when its summary is insufficient.",
     "LANGUAGE: Keep the deliverable in the language of the provided sources/templates/URLs unless task_instruction or request explicitly asks to translate or rewrite in another language. Do not switch language just because the chat request is written in a different language.",
+    "UPDATES: operation=update must call apply_artifact_patches and copy unchanged HTML spans exactly from the current document. Never keep an existing section and also emit a rewritten copy of that section. Replace the original nodes in place. save_artifact_version is for create/generate, or when there is no existing HTML to patch. If you use save_artifact_version on an update, return the complete document with each existing section appearing once.",
     "EDITORIAL QUALITY: Write with specificity and human editorial judgment. Avoid generic openings, empty scene-setting, exaggerated importance, canned transitions, repetitive summaries, symmetrical list padding, and stock AI phrases such as 'in today’s fast-paced world', 'delve into', 'unlock', 'seamless', 'crucial role', or natural equivalents in the deliverable language. Prefer concrete nouns and verbs, useful detail, varied sentence length and section shapes that fit the subject. Do not enforce these defaults against explicit user wording, source fidelity, brand rules, templates, SEO requirements or learned preferences; those take priority.",
     "SELECTED ARTIFACT CONTEXT (if present) is factual UI context about what the user highlighted — not a write lock and not a scope limiter. Interpret the user request yourself.",
     "When brand_kit is present, match its colors, fonts, typography, and spacing for any styled or visual output. Prefer brand_kit over inventing a conflicting palette.",
     "Prefer apply_artifact_patches for surgical edits: you specify exact old_html/new_html (or verified plain_start/plain_end+expected_text on artifact_plain_for_offsets). You may pass multiple non-overlapping patches.",
-    "Use save_artifact_version when creating a new document or when a full rewrite is simpler. Always return the full updated document in that case.",
+    "Use save_artifact_version for create/generate, or when there is no existing HTML to patch. Always return the full updated document in that case.",
     "Put authoritative HTML in content_json.blocks[].html when using save_artifact_version. Preserve <figure data-attachment-id> media you are not changing.",
     "HTML EMAIL / NEWSLETTER CODE: when the user asks for HTML newsletter/email (or artifact_role is newsletter_html / content_format html_email), return ONE complete email-ready HTML document in content_json.blocks[0].html (doctype/html/head/style + nested role=presentation tables + inline styles as needed). Also set content_json.content_format to \"html_email\". Do NOT convert email layout tables into TipTap semantic tables, markdown, or plain copy blocks. Do NOT strip <style>, wrappers, or nested tables. Copy-only deliverables are allowed only when the user explicitly asks for copy without HTML.",
     "SOURCE IMAGES: When source_summaries (or ai_read_source) include extracted_images with url fields, you MUST embed those exact https URLs in <img src=\"...\"> for HTML email. Prefer the extracted PDF/page images over inventing placeholders or empty gray boxes. Do not use TipTap <figure data-attachment-id> for html_email — use real <img src> URLs.",
@@ -1120,6 +1158,84 @@ Deno.serve(async (request) => {
         };
       }
 
+      if (SUPABASE_SERVICE_ROLE_KEY) {
+        const admin = createClient(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY, {
+          auth: { persistSession: false, autoRefreshToken: false },
+        });
+        const { data: collabOn } = await admin.rpc("artifact_collab_is_enabled_v1", {
+          p_artifact_id: artifactId,
+        });
+        if (collabOn === true) {
+          const idempotencyKey = `${buildId}:${unitId}:snapshot`;
+          const expectedText = beforeContentText || null;
+          const patchedHtml = String(
+            extractPrimaryArtifactHtml(snapshot.content_json) || snapshot.content_text || "",
+          );
+          const upserted = await admin.rpc("artifact_collab_upsert_proposal_v1", {
+            p_artifact_id: artifactId,
+            p_idempotency_key: idempotencyKey,
+            p_status: "ready",
+            p_payload: {
+              actor_type: "agent",
+              ai_run_id: context?.build?.ai_run_id ?? null,
+              ai_thread_id: context?.build?.thread_id ?? null,
+              expected_text: expectedText,
+              proposed_content: snapshot,
+            },
+          });
+          const proposalId = upserted.data && typeof upserted.data === "object"
+            ? String((upserted.data as { id?: string }).id ?? "")
+            : "";
+          const applied = await applyReadyAiProposalOnWorker({
+            supabase: admin,
+            artifactId,
+            idempotencyKey,
+            expectedText,
+            requireExactCurrent: true,
+            title: snapshot.title,
+            summary: args.changeSummary,
+            patchedHtml,
+            patchedJson: snapshot.content_json,
+            origin: {
+              proposalId,
+              agentId: "ai-artifact-worker",
+              runId: context?.build?.ai_run_id ?? null,
+              messageId: context?.unit?.id ?? null,
+              threadId: context?.build?.thread_id ?? null,
+              idempotencyKey,
+            },
+            broadcast: ({ update, seq, key }) =>
+              broadcastArtifactYdocUpdate(admin, artifactId, update, seq, key),
+          });
+          if (!applied.ok) {
+            if (applied.status === "conflict" || applied.reason === "expected_text_mismatch") {
+              throw new ArtifactBuildError(
+                "artifact_revision_conflict",
+                applied.reason,
+                false,
+              );
+            }
+            throw new ArtifactBuildError("artifact_not_saved", applied.reason, false);
+          }
+          return {
+            result: {
+              ok: true,
+              data: {
+                collab_proposal: "applied",
+                seq: applied.seq,
+                version_number: applied.versionNumber ?? null,
+                artifact: { current_version: applied.versionNumber ?? null },
+              },
+            },
+            snapshot,
+            summary: args.summary,
+            noop: false,
+            sectionHtml,
+            sectionBeforeHtml,
+          };
+        }
+      }
+
       const toolContext = {
         thread_id: context?.build?.thread_id,
         ai_run_id: context?.build?.ai_run_id,
@@ -1354,7 +1470,10 @@ Deno.serve(async (request) => {
                     artifactId,
                     idempotencyKey,
                     expectedText,
+                    title: snapshot.title,
+                    summary: String(toolArgs.summary ?? ""),
                     patchedHtml,
+                    patchedJson: snapshot.content_json,
                     origin: {
                       proposalId,
                       agentId: "ai-artifact-worker",
@@ -1363,34 +1482,8 @@ Deno.serve(async (request) => {
                       threadId: context?.build?.thread_id ?? null,
                       idempotencyKey,
                     },
-                    broadcast: async ({ update, seq, key }) => {
-                      const channel = admin.channel(`artifact:${artifactId}`, {
-                        config: { private: true, broadcast: { self: false } },
-                      })
-                      await new Promise<void>((resolve, reject) => {
-                        const timer = setTimeout(() => resolve(), 1500)
-                        channel.subscribe((status) => {
-                          if (status === "SUBSCRIBED") {
-                            clearTimeout(timer)
-                            resolve()
-                          }
-                          if (status === "CHANNEL_ERROR") {
-                            clearTimeout(timer)
-                            reject(new Error("broadcast_subscribe_failed"))
-                          }
-                        })
-                      })
-                      let binary = ""
-                      update.forEach((value) => {
-                        binary += String.fromCharCode(value)
-                      })
-                      await channel.send({
-                        type: "broadcast",
-                        event: "ydoc-update",
-                        payload: { key, seq, update_base64: btoa(binary) },
-                      })
-                      await admin.removeChannel(channel)
-                    },
+                    broadcast: ({ update, seq, key }) =>
+                      broadcastArtifactYdocUpdate(admin, artifactId, update, seq, key),
                   })
                   if (!applied.ok) {
                     savedResult = null
@@ -1455,6 +1548,27 @@ Deno.serve(async (request) => {
             const modelAssetCount = Array.isArray((modelAssets as any)?.assets)
               ? (modelAssets as any).assets.length
               : 0;
+            const previousHtml = extractPrimaryArtifactHtml(context?.artifact?.content_json)
+            const nextHtml = extractPrimaryArtifactHtml(contentJson)
+            const operation = String(
+              context?.unit?.input_snapshot?.artifact_operation
+              ?? context?.unit?.input_snapshot?.artifact_spec?.operation
+              ?? "create",
+            )
+            if (
+              operation === "update"
+              && htmlKeepsEntirePreviousDocument(previousHtml, nextHtml)
+            ) {
+              result = {
+                ok: false,
+                error: "update_appended_previous_document",
+                data: {
+                  hint: "This update still contains the entire previous document plus new HTML. Do not keep the original section and add a rewritten copy. Call apply_artifact_patches and replace the original nodes in place.",
+                },
+              };
+              messages.push({ role: "tool", tool_call_id: toolCall.id, content: JSON.stringify(result).slice(0, 40000) });
+              continue;
+            }
             const snapshot = {
               title: String(toolArgs.title ?? context?.artifact?.title ?? "Artifact").slice(0, 240),
               status: String(toolArgs.status ?? "ready"),

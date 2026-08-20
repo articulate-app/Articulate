@@ -88,6 +88,7 @@ export default function TasksLayout({ children, modal }: LayoutProps) {
   const [isMobileMenuOpen, setIsMobileMenuOpen] = useState(false);
   const [isSidebarCollapsed, setIsSidebarCollapsed] = useState(false);
   const SIDEBAR_WIDTH_KEY = "articulate-sidebar-width";
+  const SIDEBAR_COLLAPSED_KEY = "articulate-sidebar-collapsed";
   const SIDEBAR_MIN_WIDTH = 200;
   const SIDEBAR_MAX_WIDTH = 420;
   const SIDEBAR_DEFAULT_WIDTH = 256;
@@ -96,14 +97,15 @@ export default function TasksLayout({ children, modal }: LayoutProps) {
   const sidebarWidthRef = React.useRef(sidebarWidth);
   sidebarWidthRef.current = sidebarWidth;
 
-  useEffect(() => {
+  useLayoutEffect(() => {
     if (typeof window === "undefined") return;
     try {
-      const raw = window.localStorage.getItem(SIDEBAR_WIDTH_KEY);
-      const parsed = raw ? Number(raw) : NaN;
-      if (Number.isFinite(parsed)) {
-        setSidebarWidth(Math.min(SIDEBAR_MAX_WIDTH, Math.max(SIDEBAR_MIN_WIDTH, parsed)));
+      const rawWidth = window.localStorage.getItem(SIDEBAR_WIDTH_KEY);
+      const parsedWidth = rawWidth ? Number(rawWidth) : NaN;
+      if (Number.isFinite(parsedWidth)) {
+        setSidebarWidth(Math.min(SIDEBAR_MAX_WIDTH, Math.max(SIDEBAR_MIN_WIDTH, parsedWidth)));
       }
+      setIsSidebarCollapsed(window.localStorage.getItem(SIDEBAR_COLLAPSED_KEY) === "1");
     } catch {
       // ignore
     }
@@ -220,7 +222,15 @@ export default function TasksLayout({ children, modal }: LayoutProps) {
       setIsMobileMenuOpen((v) => !v);
       return;
     }
-    setIsSidebarCollapsed((v) => !v);
+    setIsSidebarCollapsed((v) => {
+      const next = !v;
+      try {
+        window.localStorage.setItem(SIDEBAR_COLLAPSED_KEY, next ? "1" : "0");
+      } catch {
+        // ignore
+      }
+      return next;
+    });
   };
 
   const handleMobileMenuClose = () => {

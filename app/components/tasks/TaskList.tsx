@@ -849,11 +849,15 @@ export function TaskList({ onTaskSelect, expandMainTaskId, selectedTaskId, editF
   const [activeHoverId, setActiveHoverId] = useState<string | null>(null)
   const [editIntent, setEditIntent] = useState<'click' | 'hover'>('click')
   const editingCellRef = useRef<{ taskId: number; field: string } | null>(null)
+  const editingValueRef = useRef('')
   const editIntentRef = useRef<'click' | 'hover'>('click')
+  const handleCellSaveRef = useRef<(taskId: number, field: string, taskOverride?: any) => Promise<void>>(async () => {})
 
   useEffect(() => {
     editingCellRef.current = editingCell
   }, [editingCell])
+
+  editingValueRef.current = editingValue
 
   useEffect(() => {
     editIntentRef.current = editIntent
@@ -1655,13 +1659,14 @@ export function TaskList({ onTaskSelect, expandMainTaskId, selectedTaskId, editF
 
     const task = taskOverride || taskListViewTasks.find(t => t.id === taskId)
     if (!task) return
+    const currentValue = editingValueRef.current
 
     if (field === 'delivery_date' || field === 'publication_date') {
-      if ((toISODate(editingValue) || '') === (toISODate((task as any)[field]) || '')) {
+      if ((toISODate(currentValue) || '') === (toISODate((task as any)[field]) || '')) {
         handleCellCancel()
         return
       }
-    } else if (field === 'title' && String(editingValue ?? '') === String(task.title ?? '')) {
+    } else if (field === 'title' && String(currentValue ?? '') === String(task.title ?? '')) {
       handleCellCancel()
       return
     }
@@ -1673,8 +1678,8 @@ export function TaskList({ onTaskSelect, expandMainTaskId, selectedTaskId, editF
     // Map field names to database columns and prepare optimistic update
     switch (field) {
       case 'title':
-        updateData.title = editingValue
-        optimisticTask.title = editingValue
+        updateData.title = currentValue
+        optimisticTask.title = currentValue
         break
       case 'assigned_user':
         // For assignee, use user_id as value (same as TaskDetails)
@@ -2022,9 +2027,12 @@ export function TaskList({ onTaskSelect, expandMainTaskId, selectedTaskId, editF
     }
   }
 
+  handleCellSaveRef.current = handleCellSave
+
   const handleCellCancel = useCallback(() => {
     setEditingCell(null)
     setEditingValue('')
+    editingValueRef.current = ''
     setEditIntent('click')
   }, [])
 
@@ -2069,7 +2077,11 @@ export function TaskList({ onTaskSelect, expandMainTaskId, selectedTaskId, editF
       // Close any other cell in edit mode so it doesn't stay stuck
       const current = editingCellRef.current
       if (current && (current.taskId !== taskId || current.field !== field)) {
-        handleCellCancel()
+        if (current.field === 'title') {
+          void handleCellSaveRef.current(current.taskId, 'title')
+        } else {
+          handleCellCancel()
+        }
       }
       setActiveHoverId(cellId(taskId, field))
       // Default: hover is visual affordance only. Editors open on click / keyboard.
@@ -2120,6 +2132,8 @@ export function TaskList({ onTaskSelect, expandMainTaskId, selectedTaskId, editF
       if (target?.closest?.('[data-inline-select]')) return
       if (target?.closest?.('[data-inline-editor]')) return
       clearActiveHover()
+      // Title commits on blur — don't cancel here or the typed value is dropped.
+      if (editingCellRef.current?.field === 'title') return
       handleCellCancel()
     }
     document.addEventListener('pointerdown', onPointerDown, true)
@@ -2256,7 +2270,10 @@ export function TaskList({ onTaskSelect, expandMainTaskId, selectedTaskId, editF
                 <input
                   type="text"
                   value={editingValue}
-                  onChange={(e) => setEditingValue(e.target.value)}
+                  onChange={(e) => {
+                    editingValueRef.current = e.target.value
+                    setEditingValue(e.target.value)
+                  }}
                   onBlur={() => handleCellSave(taskId, 'title', task)}
                   onKeyDown={(e) => {
                     if (e.key === 'Enter') {
@@ -3614,13 +3631,17 @@ export function TaskList({ onTaskSelect, expandMainTaskId, selectedTaskId, editF
   // Layout effect: decide compact vs expanded before paint so a single expanded frame cannot
   // stretch flex ancestors (see isCompact default / min-w-0 wrappers).
   useLayoutEffect(() => {
+    if (isMobile) {
+      setIsCompact(true)
+      return
+    }
     if (containerWidth <= 0) return
     setIsCompact((prev) =>
       prev
         ? containerWidth < compactEnterWidth + COMPACT_EXIT_MARGIN
         : containerWidth < compactEnterWidth,
     )
-  }, [containerWidth, compactEnterWidth])
+  }, [containerWidth, compactEnterWidth, isMobile])
 
   // Populate default widths once per column (for double-click reset)
   useEffect(() => {
@@ -3892,7 +3913,7 @@ export function TaskList({ onTaskSelect, expandMainTaskId, selectedTaskId, editF
         {bulkDeleteDialog}
         <div
           ref={scrollContainerRef}
-          className={scrollClassName}
+          className={cn(scrollClassName, 'pb-24')}
           {...(nestedScroll ? { 'data-task-scroll-container': '' } : {})}
           style={{ width: '100%' }}
           onScroll={markScrolling}

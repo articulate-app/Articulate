@@ -168,7 +168,7 @@ describe("statusPayloadToExecutionTraceEvent", () => {
       data_summary: { count: 0, items: [] },
       entities: [],
     })
-    expect(finished?.text).toBe("Finished listing task artifacts.")
+    expect(finished?.text).toBe("Finished listing task documents.")
     expect(finished?.details?.result_summary).toBe("Listed artifacts — none found.")
     expect(finished?.details?.data_summary).toEqual({ count: 0, items: [] })
   })

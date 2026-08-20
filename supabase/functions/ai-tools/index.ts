@@ -14,6 +14,7 @@ import {
   looksLikeSpecificResourceUrl,
   recommendBrowserFallback,
 } from "../_shared/browser-agent/url-verification.ts";
+import { expandDocumentImageCompanions } from "../_shared/artifact-build-image-companion.ts";
 
 
 
@@ -1869,11 +1870,18 @@ if (toolName === "ai_start_artifact_build") {
           // Creates may attach a visible project without a tag (brand creatives).
           projectId = modelProjectId;
         }
-        const title = String(raw?.title ?? "").trim().slice(0, 240);
+        const rawTitle = String(raw?.title ?? "").trim().slice(0, 240);
         const artifactType = String(raw?.artifact_type ?? "document").trim().slice(0, 100);
+        const artifactId = cleanUuidOrNull(raw?.artifact_id);
+        const isInPlaceUpdate = Boolean(artifactId) && operation !== "create" && operation !== "generate";
+        // Models sometimes pass title: "1" / a version number on updates. That
+        // must not create a shadow deliverable or overwrite the article title.
+        const title = isInPlaceUpdate && /^\d{1,3}$/.test(rawTitle) ? "" : rawTitle;
         if (!handle || seenHandles.has(handle)) throw new Error("artifact_handles_must_be_unique");
         seenHandles.add(handle);
-        if (!title) throw new Error("artifact_editorial_title_required");
+        // Creates need an editorial title. In-place updates inherit the current
+        // artifact title below — do not fail before that lookup.
+        if (!title && !isInPlaceUpdate) throw new Error("artifact_editorial_title_required");
         if (!artifactType) throw new Error("artifact_type_required");
         const projectNameHint = String(
           raw?.project_name
@@ -1886,7 +1894,7 @@ if (toolName === "ai_start_artifact_build") {
           task_id: taskId,
           project_id: projectId,
           project_name_hint: projectNameHint,
-          artifact_id: cleanUuidOrNull(raw?.artifact_id),
+          artifact_id: artifactId,
           operation,
           artifact_type: artifactType,
           artifact_role: String(raw?.artifact_role ?? "").trim().slice(0, 100) || null,
@@ -2105,6 +2113,23 @@ if (toolName === "ai_start_artifact_build") {
       });
     }
 
+    artifactSpecs = artifactSpecs.map((spec: any) => {
+      if (String(spec.title ?? "").trim()) return spec;
+      if (spec.artifact_id && spec.operation !== "create" && spec.operation !== "generate") {
+        return { ...spec, title: "Document" };
+      }
+      return spec;
+    });
+    if (artifactSpecs.some((spec: any) => !String(spec.title ?? "").trim())) {
+      return finalize({ name: toolName, ok: false, error: "artifact_editorial_title_required", data: null });
+    }
+
+    artifactSpecs = expandDocumentImageCompanions(artifactSpecs, { requestText });
+    for (const spec of artifactSpecs) {
+      const handle = String(spec.handle ?? "").trim();
+      if (handle) seenHandles.add(handle);
+    }
+
     for (const spec of artifactSpecs) {
       for (const dependency of spec.depends_on_handles) {
         if (!seenHandles.has(dependency)) return finalize({ name: toolName, ok: false, error: `artifact_dependency_handle_not_found:${dependency}`, data: null });
@@ -2156,10 +2181,19 @@ if (toolName === "ai_start_artifact_build") {
         artifacts: artifactSpecs,
       },
       p_idempotency_key: `run:${ctx.ai_run_id}:artifact-build`,
-      // Optimistic parallel start. If a worker hits WORKER_RESOURCE_LIMIT (546),
-      // the orchestrator degrades concurrency_limit → 1 and requeues the unit
-      // so the remaining queue drains sequentially.
-      p_concurrency_limit: Math.max(1, Math.min(Number(rawArgs.concurrency_limit ?? 3) || 3, 8)),
+      // One in-place update does not need 3 parallel isolates. Parallel start
+      // is for multi-artifact missions; a 546 (WORKER_RESOURCE_LIMIT) on a
+      // single FAQ/accent edit is isolate memory pressure, not job size.
+      p_concurrency_limit: (() => {
+        const inPlaceOnly = artifactSpecs.length === 1
+          && artifactSpecs.every((spec: any) =>
+            spec?.artifact_id
+            && spec?.operation !== "create"
+            && spec?.operation !== "generate"
+          )
+        const requested = Number(rawArgs.concurrency_limit ?? (inPlaceOnly ? 1 : 3)) || (inPlaceOnly ? 1 : 3)
+        return Math.max(1, Math.min(requested, 8))
+      })(),
     });
     if (error || data?.ok === false) {
       const failMessage = error?.message ?? data?.error ?? "build_creation_failed";
@@ -2230,7 +2264,7 @@ if (toolName === "ai_start_artifact_build") {
 if (toolName === "ai_get_artifact_build") {
     const buildId = cleanUuidOrNull(rawArgs.build_id);
     if (!buildId) return finalize({ name: toolName, ok: false, error: "build_id_required", data: null });
-    const { data, error } = await db.rpc("ai_get_artifact_build_v1", {
+    const { data, error } = await db.rpc("ai_get_orchestrated_build_v1", {
       p_build_id: buildId,
       p_after_sequence: Math.max(0, Number(rawArgs.after_sequence ?? 0) || 0),
       p_event_limit: 500,
@@ -2262,7 +2296,7 @@ if (toolName === "ai_save_build_artifact_internal") {
 if (toolName === "ai_cancel_artifact_build") {
     const buildId = cleanUuidOrNull(rawArgs.build_id);
     if (!buildId) return finalize({ name: toolName, ok: false, error: "build_id_required", data: null });
-    const { data, error } = await db.rpc("ai_cancel_artifact_build_v1", {
+    const { data, error } = await db.rpc("ai_cancel_orchestrated_build_v1", {
       p_build_id: buildId,
       p_reason: String(rawArgs.reason ?? "User cancelled the build.").slice(0, 1000),
     });
@@ -3038,7 +3072,8 @@ if (toolName === "ai_create_task") {
         p_delivery_date: payload.delivery_date ?? null,
         p_publication_date: payload.publication_date ?? null,
         p_channel_ids: uniqueInts(rawArgs.channel_ids),
-        p_watcher_user_ids: uniqueInts(rawArgs.watcher_user_ids),
+        // Never trust model-invented user IDs. Assignee is added as watcher by the RPC.
+        p_watcher_user_ids: [],
       });
       created = result.data;
       error = result.error;
@@ -3101,7 +3136,7 @@ if (toolName === "ai_bulk_create_tasks") {
         p_assigned_to_id: positiveInt(item.assigned_to_id), p_content_type_id: positiveInt(item.content_type_id),
         p_production_type_id: positiveInt(item.production_type_id), p_language_id: positiveInt(item.language_id),
         p_delivery_date: normalizeOptionalDateInput(item.delivery_date), p_publication_date: normalizeOptionalDateInput(item.publication_date),
-        p_channel_ids: uniqueInts(item.channel_ids), p_watcher_user_ids: uniqueInts(item.watcher_user_ids),
+        p_channel_ids: uniqueInts(item.channel_ids), p_watcher_user_ids: [],
       });
       if (error) failed.push({ project_id: item.project_id, title: item.title, error: error.message });
       else created.push(data);

@@ -1,11 +1,8 @@
 "use client"
 
-import { Bot, Lightbulb, MoreHorizontal } from "lucide-react"
-import { IconTooltip } from "./icon-tooltip"
+import { MoreHorizontal } from "lucide-react"
 import { cn } from "@/lib/utils"
-
-const actionButtonClass =
-  "inline-flex items-center justify-center w-8 h-8 rounded-md transition focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-black focus-visible:ring-offset-1"
+import { MOBILE_CIRCLE_BUTTON_CLASS } from "./mobile-app-header"
 
 interface MobileGlobalHeaderActionsProps {
   onOpenAiPane: () => void
@@ -16,53 +13,22 @@ interface MobileGlobalHeaderActionsProps {
 }
 
 /**
- * Global mobile header actions — AI pane and Research sit beside the object "..." menu.
- * These are intentionally separate from object-specific options (view mode, filters, group by, etc.).
+ * Overflow trigger for mobile list chrome. AI, Research, and view controls live in the options sheet.
  */
 export function MobileGlobalHeaderActions({
-  onOpenAiPane,
-  onOpenKeywordResearch,
   onOpenMoreOptions,
-  isKeywordResearchOpen = false,
   className,
 }: MobileGlobalHeaderActionsProps) {
   return (
-    <div className={cn("flex items-center gap-1", className)}>
-      <IconTooltip label="AI pane">
-        <button
-          type="button"
-          onClick={onOpenAiPane}
-          className={cn(actionButtonClass, "text-gray-600 hover:bg-gray-100")}
-          aria-label="AI pane"
-        >
-          <Bot className="w-5 h-5" />
-        </button>
-      </IconTooltip>
-      <IconTooltip label="Research">
-        <button
-          type="button"
-          onClick={onOpenKeywordResearch}
-          className={cn(
-            actionButtonClass,
-            isKeywordResearchOpen
-              ? "bg-gray-900 text-white hover:bg-gray-800"
-              : "text-gray-600 hover:bg-gray-100"
-          )}
-          aria-label="Research"
-        >
-          <Lightbulb className="w-5 h-5" />
-        </button>
-      </IconTooltip>
-      <IconTooltip label="More options">
-        <button
-          type="button"
-          onClick={onOpenMoreOptions}
-          className={cn(actionButtonClass, "text-gray-600 hover:bg-gray-100")}
-          aria-label="More options"
-        >
-          <MoreHorizontal className="w-5 h-5" />
-        </button>
-      </IconTooltip>
+    <div className={cn("flex items-center", className)}>
+      <button
+        type="button"
+        onClick={onOpenMoreOptions}
+        className={MOBILE_CIRCLE_BUTTON_CLASS}
+        aria-label="More options"
+      >
+        <MoreHorizontal className="h-5 w-5" strokeWidth={1.75} />
+      </button>
     </div>
   )
 }

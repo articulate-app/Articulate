@@ -21,6 +21,11 @@ type ComponentOutputEditableBodyProps = {
   collaborationDocument?: import("yjs").Doc | null
   collaborationAwareness?: import("y-protocols/awareness").Awareness | null
   collaborationUser?: { name: string; color: string } | null
+  collabConflicts?: import("@/lib/collaboration/collab-conflict").CollabConflictSpan[]
+  onResolveCollabConflict?: (
+    id: string,
+    choice: import("@/lib/collaboration/collab-conflict").CollabConflictChoice,
+  ) => void
   /** When set, enables image/video toolbar + drag/drop/paste into TipTap. */
   onInsertAttachment?: (
     file: File,
@@ -48,6 +53,8 @@ export function ComponentOutputEditableBody({
   collaborationDocument = null,
   collaborationAwareness = null,
   collaborationUser = null,
+  collabConflicts,
+  onResolveCollabConflict,
   onInsertAttachment,
   disableInlineMediaControls = true,
 }: ComponentOutputEditableBodyProps) {
@@ -82,6 +89,8 @@ export function ComponentOutputEditableBody({
         collaborationDocument={collaborationDocument}
         collaborationAwareness={collaborationAwareness}
         collaborationUser={collaborationUser}
+        collabConflicts={collabConflicts}
+        onResolveCollabConflict={onResolveCollabConflict}
         onInsertAttachment={readOnly ? undefined : onInsertAttachment}
       />
     </div>

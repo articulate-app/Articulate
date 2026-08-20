@@ -8,6 +8,8 @@ import { AddDashedButton } from "../ui/add-dashed-button"
 
 type TaskOverviewPreviewSectionProps = {
   title: string
+  /** Marks the whole section (title included) as the outputs file-drop target. */
+  outputsDropzone?: boolean
   onViewAll?: () => void
   viewAllLabel?: string
   /** Optional actions rendered beside the section title (e.g. comments thread controls). */
@@ -38,6 +40,7 @@ type TaskOverviewPreviewSectionProps = {
 
 export function TaskOverviewPreviewSection({
   title,
+  outputsDropzone = false,
   onViewAll,
   viewAllLabel = "View all",
   headerActions,
@@ -89,6 +92,7 @@ export function TaskOverviewPreviewSection({
   return (
     <section
       ref={setSectionRef}
+      data-outputs-dropzone={outputsDropzone ? "true" : undefined}
       className={cn("border-t border-gray-200 pt-5 pb-4", className)}
     >
       <div className="mb-3 flex items-center justify-between gap-2">

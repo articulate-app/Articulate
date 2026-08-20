@@ -1,5 +1,94 @@
 import { createClientComponentClient } from "@supabase/auth-helpers-nextjs"
+import { getSupabaseBrowser } from "../../../lib/supabase-browser"
+import type { GlobalSearchDocument } from "../global-search-types"
 import type { ProjectCard } from "../types/index"
+
+function toTrimmedString(value: unknown): string | null {
+  return typeof value === "string" && value.trim().length > 0 ? value.trim() : null
+}
+
+function toFiniteNumber(value: unknown): number | null {
+  if (typeof value === "number" && Number.isFinite(value)) return value
+  if (typeof value === "string" && value.trim()) {
+    const parsed = Number(value)
+    return Number.isFinite(parsed) ? parsed : null
+  }
+  return null
+}
+
+const PROJECT_DIRECTORY_MAX_PAGE = 500
+
+/** Map a `projects` row to the Projects directory search document. */
+export function projectRowToDirectorySearchDocument(
+  row: Record<string, unknown> | null | undefined,
+): GlobalSearchDocument | null {
+  if (!row) return null
+  const id = toFiniteNumber(row.id)
+  if (id == null) return null
+  const title = toTrimmedString(row.name) ?? "Untitled"
+  const createdAt = toTrimmedString(row.created_at)
+  const updatedAt = toTrimmedString(row.updated_at)
+  const logo = toTrimmedString(row.logo)
+  const color = toTrimmedString(row.color)
+  const createdBy = toFiniteNumber(row.created_by)
+  return {
+    entity_type: "project",
+    entity_id: String(id),
+    title,
+    subtitle: null,
+    preview: null,
+    created_at: createdAt,
+    score: null,
+    url: null,
+    project_id: id,
+    task_id: null,
+    thread_id: null,
+    display_payload: {
+      title,
+      logo: logo ?? undefined,
+      color: color ?? undefined,
+      left: {
+        type: "project",
+        logo: logo ?? undefined,
+        color: color ?? undefined,
+        label: title,
+      },
+      meta: [
+        { label: "created_at", value: createdAt ?? undefined },
+        { label: "updated_at", value: updatedAt ?? undefined },
+        { label: "created_by", value: createdBy != null ? String(createdBy) : undefined },
+      ],
+    },
+    raw: {
+      id,
+      project_id: id,
+      name: title,
+      logo,
+      color,
+      created_by: createdBy,
+      created_at: createdAt,
+      updated_at: updatedAt,
+    },
+  }
+}
+
+/** Projects directory page via `list_project_directory_v1`. */
+export async function fetchProjectDirectoryPage(args: {
+  offset: number
+  limit: number
+}): Promise<GlobalSearchDocument[]> {
+  const offset = Math.max(0, Math.trunc(args.offset))
+  const limit = Math.max(1, Math.min(Math.trunc(args.limit) || 1, PROJECT_DIRECTORY_MAX_PAGE))
+  const supabase = getSupabaseBrowser()
+  const { data, error } = await supabase.rpc("list_project_directory_v1", {
+    p_limit: limit,
+    p_offset: offset,
+  })
+  if (error) throw error
+  return (Array.isArray(data) ? data : [])
+    .map((row) => projectRowToDirectorySearchDocument(row as Record<string, unknown>))
+    .filter(Boolean) as GlobalSearchDocument[]
+}
 
 /**
  * Fetch all active projects with team (project_watchers) and last activity (latest delivery_date from tasks)

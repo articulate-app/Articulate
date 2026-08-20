@@ -1,56 +1,59 @@
 "use client"
 
-type ArtifactCollabConflict = {
-  id?: string
-  status?: string
-  expected_text?: string | null
-  conflict?: {
-    expected_text?: string | null
-    current_text?: string | null
-    kind?: string
-  } | null
-  error?: string | null
+import type { CollabConflictChoice, CollabConflictSpan } from "../../app/lib/collaboration/collab-conflict"
+
+function preview(value: string, max = 72): string {
+  const text = value.replace(/\s+/g, " ").trim()
+  if (text.length <= max) return text
+  return `${text.slice(0, max - 1).trim()}…`
 }
 
+/** Compact fallback when the conflicting phrase is no longer in the open document. */
 export function ArtifactCollabConflictBanner(props: {
-  conflicts: ArtifactCollabConflict[]
-  onDismiss?: (id: string) => void
+  conflicts: CollabConflictSpan[]
+  onResolve?: (id: string, choice: CollabConflictChoice) => void
 }) {
   if (!props.conflicts.length) return null
   return (
-    <div
-      className="mb-2 rounded-md border border-amber-300 bg-amber-50 px-3 py-2 text-sm text-amber-950"
-      data-collab-conflict="true"
-      role="alert"
-    >
-      <p className="font-medium">AI change blocked to protect concurrent edits</p>
-      {props.conflicts.map((conflict, index) => {
-        const expected = conflict.conflict?.expected_text ?? conflict.expected_text
-        const current = conflict.conflict?.current_text
-        return (
-          <div key={conflict.id ?? String(index)} className="mt-2 space-y-1">
-            <p>
-              The target sentence changed before the AI proposal could be applied.
-              The old snapshot was not written over your edit.
-            </p>
-            {expected ? (
-              <p className="text-xs"><span className="font-medium">Expected:</span> {expected}</p>
-            ) : null}
-            {current ? (
-              <p className="text-xs"><span className="font-medium">Current:</span> {current}</p>
-            ) : null}
-            {conflict.id && props.onDismiss ? (
-              <button
-                type="button"
-                className="text-xs underline"
-                onClick={() => props.onDismiss?.(conflict.id!)}
-              >
-                Keep my version
-              </button>
-            ) : null}
+    <div className="mt-2 space-y-2" data-collab-conflict="true">
+      {props.conflicts.map((conflict) => (
+        <div
+          key={conflict.id}
+          className="rounded-md border border-amber-300 bg-amber-50 px-2 py-1.5 text-xs text-amber-950"
+          role="group"
+          aria-label="Resolve edit conflict"
+        >
+          <p>
+            Also changed
+            {conflict.incoming ? `: “${preview(conflict.incoming)}”` : " here"}
+          </p>
+          <div className="mt-1 flex flex-wrap gap-1">
+            <button
+              type="button"
+              className="rounded border border-amber-400 bg-white px-1.5 py-0.5"
+              onClick={() => props.onResolve?.(conflict.id, "keep")}
+            >
+              Keep mine
+            </button>
+            <button
+              type="button"
+              className="rounded border border-amber-400 bg-white px-1.5 py-0.5 disabled:opacity-40"
+              disabled={!conflict.incoming}
+              onClick={() => props.onResolve?.(conflict.id, "incoming")}
+            >
+              Use this
+            </button>
+            <button
+              type="button"
+              className="rounded border border-amber-400 bg-white px-1.5 py-0.5 disabled:opacity-40"
+              disabled={!conflict.incoming}
+              onClick={() => props.onResolve?.(conflict.id, "both")}
+            >
+              Keep both
+            </button>
           </div>
-        )
-      })}
+        </div>
+      ))}
     </div>
   )
 }

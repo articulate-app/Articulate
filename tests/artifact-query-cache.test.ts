@@ -4,6 +4,7 @@ import type { TaskArtifact } from "../app/lib/artifacts/artifact-types"
 import {
   applyArtifactCachePatch,
   artifactCachePatchFromSavedLivePreview,
+  findCachedArtifactSnapshot,
   removeArtifactFromCache,
 } from "../features/artifacts/artifact-query-cache"
 import type { AiBuildArtifactPreviewEntry } from "../app/store/ai-build-artifact-preview-store"
@@ -211,5 +212,25 @@ describe("artifact query cache", () => {
       queryClient.getQueryData<{ artifacts: TaskArtifact[] }>(["task-artifacts", 13622])
         ?.artifacts.map((row) => row.id),
     ).toEqual(["artifact-kept"])
+  })
+
+  it("finds the live artifact from get or list caches", () => {
+    const queryClient = new QueryClient()
+    const row = makeArtifact({ id: "artifact-live", content_text: "from list" })
+    expect(findCachedArtifactSnapshot(queryClient, "artifact-live")).toBeNull()
+
+    queryClient.setQueryData(["task-artifacts", 13622], {
+      ok: true,
+      artifacts: [row],
+    })
+    expect(findCachedArtifactSnapshot(queryClient, "artifact-live")?.content_text).toBe("from list")
+
+    queryClient.setQueryData(["artifact", "artifact-live", "current"], {
+      ok: true,
+      artifact_id: "artifact-live",
+      version_number: 4,
+      snapshot: makeArtifact({ id: "artifact-live", content_text: "from get" }),
+    })
+    expect(findCachedArtifactSnapshot(queryClient, "artifact-live")?.content_text).toBe("from get")
   })
 })

@@ -7,8 +7,10 @@ import {
   Check,
   ChevronRight,
   Download,
+  FolderPlus,
   GitCompare,
   History,
+  LayoutTemplate,
   Link2,
   Loader2,
   MoreHorizontal,
@@ -33,7 +35,9 @@ import { toast } from "../../app/components/ui/use-toast"
 import {
   PANE_CHROME_ICON_BUTTON_CLASS,
   PANE_CHROME_ICON_CLASS,
+  TASK_DETAILS_HEADER_ROW_CLASS,
 } from "../../app/components/tasks/pane-header-tokens"
+import { TaskOverviewPreviewSection } from "../../app/components/tasks/task-overview-preview-section"
 import {
   artifactPlainText,
   countWords,
@@ -46,16 +50,7 @@ import {
   DialogHeader,
   DialogTitle,
 } from "../../app/components/ui/dialog"
-import {
-  AlertDialog,
-  AlertDialogAction,
-  AlertDialogCancel,
-  AlertDialogContent,
-  AlertDialogDescription,
-  AlertDialogFooter,
-  AlertDialogHeader,
-  AlertDialogTitle,
-} from "../../app/components/ui/alert-dialog"
+import { ConfirmDialog } from "../../app/components/ui/confirm-dialog"
 import { cn } from "../../app/lib/utils"
 import type {
   ArtifactContentJson,
@@ -68,13 +63,16 @@ import {
   isArtifactRevisionConflictError,
 } from "../../app/lib/artifacts/artifact-types"
 import {
+  attachArtifactToProject,
   deleteArtifact,
   exportArtifactDownload,
   getArtifact,
   listArtifactVersions,
-  restoreArtifactVersion,
+  restoreArtifactVersionForEdit,
   saveWorkspaceArtifact,
 } from "../../app/lib/services/artifacts"
+import { createProjectDesignTemplateFromArtifact } from "../../app/lib/services/project-brand-kit"
+import { ProjectPickSubmenu } from "../../app/components/workspace/project-pick-submenu"
 import { getActivityRelativeTimeLabel } from "../../app/components/activity-row-timestamp"
 import { useArtifactsRealtime } from "../../app/hooks/use-artifacts-realtime"
 import { useCurrentUserStore } from "../../app/store/current-user"
@@ -88,6 +86,7 @@ import {
   ARTIFACT_VERSION_PARAM,
   buildArtifactPath,
   getArtifactHistoryOpenFromParams,
+  isHistoricalArtifactVersion,
 } from "../../app/lib/artifact-selection-url"
 import { buildCenterPaneSelectionSearchParams } from "../../app/lib/center-pane-selection-url"
 import { shallowReplaceSearchParams } from "../../app/lib/tasks-shallow-nav"
@@ -99,14 +98,7 @@ import { ArtifactFindReplacePopover } from "./artifact-find-replace-popover"
 import { ArtifactSeoDock } from "./artifact-seo-dock"
 import { ArtifactVersionHistoryList } from "./artifact-version-history-popover"
 import { ArtifactRichDiffBody } from "./artifact-rich-diff-body"
-import {
-  progressiveLiveAfterHtml,
-  resolveArtifactChangeSides,
-} from "./resolve-artifact-change-diff"
-import {
-  buildHtmlEmailContentJson,
-  isHtmlEmailArtifact,
-} from "./artifact-html-document"
+import { resolveArtifactChangeSides } from "./resolve-artifact-change-diff"
 import {
   applyArtifactCachePatch,
   artifactCachePatchFromSavedLivePreview,
@@ -121,12 +113,9 @@ import {
 import { isArtifactLiveEditLocked } from "./artifact-live-edit-lock"
 import {
   canAutosaveArtifactSnapshot,
+  isCollaborativeArtifactSurface,
   shouldLockArtifactDuringAiGeneration,
 } from "../../app/lib/collaboration/editor-sync"
-import {
-  isArtifactCollabEnvEnabled,
-  shouldUseArtifactCollaboration,
-} from "../../app/lib/collaboration/feature-flag"
 import { exportArtifactAsDocx } from "./artifact-docx-export"
 import {
   openArtifactSelectionInAiPane,
@@ -176,6 +165,7 @@ export function ArtifactPane({
   const [isSaving, setIsSaving] = useState(false)
   const [downloadError, setDownloadError] = useState<string | null>(null)
   const [showDeleteConfirm, setShowDeleteConfirm] = useState(false)
+  const [isProjectActionBusy, setIsProjectActionBusy] = useState(false)
   const [isDeleting, setIsDeleting] = useState(false)
   const [showVersions, setShowVersions] = useState(() => {
     if (typeof window === "undefined") return false
@@ -185,6 +175,7 @@ export function ArtifactPane({
   const [versionsSubOpen, setVersionsSubOpen] = useState(false)
   const [showFindReplace, setShowFindReplace] = useState(false)
   const [showPublishMenu, setShowPublishMenu] = useState(false)
+  const [isRestoringVersion, setIsRestoringVersion] = useState(false)
   /** Show previous→current changes in the document body (not a separate top panel). */
   const [showChanges, setShowChanges] = useState(false)
   /** Highlighted artifact text waiting to be attached to a new comment thread. */
@@ -236,10 +227,22 @@ export function ArtifactPane({
     refetchOnMount: "always",
   })
 
+  const liveHeadQuery = useQuery({
+    queryKey: ["artifact", artifactId, "current"],
+    queryFn: () => getArtifact({ artifactId }),
+    enabled: !!artifactId && version != null,
+    staleTime: 10_000,
+  })
+  const liveCurrentVersion =
+    version == null
+      ? (artifactQuery.data?.snapshot?.current_version ?? null)
+      : (liveHeadQuery.data?.snapshot?.current_version ?? null)
+  const isHistoricalVersion = isHistoricalArtifactVersion(version, liveCurrentVersion)
+
   const versionsQuery = useQuery({
     queryKey: ["artifact-versions", artifactId],
     queryFn: () => listArtifactVersions({ artifactId, limit: 50 }),
-    enabled: !!artifactId && (showVersions || versionsSubOpen),
+    enabled: !!artifactId,
     staleTime: 30_000,
   })
 
@@ -277,14 +280,15 @@ export function ArtifactPane({
 
   const snapshot = artifactQuery.data?.snapshot ?? null
 
-  const isCollaborativeEditor = shouldUseArtifactCollaboration({
+  const isCollaborativeEditor = isCollaborativeArtifactSurface({
+    artifactId,
     contentJson: snapshot?.content_json,
     metadata: snapshot?.metadata,
-    envEnabled: isArtifactCollabEnvEnabled(),
   })
   const isLiveAi =
     shouldLockArtifactDuringAiGeneration(isCollaborativeEditor)
     && isArtifactLiveEditLocked(livePreview)
+  const isLiveAiStreaming = isLiveAi && livePreview?.streaming === true
 
   useEffect(() => {
     const version = snapshot?.current_version
@@ -325,73 +329,7 @@ export function ArtifactPane({
     enabled: !!artifactId && previousVersionNumber != null && !isLiveAi,
     staleTime: 60_000,
   })
-  const displayArtifact = useMemo<TaskArtifact | null>(() => {
-    if (!snapshot) return null
-    const progressiveHtml = livePreview ? progressiveLiveAfterHtml(livePreview) : null
-    // Stream heartbeats only carry section_html — overlay that so the open pane
-    // matches the chat preview card in real time.
-    if (isLiveAi && livePreview && progressiveHtml) {
-      const preferHtmlEmail =
-        isHtmlEmailArtifact(snapshot)
-        || /<!doctype\s+html|<html\b|role\s*=\s*["']presentation["']/i.test(progressiveHtml)
-      return {
-        ...snapshot,
-        title: livePreview.title ?? snapshot.title,
-        content_text: progressiveHtml,
-        content_json: preferHtmlEmail
-          ? buildHtmlEmailContentJson(progressiveHtml, snapshot.content_json)
-          : {
-              ...(typeof snapshot.content_json === "object" && snapshot.content_json
-                ? snapshot.content_json
-                : { version: 1 }),
-              blocks: [
-                {
-                  id: "body",
-                  type: "rich_text",
-                  html: progressiveHtml,
-                  text: progressiveHtml.replace(/<[^>]+>/g, " ").replace(/\s+/g, " ").trim().slice(0, 20000),
-                },
-              ],
-            },
-        asset_data: livePreview.assetData ?? snapshot.asset_data,
-        current_version: livePreview.currentVersion ?? snapshot.current_version,
-        project_id: snapshot.project_id,
-        task_id: livePreview.taskId ?? snapshot.task_id,
-        channel_id: livePreview.channelId ?? snapshot.channel_id,
-        language_id: livePreview.languageId ?? snapshot.language_id,
-        ai_thread_id: livePreview.aiThreadId ?? snapshot.ai_thread_id,
-        artifact_type: livePreview.artifactType ?? snapshot.artifact_type,
-        artifact_role: livePreview.artifactRole ?? snapshot.artifact_role,
-      }
-    }
-    // Authoritative non-streaming preview overlay (full content_json arrived).
-    const useLiveContent =
-      !!livePreview
-      && isLiveAi
-      && !livePreview.streaming
-      && !!livePreview.contentJson
-      && livePreview.phase === "preview"
-    if (!useLiveContent || !livePreview) {
-      return isLiveAi && livePreview
-        ? { ...snapshot, title: livePreview.title ?? snapshot.title }
-        : snapshot
-    }
-    return {
-      ...snapshot,
-      title: livePreview.title ?? snapshot.title,
-      content_text: livePreview.contentText || snapshot.content_text,
-      content_json: livePreview.contentJson ?? snapshot.content_json,
-      asset_data: livePreview.assetData ?? snapshot.asset_data,
-      current_version: livePreview.currentVersion ?? snapshot.current_version,
-      project_id: snapshot.project_id,
-      task_id: livePreview.taskId ?? snapshot.task_id,
-      channel_id: livePreview.channelId ?? snapshot.channel_id,
-      language_id: livePreview.languageId ?? snapshot.language_id,
-      ai_thread_id: livePreview.aiThreadId ?? snapshot.ai_thread_id,
-      artifact_type: livePreview.artifactType ?? snapshot.artifact_type,
-      artifact_role: livePreview.artifactRole ?? snapshot.artifact_role,
-    }
-  }, [isLiveAi, livePreview, snapshot])
+  const displayArtifact = snapshot
 
   const bindingQuery = useQuery({
     queryKey: [
@@ -406,19 +344,19 @@ export function ArtifactPane({
     staleTime: 60_000,
     queryFn: async () => {
       const taskId = displayArtifact?.task_id ?? null
-      const projectId = displayArtifact?.project_id ?? null
-      const [taskRes, projectRes] = await Promise.all([
-        taskId != null
-          ? supabase.from("tasks").select("id, title, project_id_int").eq("id", taskId).maybeSingle()
-          : Promise.resolve({ data: null, error: null }),
-        projectId != null
-          ? supabase.from("projects").select("id, name").eq("id", projectId).maybeSingle()
-          : Promise.resolve({ data: null, error: null }),
-      ])
+      const taskRes = taskId != null
+        ? await supabase.from("tasks").select("id, title, project_id_int").eq("id", taskId).maybeSingle()
+        : { data: null, error: null }
+      const taskProjectId =
+        typeof taskRes.data?.project_id_int === "number" ? taskRes.data.project_id_int : null
+      const projectId = displayArtifact?.project_id ?? taskProjectId
+      const projectRes = projectId != null
+        ? await supabase.from("projects").select("id, name").eq("id", projectId).maybeSingle()
+        : { data: null, error: null }
       return {
         taskTitle: typeof taskRes.data?.title === "string" ? taskRes.data.title.trim() : null,
-        taskProjectId:
-          typeof taskRes.data?.project_id_int === "number" ? taskRes.data.project_id_int : null,
+        taskProjectId,
+        projectId,
         projectName: typeof projectRes.data?.name === "string" ? projectRes.data.name.trim() : null,
       }
     },
@@ -433,6 +371,13 @@ export function ArtifactPane({
       id: taskId,
     })
     shallowReplaceSearchParams(pathname, next, "artifact-open-task")
+  }
+
+  const beginImageComment = (quote: string) => {
+    setPendingCommentSelection({
+      quote,
+      versionNumber: displayArtifact?.current_version ?? null,
+    })
   }
 
   const openBoundProject = (projectId: number) => {
@@ -471,7 +416,7 @@ export function ArtifactPane({
     if (!displayArtifact) return
     const serverVersion = displayArtifact.current_version ?? 0
     const liveKey =
-      isLiveAi && livePreview
+      isLiveAiStreaming && livePreview
         ? `:live:${livePreview.sequence}:${livePreview.updatedAt}`
         : ""
     const syncKey = `${displayArtifact.id}:${serverVersion}${liveKey}`
@@ -488,15 +433,22 @@ export function ArtifactPane({
     const previousKey = lastSyncedArtifactKeyRef.current
     lastSyncedArtifactKeyRef.current = syncKey
 
+    // Collaborative editors own the live Y.Doc. Never overlay SQL/preview JSON
+    // or clear a manual edit — AI updates arrive through collab, not this sync.
+    if (isCollaborativeEditor) {
+      setDraftTitle((prev) => prev || (displayArtifact.title ?? ""))
+      return
+    }
+
     // Live AI frames always win — force the editor onto the streaming body.
-    if (isLiveAi) {
+    if (isLiveAiStreaming) {
       applyingServerContentRef.current = true
       userDirtyRef.current = false
       draftBaseVersionRef.current = null
       setDraftTitle(displayArtifact.title ?? "")
       setDraftContentJson(displayArtifact.content_json)
       setDraftContentText(displayArtifact.content_text)
-      setEditorForceNonce((n) => n + 1)
+      if (!isCollaborativeEditor) setEditorForceNonce((n) => n + 1)
       const clear = window.setTimeout(() => {
         applyingServerContentRef.current = false
       }, 50)
@@ -574,7 +526,7 @@ export function ArtifactPane({
     setDraftTitle(displayArtifact.title ?? "")
     setDraftContentJson(displayArtifact.content_json)
     setDraftContentText(displayArtifact.content_text)
-    setEditorForceNonce((n) => n + 1)
+    if (!isCollaborativeEditor) setEditorForceNonce((n) => n + 1)
     const clear = window.setTimeout(() => {
       applyingServerContentRef.current = false
     }, 50)
@@ -586,7 +538,8 @@ export function ArtifactPane({
     displayArtifact?.title,
     displayArtifact?.content_json,
     displayArtifact?.content_text,
-    isLiveAi,
+    isCollaborativeEditor,
+    isLiveAiStreaming,
     livePreview?.sequence,
     livePreview?.updatedAt,
     updateTitle,
@@ -594,7 +547,7 @@ export function ArtifactPane({
   ])
 
   /** TipTap force key: nonce only. Version/content fingerprints remount the caret on autosave. */
-  const editorForceContentKey = `${artifactId}:${editorForceNonce}`
+  const editorForceContentKey = `${artifactId}:${version ?? "current"}:${editorForceNonce}`
 
   const assets = useMemo(
     () => (displayArtifact ? extractArtifactAssets(displayArtifact.asset_data) : []),
@@ -606,6 +559,47 @@ export function ArtifactPane({
     if (nextVersion != null && nextVersion > 0) next.set(ARTIFACT_VERSION_PARAM, String(nextVersion))
     else next.delete(ARTIFACT_VERSION_PARAM)
     shallowReplaceSearchParams(pathname, next, "artifact-version")
+  }
+
+  useEffect(() => {
+    if (version == null || liveCurrentVersion == null) return
+    if (version === liveCurrentVersion) setVersionInUrl(null)
+  }, [liveCurrentVersion, pathname, version])
+
+  const handleRestoreVersion = async (versionNumber: number) => {
+    if (isRestoringVersion) return
+    setIsRestoringVersion(true)
+    try {
+      const result = await restoreArtifactVersionForEdit({
+        artifactId,
+        versionNumber,
+      })
+      applyArtifactCachePatch(queryClient, result.snapshot)
+      await Promise.all([
+        queryClient.invalidateQueries({ queryKey: ["artifact", artifactId] }),
+        queryClient.invalidateQueries({ queryKey: ["artifact-versions", artifactId] }),
+      ])
+      setDraftTitle(result.snapshot.title ?? "")
+      setDraftContentJson(result.snapshot.content_json)
+      setDraftContentText(result.snapshot.content_text)
+      setEditorForceNonce((n) => n + 1)
+      userDirtyRef.current = false
+      setVersionInUrl(null)
+      setVersionsSubOpen(false)
+      setShowVersions(false)
+      toast({
+        title: `Restored version ${versionNumber}`,
+        description: "This is now the current document. You can edit it.",
+      })
+    } catch (error) {
+      toast({
+        title: "Could not restore version",
+        description: error instanceof Error ? error.message : "Restore failed",
+        variant: "destructive",
+      })
+    } finally {
+      setIsRestoringVersion(false)
+    }
   }
 
   const pendingAutosaveRef = useRef(false)
@@ -636,15 +630,7 @@ export function ArtifactPane({
 
   const handleSave = async () => {
     if (!displayArtifact) return
-    if (
-      !canAutosaveArtifactSnapshot(
-        shouldUseArtifactCollaboration({
-          contentJson: displayArtifact.content_json,
-          metadata: displayArtifact.metadata,
-          envEnabled: isArtifactCollabEnvEnabled(),
-        }),
-      )
-    ) {
+    if (!canAutosaveArtifactSnapshot(isCollaborativeEditor)) {
       return
     }
     if (Date.now() < conflictCooldownUntilRef.current) return
@@ -812,6 +798,73 @@ export function ArtifactPane({
     }
   }, [])
 
+  const saveAsProjectTemplate = async (projectId: number, projectName?: string) => {
+    const result = await createProjectDesignTemplateFromArtifact({
+      projectId,
+      artifactId,
+      title: displayArtifact?.title ?? "Untitled",
+      notes: `Saved from output “${displayArtifact?.title ?? "Untitled"}”.`,
+    })
+    if (result.error || !result.template) {
+      throw result.error ?? new Error("Could not save as project template")
+    }
+    toast({
+      title: "Saved as project template",
+      description: projectName
+        ? `${displayArtifact?.title ?? "Untitled"} · ${projectName}`
+        : displayArtifact?.title ?? "Untitled",
+    })
+    await queryClient.invalidateQueries({ queryKey: ["project-brand-kit", projectId] })
+  }
+
+  const handlePickProject = async (
+    mode: "attach" | "template",
+    project: { id: number; name: string },
+  ) => {
+    if (isProjectActionBusy) return
+    setIsProjectActionBusy(true)
+    try {
+      if (mode === "attach" || displayArtifact?.project_id == null) {
+        const attached = await attachArtifactToProject({ artifactId, projectId: project.id })
+        if (attached.artifact) applyArtifactCachePatch(queryClient, attached.artifact)
+        await queryClient.invalidateQueries({ queryKey: ["artifact", artifactId] })
+        await queryClient.invalidateQueries({ queryKey: ["global-search"] })
+        await queryClient.invalidateQueries({ queryKey: ["artifact-directory-meta"] })
+        if (mode === "attach") {
+          toast({ title: "Added to project", description: project.name })
+        }
+      }
+      if (mode === "template") {
+        await saveAsProjectTemplate(project.id, project.name)
+      }
+    } catch (error) {
+      toast({
+        title: mode === "template" ? "Could not save template" : "Could not add to project",
+        description: error instanceof Error ? error.message : "Try again",
+        variant: "destructive",
+      })
+    } finally {
+      setIsProjectActionBusy(false)
+    }
+  }
+
+  const handleSaveAsTemplate = async () => {
+    const projectId = displayArtifact?.project_id ?? null
+    if (!projectId) return
+    setIsProjectActionBusy(true)
+    try {
+      await saveAsProjectTemplate(projectId, bindingQuery.data?.projectName ?? undefined)
+    } catch (error) {
+      toast({
+        title: "Could not save template",
+        description: error instanceof Error ? error.message : "Try again",
+        variant: "destructive",
+      })
+    } finally {
+      setIsProjectActionBusy(false)
+    }
+  }
+
   const handleDelete = async () => {
     setIsDeleting(true)
     setConflictMessage(null)
@@ -819,6 +872,7 @@ export function ArtifactPane({
       await deleteArtifact({ artifactId })
       forgetDeletedArtifact(queryClient, artifactId)
       setShowDeleteConfirm(false)
+      await queryClient.invalidateQueries({ queryKey: ["deleted-artifacts"] })
       await queryClient.invalidateQueries({ queryKey: ["artifact", artifactId] })
       await queryClient.invalidateQueries({ queryKey: ["task-artifacts"] })
       await queryClient.invalidateQueries({ queryKey: ["project-artifacts"] })
@@ -869,31 +923,11 @@ export function ArtifactPane({
     [],
   )
 
-  const isLivePreview = isLiveAi
+  const isLivePreview = livePreview?.streaming === true
   const bodyScrollRef = useRef<HTMLDivElement | null>(null)
-  const commentsDockObserverRef = useRef<ResizeObserver | null>(null)
-  const [commentsDockHeight, setCommentsDockHeight] = useState(0)
   const commentsGutterWidth = useOverflowGutterWidth(bodyScrollRef, displayArtifact?.id)
-  const setCommentsDockNode = useCallback((node: HTMLDivElement | null) => {
-    commentsDockObserverRef.current?.disconnect()
-    commentsDockObserverRef.current = null
-    if (!node) {
-      setCommentsDockHeight(0)
-      return
-    }
-    const update = () => {
-      setCommentsDockHeight(Math.ceil(node.getBoundingClientRect().height))
-    }
-    update()
-    const observer = new ResizeObserver(update)
-    observer.observe(node)
-    commentsDockObserverRef.current = observer
-  }, [])
-  const liveContentKey = `${livePreview?.sequence ?? 0}:${(
-    livePreview?.sectionHtml
-    ?? livePreview?.streamSnippet
-    ?? livePreview?.contentText
-    ?? displayArtifact?.content_text
+  const liveContentKey = `${displayArtifact?.current_version ?? 0}:${(
+    displayArtifact?.content_text
     ?? ""
   ).length}`
   useFollowGrowingContent({
@@ -902,46 +936,16 @@ export function ArtifactPane({
     enabled: isLivePreview,
   })
 
-  useEffect(() => {
-    return () => {
-      commentsDockObserverRef.current?.disconnect()
-      commentsDockObserverRef.current = null
-    }
-  }, [])
-
   const changeDiff = useMemo(() => {
     if (!displayArtifact) return null
-    // Live AI: only scope to a section when BOTH before+after section HTML exist.
-    // Otherwise compare full before baseline → progressive after (same as chat).
-    if (isLiveAi && livePreview) {
-      const beforeHtml = livePreview.sectionBeforeHtml?.trim() || null
-      const afterHtml =
-        livePreview.sectionHtml?.trim()
-        || livePreview.streamSnippet?.trim()
-        || null
-      const useSectionScope = Boolean(beforeHtml) && Boolean(afterHtml)
-      const useProgressiveAfter =
-        !useSectionScope && Boolean(afterHtml) && livePreview.streaming === true
+    if (isLiveAiStreaming && livePreview) {
       return {
-        beforeText: useSectionScope ? beforeHtml : livePreview.beforeContentText,
-        beforeContentJson: useSectionScope ? null : livePreview.beforeContentJson,
-        afterText: useSectionScope || useProgressiveAfter
-          ? afterHtml
-          : (
-            afterHtml
-            || livePreview.diffContentText
-            || livePreview.contentText
-            || displayArtifact.content_text
-          ),
-        // Never pass frozen baseline contentJson as "after" while streaming —
-        // resolveArtifactDiffHtml would prefer it over progressive HTML.
-        afterContentJson: useSectionScope || useProgressiveAfter
-          ? null
-          : (livePreview.contentJson ?? displayArtifact.content_json),
-        beforeHtml: useSectionScope ? beforeHtml : null,
-        afterHtml: useSectionScope || useProgressiveAfter ? afterHtml : null,
-        // Prefer the frozen pre-edit JSON from the worker/store over the live
-        // row (which may already equal "after" once the version is saved).
+        beforeText: livePreview.beforeContentText,
+        beforeContentJson: livePreview.beforeContentJson,
+        afterText: displayArtifact.content_text,
+        afterContentJson: displayArtifact.content_json,
+        beforeHtml: null as string | null,
+        afterHtml: null as string | null,
         baselineContentJson:
           livePreview.beforeContentJson
           ?? snapshot?.content_json
@@ -969,7 +973,7 @@ export function ArtifactPane({
     displayArtifact,
     draftContentJson,
     draftContentText,
-    isLiveAi,
+    isLiveAiStreaming,
     livePreview,
     previousVersionNumber,
     previousVersionQuery.data?.snapshot,
@@ -995,36 +999,24 @@ export function ArtifactPane({
   const hasChangeDiff = Boolean(changeSides?.hasChanges)
   const changeDiffStats = changeSides?.stats ?? null
 
+  const userSetChangesRef = useRef(false)
   // Reset the changes view only on a hard context switch (other artifact or
   // explicit version viewer) — not on every re-render or when AI settles.
   useEffect(() => {
+    userSetChangesRef.current = false
     setShowChanges(false)
   }, [artifactId, version])
 
-  // During live AI, default to track-changes. When the run settles, KEEP the
-  // diff on-screen so the user sees what changed without hunting for the
-  // counters; the toggle (or applying a suggestion) exits it.
   const hasDisplayArtifact = Boolean(displayArtifact)
   const hasAnnotatableMedia = Boolean(
     displayArtifact && artifactHasAnnotatableMedia(displayArtifact),
   )
   useEffect(() => {
-    if (!hasDisplayArtifact) {
-      setShowChanges((prev) => (prev ? false : prev))
-      return
-    }
-    if (hasAnnotatableMedia) {
-      setShowChanges((prev) => (prev ? false : prev))
-      return
-    }
-    if (isLiveAi && hasChangeDiff) {
-      setShowChanges((prev) => (prev ? prev : true))
-      return
-    }
-    if (!hasChangeDiff) {
+    if (userSetChangesRef.current) return
+    if (!hasDisplayArtifact || hasAnnotatableMedia || !hasChangeDiff) {
       setShowChanges((prev) => (prev ? false : prev))
     }
-  }, [hasChangeDiff, artifactId, version, hasDisplayArtifact, hasAnnotatableMedia, isLiveAi])
+  }, [hasChangeDiff, artifactId, version, hasDisplayArtifact, hasAnnotatableMedia])
 
   const contentStats = useMemo(() => {
     const plain = artifactPlainText({
@@ -1072,17 +1064,23 @@ export function ArtifactPane({
     )
   }
 
-  return (
-    <div className={cn("flex h-full min-h-0 flex-col bg-white", className)}>
-      <div className="flex h-10 min-h-10 shrink-0 items-center gap-2 bg-white px-4">
+  const headerProjectId = displayArtifact.project_id ?? bindingQuery.data?.projectId ?? bindingQuery.data?.taskProjectId ?? null
+  const headerProjectName = bindingQuery.data?.projectName ?? null
+  const headerTaskId = displayArtifact.task_id ?? null
+  const hasDiffCounters = Boolean(
+    changeDiffStats && (changeDiffStats.added > 0 || changeDiffStats.removed > 0),
+  )
+
+  const artifactHeader = (
+      <div className={cn(TASK_DETAILS_HEADER_ROW_CLASS, "px-4")}>
         <div className="flex min-w-0 flex-1 items-center gap-2">
-          {displayArtifact.project_id != null && bindingQuery.data?.projectName ? (
+          {headerProjectId != null && headerProjectName ? (
             <button
               type="button"
-              className="max-w-[40%] shrink-0 truncate text-left text-sm text-gray-500 hover:text-gray-800 hover:underline"
-              onClick={() => openBoundProject(displayArtifact.project_id!)}
+              className="max-w-[36%] shrink-0 truncate text-left text-[13px] text-gray-500 hover:text-gray-800 hover:underline"
+              onClick={() => openBoundProject(headerProjectId)}
             >
-              {bindingQuery.data.projectName}
+              {headerProjectName}
             </button>
           ) : null}
           <input
@@ -1092,8 +1090,8 @@ export function ArtifactPane({
               setDraftTitle(event.target.value)
               scheduleAutosave()
             }}
-            disabled={isLivePreview}
-            className="min-w-0 flex-1 truncate border-0 bg-transparent text-sm font-medium text-gray-900 outline-none placeholder:text-gray-400 focus-visible:ring-0 disabled:opacity-70"
+            disabled={isHistoricalVersion}
+            className="min-w-0 flex-1 truncate border-0 bg-transparent text-[13px] font-medium text-gray-900 outline-none placeholder:text-gray-400 focus-visible:ring-0 disabled:opacity-70"
             placeholder="Untitled artifact"
             aria-label="Artifact title"
           />
@@ -1102,8 +1100,46 @@ export function ArtifactPane({
               Live preview
             </span>
           ) : null}
+          {isHistoricalVersion ? (
+            <span className="shrink-0 rounded bg-slate-100 px-1.5 py-0.5 text-[11px] text-slate-700">
+              v{version} · read-only
+            </span>
+          ) : null}
         </div>
-        <div className="flex shrink-0 items-center gap-0.5">
+        <div className="flex shrink-0 items-center gap-1.5">
+          <span className="shrink-0 text-[11px] tabular-nums text-gray-500">
+            {formatWordCountLabel(contentStats.words)}
+            <span className="px-1 text-gray-300" aria-hidden>·</span>
+            {formatCharCountLabel(contentStats.chars)}
+          </span>
+          {hasDiffCounters ? (
+            <button
+              type="button"
+              className="inline-flex h-7 items-center gap-1.5 rounded-md px-1.5 text-xs hover:bg-gray-50"
+              aria-label={showChanges ? "Hide changes" : "Show changes"}
+              title={showChanges ? "Hide changes" : "Show changes"}
+              onClick={() => {
+                userSetChangesRef.current = true
+                setShowChanges((value) => !value)
+              }}
+            >
+              {changeDiffStats!.added > 0 ? (
+                <span className="font-medium text-emerald-600">+{changeDiffStats!.added}</span>
+              ) : null}
+              {changeDiffStats!.removed > 0 ? (
+                <span className="font-medium text-red-600">−{changeDiffStats!.removed}</span>
+              ) : null}
+            </button>
+          ) : null}
+          <button
+            type="button"
+            className={PANE_CHROME_ICON_BUTTON_CLASS}
+            aria-label="Version history"
+            title="Version history"
+            onClick={() => setShowVersions(true)}
+          >
+            <History className={PANE_CHROME_ICON_CLASS} />
+          </button>
           <button
             type="button"
             className={PANE_CHROME_ICON_BUTTON_CLASS}
@@ -1128,7 +1164,10 @@ export function ArtifactPane({
             <DropdownMenuContent align="end" className="min-w-[220px]">
               {hasChangeDiff ? (
                 <DropdownMenuItem
-                  onSelect={() => setShowChanges((value) => !value)}
+                  onSelect={() => {
+                    userSetChangesRef.current = true
+                    setShowChanges((value) => !value)
+                  }}
                   className="gap-2"
                 >
                   <GitCompare className="h-4 w-4" />
@@ -1172,7 +1211,7 @@ export function ArtifactPane({
                   <span className="flex-1 text-left">Version history</span>
                   <ChevronRight className="ml-auto h-4 w-4 shrink-0 opacity-60" />
                 </DropdownMenuSubTrigger>
-                <DropdownMenuSubContent className="w-[min(92vw,22rem)] p-2" sideOffset={6}>
+                <DropdownMenuSubContent className="w-[min(92vw,28rem)] p-3" sideOffset={6}>
                   <div className="mb-2 space-y-0.5 border-b border-gray-100 px-1 pb-2">
                     <p className="text-xs font-medium text-gray-900">Version history</p>
                     <p className="text-[11px] text-gray-500">
@@ -1193,18 +1232,9 @@ export function ArtifactPane({
                       setVersionsSubOpen(false)
                     }}
                     onRestore={(versionNumber) => {
-                      void restoreArtifactVersion({
-                        artifactId,
-                        versionNumber,
-                      }).then(async () => {
-                        await queryClient.invalidateQueries({ queryKey: ["artifact", artifactId] })
-                        await queryClient.invalidateQueries({
-                          queryKey: ["artifact-versions", artifactId],
-                        })
-                        setVersionInUrl(null)
-                        setVersionsSubOpen(false)
-                      })
+                      void handleRestoreVersion(versionNumber)
                     }}
+                    isRestoring={isRestoringVersion}
                   />
                 </DropdownMenuSubContent>
               </DropdownMenuSub>
@@ -1244,6 +1274,36 @@ export function ArtifactPane({
                   ))}
                 </DropdownMenuSubContent>
               </DropdownMenuSub>
+              {displayArtifact.project_id == null ? (
+                <ProjectPickSubmenu
+                  label="Add to project"
+                  icon={<FolderPlus className="h-4 w-4" />}
+                  disabled={isProjectActionBusy}
+                  onPick={(project) => {
+                    void handlePickProject("attach", project)
+                  }}
+                />
+              ) : null}
+              {displayArtifact.project_id == null ? (
+                <ProjectPickSubmenu
+                  label="Save as project template"
+                  icon={<LayoutTemplate className="h-4 w-4" />}
+                  disabled={isProjectActionBusy}
+                  onPick={(project) => {
+                    void handlePickProject("template", project)
+                  }}
+                />
+              ) : (
+                <DropdownMenuItem
+                  className="gap-2"
+                  onSelect={() => {
+                    void handleSaveAsTemplate()
+                  }}
+                >
+                  <LayoutTemplate className="h-4 w-4" />
+                  Save as project template
+                </DropdownMenuItem>
+              )}
               {displayArtifact.task_id != null || displayArtifact.project_id != null ? (
                 <>
                   <DropdownMenuSeparator />
@@ -1282,17 +1342,20 @@ export function ArtifactPane({
           </DropdownMenu>
         </div>
       </div>
+  )
 
+  return (
+    <div className={cn("flex h-full min-h-0 flex-col bg-white", className)}>
       {/* Find/replace stays available via the … menu */}
       <ArtifactFindReplacePopover
         contentJson={draftContentJson ?? displayArtifact.content_json}
         contentText={draftContentText ?? displayArtifact.content_text}
-        disabled={isLivePreview}
+        disabled={isHistoricalVersion}
         open={showFindReplace}
         onOpenChange={setShowFindReplace}
         hideTrigger
         onApply={({ contentJson, contentText }) => {
-          if (isLivePreview) return
+          if (isHistoricalVersion) return
           setShowChanges(false)
           applyingServerContentRef.current = true
           beginUserEdit()
@@ -1328,18 +1391,9 @@ export function ArtifactPane({
               setShowVersions(false)
             }}
             onRestore={(versionNumber) => {
-              void restoreArtifactVersion({
-                artifactId,
-                versionNumber,
-              }).then(async () => {
-                await queryClient.invalidateQueries({ queryKey: ["artifact", artifactId] })
-                await queryClient.invalidateQueries({
-                  queryKey: ["artifact-versions", artifactId],
-                })
-                setVersionInUrl(null)
-                setShowVersions(false)
-              })
+              void handleRestoreVersion(versionNumber)
             }}
+            isRestoring={isRestoringVersion}
           />
         </DialogContent>
       </Dialog>
@@ -1355,54 +1409,76 @@ export function ArtifactPane({
         onOpenChange={setShowPublishMenu}
       />
 
-      {conflictMessage ? (
-        <div className="mx-3 mt-2 flex items-start gap-2 rounded-md border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-900">
-          <AlertTriangle className="mt-0.5 h-3.5 w-3.5 shrink-0" />
-          <div className="space-y-1">
-            <p>{conflictMessage}</p>
-            <button
-              type="button"
-              className="underline"
-              onClick={() => {
-                setConflictMessage(null)
-                void queryClient.invalidateQueries({ queryKey: ["artifact", artifactId] })
-                setVersionInUrl(null)
-              }}
-            >
-              Reload current version
-            </button>
-          </div>
-        </div>
-      ) : null}
-      {downloadError ? (
-        <p className="mx-3 mt-2 text-xs text-red-600">{downloadError}</p>
-      ) : null}
-
       <div className="relative min-h-0 flex-1 overflow-hidden">
       <div ref={bodyScrollRef} className="absolute inset-0 overflow-x-hidden overflow-y-auto [scrollbar-gutter:stable]">
+        {artifactHeader}
         <div className="mx-auto flex max-w-3xl flex-col">
+          {isHistoricalVersion ? (
+            <div className="mx-3 mt-2 flex items-start gap-2 rounded-md border border-slate-200 bg-slate-50 px-3 py-2 text-xs text-slate-800">
+              <History className="mt-0.5 h-3.5 w-3.5 shrink-0" />
+              <div className="space-y-1">
+                <p>
+                  Viewing version {version}
+                  {liveCurrentVersion != null ? ` · current is v${liveCurrentVersion}` : ""}.
+                  This snapshot is read-only.
+                </p>
+                <button
+                  type="button"
+                  className="underline"
+                  onClick={() => setVersionInUrl(null)}
+                >
+                  Edit current version
+                </button>
+              </div>
+            </div>
+          ) : null}
+          {conflictMessage ? (
+            <div className="mx-3 mt-2 flex items-start gap-2 rounded-md border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-900">
+              <AlertTriangle className="mt-0.5 h-3.5 w-3.5 shrink-0" />
+              <div className="space-y-1">
+                <p>{conflictMessage}</p>
+                <button
+                  type="button"
+                  className="underline"
+                  onClick={() => {
+                    setConflictMessage(null)
+                    void queryClient.invalidateQueries({ queryKey: ["artifact", artifactId] })
+                    setVersionInUrl(null)
+                  }}
+                >
+                  Reload current version
+                </button>
+              </div>
+            </div>
+          ) : null}
+          {downloadError ? (
+            <p className="mx-3 mt-2 text-xs text-red-600">{downloadError}</p>
+          ) : null}
           {showChanges && hasChangeDiff && changeSides && !livePreview?.streaming ? (
-            <ArtifactRichDiffBody
-              beforeHtml={changeSides.beforeHtml}
-              afterHtml={changeSides.afterHtml}
-              prebuiltHtml={changeSides.trackChangesHtml}
-            />
-          ) : (
-            <ArtifactDocumentEditor
+            <>
+              <ArtifactRichDiffBody
+                beforeHtml={changeSides.beforeHtml}
+                afterHtml={changeSides.afterHtml}
+                prebuiltHtml={changeSides.trackChangesHtml}
+                compact
+              />
+              <div className="border-t border-border px-5 py-1.5 text-[11px] text-muted-foreground">
+                Editable document
+              </div>
+            </>
+          ) : null}
+          <ArtifactDocumentEditor
               artifact={{
                 ...displayArtifact,
                 title: draftTitle,
                 // While AI streams, prefer the progressive overlay — drafts stay
                 // on the pre-edit baseline and would otherwise hide the live body.
-                content_json: isLivePreview
-                  ? displayArtifact.content_json
-                  : (draftContentJson ?? displayArtifact.content_json),
-                content_text: isLivePreview
-                  ? displayArtifact.content_text
-                  : (draftContentText ?? displayArtifact.content_text),
+                content_json: draftContentJson ?? displayArtifact.content_json,
+                content_text: draftContentText ?? displayArtifact.content_text,
               }}
               forceContentKey={editorForceContentKey}
-              readOnly={isLivePreview}
+              disableCollaboration={isHistoricalVersion}
+              readOnly={isHistoricalVersion}
               hideHtmlToolbar
               onSelectImagePoint={({ attachmentId, x, y }) => {
                 attachArtifactSelection(
@@ -1418,6 +1494,7 @@ export function ArtifactPane({
                   },
                   displayArtifact,
                 )
+                beginImageComment("Selected image")
               }}
               onSelectImageRect={({ attachmentId, x, y, width, height }) => {
                 attachArtifactSelection(
@@ -1435,6 +1512,7 @@ export function ArtifactPane({
                   },
                   displayArtifact,
                 )
+                beginImageComment("Selected image")
               }}
               onSelectVideoTime={({ attachmentId, timeStart, timeEnd }) => {
                 attachArtifactSelection(
@@ -1465,19 +1543,18 @@ export function ArtifactPane({
                 )
               }}
               onContentJsonChange={(contentJson) => {
-                if (isLivePreview || applyingServerContentRef.current) return
+                if (isHistoricalVersion || applyingServerContentRef.current) return
                 beginUserEdit()
                 setDraftContentJson(contentJson)
                 scheduleAutosave()
               }}
               onContentTextChange={(contentText) => {
-                if (isLivePreview || applyingServerContentRef.current) return
+                if (isHistoricalVersion || applyingServerContentRef.current) return
                 beginUserEdit()
                 setDraftContentText(contentText)
                 scheduleAutosave()
               }}
             />
-          )}
 
           {assets.length > 1 ? (
             <div className="space-y-1.5 px-4 py-4">
@@ -1500,54 +1577,77 @@ export function ArtifactPane({
             </div>
           ) : null}
 
-          {!showChanges ? (
-            <ArtifactSeoDock
-              variant="inline"
-              artifactId={displayArtifact.id}
-              artifactVersion={displayArtifact.current_version ?? 0}
-              artifactTitle={draftTitle || displayArtifact.title}
-              taskId={displayArtifact.task_id}
-              projectId={displayArtifact.project_id}
-              channelId={displayArtifact.channel_id}
-              contentText={draftContentText ?? displayArtifact.content_text}
-              contentJson={draftContentJson ?? displayArtifact.content_json}
-              metadata={displayArtifact.metadata}
-              assetData={displayArtifact.asset_data}
-              aiThreadId={displayArtifact.ai_thread_id}
-              readOnly={isLivePreview}
-              onContentChange={({ contentText, contentJson }) => {
-                if (isLivePreview) return
-                if (!applyingServerContentRef.current) beginUserEdit()
-                setDraftContentText(contentText)
-                setDraftContentJson(contentJson)
-                scheduleAutosave()
-              }}
-            />
-          ) : null}
-          <div
-            aria-hidden="true"
-            className="pointer-events-none shrink-0"
-            style={{ height: commentsDockHeight > 0 ? commentsDockHeight + 8 : 0 }}
+          <ArtifactSeoDock
+            variant="inline"
+            artifactId={displayArtifact.id}
+            artifactVersion={displayArtifact.current_version ?? 0}
+            artifactTitle={draftTitle || displayArtifact.title}
+            taskId={displayArtifact.task_id}
+            projectId={displayArtifact.project_id}
+            channelId={displayArtifact.channel_id}
+            contentText={draftContentText ?? displayArtifact.content_text}
+            contentJson={draftContentJson ?? displayArtifact.content_json}
+            metadata={displayArtifact.metadata}
+            assetData={displayArtifact.asset_data}
+            aiThreadId={displayArtifact.ai_thread_id}
+            readOnly={isHistoricalVersion}
+            onContentChange={({ contentText, contentJson }) => {
+              if (isHistoricalVersion) return
+              if (!applyingServerContentRef.current) beginUserEdit()
+              setDraftContentText(contentText)
+              setDraftContentJson(contentJson)
+              scheduleAutosave()
+            }}
           />
-        </div>
-      </div>
-      <div
-        className="pointer-events-none absolute inset-0 z-10 flex flex-col justify-end"
-        style={{ paddingRight: commentsGutterWidth }}
-      >
-        <div
-          ref={setCommentsDockNode}
-          className="pointer-events-auto bg-white"
-        >
-          <div className="mx-auto w-full max-w-3xl">
-            <ArtifactCommentsDock
-              artifact={displayArtifact}
-              pendingSelection={pendingCommentSelection}
-              onClearPendingSelection={() => setPendingCommentSelection(null)}
-            />
+          <div className="px-4">
+            <TaskOverviewPreviewSection title="History">
+              <ArtifactVersionHistoryList
+                hideHeading
+                previewLimit={5}
+                isLoading={versionsQuery.isLoading}
+                versions={versionsQuery.data?.versions ?? []}
+                onView={(versionNumber) => {
+                  setVersionInUrl(versionNumber)
+                }}
+                onRestore={(versionNumber) => {
+                  void handleRestoreVersion(versionNumber)
+                }}
+                isRestoring={isRestoringVersion}
+              />
+            </TaskOverviewPreviewSection>
+            <TaskOverviewPreviewSection title="Comments">
+              <ArtifactCommentsDock
+                artifact={displayArtifact}
+                taskId={headerTaskId}
+                projectId={headerProjectId}
+                variant="section"
+                hideComposer={Boolean(pendingCommentSelection)}
+                pendingSelection={pendingCommentSelection}
+                onClearPendingSelection={() => setPendingCommentSelection(null)}
+              />
+            </TaskOverviewPreviewSection>
           </div>
         </div>
       </div>
+      {pendingCommentSelection ? (
+        <div
+          className="pointer-events-none absolute inset-0 z-10 flex flex-col justify-end"
+          style={{ paddingRight: commentsGutterWidth }}
+        >
+          <div className="pointer-events-auto bg-white pb-[max(0.75rem,env(safe-area-inset-bottom))]">
+            <div className="mx-auto w-full max-w-3xl">
+              <ArtifactCommentsDock
+                artifact={displayArtifact}
+                taskId={headerTaskId}
+                projectId={headerProjectId}
+                variant="pinned"
+                pendingSelection={pendingCommentSelection}
+                onClearPendingSelection={() => setPendingCommentSelection(null)}
+              />
+            </div>
+          </div>
+        </div>
+      ) : null}
       </div>
 
       <SelectionAskAiMenu
@@ -1568,34 +1668,20 @@ export function ArtifactPane({
         }}
       />
 
-      <AlertDialog
+      <ConfirmDialog
         open={showDeleteConfirm}
+        title="Delete output"
+        description="This output will move to Deleted. You can restore it or delete it permanently from the Outputs list."
+        confirmLabel="Delete"
+        busy={isDeleting}
+        busyLabel="Deleting…"
         onOpenChange={(open) => {
           if (!open && !isDeleting) setShowDeleteConfirm(false)
         }}
-      >
-        <AlertDialogContent>
-          <AlertDialogHeader>
-            <AlertDialogTitle>Delete artifact?</AlertDialogTitle>
-            <AlertDialogDescription>
-              This archives the artifact and removes it from overview and search.
-            </AlertDialogDescription>
-          </AlertDialogHeader>
-          <AlertDialogFooter>
-            <AlertDialogCancel disabled={isDeleting}>Cancel</AlertDialogCancel>
-            <AlertDialogAction
-              disabled={isDeleting}
-              className="bg-red-600 hover:bg-red-700"
-              onClick={(event) => {
-                event.preventDefault()
-                void handleDelete()
-              }}
-            >
-              {isDeleting ? "Deleting…" : "Delete"}
-            </AlertDialogAction>
-          </AlertDialogFooter>
-        </AlertDialogContent>
-      </AlertDialog>
+        onConfirm={() => {
+          void handleDelete()
+        }}
+      />
 
     </div>
   )

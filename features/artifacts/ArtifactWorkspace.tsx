@@ -27,6 +27,7 @@ import {
   Loader2,
   Maximize2,
   Trash2,
+  Upload,
 } from "lucide-react"
 import { AddDashedButton } from "../../app/components/ui/add-dashed-button"
 import { ArtifactDocumentEditor } from "./artifact-document-editor"
@@ -38,23 +39,14 @@ import {
 } from "./open-artifact-selection-in-ai-pane"
 import { computeArtifactContentHash } from "./artifact-selection"
 import {
-  progressiveLiveAfterHtml,
   resolveArtifactChangeSides,
   resolveArtifactPreviewChangeInput,
 } from "./resolve-artifact-change-diff"
-import {
-  buildHtmlEmailContentJson,
-  isHtmlEmailArtifact,
-} from "./artifact-html-document"
 import { isArtifactLiveEditLocked } from "./artifact-live-edit-lock"
 import {
   canAutosaveArtifactSnapshot,
-  shouldLockArtifactDuringAiGeneration,
+  isCollaborativeArtifactSurface,
 } from "../../app/lib/collaboration/editor-sync"
-import {
-  isArtifactCollabEnvEnabled,
-  shouldUseArtifactCollaboration,
-} from "../../app/lib/collaboration/feature-flag"
 import {
   deleteArtifact,
   getArtifact,
@@ -85,22 +77,23 @@ import { useCenterPaneTabsStore } from "../../app/store/center-pane-tabs"
 import { buildCenterPaneTabKey } from "../../app/store/center-pane-tabs"
 import { cn } from "../../app/lib/utils"
 import { getActivityRelativeTimeLabel } from "../../app/components/activity-row-timestamp"
-import {
-  AlertDialog,
-  AlertDialogAction,
-  AlertDialogCancel,
-  AlertDialogContent,
-  AlertDialogDescription,
-  AlertDialogFooter,
-  AlertDialogHeader,
-  AlertDialogTitle,
-} from "../../app/components/ui/alert-dialog"
+import { ConfirmDialog } from "../../app/components/ui/confirm-dialog"
 import { SelectionAskAiMenu } from "../ai-chat/SelectionAskAiMenu"
 import { computeRangeTextParts } from "../ai-chat/ai-chat-text-selection"
 import {
   isArtifactAttachDrag,
   readArtifactAttachDragData,
 } from "./artifact-attach-dnd"
+import {
+  OUTPUTS_DROPZONE_ATTR,
+  OUTPUTS_FILE_ACCEPT,
+  filesFromDataTransfer,
+  filesFromFileList,
+  importFileToArtifactContent,
+  isFileImportDrag,
+  isImportableArtifactFile,
+  isPointInsideRelatedOutputsZone,
+} from "./import-file-to-artifact"
 import { ArtifactVersionHistoryPopover } from "./artifact-version-history-popover"
 import { exportArtifactAsDocx } from "./artifact-docx-export"
 import {
@@ -213,9 +206,6 @@ function resolveStackArtifactChangeDiff(args: {
     contentText: live.contentText,
     contentJson: live.contentJson,
     diffContentText: live.diffContentText,
-    sectionHtml: live.sectionHtml,
-    sectionBeforeHtml: live.sectionBeforeHtml,
-    streamSnippet: live.streamSnippet,
     fallbackAfterText: artifact.content_text,
     fallbackAfterContentJson: artifact.content_json,
     baselineContentJson: artifact.content_json,
@@ -276,34 +266,6 @@ function StackArtifactExpandedBody({
   openFullscreen: () => void
   showChanges: boolean
 }) {
-  const progressiveHtml = live ? progressiveLiveAfterHtml(live) : null
-  const streamedDisplay = useMemo(() => {
-    if (!progressiveHtml || !isLiveBusy) return display
-    const preferHtmlEmail =
-      isHtmlEmailArtifact(display)
-      || /<!doctype\s+html|<html\b|role\s*=\s*["']presentation["']/i.test(progressiveHtml)
-    return {
-      ...display,
-      title: live?.title ?? display.title,
-      content_text: progressiveHtml,
-      content_json: preferHtmlEmail
-        ? buildHtmlEmailContentJson(progressiveHtml, display.content_json)
-        : {
-            ...(typeof display.content_json === "object" && display.content_json
-              ? display.content_json
-              : { version: 1 }),
-            blocks: [
-              {
-                id: "body",
-                type: "rich_text",
-                html: progressiveHtml,
-                text: progressiveHtml.replace(/<[^>]+>/g, " ").replace(/\s+/g, " ").trim().slice(0, 20000),
-              },
-            ],
-          },
-    }
-  }, [display, isLiveBusy, live?.title, progressiveHtml])
-
   const changeDiff = useMemo(
     () => resolveStackArtifactChangeDiff({ artifact: display, live, isLiveBusy }),
     [display, isLiveBusy, live],
@@ -322,23 +284,20 @@ function StackArtifactExpandedBody({
     })
   }, [changeDiff])
 
-  const streamForceKey = progressiveHtml
-    ? `${editorForceKey}:stream:${progressiveHtml.length}`
-    : editorForceKey
-
   return (
     <div className="min-h-[12rem] max-h-[28rem] resize-y overflow-auto border-t border-gray-100">
-      {showChanges && sides?.hasChanges && !progressiveHtml ? (
+      {showChanges && sides?.hasChanges ? (
         <ArtifactRichDiffBody
           beforeHtml={sides.beforeHtml}
           afterHtml={sides.afterHtml}
           prebuiltHtml={sides.trackChangesHtml}
+          compact
         />
       ) : (
         <ArtifactDocumentEditor
-          artifact={streamedDisplay}
-          forceContentKey={streamForceKey}
-          readOnly={isLiveBusy}
+          artifact={display}
+          forceContentKey={editorForceKey}
+          readOnly={false}
           onContentJsonChange={(contentJson) => {
             updateDraft(display.id, { contentJson }, display)
           }}
@@ -349,6 +308,82 @@ function StackArtifactExpandedBody({
           {...mediaSelectHandlers}
         />
       )}
+    </div>
+  )
+}
+
+function OutputsFileDropzone({
+  active,
+  busy,
+  disabled,
+  compact = false,
+  onOpenPicker,
+  onDragOver,
+  onDrop,
+}: {
+  active: boolean
+  busy: boolean
+  disabled: boolean
+  compact?: boolean
+  onOpenPicker: () => void
+  onDragOver: (event: React.DragEvent) => void
+  onDrop: (event: React.DragEvent) => void
+}) {
+  if (disabled) return null
+  return (
+    <div
+      role="button"
+      tabIndex={0}
+      onClick={onOpenPicker}
+      onKeyDown={(event) => {
+        if (event.key === "Enter" || event.key === " ") {
+          event.preventDefault()
+          onOpenPicker()
+        }
+      }}
+      onDragEnter={onDragOver}
+      onDragOver={onDragOver}
+      onDrop={onDrop}
+      className={cn(
+        "flex cursor-pointer items-center justify-center rounded-lg border-2 border-dashed px-4 text-center text-sm transition-colors",
+        compact ? "min-h-[3.5rem] py-3" : "min-h-[6.5rem] py-5",
+        busy && "pointer-events-none opacity-70",
+        active
+          ? "border-sky-400 bg-sky-50 text-sky-800"
+          : "border-gray-300 bg-gray-50/80 text-gray-600 hover:border-gray-400 hover:bg-gray-50",
+      )}
+    >
+      <span className="inline-flex items-center gap-2">
+        {busy ? (
+          <Loader2 className="h-4 w-4 animate-spin" aria-hidden />
+        ) : (
+          <Upload className="h-4 w-4" aria-hidden />
+        )}
+        {active
+          ? "Drop to add as an output"
+          : "Drop a Word or PDF here, or click to upload"}
+      </span>
+    </div>
+  )
+}
+
+function OutputsDropOverlay({
+  active,
+  canImportFiles,
+  taskId,
+}: {
+  active: boolean
+  canImportFiles: boolean
+  taskId: number | null
+}) {
+  if (!active) return null
+  return (
+    <div className="pointer-events-none absolute inset-0 z-40 flex items-center justify-center rounded-lg border-2 border-dashed border-sky-400 bg-sky-50/90 px-4">
+      <p className="text-center text-sm font-medium text-sky-800">
+        {canImportFiles
+          ? "Drop Word, PDF, or an existing output to add it here"
+          : `Drop to attach to ${taskId != null ? "this task" : "this project"}`}
+      </p>
     </div>
   )
 }
@@ -443,6 +478,10 @@ export function ArtifactWorkspace({
   const [isAttachingDrop, setIsAttachingDrop] = useState(false)
   const [attachDropError, setAttachDropError] = useState<string | null>(null)
   const [isCreatingArtifact, setIsCreatingArtifact] = useState(false)
+  const dropRootRef = useRef<HTMLDivElement | null>(null)
+  const fileInputRef = useRef<HTMLInputElement | null>(null)
+  const isAttachDragOverRef = useRef(false)
+  isAttachDragOverRef.current = isAttachDragOver
   const draftByArtifactIdRef = useRef(draftByArtifactId)
   draftByArtifactIdRef.current = draftByArtifactId
   const allArtifactsRef = useRef<TaskArtifact[]>([])
@@ -978,10 +1017,10 @@ export function ArtifactWorkspace({
     if (!base) return
     if (
       !canAutosaveArtifactSnapshot(
-        shouldUseArtifactCollaboration({
+        isCollaborativeArtifactSurface({
+          artifactId,
           contentJson: base.content_json,
           metadata: base.metadata,
-          envEnabled: isArtifactCollabEnvEnabled(),
         }),
       )
     ) {
@@ -1246,6 +1285,7 @@ export function ArtifactWorkspace({
     try {
       await deleteArtifact({ artifactId: pendingDeleteId })
       forgetDeletedArtifact(queryClient, pendingDeleteId)
+      await queryClient.invalidateQueries({ queryKey: ["deleted-artifacts"] })
       closeCenterTab(buildCenterPaneTabKey("artifact", pendingDeleteId))
       setPendingDeleteId(null)
       if (selectedArtifactId === pendingDeleteId) setSelectedArtifactId(null)
@@ -1306,25 +1346,111 @@ export function ArtifactWorkspace({
     setIsAttachDragOver(false)
   }, [])
 
+  const canImportFiles = taskId != null && taskId > 0
+
   const handleAttachDragOver = useCallback(
     (event: React.DragEvent) => {
-      if (!canAcceptArtifactAttach || !isArtifactAttachDrag(event.dataTransfer)) return
+      const importingFiles = canImportFiles && isFileImportDrag(event.dataTransfer)
+      const attachingArtifact = canAcceptArtifactAttach && isArtifactAttachDrag(event.dataTransfer)
+      if (!importingFiles && !attachingArtifact) return
       event.preventDefault()
-      event.dataTransfer.dropEffect = "link"
-      if (!isAttachDragOver) setIsAttachDragOver(true)
+      event.stopPropagation()
+      event.dataTransfer.dropEffect = importingFiles ? "copy" : "link"
+      if (!isAttachDragOverRef.current) setIsAttachDragOver(true)
     },
-    [canAcceptArtifactAttach, isAttachDragOver],
+    [canAcceptArtifactAttach, canImportFiles],
   )
+
+  const importOutputFiles = useCallback(
+    async (incoming: File[]) => {
+      const files = incoming.filter(isImportableArtifactFile)
+      if (incoming.length > 0 && files.length === 0) {
+        setAttachDropError("Use a Word, PDF, or text file.")
+        return
+      }
+      if (files.length === 0) return
+      if (!canImportFiles || taskId == null) {
+        setAttachDropError("Add Word or PDF files on a task to create outputs.")
+        return
+      }
+      setIsAttachDragOver(false)
+      setAttachDropError(null)
+      setIsAttachingDrop(true)
+      try {
+        let lastCreatedId: string | null = null
+        for (const file of files) {
+          const imported = await importFileToArtifactContent(file)
+          const created = await createTaskArtifact({
+            taskId,
+            title: imported.title,
+            artifactType: "document",
+            channelId: defaultChannelId,
+            languageId: defaultLanguageId,
+            status: "draft",
+          })
+          const saved = await saveWorkspaceArtifact({
+            artifactId: created.id,
+            expectedVersion: created.current_version ?? 0,
+            snapshot: {
+              title: imported.title,
+              content_text: imported.text,
+              content_json: imported.contentJson,
+            },
+            changeSource: "manual",
+            changedBy: currentUserId,
+            changeSummary: `Imported ${file.name}`,
+          })
+          if (isArtifactRevisionConflictError(saved)) {
+            throw new Error(saved.message || "Failed to save imported document")
+          }
+          lastCreatedId = created.id
+        }
+        await queryClient.invalidateQueries({ queryKey: ["task-artifacts"] })
+        await queryClient.invalidateQueries({ queryKey: ["task-artifacts-meta"] })
+        await invalidateArtifactLists()
+        if (lastCreatedId) {
+          setExpandedStackIds((prev) => new Set(prev).add(lastCreatedId!))
+          setSelectedArtifactId(lastCreatedId)
+        }
+      } catch (error) {
+        setAttachDropError(
+          error instanceof Error ? error.message : "Failed to import document",
+        )
+      } finally {
+        setIsAttachingDrop(false)
+      }
+    },
+    [
+      canImportFiles,
+      currentUserId,
+      defaultChannelId,
+      defaultLanguageId,
+      invalidateArtifactLists,
+      queryClient,
+      taskId,
+    ],
+  )
+
+  const openOutputFilePicker = useCallback(() => {
+    fileInputRef.current?.click()
+  }, [])
 
   const handleAttachDrop = useCallback(
     async (event: React.DragEvent) => {
-      if (!canAcceptArtifactAttach) return
+      const incoming = filesFromDataTransfer(event.dataTransfer)
       const artifactId = readArtifactAttachDragData(event.dataTransfer)
-      if (!artifactId) return
+      if (incoming.length === 0 && !artifactId) return
       event.preventDefault()
       event.stopPropagation()
       setIsAttachDragOver(false)
       setAttachDropError(null)
+
+      if (incoming.length > 0) {
+        await importOutputFiles(incoming)
+        return
+      }
+
+      if (!canAcceptArtifactAttach || !artifactId) return
 
       const alreadyOnTask =
         taskId != null
@@ -1365,6 +1491,7 @@ export function ArtifactWorkspace({
       canAcceptArtifactAttach,
       defaultChannelId,
       defaultLanguageId,
+      importOutputFiles,
       invalidateArtifactLists,
       projectId,
       queryClient,
@@ -1372,7 +1499,9 @@ export function ArtifactWorkspace({
     ],
   )
 
-  const attachDropProps = canAcceptArtifactAttach
+  const canAcceptOutputDrop = canAcceptArtifactAttach || canImportFiles
+
+  const attachDropProps = canAcceptOutputDrop
     ? {
         onDragEnter: handleAttachDragOver,
         onDragOver: handleAttachDragOver,
@@ -1382,10 +1511,65 @@ export function ArtifactWorkspace({
           clearAttachDragOver()
         },
         onDrop: (event: React.DragEvent) => {
+          event.stopPropagation()
           void handleAttachDrop(event)
         },
       }
     : {}
+
+  useEffect(() => {
+    if (!canAcceptOutputDrop) return
+    const isRelevantDrag = (dataTransfer: DataTransfer | null) => {
+      if (canImportFiles && isFileImportDrag(dataTransfer)) return true
+      if (canAcceptArtifactAttach && isArtifactAttachDrag(dataTransfer)) return true
+      return false
+    }
+    const onWindowDragOver = (event: DragEvent) => {
+      if (!isRelevantDrag(event.dataTransfer)) return
+      const overZone = isPointInsideRelatedOutputsZone(
+        dropRootRef.current,
+        event.clientX,
+        event.clientY,
+      )
+      if (!overZone) {
+        if (isAttachDragOverRef.current) setIsAttachDragOver(false)
+        return
+      }
+      event.preventDefault()
+      if (event.dataTransfer) {
+        event.dataTransfer.dropEffect = canImportFiles && isFileImportDrag(event.dataTransfer)
+          ? "copy"
+          : "link"
+      }
+      if (!isAttachDragOverRef.current) setIsAttachDragOver(true)
+    }
+    const onWindowDrop = (event: DragEvent) => {
+      if (!isRelevantDrag(event.dataTransfer)) {
+        if (isAttachDragOverRef.current) setIsAttachDragOver(false)
+        return
+      }
+      if (!isPointInsideRelatedOutputsZone(dropRootRef.current, event.clientX, event.clientY)) {
+        if (isAttachDragOverRef.current) setIsAttachDragOver(false)
+        return
+      }
+      event.preventDefault()
+      event.stopPropagation()
+      void handleAttachDrop(event as unknown as React.DragEvent)
+    }
+    const onWindowDragEnd = () => {
+      if (isAttachDragOverRef.current) setIsAttachDragOver(false)
+    }
+    window.addEventListener("dragenter", onWindowDragOver, true)
+    window.addEventListener("dragover", onWindowDragOver, true)
+    window.addEventListener("drop", onWindowDrop, true)
+    window.addEventListener("dragend", onWindowDragEnd, true)
+    return () => {
+      window.removeEventListener("dragenter", onWindowDragOver, true)
+      window.removeEventListener("dragover", onWindowDragOver, true)
+      window.removeEventListener("drop", onWindowDrop, true)
+      window.removeEventListener("dragend", onWindowDragEnd, true)
+    }
+  }, [canAcceptArtifactAttach, canAcceptOutputDrop, canImportFiles, handleAttachDrop])
 
   const canCreateBlankArtifact = taskId != null && taskId > 0
 
@@ -1422,15 +1606,42 @@ export function ArtifactWorkspace({
     taskId,
   ])
 
-  const addArtifactButton =
-    canCreateBlankArtifact ? (
-      <AddDashedButton
-        label="Add"
-        className="mt-2"
-        disabled={isCreatingArtifact}
-        onClick={() => void handleCreateBlankArtifact()}
-      />
+  const addOutputActions =
+    canCreateBlankArtifact || canImportFiles ? (
+      <div className="mt-2 flex flex-wrap items-center gap-2">
+        {canImportFiles ? (
+          <AddDashedButton
+            label="Add file"
+            className="mt-0"
+            disabled={isAttachingDrop}
+            onClick={openOutputFilePicker}
+          />
+        ) : null}
+        {canCreateBlankArtifact ? (
+          <AddDashedButton
+            label="Add"
+            className="mt-0"
+            disabled={isCreatingArtifact}
+            onClick={() => void handleCreateBlankArtifact()}
+          />
+        ) : null}
+      </div>
     ) : null
+
+  const filePickerInput = canImportFiles ? (
+    <input
+      ref={fileInputRef}
+      type="file"
+      multiple
+      accept={OUTPUTS_FILE_ACCEPT}
+      className="sr-only"
+      onChange={(event) => {
+        const files = filesFromFileList(event.currentTarget.files)
+        event.currentTarget.value = ""
+        void importOutputFiles(files)
+      }}
+    />
+  ) : null
 
   useEffect(() => {
     if (!onArtifactTextSelectForComment) return
@@ -1530,65 +1741,69 @@ export function ArtifactWorkspace({
     )
   }
 
+  const headingActions = (
+    <div className="flex items-center gap-1">
+      {canImportFiles ? (
+        <button
+          type="button"
+          className="inline-flex h-7 w-7 items-center justify-center rounded-md text-gray-500 hover:bg-gray-100 hover:text-gray-800"
+          aria-label="Add file"
+          title="Add file"
+          disabled={isAttachingDrop}
+          onClick={openOutputFilePicker}
+        >
+          <Upload className="h-4 w-4" />
+        </button>
+      ) : null}
+      {isLoading || isReordering || isAttachingDrop ? (
+        <Loader2 className="h-4 w-4 animate-spin text-gray-400" />
+      ) : null}
+    </div>
+  )
+
   const deleteDialog = (
-    <AlertDialog
+    <ConfirmDialog
       open={!!pendingDeleteId}
+      title="Delete output"
+      description="This output will move to Deleted. You can restore it or delete it permanently from the Outputs list."
+      confirmLabel="Delete"
+      busy={isDeleting}
+      busyLabel="Deleting…"
       onOpenChange={(open) => {
         if (!open && !isDeleting) setPendingDeleteId(null)
       }}
-    >
-      <AlertDialogContent>
-        <AlertDialogHeader>
-          <AlertDialogTitle>Delete artifact?</AlertDialogTitle>
-          <AlertDialogDescription>
-            This archives the artifact and removes it from overview and search.
-          </AlertDialogDescription>
-        </AlertDialogHeader>
-        <AlertDialogFooter>
-          <AlertDialogCancel disabled={isDeleting}>Cancel</AlertDialogCancel>
-          <AlertDialogAction
-            disabled={isDeleting}
-            onClick={(event) => {
-              event.preventDefault()
-              void handleConfirmDelete()
-            }}
-            className="bg-red-600 hover:bg-red-700"
-          >
-            {isDeleting ? "Deleting…" : "Delete"}
-          </AlertDialogAction>
-        </AlertDialogFooter>
-      </AlertDialogContent>
-    </AlertDialog>
+      onConfirm={() => {
+        void handleConfirmDelete()
+      }}
+    />
   )
 
   if (layout === "stack") {
     return (
       <div
+        ref={dropRootRef}
+        {...{ [OUTPUTS_DROPZONE_ATTR]: "true" }}
         className={cn(
+          "relative min-h-[10rem]",
           className,
-          canAcceptArtifactAttach
-            && "rounded-lg transition-[box-shadow,background-color]",
-          isAttachDragOver && "bg-sky-50/80 ring-2 ring-sky-300 ring-inset",
+          canAcceptOutputDrop && "rounded-lg transition-[box-shadow,background-color]",
         )}
         {...attachDropProps}
       >
-        {!hideHeading || isLoading || isAttachingDrop ? (
+        {filePickerInput}
+        <OutputsDropOverlay
+          active={isAttachDragOver}
+          canImportFiles={canImportFiles}
+          taskId={taskId}
+        />
+        {!hideHeading ? (
           <div className="mb-3 flex items-center justify-between gap-2">
-            {!hideHeading ? (
-              <h3 className="text-base font-medium text-gray-900">{heading}</h3>
-            ) : (
-              <span />
-            )}
-            {isLoading || isReordering || isAttachingDrop ? (
-              <Loader2 className="h-4 w-4 animate-spin text-gray-400" />
-            ) : null}
+            <h3 className="text-base font-medium text-gray-900">{heading}</h3>
+            {headingActions}
           </div>
-        ) : null}
-        {isAttachDragOver ? (
-          <p className="mb-3 text-xs font-medium text-sky-800">
-            Drop to attach to {taskId != null ? "this task" : "this project"}
-          </p>
-        ) : null}
+        ) : (
+          <div className="mb-3 flex justify-end">{headingActions}</div>
+        )}
         {attachDropError ? (
           <p className="mb-3 text-xs text-red-600">{attachDropError}</p>
         ) : null}
@@ -1602,12 +1817,21 @@ export function ArtifactWorkspace({
             {error instanceof Error ? error.message : "Failed to load artifacts"}
           </p>
         ) : null}
-        {isLoading && allArtifacts.length === 0 ? (
-          <div className="space-y-2">
-            <div className="h-16 animate-pulse rounded-lg bg-gray-100" />
+        {allArtifacts.length === 0 ? (
+          <div className="mb-2">
+            <OutputsFileDropzone
+              active={isAttachDragOver}
+              busy={isAttachingDrop}
+              disabled={!canImportFiles}
+              onOpenPicker={openOutputFilePicker}
+              onDragOver={handleAttachDragOver}
+              onDrop={(event) => {
+                event.preventDefault()
+                event.stopPropagation()
+                void handleAttachDrop(event)
+              }}
+            />
           </div>
-        ) : allArtifacts.length === 0 ? (
-          null
         ) : (
           <DndContext sensors={sensors} collisionDetection={closestCenter} onDragEnd={onDragEnd}>
             <SortableContext
@@ -1865,7 +2089,24 @@ export function ArtifactWorkspace({
             </SortableContext>
           </DndContext>
         )}
-        {addArtifactButton}
+        {allArtifacts.length > 0 ? (
+          <div className="mt-3">
+            <OutputsFileDropzone
+              active={isAttachDragOver}
+              busy={isAttachingDrop}
+              disabled={!canImportFiles}
+              compact
+              onOpenPicker={openOutputFilePicker}
+              onDragOver={handleAttachDragOver}
+              onDrop={(event) => {
+                event.preventDefault()
+                event.stopPropagation()
+                void handleAttachDrop(event)
+              }}
+            />
+          </div>
+        ) : null}
+        {addOutputActions}
         <SelectionAskAiMenu
           containerSelector='[data-ai-selectable="artifact"]'
           resolve={resolveArtifactTextSelection}
@@ -1882,33 +2123,30 @@ export function ArtifactWorkspace({
 
   return (
     <div
+      ref={dropRootRef}
+      {...{ [OUTPUTS_DROPZONE_ATTR]: "true" }}
       className={cn(
-        "flex min-h-0 flex-col gap-3 overflow-hidden",
+        "relative flex min-h-0 flex-col gap-3 overflow-hidden",
         className,
-        canAcceptArtifactAttach
-          && "rounded-lg transition-[box-shadow,background-color]",
-        isAttachDragOver && "bg-sky-50/80 ring-2 ring-sky-300 ring-inset",
+        canAcceptOutputDrop && "rounded-lg transition-[box-shadow,background-color]",
       )}
       {...attachDropProps}
     >
-      {!hideHeading || isLoading || isAttachingDrop ? (
+      {filePickerInput}
+      <OutputsDropOverlay
+        active={isAttachDragOver}
+        canImportFiles={canImportFiles}
+        taskId={taskId}
+      />
+      {!hideHeading ? (
         <div className="flex shrink-0 items-center justify-between gap-2">
-          {!hideHeading ? (
-            <h3 className="text-base font-medium text-gray-900">{heading}</h3>
-          ) : (
-            <span />
-          )}
-          {isLoading || isReordering || isAttachingDrop ? (
-            <Loader2 className="h-4 w-4 animate-spin text-gray-400" />
-          ) : null}
+          <h3 className="text-base font-medium text-gray-900">{heading}</h3>
+          {headingActions}
         </div>
-      ) : null}
+      ) : (
+        <div className="flex shrink-0 justify-end">{headingActions}</div>
+      )}
 
-      {isAttachDragOver ? (
-        <p className="shrink-0 text-xs font-medium text-sky-800">
-          Drop to attach to {taskId != null ? "this task" : "this project"}
-        </p>
-      ) : null}
       {attachDropError ? (
         <p className="shrink-0 text-xs text-red-600">{attachDropError}</p>
       ) : null}
@@ -1926,7 +2164,21 @@ export function ArtifactWorkspace({
       ) : null}
 
       {allArtifacts.length === 0 && !isLoading ? (
-        addArtifactButton
+        <>
+          <OutputsFileDropzone
+            active={isAttachDragOver}
+            busy={isAttachingDrop}
+            disabled={!canImportFiles}
+            onOpenPicker={openOutputFilePicker}
+            onDragOver={handleAttachDragOver}
+            onDrop={(event) => {
+              event.preventDefault()
+              event.stopPropagation()
+              void handleAttachDrop(event)
+            }}
+          />
+          {addOutputActions}
+        </>
       ) : (
         <div className="flex min-h-0 flex-1 flex-col gap-3 overflow-hidden lg:flex-row">
           <aside className="flex max-h-40 w-full shrink-0 flex-col gap-1.5 overflow-auto lg:max-h-none lg:w-56">
@@ -2066,17 +2318,7 @@ export function ArtifactWorkspace({
                         ? `${displaySelected.id}:live:${selectedLive.buildId ?? "building"}`
                         : displaySelected.id
                     }
-                    readOnly={
-                      shouldLockArtifactDuringAiGeneration(
-                        shouldUseArtifactCollaboration({
-                          contentJson: displaySelected.content_json,
-                          metadata: displaySelected.metadata,
-                          envEnabled: isArtifactCollabEnvEnabled(),
-                        }),
-                      )
-                      && !!selectedLive
-                      && isArtifactLiveEditLocked(selectedLive)
-                    }
+                    readOnly={false}
                     onContentJsonChange={(contentJson) => {
                       updateDraft(displaySelected.id, { contentJson }, displaySelected)
                     }}
@@ -2101,7 +2343,25 @@ export function ArtifactWorkspace({
           </div>
         </div>
       )}
-      {allArtifacts.length > 0 && !isLoading ? addArtifactButton : null}      <SelectionAskAiMenu
+      {allArtifacts.length > 0 && !isLoading ? (
+        <>
+          <OutputsFileDropzone
+            active={isAttachDragOver}
+            busy={isAttachingDrop}
+            disabled={!canImportFiles}
+            compact
+            onOpenPicker={openOutputFilePicker}
+            onDragOver={handleAttachDragOver}
+            onDrop={(event) => {
+              event.preventDefault()
+              event.stopPropagation()
+              void handleAttachDrop(event)
+            }}
+          />
+          {addOutputActions}
+        </>
+      ) : null}
+      <SelectionAskAiMenu
         containerSelector='[data-ai-selectable="artifact"]'
         resolve={resolveArtifactTextSelection}
         onAsk={(context) => {

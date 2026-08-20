@@ -43,10 +43,14 @@ export type ArtifactPreviewChangeSource = {
   contentText?: string | null
   contentJson?: unknown
   diffContentText?: string | null
+  /**
+   * Unpersisted worker draft. Ignored as the after document — chat/pane
+   * must mirror the live artifact instead.
+   */
   sectionHtml?: string | null
   sectionBeforeHtml?: string | null
   streamSnippet?: string | null
-  /** Fallback after body when the live entry omitted content (task stack artifact row). */
+  /** Live artifact body (query cache / collab / list row). Source of after while busy. */
   fallbackAfterText?: string | null
   fallbackAfterContentJson?: unknown
   /** Baseline while generating (usually the on-screen artifact before the edit lands). */
@@ -54,21 +58,32 @@ export type ArtifactPreviewChangeSource = {
   baselineContentText?: string | null
 }
 
-/** Progressive HTML from live heartbeats (same fields chat preview cards use). */
-export function progressiveLiveAfterHtml(live: {
+/**
+ * Worker section/snippet is not the artifact. Kept so leftover callers stay
+ * honest instead of overlaying a second document on the pane.
+ */
+export function progressiveLiveAfterHtml(_live?: {
   streaming?: boolean
   sectionHtml?: string | null
   streamSnippet?: string | null
 }): string | null {
-  if (!live.streaming) return null
-  const html = live.sectionHtml?.trim() || live.streamSnippet?.trim() || ""
-  return html || null
+  return null
+}
+
+function hasPersistedAfterBody(source: ArtifactPreviewChangeSource): boolean {
+  return Boolean(
+    source.fallbackAfterContentJson
+    || source.fallbackAfterText?.trim()
+    || source.contentJson
+    || source.contentText?.trim()
+    || source.diffContentText?.trim(),
+  )
 }
 
 /**
- * Normalize live/saved artifact preview fields into change-sides inputs.
- * Section HTML is scoped only when both before+after section hints exist —
- * otherwise a section-only after vs full-document before yields false −N removals.
+ * Normalize preview fields into change-sides inputs.
+ * After is always the live/persisted artifact — never unpersisted section_html
+ * or stream snippets, which used to invent a document the pane never received.
  */
 export function resolveArtifactPreviewChangeInput(
   source: ArtifactPreviewChangeSource,
@@ -80,50 +95,23 @@ export function resolveArtifactPreviewChangeInput(
     || Boolean(source.baselineContentText?.trim())
 
   if (source.isBusy) {
-    const beforeHtml = source.sectionBeforeHtml?.trim() || null
-    const afterHtml =
-      source.sectionHtml?.trim()
-      || source.streamSnippet?.trim()
-      || null
-    const useSectionScope = Boolean(beforeHtml) && Boolean(afterHtml)
-    const hasFullAfter = Boolean(
-      source.contentJson
-      || source.contentText?.trim()
-      || source.diffContentText?.trim()
-      || source.fallbackAfterText?.trim()
-      || source.fallbackAfterContentJson,
-    )
-    // Heartbeats keep baseline contentJson frozen — while streaming, always
-    // prefer progressive section_html so pane/stack match the chat preview.
-    const useProgressiveAfter =
-      !useSectionScope
-      && Boolean(afterHtml)
-      && (source.streaming === true || !hasFullAfter)
-    if (!hasBefore && !useProgressiveAfter && !hasFullAfter) return null
+    const liveAfterJson = source.fallbackAfterContentJson ?? null
+    const liveAfterText = source.fallbackAfterText?.trim() || null
+    const hasLiveAfter = Boolean(liveAfterJson || liveAfterText)
+    if (!hasBefore && !hasLiveAfter) return null
     return {
-      beforeText: useSectionScope ? beforeHtml : source.beforeContentText,
-      beforeContentJson: useSectionScope ? null : source.beforeContentJson,
-      // Prefer full after body when section scope is incomplete — a lone
-      // sectionHtml vs full before invents huge −N counters in chat/history.
-      afterText: useSectionScope || useProgressiveAfter
-        ? afterHtml
-        : (
-          source.diffContentText
-          || source.contentText
-          || source.fallbackAfterText
-          || afterHtml
-        ),
-      afterContentJson: useSectionScope || useProgressiveAfter
-        ? null
-        : (source.contentJson ?? source.fallbackAfterContentJson ?? null),
-      beforeHtml: useSectionScope ? beforeHtml : null,
-      afterHtml: useSectionScope || useProgressiveAfter ? afterHtml : null,
+      beforeText: source.beforeContentText,
+      beforeContentJson: source.beforeContentJson,
+      afterText: liveAfterText,
+      afterContentJson: liveAfterJson,
+      beforeHtml: null,
+      afterHtml: null,
       baselineContentJson: source.baselineContentJson ?? source.beforeContentJson,
       baselineContentText: source.baselineContentText ?? source.beforeContentText,
     }
   }
 
-  if (!hasBefore) return null
+  if (!hasBefore && !hasPersistedAfterBody(source)) return null
 
   if (source.phase === "saved" || !source.isBusy) {
     return {

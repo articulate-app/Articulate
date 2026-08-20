@@ -23,6 +23,7 @@ import {
 import type { TaskArtifact } from "../../app/lib/artifacts/artifact-types"
 import { isHtmlEmailArtifact } from "./artifact-html-document"
 import { ArtifactHtmlDocumentView } from "./artifact-html-document-view"
+import { useMirroredArtifactBody } from "./use-mirrored-artifact-body"
 
 const CHAT_PREVIEW_MAX_SEGMENT_CHARS = 480
 /** One preview card per artifact per run — segment split was stacking same-title cards. */
@@ -127,7 +128,7 @@ function SegmentPreviewCard({
         <PreviewDiffCharStats added={segment.addedChars} removed={segment.removedChars} />
         <PreviewStatusPill phase={preview.phase} isLive={isLive} />
       </div>
-      <div className="max-h-40 w-full max-w-full min-w-0 overflow-x-hidden overflow-y-auto border-t border-border/70 px-3 pb-2 pt-1.5 sm:px-4">
+      <div className="max-h-72 w-full max-w-full min-w-0 overflow-x-hidden overflow-y-auto border-t border-border/70 px-3 pb-2 pt-1.5 sm:px-4">
         <ArtifactRichDiffBody
           prebuiltHtml={segment.html}
           compact
@@ -232,7 +233,8 @@ export type ArtifactLivePreviewCardsProps = {
 }
 
 /**
- * Chat preview: small rich track-change segments from the shared HTML↔HTML resolver.
+ * Chat preview mirrors the live artifact (same body as the pane).
+ * Compact track-change only after the real document actually changed.
  */
 export function ArtifactLivePreviewCards({
   preview,
@@ -240,6 +242,10 @@ export function ArtifactLivePreviewCards({
   onOpenArtifact,
 }: ArtifactLivePreviewCardsProps) {
   const isBusy = preview.phase !== "saved" && preview.phase !== "failed"
+  const live = useMirroredArtifactBody({
+    artifactId: preview.artifactId,
+    enabled: isBusy,
+  })
 
   const sides = useMemo(() => {
     const input = resolveArtifactPreviewChangeInput({
@@ -250,9 +256,8 @@ export function ArtifactLivePreviewCards({
       contentText: preview.contentText,
       contentJson: preview.contentJson,
       diffContentText: preview.diffContentText,
-      sectionHtml: preview.sectionHtml,
-      sectionBeforeHtml: preview.sectionBeforeHtml,
-      streamSnippet: preview.streamSnippet,
+      fallbackAfterText: live.contentText ?? live.html,
+      fallbackAfterContentJson: live.contentJson,
       baselineContentJson: preview.beforeContentJson,
       baselineContentText: preview.beforeContentText,
     })
@@ -260,8 +265,10 @@ export function ArtifactLivePreviewCards({
       return resolveArtifactChangeSides({
         beforeText: preview.beforeContentText,
         beforeContentJson: preview.beforeContentJson,
-        afterText: preview.diffContentText || preview.contentText,
-        afterContentJson: preview.contentJson,
+        afterText: isBusy
+          ? (live.contentText ?? live.html)
+          : (preview.diffContentText || preview.contentText),
+        afterContentJson: isBusy ? live.contentJson : preview.contentJson,
         baselineContentJson: preview.beforeContentJson,
         baselineContentText: preview.beforeContentText,
       })
@@ -269,23 +276,21 @@ export function ArtifactLivePreviewCards({
     return resolveArtifactChangeSides(input)
   }, [
     isBusy,
+    live.contentJson,
+    live.contentText,
+    live.html,
     preview.beforeContentJson,
     preview.beforeContentText,
     preview.contentJson,
     preview.contentText,
     preview.diffContentText,
     preview.phase,
-    preview.sectionBeforeHtml,
-    preview.sectionHtml,
-    preview.streamSnippet,
   ])
 
   const segments = useMemo(() => {
     if (!sides.hasChanges) return []
     const changedOnly = sides.trackChangesHtmlChangedOnly?.trim() || ""
     const fullTrack = sides.trackChangesHtml?.trim() || ""
-    // Prefer a single combined changed-only card; if that is empty while stats
-    // claim edits, fall back to the full track or after HTML so the body is never blank.
     const html =
       (changedOnly && changedOnly !== "<p></p>" ? changedOnly : "")
       || (fullTrack && fullTrack !== "<p></p>" ? fullTrack : "")
@@ -320,19 +325,8 @@ export function ArtifactLivePreviewCards({
   }
 
   if (isBusy) {
-    // Prefer progressive stream body over the empty pre-edit baseline so creates
-    // show content as it generates instead of "Editing artifact…".
-    const liveHtml =
-      preview.sectionHtml?.trim()
-      || (preview.streamSnippet?.trim()
-        ? snippetToPreviewHtml(preview.streamSnippet)
-        : null)
-      || (preview.contentText?.trim()
-        ? snippetToPreviewHtml(preview.contentText)
-        : null)
-      || null
     const baselineHtml =
-      liveHtml
+      live.html
       || extractPrimaryArtifactHtml(preview.beforeContentJson)
       || (preview.beforeContentText?.trim()
         ? snippetToPreviewHtml(preview.beforeContentText)
@@ -354,7 +348,7 @@ export function ArtifactLivePreviewCards({
   const settledHtml =
     extractPrimaryArtifactHtml(preview.contentJson)
     || (preview.contentText?.trim() ? snippetToPreviewHtml(preview.contentText) : null)
-    || (preview.streamSnippet?.trim() ? snippetToPreviewHtml(preview.streamSnippet) : null)
+    || extractPrimaryArtifactHtml(preview.beforeContentJson)
     || (preview.diffContentText?.trim() ? snippetToPreviewHtml(preview.diffContentText) : null)
     || "<p><em>Empty artifact</em></p>"
 

@@ -344,21 +344,21 @@ const TOOL_TRACE_COPY: Record<
   },
   ai_list_project_artifacts: {
     category: "discovery",
-    started: "Listing project artifacts…",
-    completed: "Finished listing project artifacts.",
-    failed: "Artifact listing failed.",
+    started: "Listing project documents…",
+    completed: "Finished listing project documents.",
+    failed: "Could not list project documents.",
   },
   ai_list_task_artifacts: {
     category: "discovery",
-    started: "Listing task artifacts…",
-    completed: "Finished listing task artifacts.",
-    failed: "Artifact listing failed.",
+    started: "Listing task documents…",
+    completed: "Finished listing task documents.",
+    failed: "Could not list task documents.",
   },
   ai_read_artifact: {
     category: "discovery",
-    started: "Reading artifact…",
-    completed: "Finished reading artifact.",
-    failed: "Could not read artifact.",
+    started: "Reading the document…",
+    completed: "Finished reading the document.",
+    failed: "Could not read the document.",
   },
   read_public_webpage: {
     category: "discovery",
@@ -374,9 +374,9 @@ const TOOL_TRACE_COPY: Record<
   },
   ai_start_artifact_build: {
     category: "generation",
-    started: "Starting artifact build…",
-    completed: "Artifact build started.",
-    failed: "Artifact build failed to start.",
+    started: "Updating the document…",
+    completed: "The document update is underway.",
+    failed: "Could not start the document update.",
   },
   ai_update_task_fields: {
     category: "mutation",
@@ -430,6 +430,20 @@ function humanizeToolName(toolName: string): string {
   return toolName.replace(/^ai_/, "").replace(/_/g, " ")
 }
 
+function userFacingTraceFailure(value: string | null | undefined): string {
+  const text = String(value ?? "").trim()
+  if (/revision_conflict|expected_text_mismatch/i.test(text)) {
+    return "The document changed while this update was being applied. Nothing was overwritten."
+  }
+  if (/editorial_title_required/i.test(text)) {
+    return "Could not start the update because the document title was missing."
+  }
+  if (!text || /work unit failed|artifact_|ai_start_/i.test(text)) {
+    return "The update could not be applied."
+  }
+  return text
+}
+
 function toolStatusTraceText(
   toolName: string,
   phase: AiExecutionTracePhase,
@@ -441,7 +455,13 @@ function toolStatusTraceText(
     if (phase === "completed") return known.completed
     return known.started
   }
-  if (fallbackText) return fallbackText
+  const usableFallback =
+    fallbackText
+    && !/^[a-z0-9_]+(?: failed\.?)?$/i.test(fallbackText)
+    && !/ai_start_|Finished ai_/i.test(fallbackText)
+      ? fallbackText
+      : null
+  if (usableFallback) return usableFallback
   const pretty = humanizeToolName(toolName)
   if (phase === "failed") return `${pretty} failed.`
   if (phase === "completed") return `Finished ${pretty}.`
@@ -1027,11 +1047,15 @@ export function mapBuildEventToExecutionTraceSteps(
     || normalizeBuildEventType(eventType) === "build.failed"
   ) {
     // Same step_id as failed repair so timeline does not duplicate failure cards.
-    const error =
+    const errorCode =
+      toTrimmedString(payload.error_code)
+      ?? toTrimmedString(payload.code)
+    const rawError =
       toTrimmedString(payload.error_message)
       ?? toTrimmedString(payload.error)
       ?? toTrimmedString(payload.message)
-      ?? "Work unit failed"
+      ?? errorCode
+    const error = userFacingTraceFailure(rawError)
     return [
       base({
         stepId: `${unitId}:failed`,

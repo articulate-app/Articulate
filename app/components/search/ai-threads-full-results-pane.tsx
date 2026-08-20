@@ -57,6 +57,7 @@ export function AiThreadsFullResultsPane({
   searchQuery = "",
   embedInParentScroll = false,
   scrollRootRef = null,
+  scrollClassName,
 }: {
   onResultSelect: (item: GlobalSearchDocument) => void
   viewScope: string
@@ -64,6 +65,7 @@ export function AiThreadsFullResultsPane({
   searchQuery?: string
   embedInParentScroll?: boolean
   scrollRootRef?: RefObject<HTMLElement | null> | null
+  scrollClassName?: string
 }) {
   const { threads, isLoading, isError } = useThreads()
   const localScrollContainerRef = useRef<HTMLDivElement | null>(null)
@@ -143,5 +145,9 @@ export function AiThreadsFullResultsPane({
   if (embedInParentScroll) {
     return <div className="min-w-0">{body}</div>
   }
-  return <ObjectPaneScrollShell scrollRef={localScrollContainerRef}>{body}</ObjectPaneScrollShell>
+  return (
+    <ObjectPaneScrollShell scrollRef={localScrollContainerRef} className={scrollClassName}>
+      {body}
+    </ObjectPaneScrollShell>
+  )
 }

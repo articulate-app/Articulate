@@ -32,6 +32,7 @@ export function canAutosaveArtifactSnapshot(collaborative: boolean): boolean {
   return collaborative !== true
 }
 
-export function shouldLockArtifactDuringAiGeneration(collaborative: boolean): boolean {
-  return collaborative !== true
+/** Manual editing of the current document is never locked — including during AI. */
+export function shouldLockArtifactDuringAiGeneration(_collaborative: boolean): boolean {
+  return false
 }

@@ -12,6 +12,11 @@ import {
   getCollaborativeTipTapSchema,
   TIPTAP_COLLAB_SCHEMA_VERSION,
 } from "./tiptap-collab-schema"
+import {
+  editorialPlainText,
+  hasLeftoverMarkdown,
+  normalizeLeftoverMarkdownHtml,
+} from "./tiptap-json-to-yxml"
 
 export { TIPTAP_COLLAB_SCHEMA_VERSION }
 
@@ -44,7 +49,10 @@ export function extractArtifactSeedHtml(contentJson: unknown): string | null {
 }
 
 export function htmlToTipTapJson(html: string): ArtifactTipTapDoc {
-  const json = generateJSON(html, getCollaborativeTipTapExtensions()) as ArtifactTipTapDoc
+  const json = generateJSON(
+    normalizeLeftoverMarkdownHtml(html),
+    getCollaborativeTipTapExtensions(),
+  ) as ArtifactTipTapDoc
   if (json?.type !== "doc") {
     return { type: "doc", content: [{ type: "paragraph" }] }
   }
@@ -100,6 +108,58 @@ export function encodeYDocSnapshot(document: Y.Doc): {
     snapshot: Y.encodeStateAsUpdate(document),
     stateVector: Y.encodeStateVector(document),
   }
+}
+
+export function repairLeftoverMarkdownYDoc(document: Y.Doc, origin = "repair:markdown"): boolean {
+  const html = yDocToHtml(document)
+  if (!hasLeftoverMarkdown(html)) return false
+  const next = htmlToTipTapJson(html)
+  replaceYDocContent(document, next, origin)
+  return true
+}
+
+function jsonHasLinkMark(node: JSONContent | null | undefined): boolean {
+  if (!node) return false
+  if (node.type === "text" && Array.isArray(node.marks) && node.marks.some((mark) => mark.type === "link")) {
+    return true
+  }
+  return (node.content ?? []).some((child) => jsonHasLinkMark(child))
+}
+
+function jsonHasLiteralAnchor(node: JSONContent | null | undefined): boolean {
+  if (!node) return false
+  if (node.type === "text" && /<a\b[^>]*href\s*=/i.test(String(node.text ?? ""))) return true
+  return (node.content ?? []).some((child) => jsonHasLiteralAnchor(child))
+}
+
+function unescapeEscapedAnchors(html: string): string {
+  return String(html ?? "").replace(
+    /&lt;a([\s\S]*?)&gt;([\s\S]*?)&lt;\/a&gt;/gi,
+    (_match, attrs, text) => {
+      const decoded = String(attrs ?? "")
+        .replace(/&quot;/g, '"')
+        .replace(/&#39;/g, "'")
+        .replace(/&amp;/g, "&")
+      return `<a${decoded}>${text}</a>`
+    },
+  )
+}
+
+/**
+ * Promote leftover `<a href>` strings (or escaped `&lt;a href`) into TipTap
+ * link marks without changing editorial text.
+ */
+export function repairLiteralHtmlAnchorsYDoc(document: Y.Doc, origin = "repair:html-anchors"): boolean {
+  const json = yDocToTipTapJson(document)
+  const html = yDocToHtml(document)
+  if (!jsonHasLiteralAnchor(json) && !/&lt;a\b[^&]*href/i.test(html)) return false
+  const next = htmlToTipTapJson(unescapeEscapedAnchors(html))
+  if (!jsonHasLinkMark(next)) return false
+  if (editorialPlainText(yDocToPlainText(document)) !== editorialPlainText(tipTapJsonToPlainText(next))) {
+    return false
+  }
+  replaceYDocContent(document, next, origin)
+  return true
 }
 
 export function replaceYDocContent(

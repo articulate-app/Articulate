@@ -14,6 +14,7 @@ type ComponentOutputReadonlyBodyProps = {
   toolbarId: string
   placeholder?: string
   className?: string
+  editorWrapperClassName?: string
   fromAiChat?: boolean
 }
 
@@ -24,6 +25,7 @@ export function ComponentOutputReadonlyBody({
   toolbarId,
   placeholder = "Add output...",
   className,
+  editorWrapperClassName,
   fromAiChat = false,
 }: ComponentOutputReadonlyBodyProps) {
   const value = useMemo(() => html || "<p></p>", [html])
@@ -44,7 +46,7 @@ export function ComponentOutputReadonlyBody({
         autoGrow
         fontSize={COMPONENT_OUTPUT_FONT_SIZE_PX}
         placeholder={placeholder}
-        editorWrapperClassName={COMPONENT_FIELD_TEXTAREA_CLASS}
+        editorWrapperClassName={editorWrapperClassName ?? COMPONENT_FIELD_TEXTAREA_CLASS}
               flatSurface
         disableInlineMediaControls
         highlightTerms={highlightTerms}

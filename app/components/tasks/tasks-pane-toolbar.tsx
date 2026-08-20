@@ -34,6 +34,8 @@ import { PANE_CHROME_ICON_BUTTON_CLASS, PANE_CHROME_ICON_CLASS, TASK_DETAILS_HEA
 import { IconTooltip } from "../ui/icon-tooltip"
 import { SplitPaneViewDropdown } from "./split-pane-view-dropdown"
 import { TasksPaneMoreMenu } from "./tasks-pane-more-menu"
+import { useOptionalToolbarCollapse } from "./use-optional-toolbar-collapse"
+import { useArtifactDeletedStore } from "../../store/artifact-deleted-store"
 
 export type MainViewMode = "list" | "calendar" | "kanban"
 
@@ -309,6 +311,8 @@ export function TasksPaneToolbar(props: TasksPaneToolbarProps) {
   const objectSwitcherRowRef = useRef<HTMLDivElement | null>(null)
   const rightClusterRef = useRef<HTMLDivElement | null>(null)
   const optionalClusterRef = useRef<HTMLDivElement | null>(null)
+  const optionsRowFit = useOptionalToolbarCollapse(`${paneFitKey}-options`)
+  const topRowFit = useOptionalToolbarCollapse(`${paneFitKey}-top`)
   const [fit, setFit] = useState<TasksToolbarFitSnapshot>(defaultTasksToolbarFit)
   const placementNotifyRef = useRef<string | null>(null)
   // Available horizontal space for the object switcher.
@@ -601,7 +605,18 @@ export function TasksPaneToolbar(props: TasksPaneToolbarProps) {
       </DropdownMenuItem>
     ) : null
 
+  const showArtifactsDeletedMenu = leftObject === "artifacts" && !minimalMode
+  const artifactsDeletedItem = showArtifactsDeletedMenu ? (
+    <DropdownMenuItem
+      key="artifacts-deleted"
+      onSelect={() => useArtifactDeletedStore.getState().open({})}
+    >
+      Deleted
+    </DropdownMenuItem>
+  ) : null
+
   const overflowMenuBody = useMemo(() => {
+    if (showArtifactsDeletedMenu) return artifactsDeletedItem
     if (view === "calendar" && calendarOverflowMenu) {
       return (
         <>
@@ -620,7 +635,15 @@ export function TasksPaneToolbar(props: TasksPaneToolbarProps) {
     }
     if (view === "list") return <>{listOverflowNodes}</>
     return null
-  }, [view, calendarOverflowMenu, kanbanOverflowMenu, listOverflowNodes, multiselectOverflowItem])
+  }, [
+    showArtifactsDeletedMenu,
+    artifactsDeletedItem,
+    view,
+    calendarOverflowMenu,
+    kanbanOverflowMenu,
+    listOverflowNodes,
+    multiselectOverflowItem,
+  ])
 
   const showMoreTrigger =
     view === "list" || (view === "kanban" && showKanbanMore) || (view === "calendar" && showCalendarMore)
@@ -630,10 +653,19 @@ export function TasksPaneToolbar(props: TasksPaneToolbarProps) {
   const isMobileSplitCompact = compactMode === "mobile-split-bottom"
   const canShowTaskControls = !minimalMode && isTaskRoute
   const canShowSearch = !minimalMode && !isMobileSplitCompact
+  const showObjectOptionsRow =
+    isTopLikePane &&
+    !isMobileSplitCompact &&
+    !isInlineSearchOpen &&
+    !minimalMode &&
+    (canShowTaskControls || canShowSearch)
+  const chromeCollapsed = showObjectOptionsRow
+    ? optionsRowFit.optionalCollapsed
+    : topRowFit.optionalCollapsed
   const showMoreMenu =
     isMobileSplitCompact
-      ? hasRenderableOverflow
-      : showMoreTrigger && hasRenderableOverflow
+      ? hasRenderableOverflow || chromeCollapsed || showArtifactsDeletedMenu
+      : (showMoreTrigger && hasRenderableOverflow) || chromeCollapsed || showArtifactsDeletedMenu
 
   const searchPlaceholder =
     leftObject === "projects"
@@ -856,14 +888,115 @@ export function TasksPaneToolbar(props: TasksPaneToolbarProps) {
     </div>
   ) : null
 
+  const chromeOverflowItems = chromeCollapsed ? (
+    <>
+      {canShowTaskControls ? (
+        <DropdownMenuSub>
+          <DropdownMenuSubTrigger className="gap-2">
+            <span className="min-w-0 truncate">View</span>
+            <OverflowMenuValueChevron value={paneLabel} />
+          </DropdownMenuSubTrigger>
+          <DropdownMenuSubContent className="min-w-[220px]">
+            {isTopLikePane ? (
+              <>
+                <DropdownMenuItem onClick={() => handlePrimaryViewChange("list")}>
+                  <List className="mr-2 h-4 w-4" />
+                  List
+                </DropdownMenuItem>
+                <DropdownMenuItem onClick={() => handlePrimaryViewChange("calendar")}>
+                  <Calendar className="mr-2 h-4 w-4" />
+                  Calendar
+                </DropdownMenuItem>
+                <DropdownMenuItem onClick={() => handlePrimaryViewChange("kanban")}>
+                  <LayoutGrid className="mr-2 h-4 w-4" />
+                  Kanban
+                </DropdownMenuItem>
+                <DropdownMenuSeparator />
+                <DropdownMenuSub>
+                  <DropdownMenuSubTrigger className="gap-2">
+                    Split screen
+                    <ChevronRight className="ml-auto h-4 w-4 shrink-0 opacity-60" />
+                  </DropdownMenuSubTrigger>
+                  <DropdownMenuSubContent className="min-w-[160px]">
+                    <DropdownMenuItem
+                      onClick={() => applyViewState({ isSplit: true, secondaryView: "list" })}
+                      disabled={primaryView === "list"}
+                    >
+                      List
+                    </DropdownMenuItem>
+                    <DropdownMenuItem
+                      onClick={() => applyViewState({ isSplit: true, secondaryView: "kanban" })}
+                      disabled={primaryView === "kanban"}
+                    >
+                      Kanban
+                    </DropdownMenuItem>
+                    <DropdownMenuItem
+                      onClick={() => applyViewState({ isSplit: true, secondaryView: "calendar" })}
+                      disabled={primaryView === "calendar"}
+                    >
+                      Calendar
+                    </DropdownMenuItem>
+                  </DropdownMenuSubContent>
+                </DropdownMenuSub>
+              </>
+            ) : (
+              <>
+                <DropdownMenuItem
+                  onClick={() => handleSecondaryViewChange("list")}
+                  disabled={primaryView === "list"}
+                >
+                  <List className="mr-2 h-4 w-4" />
+                  List
+                </DropdownMenuItem>
+                <DropdownMenuItem
+                  onClick={() => handleSecondaryViewChange("calendar")}
+                  disabled={primaryView === "calendar"}
+                >
+                  <Calendar className="mr-2 h-4 w-4" />
+                  Calendar
+                </DropdownMenuItem>
+                <DropdownMenuItem
+                  onClick={() => handleSecondaryViewChange("kanban")}
+                  disabled={primaryView === "kanban"}
+                >
+                  <LayoutGrid className="mr-2 h-4 w-4" />
+                  Kanban
+                </DropdownMenuItem>
+              </>
+            )}
+          </DropdownMenuSubContent>
+        </DropdownMenuSub>
+      ) : null}
+      {canShowTaskControls ? (
+        <FilterCascadingDropdown
+          editFields={editFields}
+          filterOptions={filterOptions}
+          filters={filters}
+          setFilters={setFilters}
+          router={router}
+          pathname={pathname}
+          params={new URLSearchParams(params.toString())}
+          variant="submenu"
+        />
+      ) : null}
+      {canShowSearch ? (
+        <DropdownMenuItem onSelect={() => setIsInlineSearchOpen(true)}>
+          <Search className="mr-2 h-4 w-4" />
+          Search
+        </DropdownMenuItem>
+      ) : null}
+      {overflowMenuBody ? <DropdownMenuSeparator /> : null}
+    </>
+  ) : null
+
   const objectOptionsControls = (canShowTaskControls || canShowSearch) && !isInlineSearchOpen ? (
     <div
       ref={rightClusterRef}
       className={cn("flex shrink-0 items-center gap-0", isMobileSplitCompact && "ml-auto")}
     >
-      {canShowTaskControls ? viewModeControl : null}
-      {canShowTaskControls ? filterControl : null}
-      {canShowSearch ? (
+      {!chromeCollapsed && canShowTaskControls ? viewModeControl : null}
+      {!chromeCollapsed && canShowTaskControls ? filterControl : null}
+      {!chromeCollapsed && canShowSearch ? (
         <IconTooltip label="Search">
           <button
             type="button"
@@ -875,24 +1008,28 @@ export function TasksPaneToolbar(props: TasksPaneToolbarProps) {
           </button>
         </IconTooltip>
       ) : null}
-      {canShowTaskControls ? (
+      {canShowTaskControls || chromeCollapsed || showArtifactsDeletedMenu ? (
         <TasksPaneMoreMenu
-          visible={showMoreMenu || Boolean(canShowTaskControls && view === "list")}
-          ariaLabel={isMobileSplitCompact ? "More split options" : view === "list" ? "Sort and group" : "More actions"}
-          triggerIcon={view === "list" ? "sort" : "more"}
+          visible={showMoreMenu || Boolean(canShowTaskControls && view === "list") || chromeCollapsed || showArtifactsDeletedMenu}
+          ariaLabel={
+            showArtifactsDeletedMenu
+              ? "More actions"
+              : chromeCollapsed
+              ? "More actions"
+              : isMobileSplitCompact
+                ? "More split options"
+                : view === "list"
+                  ? "Sort and group"
+                  : "More actions"
+          }
+          triggerIcon={showArtifactsDeletedMenu || chromeCollapsed || view !== "list" ? "more" : "sort"}
         >
+          {chromeOverflowItems}
           {overflowMenuBody}
         </TasksPaneMoreMenu>
       ) : null}
     </div>
   ) : null
-
-  const showObjectOptionsRow =
-    isTopLikePane &&
-    !isMobileSplitCompact &&
-    !isInlineSearchOpen &&
-    !minimalMode &&
-    Boolean(objectOptionsControls)
 
   const showTopSwitcherRow =
     showObjectSwitcher || isInlineSearchOpen || (showPaneChrome && !showObjectOptionsRow)
@@ -931,7 +1068,14 @@ export function TasksPaneToolbar(props: TasksPaneToolbarProps) {
             }
           />
         ) : (
-          <>
+          <div
+            ref={!showObjectOptionsRow ? topRowFit.containerRef : undefined}
+            className="flex min-w-0 flex-1 overflow-hidden"
+          >
+            <div
+              ref={!showObjectOptionsRow ? topRowFit.measureRowRef : undefined}
+              className="flex min-w-0 w-full flex-nowrap items-center gap-1"
+            >
             {showObjectSwitcher && isTopLikePane && !isMobileSplitCompact ? (
               <div
                 ref={objectSwitcherRowRef}
@@ -954,7 +1098,8 @@ export function TasksPaneToolbar(props: TasksPaneToolbarProps) {
             {!showObjectOptionsRow ? optionalControls : null}
             {!showObjectOptionsRow && !isTopLikePane ? objectOptionsControls : null}
             {isMobileSplitCompact ? objectOptionsControls : null}
-          </>
+            </div>
+          </div>
         )}
         {showPaneChrome ? chromeControls : null}
       </div>
@@ -963,11 +1108,16 @@ export function TasksPaneToolbar(props: TasksPaneToolbarProps) {
       )}
       {showObjectOptionsRow ? (
         <div
+          ref={optionsRowFit.containerRef}
           className={cn(
             TASK_DETAILS_HEADER_ROW_CLASS,
-            "w-full min-w-0 gap-2 border-b border-gray-200/80 pl-4 pr-1.5",
+            "w-full min-w-0 justify-start gap-2 overflow-hidden border-b border-gray-200/80 pl-4 pr-1.5",
           )}
         >
+          <div
+            ref={optionsRowFit.measureRowRef}
+            className="flex h-full min-w-0 w-full flex-nowrap items-center gap-2"
+          >
           <span className="flex h-7 shrink-0 items-center text-sm font-medium leading-none text-gray-900">
             {leftPaneObjectLabel(leftObject)}
           </span>
@@ -978,7 +1128,8 @@ export function TasksPaneToolbar(props: TasksPaneToolbarProps) {
               className="flex shrink-0 flex-nowrap items-center gap-2"
             />
           ) : null}
-          <div className="ml-auto flex min-w-0 items-center">{objectOptionsControls}</div>
+          <div className="ml-auto flex shrink-0 items-center">{objectOptionsControls}</div>
+          </div>
         </div>
       ) : null}
     </div>

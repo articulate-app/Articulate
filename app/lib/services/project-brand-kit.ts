@@ -4,6 +4,7 @@ import { createClientComponentClient } from "@supabase/auth-helpers-nextjs"
 import {
   applyBrandKitDesignFields,
   applyBrandKitOverrides,
+  buildLinkDesignTemplate,
   emptyProjectBrandKit,
   parseProjectBrandKit,
   type PartialBrandKitEffective,
@@ -323,14 +324,26 @@ async function docxFileTextExcerpt(file: File, maxChars = 1200): Promise<string 
   }
 }
 
-async function uploadDesignAssetFile(args: {
-  projectId: number
+export async function uploadDesignAssetFile(args: {
+  projectId?: number | null
   file: File
 }): Promise<{ asset: ProjectDesignTemplateAsset | null; error: Error | null }> {
   const supabase = createClientComponentClient()
   const ext = extensionForUpload(args.file)
-  const storagePath =
-    `projects/${args.projectId}/design-examples/${crypto.randomUUID()}.${ext}`
+  const projectId =
+    typeof args.projectId === "number" && Number.isFinite(args.projectId) && args.projectId > 0
+      ? args.projectId
+      : null
+  let folder = projectId != null ? `projects/${projectId}/design-examples` : null
+  if (!folder) {
+    const { data: actorId } = await supabase.rpc("current_user_id")
+    const userId = Number(actorId)
+    if (!Number.isFinite(userId) || userId <= 0) {
+      return { asset: null, error: new Error("authentication_required") }
+    }
+    folder = `users/${userId}/design-examples`
+  }
+  const storagePath = `${folder}/${crypto.randomUUID()}.${ext}`
 
   const { error: uploadError } = await supabase.storage
     .from(PUBLIC_MEDIA_BUCKET)
@@ -490,46 +503,11 @@ export async function addProjectDesignTemplateLink(args: {
     return { data: args.brandKit, template: null, error: new Error("URL is required") }
   }
 
-  let hostname: string | null = null
-  try {
-    hostname = new URL(url).hostname.replace(/^www\./, "")
-  } catch {
-    /* ignore */
-  }
-
-  const lowerUrl = url.toLowerCase()
-  const looksLikeHtml =
-    lowerUrl.endsWith(".html")
-    || lowerUrl.endsWith(".htm")
-    || lowerUrl.includes(".html?")
-    || lowerUrl.includes(".htm?")
-  const looksLikeDocx =
-    lowerUrl.endsWith(".docx")
-    || lowerUrl.endsWith(".doc")
-    || lowerUrl.includes(".docx?")
-    || lowerUrl.includes(".doc?")
-
-  const template: ProjectDesignTemplate = {
-    id: crypto.randomUUID(),
-    title: args.title?.trim() || hostname || url,
-    notes: args.notes?.trim() || null,
-    assets: [
-      {
-        id: crypto.randomUUID(),
-        media_type: looksLikeHtml ? "html" : looksLikeDocx ? "docx" : "url",
-        title: args.title?.trim() || hostname || url,
-        url,
-        storage_path: null,
-        mime_type: looksLikeHtml
-          ? "text/html"
-          : looksLikeDocx
-            ? "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
-            : null,
-      },
-    ],
-    source_artifact_id: null,
-    created_at: new Date().toISOString(),
-  }
+  const template = buildLinkDesignTemplate({
+    url,
+    title: args.title,
+    notes: args.notes,
+  })
 
   const saved = await saveProjectBrandKitDesign({
     projectId: args.projectId,
@@ -627,6 +605,40 @@ export async function addProjectDesignExampleLink(args: {
 }): Promise<{ data: ProjectBrandKit; example: ProjectDesignTemplate | null; error: Error | null }> {
   const result = await addProjectDesignTemplateLink(args)
   return { data: result.data, example: result.template, error: result.error }
+}
+
+/** Save an existing output as a project Brand kit template. */
+export async function createProjectDesignTemplateFromArtifact(args: {
+  projectId: number
+  artifactId: string
+  title?: string | null
+  notes?: string | null
+}): Promise<{ data: ProjectBrandKit; template: ProjectDesignTemplate | null; error: Error | null }> {
+  const brandKit = await fetchProjectBrandKit(args.projectId)
+  const already = brandKit.design_templates.find(
+    (entry) => entry.source_artifact_id === args.artifactId,
+  )
+  if (already) {
+    return { data: brandKit, template: already, error: null }
+  }
+  const template: ProjectDesignTemplate = {
+    id: crypto.randomUUID(),
+    title: args.title?.trim() || "Untitled template",
+    notes: args.notes?.trim() || "Saved from an output.",
+    assets: [],
+    source_artifact_id: args.artifactId,
+    created_at: new Date().toISOString(),
+  }
+  const saved = await saveProjectBrandKitDesign({
+    projectId: args.projectId,
+    brandKit,
+    designTemplates: [...brandKit.design_templates, template],
+  })
+  return {
+    data: saved.data,
+    template: saved.error ? null : template,
+    error: saved.error,
+  }
 }
 
 /** @deprecated Use removeProjectDesignTemplate */

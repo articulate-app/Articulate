@@ -129,6 +129,7 @@ export async function applyReadyAiProposal(args: {
         conflict: proposalConflictPayload({
           expectedText: args.expectedText,
           currentText: applied.currentText,
+          incomingText: args.patchedHtml.replace(/<[^>]+>/g, " "),
         }),
       },
     })
@@ -178,29 +179,9 @@ export async function applyReadyAiProposal(args: {
     document: ydoc,
     seq,
     changeSource: "ai",
-    summary: "AI proposal applied",
     aiRunId: args.origin.runId,
     aiMessageId: args.origin.messageId,
     aiThreadId: args.origin.threadId,
-  })
-
-  await args.supabase.rpc("artifact_collab_record_change_group_v1", {
-    p_artifact_id: args.artifactId,
-    p_payload: {
-      actor_type: "agent",
-      origin: aiApplyOriginTag(args.origin),
-      summary: "AI proposal applied",
-      target: {
-        proposal_id: args.origin.proposalId ?? null,
-        agent_id: args.origin.agentId ?? null,
-        run_id: args.origin.runId ?? null,
-        message_id: args.origin.messageId ?? null,
-        thread_id: args.origin.threadId ?? null,
-        idempotency_key: args.idempotencyKey,
-      },
-      to_seq: seq,
-      proposal_id: args.origin.proposalId ?? null,
-    },
   })
 
   const completed = await args.supabase.rpc("artifact_collab_complete_proposal_v1", {

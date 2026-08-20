@@ -35,6 +35,7 @@ import {
   SeoLinkSummaryList,
   type SeoLinkSummaryItem,
 } from "../tasks/components/seo-link-summary-list"
+import { TaskOverviewPreviewSection } from "../../app/components/tasks/task-overview-preview-section"
 
 type LinkStatusResult =
   | { kind: "checking" }
@@ -453,47 +454,45 @@ export function ArtifactSeoDock({
 
   if (variant === "inline") {
     return (
-      <div className={cn("space-y-8 border-t border-gray-100 px-4 py-6", className)}>
-        <section className="space-y-2">
-          <h3 className="text-base font-medium text-gray-900">Navigation</h3>
+      <div className={cn("px-4 pb-2", className)}>
+        <TaskOverviewPreviewSection title="Navigation">
           {navList}
-        </section>
-        <section className="space-y-2">
-          <div className="flex flex-wrap items-center gap-2">
-            <h3 className="text-base font-medium text-gray-900">Keywords</h3>
-            {hasBadPrimary || hasAnyBadKeyword ? (
+        </TaskOverviewPreviewSection>
+        <TaskOverviewPreviewSection
+          title="Keywords"
+          headerActions={
+            hasBadPrimary || hasAnyBadKeyword ? (
               <span className="inline-flex items-center gap-1 text-xs text-red-600">
                 <AlertTriangle className="h-3.5 w-3.5" aria-hidden />
                 Needs attention
               </span>
-            ) : null}
-          </div>
+            ) : null
+          }
+        >
           {keywordsPanel}
-        </section>
-        <section className="space-y-2">
-          <div className="flex flex-wrap items-center gap-2">
-            <h3 className="text-base font-medium text-gray-900">Links</h3>
-            {linkIssueCount > 0 ? (
+        </TaskOverviewPreviewSection>
+        <TaskOverviewPreviewSection
+          title="Links"
+          headerActions={
+            linkIssueCount > 0 ? (
               <span className="inline-flex items-center gap-1 text-xs text-red-600">
                 <AlertTriangle className="h-3.5 w-3.5" aria-hidden />
                 {linkIssueCount} issue{linkIssueCount === 1 ? "" : "s"}
               </span>
-            ) : null}
-          </div>
+            ) : null
+          }
+        >
           {linksPanel}
-        </section>
-        <section className="space-y-2">
-          <h3 className="text-base font-medium text-gray-900">Meta info</h3>
+        </TaskOverviewPreviewSection>
+        <TaskOverviewPreviewSection title="Meta info">
           <ArtifactSeoDetailsPanel artifact={detailArtifact} section="meta" readOnly={readOnly} />
-        </section>
-        <section className="space-y-2">
-          <h3 className="text-base font-medium text-gray-900">Prompts</h3>
+        </TaskOverviewPreviewSection>
+        <TaskOverviewPreviewSection title="Prompts">
           <ArtifactSeoDetailsPanel artifact={detailArtifact} section="prompts" readOnly={readOnly} />
-        </section>
-        <section className="space-y-2">
-          <h3 className="text-base font-medium text-gray-900">Image info</h3>
+        </TaskOverviewPreviewSection>
+        <TaskOverviewPreviewSection title="Image info">
           <ArtifactSeoDetailsPanel artifact={detailArtifact} section="images" readOnly={readOnly} />
-        </section>
+        </TaskOverviewPreviewSection>
       </div>
     )
   }

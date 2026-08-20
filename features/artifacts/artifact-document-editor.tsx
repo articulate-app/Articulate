@@ -1,7 +1,14 @@
 "use client"
 
-import React, { useEffect, useMemo, useRef, useState } from "react"
+import React, { useCallback, useEffect, useMemo, useRef, useState } from "react"
 import { cn } from "../../app/lib/utils"
+import {
+  normalizeLeftoverMarkdownHtml,
+  replaceInTipTapDoc,
+  replaceYDocWithTipTapJson,
+  tipTapJsonToPlainText,
+  yXmlToTipTapDoc,
+} from "../../app/lib/collaboration/tiptap-json-to-yxml"
 import { normalizeComponentOutputToHtml } from "../../app/lib/rich-text-normalization"
 import {
   extractArtifactBlocks,
@@ -19,8 +26,9 @@ import {
 } from "./artifact-html-document"
 import { ArtifactHtmlDocumentFromArtifact } from "./artifact-html-document-view"
 import { useArtifactCollaboration } from "../../app/hooks/use-artifact-collaboration"
-import { shouldLockArtifactDuringAiGeneration } from "../../app/lib/collaboration/editor-sync"
 import { ArtifactCollabConflictBanner } from "./artifact-collab-conflict-banner"
+import { parseCollabConflicts } from "../../app/lib/collaboration/collab-conflict"
+import type { CollabConflictChoice } from "../../app/lib/collaboration/collab-conflict"
 
 function htmlToPlainText(html: string): string {
   if (typeof document === "undefined") {
@@ -270,6 +278,8 @@ export type ArtifactDocumentEditorProps = {
   artifact: TaskArtifact
   className?: string
   readOnly?: boolean
+  /** Historical version preview — do not bind the live Y.Doc. */
+  disableCollaboration?: boolean
   /**
    * External TipTap sync key (server/live content or find-replace).
    * Must NOT change on every keystroke — derive from authoritative snapshot, not draft.
@@ -304,6 +314,7 @@ export function ArtifactDocumentEditor({
   artifact,
   className,
   readOnly = false,
+  disableCollaboration = false,
   forceContentKey = null,
   onContentJsonChange,
   onContentTextChange,
@@ -314,9 +325,31 @@ export function ArtifactDocumentEditor({
   onOpenFullscreen,
   hideHtmlToolbar = false,
 }: ArtifactDocumentEditorProps) {
-  const collaboration = useArtifactCollaboration(artifact)
+  const collaboration = useArtifactCollaboration(disableCollaboration ? null : artifact)
   const collaborative = collaboration.enabled && Boolean(collaboration.document)
-  const effectiveReadOnly = shouldLockArtifactDuringAiGeneration(collaborative) ? readOnly : false
+  const effectiveReadOnly = readOnly
+  const collabConflicts = useMemo(
+    () => parseCollabConflicts(collaboration.conflicts as Array<Record<string, unknown>>),
+    [collaboration.conflicts],
+  )
+  const resolveCollabConflict = useCallback(async (id: string, choice: CollabConflictChoice) => {
+    const conflict = collabConflicts.find((row) => row.id === id)
+    const ydoc = collaboration.document
+    if (conflict && ydoc && choice !== "keep" && conflict.incoming) {
+      const live = yXmlToTipTapDoc(ydoc)
+      const liveText = tipTapJsonToPlainText(live)
+      if (liveText.includes(conflict.current)) {
+        const next = choice === "both"
+          ? `${conflict.current} ${conflict.incoming}`.trim()
+          : conflict.incoming
+        const replaced = replaceInTipTapDoc(live, [{ from: conflict.current, to: next }])
+        if (replaced.count > 0) {
+          replaceYDocWithTipTapJson(ydoc, replaced.doc, "conflict-resolve")
+        }
+      }
+    }
+    await collaboration.dismissConflict(id)
+  }, [collabConflicts, collaboration])
   const initialBlocks = useMemo(
     () => extractArtifactBlocks(artifact.content_json),
     [artifact.content_json],
@@ -324,11 +357,13 @@ export function ArtifactDocumentEditor({
 
   const derivedRichHtml = useMemo(() => {
     const fromBlock = singleRichTextHtml(initialBlocks)
-    if (fromBlock) return fromBlock
+    if (fromBlock) return normalizeLeftoverMarkdownHtml(fromBlock)
     if (initialBlocks.length > 0 && !blocksHaveMedia(initialBlocks)) {
-      return blocksToCombinedHtml(initialBlocks)
+      return normalizeLeftoverMarkdownHtml(blocksToCombinedHtml(initialBlocks))
     }
-    return normalizeComponentOutputToHtml(artifact.content_text ?? "", artifact.title) || "<p></p>"
+    return normalizeLeftoverMarkdownHtml(
+      normalizeComponentOutputToHtml(artifact.content_text ?? "", artifact.title) || "<p></p>",
+    )
   }, [artifact.content_text, artifact.title, initialBlocks])
 
   const resolvedForceKey =
@@ -484,6 +519,10 @@ export function ArtifactDocumentEditor({
           collaborationDocument={collaboration.document}
           collaborationAwareness={collaboration.awareness}
           collaborationUser={collaboration.user}
+          collabConflicts={collabConflicts}
+          onResolveCollabConflict={(id) => {
+            void collaboration.dismissConflict(id)
+          }}
           onInsertAttachment={async (file) =>
             uploadArtifactInlineAttachment(artifact.id, file)
           }
@@ -491,11 +530,15 @@ export function ArtifactDocumentEditor({
         {collaborative ? (
           <>
             <ArtifactCollabConflictBanner
-              conflicts={collaboration.conflicts as Array<{
-                id?: string
-                expected_text?: string | null
-                conflict?: { expected_text?: string | null; current_text?: string | null }
-              }>}
+              conflicts={collabConflicts.filter((conflict) => {
+                const haystack = `${htmlForEditor} ${plainText}`
+                return Boolean(conflict.current)
+                  && !haystack.includes(conflict.current)
+                  && !(conflict.expected && haystack.includes(conflict.expected))
+              })}
+              onResolve={(id, choice) => {
+                void resolveCollabConflict(id, choice)
+              }}
             />
             <p className="px-1 pt-1 text-[11px] text-muted-foreground" data-collab-status={collaboration.status}>
               {collaboration.status === "synced"

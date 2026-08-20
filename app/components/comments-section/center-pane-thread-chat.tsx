@@ -7,7 +7,6 @@ import { Plus } from "lucide-react"
 import { ThreadedRealtimeChat } from "../threaded-realtime-chat"
 import { AddCommentInput } from "./add-comment-input"
 import { ThreadParticipantsInline } from "./thread-participants-inline"
-import { UserAvatar } from "../UserAvatar"
 import { Button } from "../ui/button"
 import { getImageUrl } from "../../lib/public-media"
 import { useCurrentUserStore } from "../../store/current-user"
@@ -178,13 +177,7 @@ export function CenterPaneThreadChat({
 
       <div className="shrink-0 border-t border-gray-200 bg-white px-4 py-3">
         <div className={CHAT_CONTENT_COLUMN_CLASS}>
-        <div className="mb-2 flex items-start gap-2">
-          <UserAvatar
-            name={currentUserName}
-            photoUrl={currentUserAvatarUrl}
-            size="sm"
-            className="mt-3"
-          />
+        <div className="mb-2 flex items-start">
           <div className="min-w-0 flex-1">
             <AddCommentInput
               key={`center-thread-input-${composerThreadId ?? "new"}-${replyTo?.id ?? "none"}`}

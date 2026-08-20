@@ -57,11 +57,11 @@ export type AiBuildArtifactPreviewEntry = {
   streaming: boolean
   /** Approximate streamed chars for progress UI (body kept on baseline until save). */
   streamChars: number | null
-  /** Compact live snippet (section/plain) for chat preview while generating. */
+  /** Compact live snippet from the worker. Chat/pane must not treat this as the document. */
   streamSnippet: string | null
   /** Heading of the section being edited, when the worker runs in section mode. */
   targetSectionHeading: string | null
-  /** HTML for the edited section only (chat preview — never the full article). */
+  /** Unpersisted worker draft. Chat/pane mirror the live artifact instead. */
   sectionHtml: string | null
   sectionBeforeHtml: string | null
   threadId: string | null
@@ -578,7 +578,7 @@ export const useAiBuildArtifactPreviewStore = create<AiBuildArtifactPreviewState
           streamChars: null,
           errorMessage:
             phase === "failed"
-              ? (errorMessage?.trim() || entry.errorMessage || "Work unit failed")
+              ? (errorMessage?.trim() || entry.errorMessage || "The update could not be applied.")
               : entry.errorMessage,
           // Prefer authoritative body when present; otherwise keep baseline so UI isn't blank.
           contentText: entry.contentText || entry.beforeContentText || "",

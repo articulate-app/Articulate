@@ -1,9 +1,12 @@
 "use client"
 
 import { useEffect, useMemo, useRef, type ReactNode, type RefObject } from "react"
+import { useSearchParams } from "next/navigation"
 import { keepPreviousData, useInfiniteQuery, useQuery } from "@tanstack/react-query"
 import { Loader2 } from "lucide-react"
 import { cn } from "@/lib/utils"
+import { useCurrentUserStore } from "../../store/current-user"
+import { filterProjectsByScope, type ProjectListScope } from "../../lib/project-list-scope"
 import {
   getGlobalSearchEntityLabel,
   type GlobalSearchDocument,
@@ -42,10 +45,11 @@ function ArtifactDirectoryHeader({ embedInParentScroll }: { embedInParentScroll:
   return (
     <div
       className={cn(
-        "sticky top-0 z-10 flex min-w-0 items-center gap-2 bg-white py-1.5 text-sm font-medium text-gray-500",
+        "sticky top-0 z-10 flex min-w-0 items-center gap-2.5 bg-white py-1.5 text-sm font-medium text-gray-500",
         embedInParentScroll ? "px-1" : "border-b border-gray-100 px-3",
       )}
     >
+      <span className="w-5 shrink-0" aria-hidden />
       <span className="min-w-0 flex-1 truncate">Title</span>
       <span className="artifact-directory-col-project">Project</span>
       <span className="artifact-directory-col-created">Created</span>
@@ -65,6 +69,7 @@ function ArtifactDirectorySkeletonRows({ embedInParentScroll }: { embedInParentS
             embedInParentScroll ? "px-1" : "px-3",
           )}
         >
+          <span className="h-5 w-5 shrink-0 animate-pulse rounded-md bg-gray-100" />
           <span className="h-3.5 min-w-0 flex-1 animate-pulse rounded bg-gray-100" />
           <span className="artifact-directory-col-project h-3.5 animate-pulse rounded bg-gray-100" />
           <span className="artifact-directory-col-created h-3.5 animate-pulse rounded bg-gray-100" />
@@ -120,6 +125,7 @@ export function GlobalSearchFullResultsPane({
   selectedEntityId = null,
   embedInParentScroll = false,
   scrollRootRef = null,
+  comfortableRows = false,
 }: {
   query: string
   activeTab: GlobalSearchItemEntityType
@@ -143,13 +149,22 @@ export function GlobalSearchFullResultsPane({
   embedInParentScroll?: boolean
   /** Scroll root for infinite-scroll IntersectionObserver when embedded. */
   scrollRootRef?: RefObject<HTMLElement | null> | null
+  /** Mobile object lists: stacked name + meta, larger type visuals. */
+  comfortableRows?: boolean
 }) {
   const sentinelRef = useRef<HTMLDivElement | null>(null)
   const localScrollContainerRef = useRef<HTMLDivElement | null>(null)
   const scrollContainerRef = scrollRootRef ?? localScrollContainerRef
+  const searchParams = useSearchParams()
+  const currentUserId = useCurrentUserStore((s) => s.publicUserId)
+  const projectScope: ProjectListScope = (() => {
+    const raw = searchParams.get("projectsTab")
+    return raw === "created" || raw === "shared" ? raw : "all"
+  })()
   const shouldFetchRemote =
     activeTab !== "task" && activeTab !== "mention" && activeTab !== "ai_thread"
   const usesClientFilter = LEFT_PANE_CLIENT_FILTER_TYPES.has(activeTab)
+  const isDirectoryTab = directoryMode && (activeTab === "project" || activeTab === "user")
   const abortRetryAttemptsRef = useRef(0)
 
   const fullResultsQuery = useInfiniteQuery({
@@ -177,6 +192,8 @@ export function GlobalSearchFullResultsPane({
       return nextOffset
     },
     enabled: shouldFetchRemote,
+    staleTime: isDirectoryTab ? 60_000 : 0,
+    placeholderData: keepPreviousData,
   })
 
   const directoryRecencyQuery = useQuery({
@@ -244,10 +261,11 @@ export function GlobalSearchFullResultsPane({
   }, [viewScope])
 
   const remoteItems = fullResultsQuery.data?.pages.flat() ?? []
-  const items = useMemo(
-    () => (usesClientFilter ? filterLeftPaneListItems(remoteItems, query) : remoteItems),
-    [query, remoteItems, usesClientFilter],
-  )
+  const items = useMemo(() => {
+    const filtered = usesClientFilter ? filterLeftPaneListItems(remoteItems, query) : remoteItems
+    if (activeTab !== "project") return filtered
+    return filterProjectsByScope(filtered, projectScope, currentUserId)
+  }, [activeTab, currentUserId, projectScope, query, remoteItems, usesClientFilter])
 
   const directoryUserIds = useMemo(() => {
     if (!directoryMode || activeTab !== "user") return [] as number[]
@@ -297,7 +315,12 @@ export function GlobalSearchFullResultsPane({
   const hasAbortError = isAbortError(fetchError)
   const isArtifactList = activeTab === "artifact"
   const showArtifactSkeleton =
-    isArtifactList && items.length === 0 && (fullResultsQuery.isPending || fullResultsQuery.isLoading || hasAbortError)
+    isArtifactList &&
+    items.length === 0 &&
+    (fullResultsQuery.isPending ||
+      fullResultsQuery.isLoading ||
+      fullResultsQuery.isFetching ||
+      hasAbortError)
 
   useEffect(() => {
     if (!hasAbortError) return
@@ -315,6 +338,7 @@ export function GlobalSearchFullResultsPane({
         filterQuery={query}
         embedInParentScroll={embedInParentScroll}
         scrollRootRef={scrollRootRef}
+        comfortableRows={comfortableRows}
       />
     )
   }
@@ -327,6 +351,7 @@ export function GlobalSearchFullResultsPane({
         searchQuery={query}
         embedInParentScroll={embedInParentScroll}
         scrollRootRef={scrollRootRef}
+        scrollClassName={comfortableRows ? "pb-24" : undefined}
       />
     )
   }
@@ -335,13 +360,14 @@ export function GlobalSearchFullResultsPane({
     <ResultsShell
       embedInParentScroll={embedInParentScroll}
       scrollRef={embedInParentScroll ? undefined : localScrollContainerRef}
+      scrollClassName={comfortableRows ? "pb-24" : undefined}
     >
       {showArtifactSkeleton ? (
         <div className="artifact-directory-list min-w-0 w-full overflow-x-hidden py-1">
           <ArtifactDirectoryHeader embedInParentScroll={embedInParentScroll} />
           <ArtifactDirectorySkeletonRows embedInParentScroll={embedInParentScroll} />
         </div>
-      ) : fullResultsQuery.isLoading ? (
+      ) : fullResultsQuery.isLoading && !isDirectoryTab ? (
         <div className={objectPaneCenteredStateClass()}>
           <Loader2 className="h-4 w-4 animate-spin" />
           Loading {getGlobalSearchEntityLabel(activeTab).toLowerCase()}...
@@ -355,20 +381,24 @@ export function GlobalSearchFullResultsPane({
           No {getGlobalSearchEntityLabel(activeTab).toLowerCase()} results found.
         </div>
       ) : !hasFetched || hasAbortError ? (
-        <div className={objectPaneCenteredStateClass()}>
-          <Loader2 className="h-4 w-4 animate-spin" />
-          Loading {getGlobalSearchEntityLabel(activeTab).toLowerCase()}...
-        </div>
+        isDirectoryTab ? (
+          <div className="flex min-h-full flex-col py-1" />
+        ) : (
+          <div className={objectPaneCenteredStateClass()}>
+            <Loader2 className="h-4 w-4 animate-spin" />
+            Loading {getGlobalSearchEntityLabel(activeTab).toLowerCase()}...
+          </div>
+        )
       ) : (
         <div
           className={cn(
             "flex min-h-full flex-col py-1",
             activeTab === "artifact" ? "artifact-directory-list min-w-0 w-full overflow-x-hidden" : null,
-            directoryMode && !embedInParentScroll ? DIRECTORY_CONTENT_CLASS : null,
+            directoryMode && !embedInParentScroll && !comfortableRows ? DIRECTORY_CONTENT_CLASS : null,
             directoryMode && embedInParentScroll ? "w-full" : null,
           )}
         >
-          {directoryMode && (activeTab === "user" || activeTab === "project") ? (
+          {directoryMode && !comfortableRows && (activeTab === "user" || activeTab === "project") ? (
             <div
               className={cn(
                 "sticky top-0 z-10 flex items-center gap-3 bg-white py-1.5",
@@ -419,6 +449,7 @@ export function GlobalSearchFullResultsPane({
                     key={buildScopedResultKey(viewScope, "list", item, index)}
                     item={item}
                     mode={activeTab === "user" ? "user" : "project"}
+                    layout={comfortableRows ? "stacked" : "columns"}
                     denseInset={embedInParentScroll}
                     recentAtOverride={
                       directoryRecentAtById.get(String(item.entity_id ?? "").trim()) ?? null
@@ -450,6 +481,7 @@ export function GlobalSearchFullResultsPane({
                       denseInset={embedInParentScroll}
                       projectLabelOverride={artifactMeta?.projectName ?? null}
                       createdAtOverride={artifactMeta?.createdAt ?? null}
+                      fileKindOverride={artifactMeta?.fileKind ?? null}
                       isSelected={
                         !!selectedEntityId &&
                         artifactId === String(selectedEntityId).trim()
@@ -484,14 +516,20 @@ export function GlobalSearchFullResultsPane({
 function ResultsShell({
   embedInParentScroll,
   scrollRef,
+  scrollClassName,
   children,
 }: {
   embedInParentScroll: boolean
   scrollRef?: RefObject<HTMLDivElement | null>
+  scrollClassName?: string
   children: ReactNode
 }) {
   if (embedInParentScroll) {
     return <div className="min-w-0 w-full overflow-x-hidden">{children}</div>
   }
-  return <ObjectPaneScrollShell scrollRef={scrollRef}>{children}</ObjectPaneScrollShell>
+  return (
+    <ObjectPaneScrollShell scrollRef={scrollRef} className={scrollClassName}>
+      {children}
+    </ObjectPaneScrollShell>
+  )
 }

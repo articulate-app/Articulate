@@ -1,8 +1,8 @@
 import * as Y from "yjs"
 import { encodeBroadcastUpdate } from "./binary"
 import {
-  COLLAB_REMOTE_ORIGIN,
   applyBufferedBroadcasts,
+  applyCatchUpDocument,
   applyLoadedDocument,
   applyPersistedUpdate,
   createIdempotencyKey,
@@ -14,7 +14,7 @@ import {
 } from "./sync-protocol"
 
 export type ArtifactCollabTransport = {
-  persistUpdate: (update: Uint8Array, idempotencyKey: string) => Promise<PersistUpdateResult>
+  persistUpdate: (update: Uint8Array, idempotencyKey: string, baseSeq?: number) => Promise<PersistUpdateResult>
   loadDocument: (afterSeq: number) => Promise<LoadDocumentResult>
   subscribe: (
     onEvent: (payload: { key: string; update: Uint8Array; seq?: number }) => void,
@@ -31,9 +31,13 @@ export type ArtifactCollabProvider = {
   disconnect: () => void
   destroy: () => void
   flush: () => Promise<void>
+  catchUp: () => Promise<void>
 }
 
 const LOCAL_DEBOUNCE_MS = 40
+const CATCH_UP_FAST_MS = 2500
+const CATCH_UP_IDLE_MS = 8000
+const CATCH_UP_REST_MS = 20000
 
 export function createArtifactCollabProvider(args: {
   document: Y.Doc
@@ -50,9 +54,13 @@ export function createArtifactCollabProvider(args: {
   let lastSeq = 0
   let status: SyncStatus = "connecting"
   let debounceTimer: ReturnType<typeof setTimeout> | null = null
+  let catchUpTimer: ReturnType<typeof setTimeout> | null = null
+  let idleCatchUps = 0
   let unsubscribe: (() => void) | null = null
   let destroyed = false
   let flushing = false
+  let catchingUp = false
+  let visibilityHandler: (() => void) | null = null
 
   const setStatus = (next: SyncStatus) => {
     status = next
@@ -78,8 +86,64 @@ export function createArtifactCollabProvider(args: {
       buffer.push(payload)
       return
     }
+    idleCatchUps = 0
     applyPersistedUpdate(args.document, payload.update, appliedKeys, payload.key)
     if (typeof payload.seq === "number" && payload.seq > lastSeq) lastSeq = payload.seq
+  }
+
+  const stopCatchUp = () => {
+    if (catchUpTimer) {
+      clearTimeout(catchUpTimer)
+      catchUpTimer = null
+    }
+    if (visibilityHandler && typeof globalThis.document !== "undefined") {
+      globalThis.document.removeEventListener("visibilitychange", visibilityHandler)
+      visibilityHandler = null
+    }
+  }
+
+  const catchUpDelay = () => {
+    if (idleCatchUps <= 0) return CATCH_UP_FAST_MS
+    if (idleCatchUps === 1) return CATCH_UP_IDLE_MS
+    return CATCH_UP_REST_MS
+  }
+
+  const scheduleCatchUp = (delay = catchUpDelay()) => {
+    if (catchUpTimer) clearTimeout(catchUpTimer)
+    catchUpTimer = setTimeout(() => {
+      void catchUp()
+    }, delay)
+  }
+
+  const catchUp = async () => {
+    if (!loaded || destroyed || catchingUp) return
+    catchingUp = true
+    const previousSeq = lastSeq
+    try {
+      const loadedDoc = await args.transport.loadDocument(lastSeq)
+      lastSeq = applyCatchUpDocument(args.document, loadedDoc, appliedKeys, lastSeq)
+      idleCatchUps = lastSeq === previousSeq ? idleCatchUps + 1 : 0
+    } catch {
+      // The next interval retries. Broadcast remains the fast path.
+    } finally {
+      catchingUp = false
+      if (loaded && !destroyed) scheduleCatchUp()
+    }
+  }
+
+  const startCatchUp = () => {
+    stopCatchUp()
+    idleCatchUps = 0
+    scheduleCatchUp(CATCH_UP_FAST_MS)
+    if (typeof globalThis.document !== "undefined") {
+      visibilityHandler = () => {
+        if (globalThis.document.visibilityState === "visible") {
+          idleCatchUps = 0
+          void catchUp()
+        }
+      }
+      globalThis.document.addEventListener("visibilitychange", visibilityHandler)
+    }
   }
 
   const flush = async () => {
@@ -90,7 +154,7 @@ export function createArtifactCollabProvider(args: {
       while (outbox.length > 0 && !destroyed) {
         const item = outbox[0]
         item.attempts += 1
-        const persisted = await args.transport.persistUpdate(item.update, item.idempotencyKey)
+        const persisted = await args.transport.persistUpdate(item.update, item.idempotencyKey, lastSeq)
         appliedKeys.add(item.idempotencyKey)
         if (persisted.seq > lastSeq) lastSeq = persisted.seq
         try {
@@ -148,6 +212,7 @@ export function createArtifactCollabProvider(args: {
           unsubscribe = null
         }
         lastSeq = applyBufferedBroadcasts(args.document, buffer.splice(0), appliedKeys, lastSeq)
+        startCatchUp()
         await flush()
         if (!destroyed && outbox.length === 0) setStatus("synced")
       } catch {
@@ -156,6 +221,7 @@ export function createArtifactCollabProvider(args: {
       }
     },
     disconnect() {
+      stopCatchUp()
       unsubscribe?.()
       unsubscribe = null
       loaded = false
@@ -164,10 +230,12 @@ export function createArtifactCollabProvider(args: {
     destroy() {
       destroyed = true
       if (debounceTimer) clearTimeout(debounceTimer)
+      stopCatchUp()
       args.document.off("update", onDocUpdate)
       unsubscribe?.()
       unsubscribe = null
     },
     flush,
+    catchUp,
   }
 }

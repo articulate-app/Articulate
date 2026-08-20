@@ -6,7 +6,7 @@ import { StickyAddCommentInput } from "./sticky-add-comment-input"
 import { ThreadParticipantsInline } from "./thread-participants-inline"
 import { Button } from "../ui/button"
 import { Dialog, DialogContent, DialogTitle, DialogFooter } from "../ui/dialog"
-import { ChevronLeft, Clock3, MessageSquare, Plus, Reply, Trash2 } from "lucide-react"
+import { ChevronLeft, Clock3, CornerDownRight, MessageSquare, Plus, Reply, Trash2 } from "lucide-react"
 import { Popover, PopoverContent, PopoverTrigger } from "../ui/popover"
 import { UserAvatar } from "../UserAvatar"
 import { getImageUrl } from "../../lib/public-media"
@@ -635,16 +635,11 @@ export function TaskCommentsInputPart(props: TaskCommentsPanelProps) {
     handleDeleteThread,
     replyTo,
     onClearReply,
-    currentUserName,
-    currentUserAvatar,
     minimalComposer = false,
     composerExpanded,
     onComposerExpandedChange,
   } = props
 
-  const composerPhotoUrl =
-    getImageUrl(currentUserAvatar || null)
-    || (currentUserAvatar?.startsWith("http") ? currentUserAvatar : null)
   const [localExpanded, setLocalExpanded] = React.useState(false)
   const [localFocusToken, setLocalFocusToken] = React.useState(0)
   const [selectionQuoteVisible, setSelectionQuoteVisible] = React.useState(false)
@@ -677,24 +672,19 @@ export function TaskCommentsInputPart(props: TaskCommentsPanelProps) {
   }
 
   return (
-    <div className="z-10 flex w-full items-start gap-2 bg-white py-1.5">
-      <UserAvatar
-        name={currentUserName || "You"}
-        photoUrl={composerPhotoUrl}
-        size="sm"
-        className="mt-0.5"
-      />
+    <div className="z-10 flex w-full items-start bg-white py-1.5">
       <div className="min-w-0 flex-1">
         {shouldShowFullComposer ? (
           <>
             {pendingQuote && selectionQuoteVisible ? (
-              <div className="mb-2 flex items-start justify-between gap-3 rounded-md border border-gray-200 bg-gray-50 px-3 py-1.5">
-                <div className="min-w-0 truncate text-xs text-gray-700">
+              <div className="mb-2 flex items-center gap-2 rounded-xl bg-gray-50 px-3 py-2">
+                <CornerDownRight className="h-3.5 w-3.5 shrink-0 text-gray-400" />
+                <div className="min-w-0 flex-1 truncate text-sm text-gray-700">
                   “{pendingQuote}”
                 </div>
                 <button
                   type="button"
-                  className="shrink-0 text-xs text-gray-500 hover:text-gray-900"
+                  className="inline-flex h-6 w-6 shrink-0 items-center justify-center rounded-md text-gray-400 hover:bg-gray-100 hover:text-gray-700"
                   onClick={() => {
                     setSelectionQuoteVisible(false)
                     props.onClearPendingArtifactTextQuote?.()

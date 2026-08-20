@@ -157,6 +157,42 @@ export function forgetDeletedArtifact(
   removeArtifactFromCache(queryClient, id)
 }
 
+/**
+ * Resolve the live artifact the chat preview should mirror — query get, then
+ * list caches. Never invent a body from worker section/snippet fields.
+ */
+export function findCachedArtifactSnapshot(
+  queryClient: QueryClient,
+  artifactId: string,
+): TaskArtifact | null {
+  const id = artifactId.trim()
+  if (!id) return null
+
+  const current = queryClient.getQueryData<ArtifactGetResult>(["artifact", id, "current"])
+  if (current?.snapshot?.id === id) return current.snapshot
+
+  const loose = queryClient.getQueryData<ArtifactGetResult>(["artifact", id])
+  if (loose?.snapshot?.id === id) return loose.snapshot
+
+  const listKeys = [
+    "task-artifacts",
+    "task-artifacts-meta",
+    "project-artifacts",
+    "project-artifacts-meta",
+    "ai-thread-artifacts",
+  ] as const
+  for (const key of listKeys) {
+    const entries = queryClient.getQueriesData<{ artifacts?: TaskArtifact[] }>({
+      queryKey: [key],
+    })
+    for (const [, data] of entries) {
+      const row = data?.artifacts?.find((artifact) => artifact.id === id)
+      if (row) return row
+    }
+  }
+  return null
+}
+
 export function applyArtifactCachePatch(
   queryClient: QueryClient,
   patch: ArtifactCachePatch,

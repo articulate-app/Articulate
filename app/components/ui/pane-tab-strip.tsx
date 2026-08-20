@@ -371,6 +371,7 @@ export function PaneTabStrip({
                   onDragOver={(event) => handleTabDragOver(tabIndex, event)}
                   className={cn(
                     AI_PANE_TAB_CHIP_CLASS,
+                    "group/tab",
                     isActive ? AI_PANE_TAB_ACTIVE_CLASS : AI_PANE_TAB_INACTIVE_CLASS,
                     isSelected && isMultiSelected && AI_PANE_TAB_SELECTED_CLASS,
                     canDrag && "cursor-grab active:cursor-grabbing",
@@ -388,7 +389,7 @@ export function PaneTabStrip({
                   <button
                     type="button"
                     onClick={(event) => handleCloseClick(tab.key, event)}
-                    className="rounded p-0.5 text-gray-400 opacity-70 hover:bg-black/5 hover:text-gray-700 hover:opacity-100"
+                    className="rounded p-0.5 text-gray-400 opacity-0 hover:bg-black/5 hover:text-gray-700 group-hover/tab:opacity-100 focus-visible:opacity-100"
                     title={
                       isMultiSelected && isSelected
                         ? `Close ${selectedKeys.length} tabs`

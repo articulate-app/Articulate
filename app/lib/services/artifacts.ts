@@ -15,6 +15,9 @@ import {
   type TaskArtifactsListResult,
   type ThreadArtifactsListResult,
 } from "../artifacts/artifact-types"
+import { resolveArtifactDirectoryFileKindFromRow } from "../artifacts/artifact-file-kind"
+import type { AttachmentFileKind } from "../../../features/ai-chat/attachment-file-meta"
+import type { GlobalSearchDocument } from "../global-search-types"
 import { invokeEdgeFunctionFetch } from "../edge-functions"
 
 function toTrimmedString(value: unknown): string | null {
@@ -85,6 +88,13 @@ function normalizeArtifactVersionSummary(row: unknown): ArtifactVersionSummary |
     title: toTrimmedString(record.title),
     status: toTrimmedString(record.status),
     content_preview: toTrimmedString(record.content_preview),
+    previous_content_preview: toTrimmedString(record.previous_content_preview),
+    insert_count: toFiniteNumber(record.insert_count)
+      ?? toFiniteNumber(asRecord(record.diff_stats)?.insert_count)
+      ?? 0,
+    delete_count: toFiniteNumber(record.delete_count)
+      ?? toFiniteNumber(asRecord(record.diff_stats)?.delete_count)
+      ?? 0,
     asset_count: toFiniteNumber(record.asset_count) ?? 0,
     is_current: record.is_current === true,
   }
@@ -221,6 +231,47 @@ export async function listArtifactVersions(args: {
   }
 }
 
+export async function restoreArtifactVersionForEdit(args: {
+  artifactId: string
+  versionNumber: number
+}): Promise<ArtifactSaveResult> {
+  const supabase = getSupabaseBrowser()
+  const historical = await getArtifact({
+    artifactId: args.artifactId,
+    versionNumber: args.versionNumber,
+  })
+  const { data: collabOn } = await supabase.rpc("artifact_collab_is_enabled_v1", {
+    p_artifact_id: args.artifactId,
+  })
+  if (collabOn === true) {
+    const { restoreArtifactCheckpoint } = await import("../collaboration/restore-checkpoint")
+    const restored = await restoreArtifactCheckpoint({
+      supabase,
+      artifactId: args.artifactId,
+      snapshot: historical.snapshot,
+      summary: `Restored artifact version ${args.versionNumber}`,
+    })
+    if (!restored.ok) {
+      throw new Error(
+        restored.error === "ydoc_not_open"
+          ? "Could not open the live document to restore into. Refresh and try again."
+          : restored.error ?? "Failed to restore collaborative document",
+      )
+    }
+    const live = await getArtifact({ artifactId: args.artifactId })
+    return {
+      ok: true,
+      artifact_id: args.artifactId,
+      version_number: restored.versionNumber ?? live.snapshot.current_version,
+      snapshot: {
+        ...live.snapshot,
+        title: historical.snapshot.title ?? live.snapshot.title,
+      },
+    }
+  }
+  return restoreArtifactVersion(args)
+}
+
 export async function restoreArtifactVersion(args: {
   artifactId: string
   versionNumber: number
@@ -339,7 +390,12 @@ export async function getArtifact(args: {
   })
   if (error) throw error
   const root = asRecord(data) ?? {}
-  const snapshot = normalizeTaskArtifact(root.snapshot)
+  const rawSnapshot = asRecord(root.snapshot) ?? {}
+  const snapshot = normalizeTaskArtifact({
+    ...rawSnapshot,
+    id: rawSnapshot.id ?? root.artifact_id ?? args.artifactId,
+    current_version: rawSnapshot.current_version ?? root.version_number ?? args.versionNumber ?? null,
+  })
   if (!snapshot) throw new Error("ai_get_artifact_v2 returned no snapshot")
   return {
     ok: true,
@@ -363,6 +419,90 @@ export async function deleteArtifact(args: {
     artifact_id: toTrimmedString(root.artifact_id) ?? args.artifactId,
     status: toTrimmedString(root.status) ?? undefined,
     already_archived: root.already_archived === true,
+  }
+}
+
+export type DeletedArtifactRow = {
+  id: string
+  title: string
+  createdAt: string | null
+  updatedAt: string | null
+  archivedAt: string | null
+  projectId: number | null
+  projectName: string | null
+  taskId: number | null
+  threadId: string | null
+}
+
+export function deletedArtifactRowFromRpc(row: Record<string, unknown> | null | undefined): DeletedArtifactRow | null {
+  if (!row) return null
+  const id = toTrimmedString(row.id)
+  if (!id) return null
+  return {
+    id,
+    title: toTrimmedString(row.title) ?? "Untitled",
+    createdAt: toTrimmedString(row.created_at),
+    updatedAt: toTrimmedString(row.updated_at),
+    archivedAt: toTrimmedString(row.archived_at),
+    projectId: toFiniteNumber(row.project_id),
+    projectName: toTrimmedString(row.project_name),
+    taskId: toFiniteNumber(row.task_id),
+    threadId: toTrimmedString(row.ai_thread_id),
+  }
+}
+
+export async function listDeletedArtifacts(args: {
+  taskId?: number | null
+  projectId?: number | null
+  threadId?: string | null
+  limit?: number
+  offset?: number
+}): Promise<DeletedArtifactRow[]> {
+  const supabase = getSupabaseBrowser()
+  const { data, error } = await supabase.rpc("list_deleted_artifacts_v1", {
+    p_task_id: args.taskId ?? null,
+    p_project_id: args.projectId ?? null,
+    p_thread_id: args.threadId ?? null,
+    p_limit: Math.max(1, Math.min(args.limit ?? 50, 200)),
+    p_offset: Math.max(0, args.offset ?? 0),
+  })
+  if (error) throw error
+  return (Array.isArray(data) ? data : [])
+    .map((row) => deletedArtifactRowFromRpc(row as Record<string, unknown>))
+    .filter(Boolean) as DeletedArtifactRow[]
+}
+
+export async function restoreArtifact(args: {
+  artifactId: string
+}): Promise<{ ok: true; artifact_id: string; status?: string; already_restored?: boolean; artifact: TaskArtifact | null }> {
+  const supabase = getSupabaseBrowser()
+  const { data, error } = await supabase.rpc("ai_restore_artifact_v1", {
+    p_artifact_id: args.artifactId,
+  })
+  if (error) throw error
+  const root = asRecord(data) ?? {}
+  return {
+    ok: true,
+    artifact_id: toTrimmedString(root.artifact_id) ?? args.artifactId,
+    status: toTrimmedString(root.status) ?? undefined,
+    already_restored: root.already_restored === true,
+    artifact: normalizeTaskArtifact(root.artifact),
+  }
+}
+
+export async function purgeArtifact(args: {
+  artifactId: string
+}): Promise<{ ok: true; artifact_id: string; purged?: boolean }> {
+  const supabase = getSupabaseBrowser()
+  const { data, error } = await supabase.rpc("ai_purge_artifact_v1", {
+    p_artifact_id: args.artifactId,
+  })
+  if (error) throw error
+  const root = asRecord(data) ?? {}
+  return {
+    ok: true,
+    artifact_id: toTrimmedString(root.artifact_id) ?? args.artifactId,
+    purged: root.purged === true,
   }
 }
 
@@ -484,6 +624,77 @@ export type ArtifactDirectoryMeta = {
   createdAt: string | null
   projectId: number | null
   projectName: string | null
+  fileKind: AttachmentFileKind
+}
+
+const ARTIFACT_DIRECTORY_MAX_PAGE = 500
+
+/** Map an `artifacts` row to the Outputs directory search document. */
+export function artifactRowToDirectorySearchDocument(
+  row: Record<string, unknown> | null | undefined,
+): GlobalSearchDocument | null {
+  if (!row) return null
+  const id = toTrimmedString(row.id)
+  if (!id) return null
+  const title = toTrimmedString(row.title) ?? "Untitled"
+  const createdAt = toTrimmedString(row.created_at)
+  const updatedAt = toTrimmedString(row.updated_at)
+  const projectId = toFiniteNumber(row.project_id)
+  const projectName = toTrimmedString(row.project_name)
+  const fileKind = resolveArtifactDirectoryFileKindFromRow(row)
+  return {
+    entity_type: "artifact",
+    entity_id: id,
+    title,
+    subtitle: projectName,
+    preview: null,
+    created_at: createdAt,
+    score: null,
+    url: null,
+    project_id: projectId,
+    task_id: toFiniteNumber(row.task_id),
+    thread_id: null,
+    display_payload: {
+      title,
+      left: projectName
+        ? { type: "project", label: projectName }
+        : null,
+      meta: [
+        { label: "created_at", value: createdAt ?? undefined },
+        { label: "updated_at", value: updatedAt ?? undefined },
+      ],
+    },
+    raw: {
+      id,
+      artifact_id: id,
+      project_id: projectId,
+      project_name: projectName,
+      created_at: createdAt,
+      updated_at: updatedAt,
+      artifact_type: toTrimmedString(row.artifact_type),
+      import_kind: toTrimmedString(row.import_kind),
+      import_file_name: toTrimmedString(row.import_file_name),
+      file_kind: fileKind,
+    },
+  }
+}
+
+/** Outputs directory page via `list_artifact_directory_v1`. */
+export async function fetchArtifactDirectoryPage(args: {
+  offset: number
+  limit: number
+}): Promise<GlobalSearchDocument[]> {
+  const offset = Math.max(0, Math.trunc(args.offset))
+  const limit = Math.max(1, Math.min(Math.trunc(args.limit) || 1, ARTIFACT_DIRECTORY_MAX_PAGE))
+  const supabase = getSupabaseBrowser()
+  const { data, error } = await supabase.rpc("list_artifact_directory_v1", {
+    p_limit: limit,
+    p_offset: offset,
+  })
+  if (error) throw error
+  return (Array.isArray(data) ? data : [])
+    .map((row) => artifactRowToDirectorySearchDocument(row as Record<string, unknown>))
+    .filter(Boolean) as GlobalSearchDocument[]
 }
 
 /** Batch created-at + project name for the Outputs directory table. */
@@ -498,7 +709,7 @@ export async function fetchArtifactDirectoryMeta(
   const supabase = getSupabaseBrowser()
   const { data, error } = await supabase
     .from("artifacts")
-    .select("id, created_at, project_id")
+    .select("id, created_at, project_id, title, artifact_type, metadata")
     .in("id", unique)
   if (error) throw error
 
@@ -533,6 +744,7 @@ export async function fetchArtifactDirectoryMeta(
       createdAt: toTrimmedString((row as { created_at?: unknown }).created_at),
       projectId,
       projectName: projectId != null ? projectNames.get(projectId) ?? null : null,
+      fileKind: resolveArtifactDirectoryFileKindFromRow(row as Record<string, unknown>),
     }
   }
   return out
@@ -565,5 +777,32 @@ export async function createTaskArtifact(args: {
   const root = asRecord(data) ?? {}
   const artifact = normalizeTaskArtifact(root.artifact)
   if (!artifact) throw new Error("ai_create_task_artifact_v1 returned no artifact")
+  return artifact
+}
+
+/** Create a workspace output. Scope (task / project / thread) is optional. */
+export async function createWorkspaceArtifact(args: {
+  title?: string
+  artifactType?: string
+  status?: string | null
+  taskId?: number | null
+  projectId?: number | null
+  aiThreadId?: string | null
+  metadata?: Record<string, unknown> | null
+}): Promise<TaskArtifact> {
+  const supabase = getSupabaseBrowser()
+  const { data, error } = await supabase.rpc("ai_create_workspace_artifact_v1", {
+    p_title: args.title?.trim() || "Untitled",
+    p_artifact_type: args.artifactType ?? "document",
+    p_task_id: args.taskId ?? null,
+    p_project_id: args.projectId ?? null,
+    p_ai_thread_id: args.aiThreadId ?? null,
+    p_status: args.status ?? "draft",
+    p_metadata: args.metadata ?? {},
+  })
+  if (error) throw error
+  const root = asRecord(data) ?? {}
+  const artifact = normalizeTaskArtifact(root.artifact)
+  if (!artifact) throw new Error("ai_create_workspace_artifact_v1 returned no artifact")
   return artifact
 }

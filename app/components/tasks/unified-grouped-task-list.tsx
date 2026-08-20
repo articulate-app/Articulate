@@ -171,10 +171,18 @@ function renderFirstTaskCellContent({
   forceShowControls?: boolean
   onToggleChecked?: () => void
 }) {
-  if (showOutsideControls) {
-    const showRowCheckbox = showCheckbox && (isChecked || forceShowControls)
-    return (
-      <div className="relative flex min-w-0 items-center gap-2">
+  const showRowCheckbox = showOutsideControls && showCheckbox && (isChecked || forceShowControls)
+  const showGrip = !showRowCheckbox
+  return (
+    <div className="relative flex min-w-0 items-center">
+      <div
+        className={cn(
+          "flex shrink-0 items-center justify-center overflow-hidden transition-[width] duration-150",
+          showRowCheckbox
+            ? "mr-1.5 w-6"
+            : "w-0 [@media(hover:hover)]:group-hover/task-row:mr-1.5 [@media(hover:hover)]:group-hover/task-row:w-5",
+        )}
+      >
         {showRowCheckbox ? (
           <input
             type="checkbox"
@@ -187,20 +195,14 @@ function renderFirstTaskCellContent({
               onToggleChecked?.()
             }}
           />
-        ) : null}
-        {!forceShowControls ? (
+        ) : showGrip ? (
           <TaskDragHandle
             task={task}
             sourceGroupKey={groupKey}
+            className="opacity-100"
           />
         ) : null}
-        <div className="min-w-0 flex-1 truncate">{children}</div>
       </div>
-    )
-  }
-  return (
-    <div className="flex min-w-0 items-center gap-1">
-      <TaskDragHandle task={task} sourceGroupKey={groupKey} />
       <div className="min-w-0 flex-1 truncate">{children}</div>
     </div>
   )
@@ -1549,7 +1551,7 @@ export function UnifiedGroupedTaskList<T>({
                 ))}
               {/* Title column: group label, sticky-left like Title */}
               <td
-                className="task-cell task-cell--sticky task-group-label bg-transparent pl-0 pr-3 pb-1.5 pt-6"
+                className="task-cell task-cell--sticky task-group-label bg-transparent pl-4 pr-3 pb-1.5 pt-6"
                 data-col="title"
               >
                 <div className="flex w-full items-center gap-1.5">
@@ -1738,6 +1740,7 @@ export function UnifiedGroupedTaskList<T>({
                       <TaskDragHandle
                         task={task as Record<string, unknown>}
                         sourceGroupKey={item.groupKey}
+                        className="opacity-100"
                       />
                     )
                   }
@@ -1813,7 +1816,7 @@ export function UnifiedGroupedTaskList<T>({
                   'border-b border-transparent',
                 entry.colId !== 'project_statuses' && 'truncate',
                 entry.isSpacer && 'task-spacer-cell relative p-0 overflow-visible',
-                !entry.isSpacer && entry.colId === 'title' && 'py-2 pl-0 pr-3',
+                !entry.isSpacer && entry.colId === 'title' && 'py-2 pl-4 pr-3',
                 !entry.isSpacer && entry.colId !== 'title' && 'px-3 py-2',
                 entry.colId === 'title' && 'task-cell--sticky overflow-visible',
               )}

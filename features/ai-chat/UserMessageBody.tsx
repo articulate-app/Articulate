@@ -24,6 +24,30 @@ import { cn } from "../../app/lib/utils"
 import { splitTextWithUrls } from "./split-text-with-urls"
 import { htmlLooksRich, sanitizeChatComposerHtml, splitRichHtmlByMentionMarkers } from "./composer-paste"
 
+export function UserMessageArtifactChips({
+  contentJson,
+  className,
+}: {
+  contentJson?: unknown
+  className?: string
+}) {
+  const pills = parseUserMessageContentJson(contentJson).selection_pills ?? []
+  const artifactPills = pills.filter((pill) => pill.entity_type === "artifact")
+  if (artifactPills.length === 0) return null
+  return (
+    <div className={cn("flex w-fit max-w-full flex-wrap items-start justify-end gap-1.5", className)}>
+      {artifactPills.map((pill, index) => (
+        <span
+          key={`artifact-${pill.artifact_id ?? index}`}
+          className="min-w-0 max-w-full"
+        >
+          <UserSelectionPill pill={pill} />
+        </span>
+      ))}
+    </div>
+  )
+}
+
 export function UserMentionChip({ tag }: { tag: AiContextTag }) {
   const pathname = usePathname()
   const searchParams = useSearchParams()
@@ -324,9 +348,11 @@ export function UserMessageBody({
   const visibleContent = resolveUserMessageDisplayContent(content, contentJson)
   const segments = inferUserMessageSegments(visibleContent, parsed)
   const selectionPills = parsed.selection_pills ?? []
+  const artifactPills = selectionPills.filter((pill) => pill.entity_type === "artifact")
+  const inBubblePills = selectionPills.filter((pill) => pill.entity_type !== "artifact")
   const artifactPillIds = new Set(
-    selectionPills
-      .map((pill) => (pill.entity_type === "artifact" ? pill.artifact_id?.trim() : null))
+    artifactPills
+      .map((pill) => pill.artifact_id?.trim())
       .filter((id): id is string => Boolean(id)),
   )
   const mentionTagsForRichHtml = segments
@@ -383,11 +409,11 @@ export function UserMessageBody({
         setIsSelected((prev) => !prev)
       }}
     >
-      {selectionPills.length > 0 || visibleSegments.length > 0 || richHtml ? (
+      {inBubblePills.length > 0 || visibleSegments.length > 0 || richHtml ? (
         <div className="flex w-fit max-w-full min-w-0 flex-col gap-1.5">
-          {selectionPills.length > 0 ? (
+          {inBubblePills.length > 0 ? (
             <div className="flex max-w-full flex-wrap items-start gap-1.5">
-              {selectionPills.map((pill, index) => (
+              {inBubblePills.map((pill, index) => (
                 <span
                   key={`selection-${pill.entity_type}-${pill.artifact_id ?? pill.component_id ?? index}`}
                   className="min-w-0 max-w-full"

@@ -22,6 +22,16 @@ export function getArtifactVersionFromParams(params: ReadableParams): number | n
   return Number.isInteger(parsed) && parsed > 0 ? parsed : null
 }
 
+/** True when the URL pins an older snapshot — that view is read-only. */
+export function isHistoricalArtifactVersion(
+  selectedVersion: number | null | undefined,
+  liveCurrentVersion: number | null | undefined,
+): boolean {
+  if (selectedVersion == null || selectedVersion <= 0) return false
+  if (liveCurrentVersion == null || liveCurrentVersion <= 0) return selectedVersion > 0
+  return selectedVersion !== liveCurrentVersion
+}
+
 export function clearArtifactCenterSelectionParams(next: URLSearchParams) {
   next.delete(CENTER_ARTIFACT_ID_PARAM)
   next.delete(ARTIFACT_VERSION_PARAM)

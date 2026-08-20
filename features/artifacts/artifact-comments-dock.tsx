@@ -1,8 +1,8 @@
 "use client"
 
-import React, { useEffect, useMemo, useState } from "react"
+import React, { useCallback, useEffect, useMemo, useRef, useState } from "react"
 import { useQuery } from "@tanstack/react-query"
-import { CheckCircle2, ChevronLeft, Clock3, Plus, Reply, RotateCcw, Trash2, X } from "lucide-react"
+import { CheckCircle2, ChevronLeft, Clock3, CornerDownRight, Plus, Reply, RotateCcw, Trash2, X } from "lucide-react"
 import { UserAvatar } from "../../app/components/UserAvatar"
 import { ThreadParticipantsInline } from "../../app/components/comments-section/thread-participants-inline"
 import { ThreadedRealtimeChat } from "../../app/components/threaded-realtime-chat"
@@ -35,10 +35,21 @@ export type ArtifactCommentPendingSelection = {
 
 type ArtifactCommentsDockProps = {
   artifact: TaskArtifact
+  /** Resolved task id when the artifact row is missing it. */
+  taskId?: number | null
+  /** Resolved project id when the artifact row is missing it. */
+  projectId?: number | null
   /** Highlighted artifact text to anchor the next comment thread to. */
   pendingSelection?: ArtifactCommentPendingSelection | null
   onClearPendingSelection?: () => void
   className?: string
+  /**
+   * `section` — inline list + composer at the end of the pane.
+   * `pinned` — composer only, overlayed while adding a selection/image comment.
+   */
+  variant?: "section" | "pinned"
+  /** Hide the composer (used on the section while the pinned overlay is open). */
+  hideComposer?: boolean
 }
 
 type StatusFilter = "all" | "open" | "resolved"
@@ -57,13 +68,18 @@ function stripPreview(value: string | null | undefined): string {
  */
 export function ArtifactCommentsDock({
   artifact,
+  taskId = null,
+  projectId = null,
   pendingSelection = null,
   onClearPendingSelection,
   className,
+  variant = "section",
+  hideComposer = false,
 }: ArtifactCommentsDockProps) {
   const currentUserId = useCurrentUserStore((s) => s.publicUserId)
   const currentUserName = useCurrentUserStore((s) => s.fullName)
-  const currentUserPhoto = useCurrentUserStore((s) => s.photo)
+  const notifyTaskId = taskId ?? artifact.task_id ?? null
+  const notifyProjectId = projectId ?? artifact.project_id ?? null
   const createComment = useCreateArtifactCommentThread()
   const replyComment = useReplyToArtifactCommentThread()
   const deleteThread = useDeleteArtifactCommentThread()
@@ -71,6 +87,10 @@ export function ArtifactCommentsDock({
 
   const [draft, setDraft] = useState("")
   const [composerExpanded, setComposerExpanded] = useState(false)
+  const composerRootRef = useRef<HTMLDivElement | null>(null)
+  const composerTextareaRef = useRef<HTMLTextAreaElement | null>(null)
+  const draftRef = useRef(draft)
+  draftRef.current = draft
   const [selectedThreadId, setSelectedThreadId] = useState<number | null>(null)
   const [isThreadView, setIsThreadView] = useState(false)
   const [isAddingThread, setIsAddingThread] = useState(false)
@@ -88,21 +108,21 @@ export function ArtifactCommentsDock({
     queryKey: [
       "artifact-notify-pool",
       artifact.id,
-      artifact.task_id ?? null,
-      artifact.project_id ?? null,
+      notifyTaskId,
+      notifyProjectId,
       artifact.ai_thread_id ?? null,
     ],
     queryFn: () =>
       loadArtifactNotifyPool({
-        task_id: artifact.task_id,
-        project_id: artifact.project_id,
+        task_id: notifyTaskId,
+        project_id: notifyProjectId,
         ai_thread_id: artifact.ai_thread_id,
       }),
     staleTime: 60_000,
   })
 
   const allNotifyUsers = notifyPoolQuery.data ?? []
-  const projectIdForParticipants = artifact.project_id ?? 0
+  const projectIdForParticipants = notifyProjectId ?? 0
 
   useEffect(() => {
     if (selectedThreadId == null) return
@@ -153,18 +173,44 @@ export function ArtifactCommentsDock({
     return rows
   }, [filteredThreads])
 
-  const photoUrl =
-    getImageUrl(currentUserPhoto || null)
-    || (currentUserPhoto?.startsWith("http") ? currentUserPhoto : null)
-
   const isPosting = createComment.isPending || replyComment.isPending
   const canPost = Boolean(draft.trim() && currentUserId && !isPosting)
-  const showComposer =
-    composerExpanded
-    || draft.trim()
-    || isAddingThread
-    || !!pendingSelection
-    || (selectedThreadId != null && isThreadView)
+  const showComposer = composerExpanded || Boolean(draft.trim())
+
+  const collapseComposerIfEmpty = useCallback(() => {
+    if (draftRef.current.trim()) return
+    setComposerExpanded(false)
+    setIsAddingThread(false)
+    onClearPendingSelection?.()
+  }, [onClearPendingSelection])
+
+  useEffect(() => {
+    if (!showComposer) return
+    const frame = requestAnimationFrame(() => {
+      composerTextareaRef.current?.focus()
+    })
+    return () => cancelAnimationFrame(frame)
+  }, [showComposer])
+
+  useEffect(() => {
+    if (!showComposer) return
+    const onPointerDown = (event: PointerEvent) => {
+      const root = composerRootRef.current
+      if (!root) return
+      if (event.target instanceof Node && root.contains(event.target)) return
+      collapseComposerIfEmpty()
+    }
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key !== "Escape") return
+      collapseComposerIfEmpty()
+    }
+    document.addEventListener("pointerdown", onPointerDown)
+    document.addEventListener("keydown", onKeyDown)
+    return () => {
+      document.removeEventListener("pointerdown", onPointerDown)
+      document.removeEventListener("keydown", onKeyDown)
+    }
+  }, [showComposer, collapseComposerIfEmpty])
 
   const handleAddThread = () => {
     setIsAddingThread(true)
@@ -228,8 +274,8 @@ export function ArtifactCommentsDock({
       })
     } else {
       const threadId = await createComment.mutateAsync({
-        taskId: artifact.task_id,
-        projectId: artifact.project_id,
+        taskId: notifyTaskId,
+        projectId: notifyProjectId,
         artifactId: artifact.id,
         artifactVersionNumber: pendingSelection?.versionNumber ?? artifact.current_version,
         comment,
@@ -259,13 +305,22 @@ export function ArtifactCommentsDock({
 
   const hasComments = threads.length > 0
   // Keep filters / thread list chrome only once there is something to filter.
-  const showThreadChrome = hasComments
-  const showCommentList = hasComments || isThreadView
+  const isPinned = variant === "pinned"
+  const showThreadChrome = !isPinned && hasComments
+  const showCommentList = !isPinned && (hasComments || isThreadView)
+  const showInlineComposer = !hideComposer
+  const padX = isPinned ? "px-4" : "px-0"
 
   return (
-    <div className={cn("flex shrink-0 flex-col border-t border-gray-100 bg-white", className)}>
+    <div
+      className={cn(
+        "flex shrink-0 flex-col bg-white",
+        isPinned && "border-t border-gray-100 shadow-[0_-8px_16px_rgba(255,255,255,0.9)]",
+        className,
+      )}
+    >
       {showThreadChrome ? (
-        <div className="flex items-center justify-between gap-2 border-b border-gray-50 px-4 py-1.5">
+        <div className={cn("flex items-center justify-between gap-2 border-b border-gray-50 py-1.5", padX)}>
           <div className="flex items-center gap-1">
             {(["all", "open", "resolved"] as const).map((value) => (
               <Button
@@ -358,7 +413,7 @@ export function ArtifactCommentsDock({
       ) : null}
 
       {showCommentList ? (
-        <div className="max-h-56 min-h-0 overflow-y-auto px-4 py-2">
+        <div className={cn("max-h-56 min-h-0 overflow-y-auto py-2", padX)}>
           {isThreadView && selectedThreadId != null ? (
             <div className="space-y-2">
               <div className="flex items-center justify-between gap-2">
@@ -490,85 +545,82 @@ export function ArtifactCommentsDock({
         </div>
       ) : null}
 
-      <div className={cn("px-4", showCommentList ? "pt-1" : "pt-3")}>
-        <div className="flex w-full items-start gap-2">
-          <UserAvatar
-            name={currentUserName || "You"}
-            photoUrl={photoUrl}
-            size="sm"
-            className="mt-0.5"
-          />
-          <div className="min-w-0 flex-1">
-            {showComposer ? (
-              <div className="space-y-2">
-                {pendingSelection?.quote ? (
-                  <div className="flex items-start gap-2 rounded-md border border-amber-200 bg-amber-50 px-2.5 py-1.5">
-                    <blockquote className="min-w-0 flex-1 border-l-2 border-amber-300 pl-2 text-xs leading-5 text-amber-900 line-clamp-3">
-                      {pendingSelection.quote}
-                    </blockquote>
-                    <button
-                      type="button"
-                      className="mt-0.5 inline-flex h-4 w-4 shrink-0 items-center justify-center rounded text-amber-700 hover:bg-amber-100"
-                      aria-label="Remove highlighted excerpt"
-                      title="Remove highlighted excerpt"
-                      onClick={() => onClearPendingSelection?.()}
-                    >
-                      <X className="h-3 w-3" />
-                    </button>
-                  </div>
-                ) : null}
-                {selectedThreadId != null && isThreadView ? (
-                  <p className="text-[11px] text-muted-foreground">
-                    Replying in thread #{selectedThreadId}
-                    {" · "}
-                    <button type="button" className="underline" onClick={handleAddThread}>
-                      Start new thread
-                    </button>
-                  </p>
-                ) : null}
-                <textarea
-                  value={draft}
-                  onChange={(event) => setDraft(event.target.value)}
-                  rows={3}
-                  placeholder="Add a comment…"
-                  className="w-full resize-y rounded-md border border-gray-200 px-2.5 py-2 text-sm outline-none focus:border-gray-400"
-                  onBlur={() => {
-                    if (!draft.trim() && !isAddingThread && !isThreadView) setComposerExpanded(false)
-                  }}
-                />
-                <div className="flex justify-end">
-                  <button
-                    type="button"
-                    disabled={!canPost}
-                    onClick={() => void handlePost()}
-                    className="rounded-md bg-gray-900 px-2.5 py-1.5 text-xs font-medium text-white disabled:opacity-50"
-                  >
-                    {isPosting ? "Posting…" : "Comment"}
-                  </button>
-                </div>
-              </div>
-            ) : (
-              <div className="flex h-9 items-center gap-1.5">
+      {showInlineComposer ? (
+      <div ref={composerRootRef}>
+      <div className={cn(padX, showCommentList ? "pt-1" : "pt-3", !showComposer && "pb-1.5")}>
+        {showComposer ? (
+          <div className="overflow-hidden rounded-2xl border border-gray-200 bg-white">
+            {pendingSelection?.quote ? (
+              <div className="flex items-center gap-2 bg-gray-50 px-3 py-2">
+                <CornerDownRight className="h-3.5 w-3.5 shrink-0 text-gray-400" />
+                <p className="min-w-0 flex-1 truncate text-sm text-gray-700">
+                  “{pendingSelection.quote}”
+                </p>
                 <button
                   type="button"
-                  className="flex h-9 min-w-0 flex-1 cursor-text items-center rounded-md border border-gray-200 bg-white px-3 text-left text-sm text-muted-foreground hover:border-gray-300"
-                  onClick={() => {
-                    if (pendingParticipants.length === 0 && allNotifyUsers.length > 0) {
-                      setPendingParticipants(allNotifyUsers)
-                    }
-                    setComposerExpanded(true)
-                  }}
+                  className="inline-flex h-6 w-6 shrink-0 items-center justify-center rounded-md text-gray-400 hover:bg-gray-100 hover:text-gray-700"
+                  aria-label="Remove highlighted excerpt"
+                  title="Remove highlighted excerpt"
+                  onClick={() => onClearPendingSelection?.()}
                 >
-                  Add a comment...
+                  <X className="h-3.5 w-3.5" />
                 </button>
               </div>
-            )}
+            ) : null}
+            {selectedThreadId != null && isThreadView ? (
+              <p className="px-3 pt-2 text-[11px] text-muted-foreground">
+                Replying in thread #{selectedThreadId}
+                {" · "}
+                <button type="button" className="underline" onClick={handleAddThread}>
+                  Start new thread
+                </button>
+              </p>
+            ) : null}
+            <textarea
+              ref={composerTextareaRef}
+              value={draft}
+              onChange={(event) => setDraft(event.target.value)}
+              rows={3}
+              placeholder="Add a comment..."
+              className="w-full resize-none border-0 bg-transparent px-3 py-2.5 text-sm text-gray-900 outline-none placeholder:text-gray-400"
+              onBlur={(event) => {
+                const next = event.relatedTarget
+                if (next instanceof Node && composerRootRef.current?.contains(next)) return
+                window.setTimeout(() => {
+                  if (composerRootRef.current?.contains(document.activeElement)) return
+                  collapseComposerIfEmpty()
+                }, 0)
+              }}
+            />
+            <div className="flex justify-end px-2 pb-2">
+              <button
+                type="button"
+                disabled={!canPost}
+                onClick={() => void handlePost()}
+                className="rounded-full bg-primary px-4 py-1.5 text-sm font-medium text-white shadow-sm transition hover:bg-primary/90 disabled:opacity-50"
+              >
+                {isPosting ? "Posting…" : "Comment"}
+              </button>
+            </div>
           </div>
-        </div>
+        ) : (
+          <button
+            type="button"
+            className="flex h-9 w-full cursor-text items-center rounded-md border border-gray-200 bg-white px-3 text-left text-sm text-muted-foreground hover:border-gray-300"
+            onClick={() => {
+              if (pendingParticipants.length === 0 && allNotifyUsers.length > 0) {
+                setPendingParticipants(allNotifyUsers)
+              }
+              setComposerExpanded(true)
+            }}
+          >
+            Add a comment...
+          </button>
+        )}
       </div>
 
       {showComposer ? (
-        <div className="flex shrink-0 items-center gap-2 px-4 py-1.5">
+        <div className={cn("flex shrink-0 items-center gap-2 py-1.5", padX)}>
           <span className="shrink-0 text-xs text-gray-500">We'll notify</span>
           <div className="min-w-0 flex-1 overflow-hidden">
             {selectedThread && !isAddingThread ? (
@@ -639,6 +691,8 @@ export function ArtifactCommentsDock({
             </>
           ) : null}
         </div>
+      ) : null}
+      </div>
       ) : null}
     </div>
   )

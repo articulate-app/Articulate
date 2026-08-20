@@ -23,11 +23,18 @@ import { enhanceBlocksWithMarkdownTables, tableBlockToClipboardText } from "./te
 import { getAssistantContentBlocks } from "./assistant-content-blocks"
 import {
   AI_CHAT_ASSISTANT_MESSAGE_CLASS,
+  extractAssistantMarkdownFromMessage,
   formatAssistantBlocksForDisplay,
   formatAssistantContentForDisplay,
   groupAssistantBlocksForRender,
 } from "./ai-chat-message-format"
-import { UserMessageBody } from "./UserMessageBody"
+import {
+  isAssistantDraftDocument,
+  splitAssistantDraftDocument,
+  titleFromDraftDocument,
+} from "./assistant-draft-output"
+import { AssistantDraftOutputCard } from "./AssistantDraftOutputCard"
+import { UserMessageArtifactChips, UserMessageBody } from "./UserMessageBody"
 import { buildUserMessageContentJson } from "./ai-chat-user-message-content"
 import { resolveUserMessageDisplayContent } from "./resolve-user-message-display-content"
 import type { AiMessageSegment } from "./composer-inline-editor"
@@ -335,7 +342,7 @@ export function MessageBubble({
   msg,
   isMine,
   taskId,
-  threadContext: _threadContext,
+  threadContext,
   activeChannelId,
   chatContext: _chatContext,
   mentionDirectSeed,
@@ -355,6 +362,7 @@ export function MessageBubble({
   runFailureCard = null,
   forceExpandedUserMessage = false,
 }: MessageBubbleProps) {
+  const resolvedTaskId = taskId ?? threadContext?.task_id ?? null
   const router = useRouter()
   const pathname = usePathname()
   const searchParams = useSearchParams()
@@ -599,8 +607,6 @@ export function MessageBubble({
 
   const showOwnHoverActions = isMine && !isEditing && showTouchActions
   const resolvedCopyableAssistantText = (copyableAssistantText ?? "").trim()
-  const showAssistantCopyButton =
-    !isEditing && !isMine && msg.role === "assistant" && resolvedCopyableAssistantText.length > 0
   const hasInlinePreview = Boolean(componentEditPreview)
   const hasChangePreview = Boolean(changePreview) && !isMine
   const hasOrchestratedBuild = Boolean(orchestratedBuild) && !isMine
@@ -609,6 +615,30 @@ export function MessageBubble({
   const hasTraceCards = Boolean(traceCards) && !isMine
   const hasRequestPlanCard = Boolean(requestPlanCard) && !isMine
   const hasExecutionTimeline = Boolean(executionTimeline) && !isMine
+  const draftDocumentMarkdown = useMemo(() => {
+    if (isMine || msg.role !== "assistant") return ""
+    return extractAssistantMarkdownFromMessage({
+      content: msg.content,
+      contentJson: msg.content_json,
+    })
+  }, [isMine, msg.content, msg.content_json, msg.role])
+  const draftDocumentParts = useMemo(
+    () => splitAssistantDraftDocument(draftDocumentMarkdown),
+    [draftDocumentMarkdown],
+  )
+  const isDraftDocument =
+    !isMine
+    && msg.role === "assistant"
+    && !componentEditPreview
+    && !changePreview
+    && !orchestratedBuild
+    && isAssistantDraftDocument(draftDocumentMarkdown)
+  const showAssistantCopyButton =
+    !isEditing
+    && !isMine
+    && msg.role === "assistant"
+    && resolvedCopyableAssistantText.length > 0
+    && !isDraftDocument
   const introHtml = (assistantIntroHtml ?? "").trim()
   const outroHtml = (assistantOutroHtml ?? "").trim()
   const hasIntroHtml = introHtml.length > 0
@@ -742,15 +772,24 @@ export function MessageBubble({
           />
         ) : null}
 
+        {isMine && !isEditing ? (
+          <UserMessageArtifactChips
+            contentJson={msg.content_json}
+            className={shouldRenderBubble || hasUserAttachments ? "mb-2" : undefined}
+          />
+        ) : null}
+
         {shouldRenderBubble ? (
         <div
           data-ai-selectable="chat-message"
           data-message-id={msg.id}
           data-message-role={msg.role}
-          className={`px-3.5 py-2.5 text-sm break-words max-w-full min-w-0 overflow-x-hidden ${
+          className={`text-sm break-words max-w-full min-w-0 overflow-x-hidden ${
             isMine
-              ? "rounded-[22px] bg-[#f4f4f4] text-gray-900"
-              : "rounded-lg bg-white"
+              ? "rounded-[22px] bg-[#f4f4f4] px-3.5 py-2.5 text-gray-900"
+              : isDraftDocument
+                ? "rounded-lg bg-transparent p-0"
+                : "rounded-lg bg-white px-3.5 py-2.5"
           }`}
         >
           {hasExecutionTimeline && !isEditing ? (
@@ -800,7 +839,23 @@ export function MessageBubble({
           ) : isMine && (userDisplayContent || msg.content) ? (
             renderUserMessage(userDisplayContent || msg.content || "")
           ) : suppressBuildAckBubble ? null
-          : hasInlinePreview || hasIntroHtml || hasOutroHtml ? (
+          : isDraftDocument ? (
+            <div className="space-y-3">
+              {draftDocumentParts.intro ? renderAssistantHtml(draftDocumentParts.intro) : null}
+              <AssistantDraftOutputCard
+                messageId={msg.id}
+                threadId={msg.thread_id}
+                taskId={resolvedTaskId}
+                projectId={threadContext?.project_id ?? null}
+                title={titleFromDraftDocument(draftDocumentParts.body || draftDocumentMarkdown)}
+                html={formatAssistantContentForDisplay(draftDocumentParts.body || draftDocumentMarkdown, {
+                  appLinkLabels: appLinkLabelsForDisplay(),
+                })}
+                plainText={draftDocumentParts.body || resolvedCopyableAssistantText || draftDocumentMarkdown}
+              />
+              {draftDocumentParts.outro ? renderAssistantHtml(draftDocumentParts.outro) : null}
+            </div>
+          ) : hasInlinePreview || hasIntroHtml || hasOutroHtml ? (
             <div className="space-y-3">
               {hasIntroHtml ? renderAssistantHtml(introHtml) : null}
               {componentEditPreview ? <div className="w-full min-w-0 max-w-full">{componentEditPreview}</div> : null}
@@ -875,7 +930,7 @@ export function MessageBubble({
                   threadId={msg.thread_id}
                   messageId={msg.id}
                   changeSet={assistantChangeSet}
-                  taskId={taskId ?? _threadContext?.task_id ?? null}
+                  taskId={resolvedTaskId}
                   activeChannelId={activeChannelId ?? null}
                 />
               ) : null}
